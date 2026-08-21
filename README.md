@@ -99,6 +99,50 @@ curl -X POST http://localhost:8000/auth/login \
 - Seeding creates a demo admin. If its password is ever missing, regenerate it:
   `python scripts/set_admin_password.py`.
 
+## Admin & user management
+
+The platform has two roles: `admin` and `user`. Admin-only endpoints are
+guarded by a `require_admin` dependency (HTTP 403 otherwise).
+
+- **Users** (`/users`, admin): list, create, update (role/status/name), delete,
+  and admin reset-password. The last active admin can never be demoted or
+  deleted, so the console can't be locked out.
+- **Invites** (`/invites`, admin): create an invite for a teammate's email; the
+  single-use token is returned. The recipient opens `/accept-invite?token=...`
+  (no session required) and sets a password to activate the account.
+- **Self-service**: any authenticated user can change their own password at
+  `POST /auth/change-password`.
+
+## AI model configuration (real LLM activation)
+
+Analyses run through the agentic engine. When an AI model is configured it is
+called; otherwise the engine falls back to a deterministic offline heuristic so
+the product stays runnable with no external keys.
+
+- Configure OpenAI-/Anthropic-compatible endpoints at
+  `POST/PUT/DELETE /settings/ai-models` (admin). Exactly one config is the
+  `default` per scope (`global` or `application`); the engine resolves
+  application → global.
+- **Secrets stay out of the database.** `api_key_ref` supports `env://NAME`
+  (the real key is read from the environment at request time) or a literal key.
+  The API never echoes the value back — only `has_key` (boolean).
+- Example: create a global default backed by an env var, then run an analysis:
+
+```bash
+curl -X POST http://localhost:8000/settings/ai-models \
+  -H 'Authorization: Bearer <admin-token>' -H 'Content-Type: application/json' \
+  -d '{"scope":"global","provider":"openai","base_url":"https://api.openai.com/v1",
+       "api_key_ref":"env://OPENAI_API_KEY","model":"gpt-4o-mini","is_default":true}'
+```
+
+## Ingestion → analysis chain
+
+The Kafka consumer (`make consume`) validates each v1.1 alert, persists the
+`Alert` + a pending `Analysis`, then triggers `run_analysis` in a background
+task so the full `receive → git_sync → context → ai_analysis → memory →
+conclusion` workflow runs without blocking ingestion. A failed run is marked
+`failed` rather than crashing the consumer.
+
 ## Running the full stack (Docker)
 
 ```bash
