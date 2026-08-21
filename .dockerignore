@@ -1,0 +1,14 @@
+# Project-level build context for the backend image.
+.venv/
+.git/
+.gitignore
+.idea/
+.pytest_cache/
+__pycache__/
+*.pyc
+.env
+.env.example
+apps/
+README.md
+docker-compose.yml
+*.md

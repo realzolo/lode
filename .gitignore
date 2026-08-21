@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────
+# Incident Trace — ignore rules
+# Node/Next build artifacts and Python caches are ignored so the
+# repo ships source only. Real secrets (.env) are ignored; the
+# committed .env.example template is explicitly re-included.
+# ─────────────────────────────────────────────────────────────
+
+# ── Python ──
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ── Node / Next.js (apps/web) ──
+node_modules/
+.pnp/
+.pnp.js
+.yarn/
+.next/
+out/
+.next/
+.swc/
+.vercel
+next-env.d.ts
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pem
+
+# ── Environment / secrets ──
+# Keep .env.example tracked as a template; ignore every real env file.
+.env
+.env.*
+!.env.example
+*.local
+
+# ── Logs ──
+*.log
+
+# ── OS / editor ──
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.idea/
+.vscode/
