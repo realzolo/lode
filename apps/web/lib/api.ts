@@ -21,21 +21,62 @@ import type {
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
 
+// The session JWT lives in a cookie (not localStorage) so the auth gate in
+// `middleware.ts` can read it on the server and redirect unauthenticated
+// requests *before* any HTML is sent — eliminating the client-side flash-of-white.
+// It is a readable (non-HttpOnly) cookie because the cross-origin FastAPI backend
+// is authorized via the `Authorization: Bearer` header (read here), not cookies.
 const TOKEN_KEY = 'it_token';
 
 export function getToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem(TOKEN_KEY);
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(
+    new RegExp('(^|;\\s*)' + TOKEN_KEY + '=([^;]*)')
+  );
+  return match ? decodeURIComponent(match[2]) : null;
 }
 
 export function setToken(token: string): void {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(TOKEN_KEY, token);
+  if (typeof document === 'undefined') return;
+  const maxAge = tokenMaxAgeSeconds(token);
+  const secure =
+    typeof window !== 'undefined' && window.location.protocol === 'https:'
+      ? '; Secure'
+      : '';
+  document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; SameSite=Lax${secure}`;
 }
 
 export function clearToken(): void {
-  if (typeof window === 'undefined') return;
-  window.localStorage.removeItem(TOKEN_KEY);
+  if (typeof document === 'undefined') return;
+  document.cookie = `${TOKEN_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
+}
+
+// Derive cookie lifetime from the JWT `exp` claim so the cookie expires with the
+// token. Falls back to 7 days if the claim is missing or unreadable.
+function tokenMaxAgeSeconds(token: string): number {
+  const exp = jwtExp(token);
+  if (typeof exp === 'number') {
+    return Math.max(0, exp - Math.floor(Date.now() / 1000));
+  }
+  return 60 * 60 * 24 * 7;
+}
+
+// Decode the JWT `exp` claim. Returns undefined on any parse failure — callers
+// treat that as "not valid" (fail-safe) rather than trusting an unreadable token.
+function jwtExp(token: string): number | undefined {
+  try {
+    const payload = JSON.parse(base64UrlDecode(token.split('.')[1] ?? ''));
+    return typeof payload?.exp === 'number' ? payload.exp : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function base64UrlDecode(input: string): string {
+  const b64 = input.replace(/-/g, '+').replace(/_/g, '/');
+  if (typeof atob === 'function') return atob(b64);
+  // Node fallback (SSR/tests) — never reached in the browser.
+  return Buffer.from(b64, 'base64').toString('utf-8');
 }
 
 function authHeaders(): Record<string, string> {

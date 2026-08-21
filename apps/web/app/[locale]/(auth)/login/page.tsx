@@ -27,7 +27,17 @@ export default function LoginPage() {
       clearToken();
       setToken(result.token);
       setUser(result.user);
-      router.replace('/dashboard');
+      // Send the user back to the page they originally requested (set by the
+      // middleware as ?redirect), defaulting to the dashboard. Read from the URL
+      // directly to avoid pulling in useSearchParams (which would need a Suspense
+      // boundary and deopt the page to client rendering).
+      const params = new URLSearchParams(window.location.search);
+      const redirectRaw = params.get('redirect');
+      const redirect =
+        redirectRaw && redirectRaw.startsWith('/') && !redirectRaw.startsWith('//')
+          ? redirectRaw
+          : '/dashboard';
+      router.replace(redirect);
     } catch (err) {
       setError(String(err));
     } finally {
