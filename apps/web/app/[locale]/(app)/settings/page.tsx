@@ -13,11 +13,11 @@ import {
   deleteAiModel,
   fetchApplications,
   fetchSettings,
-  getRole,
   updateAiModel,
   type AiModelInput,
   type GlobalSettings,
 } from '@/lib/api';
+import { useUser } from '@/lib/user-context';
 import type { Application } from '@/lib/types';
 
 export default function SettingsPage() {
@@ -30,7 +30,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const isAdmin = getRole() === 'admin';
+  const isAdmin = useUser().isAdmin;
 
   useEffect(() => {
     let active = true;
@@ -219,7 +219,7 @@ function AiModelManager({
   return (
     <div style={{ marginTop: 16 }}>
       <Button size="sm" variant="primary" onClick={() => { resetForm(); setShowForm((v) => !v); }}>
-        {tu('newUser') === '新建用户' ? '添加模型' : 'Add model'}
+        {t('addModel')}
       </Button>
 
       {showForm && (
@@ -265,7 +265,7 @@ function AiModelManager({
           </label>
           <div className="row" style={{ gap: 8 }}>
             <Button size="sm" variant="primary" onClick={handleSubmit} disabled={busy || !baseUrl || !model || (scope === 'application' && !applicationId)}>
-              {editingId != null ? tc('save') : tu('newUser')}
+              {editingId != null ? tc('save') : t('createModel')}
             </Button>
             {editingId != null && (
               <Button size="sm" onClick={() => { resetForm(); setShowForm(false); }}>{tc('cancel')}</Button>

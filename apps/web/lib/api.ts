@@ -22,7 +22,6 @@ export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
 
 const TOKEN_KEY = 'it_token';
-const ROLE_KEY = 'it_role';
 
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null;
@@ -34,20 +33,9 @@ export function setToken(token: string): void {
   window.localStorage.setItem(TOKEN_KEY, token);
 }
 
-export function getRole(): string | null {
-  if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem(ROLE_KEY);
-}
-
-export function setRole(role: string): void {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(ROLE_KEY, role);
-}
-
 export function clearToken(): void {
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(TOKEN_KEY);
-  window.localStorage.removeItem(ROLE_KEY);
 }
 
 function authHeaders(): Record<string, string> {
@@ -245,7 +233,7 @@ export async function addHint(
 
 export interface LoginResult {
   token: string;
-  user: { id: number; email: string; name: string; role: string; status: string };
+  user: CurrentUser;
 }
 
 export async function login(email: string, password: string): Promise<LoginResult> {

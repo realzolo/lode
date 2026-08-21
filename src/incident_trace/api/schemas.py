@@ -124,7 +124,7 @@ class AuthLoginIn(BaseModel):
 
 class TokenOut(BaseModel):
     token: str
-    user: dict
+    user: UserOut
 
 
 class UserOut(BaseModel):

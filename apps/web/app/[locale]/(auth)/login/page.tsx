@@ -6,11 +6,13 @@ import { useRouter } from '@/lib/navigation';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { clearToken, login, setRole, setToken } from '@/lib/api';
+import { clearToken, login, setToken } from '@/lib/api';
+import { useUser } from '@/lib/user-context';
 
 export default function LoginPage() {
   const t = useTranslations('login');
   const router = useRouter();
+  const { setUser } = useUser();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +26,7 @@ export default function LoginPage() {
       const result = await login(email, password);
       clearToken();
       setToken(result.token);
-      setRole(result.user.role);
+      setUser(result.user);
       router.replace('/dashboard');
     } catch (err) {
       setError(String(err));

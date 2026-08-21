@@ -12,10 +12,10 @@ import {
   createUser,
   deleteUser,
   fetchUsers,
-  getRole,
   resetUserPassword,
   updateUser,
 } from '@/lib/api';
+import { useUser } from '@/lib/user-context';
 import type { CurrentUser } from '@/lib/types';
 
 export default function UsersPage() {
@@ -43,7 +43,7 @@ export default function UsersPage() {
   const [resetId, setResetId] = useState<number | null>(null);
   const [resetPassword, setResetPassword] = useState('');
 
-  const isAdmin = getRole() === 'admin';
+  const isAdmin = useUser().isAdmin;
 
   async function load() {
     setLoading(true);
@@ -189,8 +189,8 @@ export default function UsersPage() {
               onChange={(e) => setCreateName(e.target.value)}
             />
             <Select value={createRole} onChange={(e) => setCreateRole(e.target.value)}>
-              <option value="user">{tc('appName') === 'Incident Trace' ? 'user' : '普通用户'}</option>
-              <option value="admin">admin</option>
+              <option value="user">{t('roleUser')}</option>
+              <option value="admin">{t('roleAdmin')}</option>
             </Select>
             <Input
               type="password"
@@ -260,8 +260,8 @@ export default function UsersPage() {
                       value={u.role}
                       onChange={(e) => handleRoleChange(u.id, e.target.value)}
                     >
-                      <option value="user">user</option>
-                      <option value="admin">admin</option>
+                      <option value="user">{t('roleUser')}</option>
+                      <option value="admin">{t('roleAdmin')}</option>
                     </Select>
                   </td>
                   <td>
@@ -269,9 +269,9 @@ export default function UsersPage() {
                       value={u.status}
                       onChange={(e) => handleStatusChange(u.id, e.target.value)}
                     >
-                      <option value="active">active</option>
-                      <option value="disabled">disabled</option>
-                      <option value="pending">pending</option>
+                      <option value="active">{t('statusActive')}</option>
+                      <option value="disabled">{t('statusDisabled')}</option>
+                      <option value="pending">{t('statusPending')}</option>
                     </Select>
                   </td>
                   <td className="muted" style={{ fontSize: 12 }}>

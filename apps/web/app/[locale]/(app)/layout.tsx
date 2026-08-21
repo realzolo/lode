@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useRouter } from '@/lib/navigation';
-import { fetchCurrentUser, getToken, setRole } from '@/lib/api';
+import { getToken } from '@/lib/api';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Topbar } from '@/components/layout/topbar';
 
@@ -17,10 +17,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       return;
     }
     setChecked(true);
-    // Keep the cached role fresh so the admin-only nav appears correctly.
-    fetchCurrentUser()
-      .then((u) => setRole(u.role))
-      .catch(() => {});
+    // The current user (incl. role) is owned by <UserProvider>, which seeds it
+    // from /auth/me on mount — no manual role refetch needed here.
   }, [router]);
 
   if (!checked) {

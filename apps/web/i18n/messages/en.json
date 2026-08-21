@@ -39,7 +39,9 @@
     "gitAccountDesc": "Read-only account with access to every repository.",
     "repoRegistry": "Repository registry",
     "aiModel": "AI model",
-    "aiModelDesc": "Default provider used when an application does not override it."
+    "aiModelDesc": "Default provider used when an application does not override it.",
+    "addModel": "Add model",
+    "createModel": "Create model"
   },
   "application": {
     "title": "Application settings",
@@ -90,7 +92,12 @@
     "copyLink": "Copy invite link",
     "inviteSent": "Invite created — share the link below",
     "grantAdmin": "Grant admin",
-    "revokeAdmin": "Revoke admin"
+    "revokeAdmin": "Revoke admin",
+    "roleUser": "User",
+    "roleAdmin": "Admin",
+    "statusActive": "Active",
+    "statusDisabled": "Disabled",
+    "statusPending": "Pending"
   },
   "account": {
     "title": "Account",

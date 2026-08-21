@@ -6,7 +6,8 @@ import { useTheme } from 'next-themes';
 import { useRouter, usePathname } from '@/lib/navigation';
 import { CommandPalette } from '@/components/cmdk';
 import { Select } from '@/components/ui/select';
-import { fetchApplications, clearToken } from '@/lib/api';
+import { fetchApplications } from '@/lib/api';
+import { useUser } from '@/lib/user-context';
 import type { Application } from '@/lib/types';
 
 export function Topbar() {
@@ -15,6 +16,7 @@ export function Topbar() {
   const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
+  const { clearUser } = useUser();
   const [apps, setApps] = useState<Application[]>([]);
 
   useEffect(() => {
@@ -28,7 +30,7 @@ export function Topbar() {
     router.replace(pathname, { locale: locale === 'zh' ? 'en' : 'zh' });
 
   const handleLogout = () => {
-    clearToken();
+    clearUser();
     router.replace('/login');
   };
 

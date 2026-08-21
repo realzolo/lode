@@ -3,7 +3,7 @@
 import { Link, usePathname } from '@/lib/navigation';
 import { useTranslations } from 'next-intl';
 import { cx } from '@/lib/cn';
-import { getRole } from '@/lib/api';
+import { useUser } from '@/lib/user-context';
 
 const NAV = [
   { key: 'dashboard', href: '/dashboard', adminOnly: false },
@@ -16,7 +16,7 @@ const NAV = [
 export function Sidebar() {
   const t = useTranslations('nav');
   const pathname = usePathname();
-  const isAdmin = getRole() === 'admin';
+  const { isAdmin } = useUser();
 
   return (
     <aside className="sidebar">

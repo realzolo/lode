@@ -39,13 +39,14 @@ async def login(payload: AuthLoginIn, session: AsyncSession = Depends(get_sessio
     token = create_token(user.id, settings.secret_key, settings.jwt_ttl_seconds)
     return TokenOut(
         token=token,
-        user={
-            "id": user.id,
-            "email": user.email,
-            "name": user.name,
-            "role": user.role,
-            "status": user.status,
-        },
+        user=UserOut(
+            id=user.id,
+            email=user.email,
+            name=user.name,
+            role=user.role,
+            status=user.status,
+            created_at=user.created_at,
+        ),
     )
 
 

@@ -39,7 +39,9 @@
     "gitAccountDesc": "拥有所有仓库只读权限的账号。",
     "repoRegistry": "仓库注册表",
     "aiModel": "AI 模型",
-    "aiModelDesc": "当应用未覆盖时使用默认_provider。"
+    "aiModelDesc": "当应用未覆盖时使用默认_provider。",
+    "addModel": "添加模型",
+    "createModel": "新建模型"
   },
   "application": {
     "title": "应用设置",
@@ -90,7 +92,12 @@
     "copyLink": "复制邀请链接",
     "inviteSent": "邀请已创建——请分享以下链接",
     "grantAdmin": "设为管理员",
-    "revokeAdmin": "取消管理员"
+    "revokeAdmin": "取消管理员",
+    "roleUser": "普通用户",
+    "roleAdmin": "管理员",
+    "statusActive": "启用",
+    "statusDisabled": "停用",
+    "statusPending": "待激活"
   },
   "account": {
     "title": "账号",

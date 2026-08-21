@@ -3,6 +3,7 @@
 import { ReactNode } from 'react';
 import { ThemeProvider } from 'next-themes';
 import { NextIntlClientProvider } from 'next-intl';
+import { UserProvider } from '@/lib/user-context';
 
 interface ProvidersProps {
   children: ReactNode;
@@ -15,7 +16,7 @@ export function Providers({ children, messages, locale }: ProvidersProps) {
   return (
     <NextIntlClientProvider messages={messages} locale={locale}>
       <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
-        {children}
+        <UserProvider>{children}</UserProvider>
       </ThemeProvider>
     </NextIntlClientProvider>
   );
