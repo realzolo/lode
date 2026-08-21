@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from incident_trace.api.main import app
 from incident_trace.db.models.ai_model import AiModelConfig
+from incident_trace.db.models.application import Application
 from incident_trace.db.models.user import Invite, User
 from incident_trace.db.session import AsyncSessionLocal
 from incident_trace.security import hash_password
@@ -198,6 +199,68 @@ async def test_change_own_password(user):
 
 
 # --- Invites -------------------------------------------------------------
+
+async def test_promote_default_stays_scoped_to_application(admin):
+    """Deleting one application's default must NOT promote a sibling app's config.
+
+    Regression test for ``_promote_if_no_default``: it must filter by
+    ``application_id`` so the replacement default is chosen within the same
+    application rather than borrowing the sibling application's still-valid default.
+    """
+    _email, _pw, uid = admin
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+
+    # Two isolated applications so promotion cannot leak across them.
+    async with AsyncSessionLocal() as session:
+        app_a = Application(name=f"app-a-{uuid.uuid4().hex}", created_by=uid)
+        app_b = Application(name=f"app-b-{uuid.uuid4().hex}", created_by=uid)
+        session.add(app_a)
+        session.add(app_b)
+        await session.commit()
+        await session.refresh(app_a)
+        await session.refresh(app_b)
+        app_a_id, app_b_id = app_a.id, app_b.id
+
+    async with _client() as client:
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # app A: two configs, the first is the default.
+        a1 = (await client.post("/settings/ai-models", headers=headers, json={
+            "scope": "application", "application_id": app_a_id,
+            "provider": "openai", "base_url": "https://api.openai.com/v1",
+            "api_key_ref": "env://OPENAI_API_KEY", "model": "gpt-4o", "is_default": True,
+        })).json()
+        assert a1["is_default"] is True
+        a2 = (await client.post("/settings/ai-models", headers=headers, json={
+            "scope": "application", "application_id": app_a_id,
+            "provider": "anthropic", "base_url": "https://api.anthropic.com",
+            "api_key_ref": "env://ANTHROPIC_API_KEY", "model": "claude", "is_default": False,
+        })).json()
+
+        # app B: a single default config (the "sibling" that must stay untouched).
+        b1 = (await client.post("/settings/ai-models", headers=headers, json={
+            "scope": "application", "application_id": app_b_id,
+            "provider": "openai", "base_url": "https://api.openai.com/v1",
+            "api_key_ref": "env://OPENAI_API_KEY", "model": "gpt-4o", "is_default": True,
+        })).json()
+        assert b1["is_default"] is True
+
+        # Delete app A's default; A2 should be promoted within app A.
+        resp = await client.delete(f"/settings/ai-models/{a1['id']}", headers=headers)
+        assert resp.status_code == 204
+
+        rows = {m["id"]: m for m in (await client.get("/settings/ai-models", headers=headers)).json()}
+        assert rows[a2["id"]]["is_default"] is True, "replacement default not promoted within app A"
+        assert rows[b1["id"]]["is_default"] is True, "sibling app B default wrongly disturbed"
+
+    # Cascade-delete the configs along with their applications.
+    async with AsyncSessionLocal() as session:
+        for aid in (app_a_id, app_b_id):
+            v = (await session.execute(select(Application).where(Application.id == aid))).scalars().first()
+            if v is not None:
+                await session.delete(v)
+                await session.commit()
+
 
 async def test_invite_create_and_accept(admin):
     _email, _pw, _uid = admin

@@ -107,13 +107,16 @@ async def _promote_if_no_default(
 
     Keeps the engine's ``_resolve_model_config`` functional instead of silently
     falling back to the heuristic when an operator forgets to tick "default".
+
+    For ``scope='application'`` the search is limited to the same
+    ``application_id`` so a replacement default is promoted *within the correct
+    application* and never accidentally borrowed from a sibling application.
     """
+    stmt = select(AiModelConfig).where(AiModelConfig.scope == scope)
+    if scope == "application":
+        stmt = stmt.where(AiModelConfig.application_id == application_id)
     existing = (
-        await session.execute(
-            select(AiModelConfig)
-            .where(AiModelConfig.scope == scope)
-            .order_by(AiModelConfig.id.desc())
-        )
+        await session.execute(stmt.order_by(AiModelConfig.id.desc()))
     ).scalars().all()
     if not existing:
         return
