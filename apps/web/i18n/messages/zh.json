@@ -1,0 +1,73 @@
+{
+  "nav": {
+    "dashboard": "概览",
+    "applications": "应用",
+    "analyses": "分析",
+    "memories": "共享记忆",
+    "settings": "全局设置"
+  },
+  "common": {
+    "appName": "Incident Trace",
+    "search": "搜索",
+    "command": "命令",
+    "theme": "主题",
+    "language": "语言",
+    "save": "保存",
+    "cancel": "取消",
+    "loading": "加载中...",
+    "empty": "暂无数据",
+    "addHint": "添加提示",
+    "reanalyze": "重新分析"
+  },
+  "login": {
+    "title": "登录",
+    "subtitle": "使用邀请链接激活你的账号。",
+    "email": "邮箱",
+    "password": "密码",
+    "submit": "继续"
+  },
+  "dashboard": {
+    "title": "应用",
+    "subtitle": "每个应用对应一个 Kafka topic。",
+    "newApplication": "新建应用",
+    "topic": "Topic"
+  },
+  "settings": {
+    "title": "全局设置",
+    "gitAccount": "Git 账号",
+    "gitAccountDesc": "拥有所有仓库只读权限的账号。",
+    "repoRegistry": "仓库注册表",
+    "aiModel": "AI 模型",
+    "aiModelDesc": "当应用未覆盖时使用默认_provider。"
+  },
+  "application": {
+    "title": "应用设置",
+    "topic": "Kafka topic",
+    "repos": "仓库",
+    "reposDesc": "选择仓库并描述每个模块。",
+    "prompts": "预制提示词",
+    "dbSources": "只读数据源",
+    "modelOverride": "模型覆盖"
+  },
+  "analyses": {
+    "title": "分析",
+    "dedupeKey": "去重键",
+    "status": "状态",
+    "level": "级别",
+    "view": "查看"
+  },
+  "analysis": {
+    "title": "根因分析",
+    "conclusion": "结论",
+    "confidence": "置信度",
+    "evidence": "证据",
+    "steps": "工作流",
+    "hintPlaceholder": "补充上下文以辅助 Agent..."
+  },
+  "memories": {
+    "title": "共享记忆",
+    "trigger": "触发签名",
+    "content": "内容",
+    "valid": "有效"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "applications": "Applications",
+    "analyses": "Analyses",
+    "memories": "Shared Memory",
+    "settings": "Global Settings"
+  },
+  "common": {
+    "appName": "Incident Trace",
+    "search": "Search",
+    "command": "Command",
+    "theme": "Theme",
+    "language": "Language",
+    "save": "Save",
+    "cancel": "Cancel",
+    "loading": "Loading...",
+    "empty": "No data yet",
+    "addHint": "Add hint",
+    "reanalyze": "Re-analyze"
+  },
+  "login": {
+    "title": "Sign in",
+    "subtitle": "Use your invite link to activate your account.",
+    "email": "Email",
+    "password": "Password",
+    "submit": "Continue"
+  },
+  "dashboard": {
+    "title": "Applications",
+    "subtitle": "Each application maps to one Kafka topic.",
+    "newApplication": "New application",
+    "topic": "Topic"
+  },
+  "settings": {
+    "title": "Global Settings",
+    "gitAccount": "Git account",
+    "gitAccountDesc": "Read-only account with access to every repository.",
+    "repoRegistry": "Repository registry",
+    "aiModel": "AI model",
+    "aiModelDesc": "Default provider used when an application does not override it."
+  },
+  "application": {
+    "title": "Application settings",
+    "topic": "Kafka topic",
+    "repos": "Repositories",
+    "reposDesc": "Select repositories and describe each module.",
+    "prompts": "Preset prompts",
+    "dbSources": "Read-only data sources",
+    "modelOverride": "Model override"
+  },
+  "analyses": {
+    "title": "Analyses",
+    "dedupeKey": "Dedupe key",
+    "status": "Status",
+    "level": "Level",
+    "view": "View"
+  },
+  "analysis": {
+    "title": "Root-cause analysis",
+    "conclusion": "Conclusion",
+    "confidence": "Confidence",
+    "evidence": "Evidence",
+    "steps": "Workflow",
+    "hintPlaceholder": "Add context to help the agent..."
+  },
+  "memories": {
+    "title": "Shared memory",
+    "trigger": "Trigger signature",
+    "content": "Content",
+    "valid": "Valid"
+  }
+}
