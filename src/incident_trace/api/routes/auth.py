@@ -7,11 +7,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from incident_trace.api.deps import require_user
-from incident_trace.api.schemas import AuthLoginIn, TokenOut, UserOut
+from incident_trace.api.schemas import (
+    AuthLoginIn,
+    PasswordChangeIn,
+    TokenOut,
+    UserOut,
+)
 from incident_trace.config import settings
 from incident_trace.db.models.user import User
 from incident_trace.db.session import AsyncSessionLocal
-from incident_trace.security import create_token, verify_password
+from incident_trace.security import create_token, hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -50,4 +55,28 @@ async def me(user_id: int = Depends(require_user)) -> UserOut:
         user = await session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="user not found")
-    return UserOut(id=user.id, email=user.email, name=user.name, role=user.role, status=user.status)
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        role=user.role,
+        status=user.status,
+        created_at=user.created_at,
+    )
+
+
+@router.post("/change-password")
+async def change_password(
+    payload: PasswordChangeIn,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Let the authenticated user change their own password."""
+    user = await session.get(User, user_id)
+    if user is None or user.password_hash is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="current password is incorrect")
+    user.password_hash = hash_password(payload.new_password)
+    await session.commit()
+    return {"status": "ok", "message": "password updated"}
