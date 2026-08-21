@@ -4,7 +4,8 @@
     "applications": "应用",
     "analyses": "分析",
     "memories": "共享记忆",
-    "settings": "全局设置"
+    "settings": "全局设置",
+    "users": "用户"
   },
   "common": {
     "appName": "Incident Trace",
@@ -69,5 +70,34 @@
     "trigger": "触发签名",
     "content": "内容",
     "valid": "有效"
+  },
+  "users": {
+    "title": "用户",
+    "subtitle": "管理团队成员访问权限。管理员可邀请、创建与停用账号。",
+    "email": "邮箱",
+    "name": "姓名",
+    "role": "角色",
+    "status": "状态",
+    "created": "创建时间",
+    "actions": "操作",
+    "invite": "邀请用户",
+    "newUser": "新建用户",
+    "resetPw": "重置密码",
+    "delete": "删除",
+    "password": "密码",
+    "newPassword": "新密码",
+    "currentPassword": "当前密码",
+    "copyLink": "复制邀请链接",
+    "inviteSent": "邀请已创建——请分享以下链接",
+    "grantAdmin": "设为管理员",
+    "revokeAdmin": "取消管理员"
+  },
+  "account": {
+    "title": "账号",
+    "subtitle": "管理你自己的凭据。",
+    "changePassword": "修改密码",
+    "currentPassword": "当前密码",
+    "newPassword": "新密码",
+    "update": "更新密码"
   }
 }

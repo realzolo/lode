@@ -3,22 +3,26 @@
 import { Link, usePathname } from '@/lib/navigation';
 import { useTranslations } from 'next-intl';
 import { cx } from '@/lib/cn';
+import { getRole } from '@/lib/api';
 
 const NAV = [
-  { key: 'dashboard', href: '/dashboard' },
-  { key: 'analyses', href: '/analyses' },
-  { key: 'memories', href: '/memories' },
-  { key: 'settings', href: '/settings' },
+  { key: 'dashboard', href: '/dashboard', adminOnly: false },
+  { key: 'analyses', href: '/analyses', adminOnly: false },
+  { key: 'memories', href: '/memories', adminOnly: false },
+  { key: 'settings', href: '/settings', adminOnly: false },
+  { key: 'users', href: '/users', adminOnly: true },
 ] as const;
 
 export function Sidebar() {
   const t = useTranslations('nav');
   const pathname = usePathname();
+  const isAdmin = getRole() === 'admin';
 
   return (
     <aside className="sidebar">
       <div className="sidebar-logo">Incident Trace</div>
       {NAV.map((item) => {
+        if (item.adminOnly && !isAdmin) return null;
         const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
         return (
           <Link

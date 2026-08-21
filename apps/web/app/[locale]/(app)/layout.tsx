@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useRouter } from '@/lib/navigation';
-import { getToken } from '@/lib/api';
+import { fetchCurrentUser, getToken, setRole } from '@/lib/api';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Topbar } from '@/components/layout/topbar';
 
@@ -14,9 +14,13 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!getToken()) {
       router.replace('/login');
-    } else {
-      setChecked(true);
+      return;
     }
+    setChecked(true);
+    // Keep the cached role fresh so the admin-only nav appears correctly.
+    fetchCurrentUser()
+      .then((u) => setRole(u.role))
+      .catch(() => {});
   }, [router]);
 
   if (!checked) {

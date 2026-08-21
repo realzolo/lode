@@ -6,7 +6,7 @@ import { useRouter } from '@/lib/navigation';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { clearToken, login, setToken } from '@/lib/api';
+import { clearToken, login, setRole, setToken } from '@/lib/api';
 
 export default function LoginPage() {
   const t = useTranslations('login');
@@ -24,6 +24,7 @@ export default function LoginPage() {
       const result = await login(email, password);
       clearToken();
       setToken(result.token);
+      setRole(result.user.role);
       router.replace('/dashboard');
     } catch (err) {
       setError(String(err));

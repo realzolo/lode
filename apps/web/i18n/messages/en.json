@@ -4,7 +4,8 @@
     "applications": "Applications",
     "analyses": "Analyses",
     "memories": "Shared Memory",
-    "settings": "Global Settings"
+    "settings": "Global Settings",
+    "users": "Users"
   },
   "common": {
     "appName": "Incident Trace",
@@ -69,5 +70,34 @@
     "trigger": "Trigger signature",
     "content": "Content",
     "valid": "Valid"
+  },
+  "users": {
+    "title": "Users",
+    "subtitle": "Manage team access. Admins can invite, create, and disable accounts.",
+    "email": "Email",
+    "name": "Name",
+    "role": "Role",
+    "status": "Status",
+    "created": "Created",
+    "actions": "Actions",
+    "invite": "Invite user",
+    "newUser": "Create user",
+    "resetPw": "Reset password",
+    "delete": "Delete",
+    "password": "Password",
+    "newPassword": "New password",
+    "currentPassword": "Current password",
+    "copyLink": "Copy invite link",
+    "inviteSent": "Invite created — share the link below",
+    "grantAdmin": "Grant admin",
+    "revokeAdmin": "Revoke admin"
+  },
+  "account": {
+    "title": "Account",
+    "subtitle": "Manage your own credentials.",
+    "changePassword": "Change password",
+    "currentPassword": "Current password",
+    "newPassword": "New password",
+    "update": "Update password"
   }
 }

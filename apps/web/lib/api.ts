@@ -9,7 +9,10 @@ import type {
   Analysis,
   AnalysisStatus,
   AnalysisStep,
+  AiModelConfig,
   Application,
+  CurrentUser,
+  Invite,
   Level,
   Memory,
   StepStatus,
@@ -19,6 +22,7 @@ export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
 
 const TOKEN_KEY = 'it_token';
+const ROLE_KEY = 'it_role';
 
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null;
@@ -30,9 +34,20 @@ export function setToken(token: string): void {
   window.localStorage.setItem(TOKEN_KEY, token);
 }
 
+export function getRole(): string | null {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem(ROLE_KEY);
+}
+
+export function setRole(role: string): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(ROLE_KEY, role);
+}
+
 export function clearToken(): void {
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(TOKEN_KEY);
+  window.localStorage.removeItem(ROLE_KEY);
 }
 
 function authHeaders(): Record<string, string> {
@@ -295,6 +310,7 @@ export interface GlobalSettings {
     scope: string;
     application_id: number | null;
     provider: string;
+    base_url: string;
     model: string;
     is_default: boolean;
     has_key: boolean;
@@ -303,4 +319,175 @@ export interface GlobalSettings {
 
 export async function fetchSettings(): Promise<GlobalSettings> {
   return getJson<GlobalSettings>('/settings');
+}
+
+export interface AiModelInput {
+  scope: string;
+  application_id: number | null;
+  provider: string;
+  base_url: string;
+  api_key_ref: string;
+  model: string;
+  is_default: boolean;
+}
+
+export async function createAiModel(input: AiModelInput): Promise<AiModelConfig> {
+  return postJson<AiModelConfig>('/settings/ai-models', input);
+}
+
+export async function updateAiModel(id: number, input: AiModelInput): Promise<AiModelConfig> {
+  return putJson<AiModelConfig>(`/settings/ai-models/${id}`, input);
+}
+
+export async function deleteAiModel(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/settings/ai-models/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) throw new Error(`delete ai model failed: ${res.status}`);
+}
+
+// ---------------------------------------------------------------------------
+// Current user / account
+// ---------------------------------------------------------------------------
+
+export async function fetchCurrentUser(): Promise<CurrentUser> {
+  return getJson<CurrentUser>('/auth/me');
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/auth/change-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error?.message ?? `change password failed: ${res.status}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// User administration (admin)
+// ---------------------------------------------------------------------------
+
+export interface UserInput {
+  email?: string;
+  name?: string;
+  role?: string;
+  password?: string;
+  status?: string;
+}
+
+export async function fetchUsers(): Promise<CurrentUser[]> {
+  return getJson<CurrentUser[]>('/users');
+}
+
+export async function createUser(input: UserInput): Promise<CurrentUser> {
+  return postJson<CurrentUser>('/users', input);
+}
+
+export async function updateUser(id: number, input: UserInput): Promise<CurrentUser> {
+  return putJson<CurrentUser>(`/users/${id}`, input);
+}
+
+export async function deleteUser(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/users/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error?.message ?? `delete user failed: ${res.status}`);
+  }
+}
+
+export async function resetUserPassword(id: number, password: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/users/${id}/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ password }),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error?.message ?? `reset password failed: ${res.status}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Invitations (admin create/list, open accept)
+// ---------------------------------------------------------------------------
+
+export async function createInvite(email: string): Promise<Invite> {
+  return postJson<Invite>('/invites', { email });
+}
+
+export async function fetchInvites(): Promise<Invite[]> {
+  return getJson<Invite[]>('/invites');
+}
+
+export async function acceptInvite(token: string, password: string, name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/invites/accept`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password, name }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error?.message ?? `accept invite failed: ${res.status}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Private JSON helpers (POST/PUT with auth)
+// ---------------------------------------------------------------------------
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const b = await res.json().catch(() => null);
+    throw new Error(b?.error?.message ?? `request failed: ${res.status} ${path}`);
+  }
+  return (await res.json()) as T;
+}
+
+async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const b = await res.json().catch(() => null);
+    throw new Error(b?.error?.message ?? `request failed: ${res.status} ${path}`);
+  }
+  return (await res.json()) as T;
 }

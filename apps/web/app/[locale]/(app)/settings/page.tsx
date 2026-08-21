@@ -4,19 +4,42 @@ import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { fetchSettings, type GlobalSettings } from '@/lib/api';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Select } from '@/components/ui/select';
+import {
+  changePassword,
+  createAiModel,
+  deleteAiModel,
+  fetchApplications,
+  fetchSettings,
+  getRole,
+  updateAiModel,
+  type AiModelInput,
+  type GlobalSettings,
+} from '@/lib/api';
+import type { Application } from '@/lib/types';
 
 export default function SettingsPage() {
   const t = useTranslations('settings');
   const tc = useTranslations('common');
+  const tu = useTranslations('users');
+  const ta = useTranslations('account');
   const [settings, setSettings] = useState<GlobalSettings | null>(null);
+  const [apps, setApps] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const isAdmin = getRole() === 'admin';
+
   useEffect(() => {
     let active = true;
-    fetchSettings()
-      .then((d) => active && setSettings(d))
+    Promise.all([fetchSettings(), fetchApplications().catch(() => [] as Application[])])
+      .then(([d, a]) => {
+        if (!active) return;
+        setSettings(d);
+        setApps(a);
+      })
       .catch((e) => active && setError(String(e)))
       .finally(() => active && setLoading(false));
     return () => {
@@ -24,11 +47,24 @@ export default function SettingsPage() {
     };
   }, []);
 
+  async function reload() {
+    setError(null);
+    try {
+      setSettings(await fetchSettings());
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   return (
     <>
       <h1 className="page-title">{t('title')}</h1>
       {loading && <p className="muted">{tc('loading')}</p>}
-      {error && <p className="muted" style={{ color: 'var(--danger, #f87171)' }}>{error}</p>}
+      {error && (
+        <p className="muted" style={{ color: 'var(--danger, #f87171)' }}>
+          {error}
+        </p>
+      )}
 
       {settings && (
         <div className="stack" style={{ marginTop: 24 }}>
@@ -72,9 +108,246 @@ export default function SettingsPage() {
                 {m.is_default && <Badge variant="accent">default</Badge>}
               </div>
             ))}
+            {isAdmin && (
+              <AiModelManager
+                settings={settings}
+                apps={apps}
+                onChanged={reload}
+                onError={setError}
+              />
+            )}
           </Card>
+
+          <AccountSection />
         </div>
       )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Admin-only AI model CRUD
+// ---------------------------------------------------------------------------
+
+function AiModelManager({
+  settings,
+  apps,
+  onChanged,
+  onError,
+}: {
+  settings: GlobalSettings;
+  apps: Application[];
+  onChanged: () => Promise<void> | void;
+  onError: (msg: string | null) => void;
+}) {
+  const t = useTranslations('settings');
+  const tu = useTranslations('users');
+  const tc = useTranslations('common');
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [scope, setScope] = useState('global');
+  const [applicationId, setApplicationId] = useState<string>('');
+  const [provider, setProvider] = useState('openai');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [apiKeyRef, setApiKeyRef] = useState('');
+  const [model, setModel] = useState('');
+  const [isDefault, setIsDefault] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  function resetForm() {
+    setEditingId(null);
+    setScope('global');
+    setApplicationId('');
+    setProvider('openai');
+    setBaseUrl('');
+    setApiKeyRef('');
+    setModel('');
+    setIsDefault(true);
+  }
+
+  function startEdit(m: GlobalSettings['ai_model_configs'][number]) {
+    setEditingId(m.id);
+    setScope(m.scope);
+    setApplicationId(m.application_id != null ? String(m.application_id) : '');
+    setProvider(m.provider);
+    setBaseUrl(m.base_url);
+    setApiKeyRef('');
+    setModel(m.model);
+    setIsDefault(m.is_default);
+    setShowForm(true);
+  }
+
+  async function handleSubmit() {
+    setBusy(true);
+    onError(null);
+    const payload: AiModelInput = {
+      scope,
+      application_id: scope === 'application' && applicationId ? Number(applicationId) : null,
+      provider,
+      base_url: baseUrl,
+      api_key_ref: apiKeyRef,
+      model,
+      is_default: isDefault,
+    };
+    try {
+      if (editingId != null) {
+        await updateAiModel(editingId, payload);
+      } else {
+        await createAiModel(payload);
+      }
+      resetForm();
+      setShowForm(false);
+      await onChanged();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(id: number) {
+    if (!window.confirm(t('aiModel') + '?')) return;
+    onError(null);
+    try {
+      await deleteAiModel(id);
+      await onChanged();
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <Button size="sm" variant="primary" onClick={() => { resetForm(); setShowForm((v) => !v); }}>
+        {tu('newUser') === '新建用户' ? '添加模型' : 'Add model'}
+      </Button>
+
+      {showForm && (
+        <div className="stack" style={{ marginTop: 12 }}>
+          <Select value={scope} onChange={(e) => setScope(e.target.value)}>
+            <option value="global">{t('aiModel')} · global</option>
+            <option value="application">application</option>
+          </Select>
+          {scope === 'application' && (
+            <Select value={applicationId} onChange={(e) => setApplicationId(e.target.value)}>
+              <option value="">— select app —</option>
+              {apps.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </Select>
+          )}
+          <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
+            <option value="openai">openai</option>
+            <option value="anthropic">anthropic</option>
+          </Select>
+          <Input
+            placeholder="base_url (e.g. https://api.openai.com/v1)"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+          />
+          <Input
+            placeholder="api_key_ref (env://OPENAI_API_KEY or literal)"
+            value={apiKeyRef}
+            onChange={(e) => setApiKeyRef(e.target.value)}
+          />
+          <Input
+            placeholder="model (e.g. gpt-4o-mini)"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          />
+          <label className="row" style={{ gap: 8, fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={isDefault}
+              onChange={(e) => setIsDefault(e.target.checked)}
+            />
+            default for this scope
+          </label>
+          <div className="row" style={{ gap: 8 }}>
+            <Button size="sm" variant="primary" onClick={handleSubmit} disabled={busy || !baseUrl || !model || (scope === 'application' && !applicationId)}>
+              {editingId != null ? tc('save') : tu('newUser')}
+            </Button>
+            {editingId != null && (
+              <Button size="sm" onClick={() => { resetForm(); setShowForm(false); }}>{tc('cancel')}</Button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="stack" style={{ marginTop: 12 }}>
+        {settings.ai_model_configs.map((m) => (
+          <div key={m.id} className="row-between" style={{ borderTop: '1px solid var(--border, #333)', paddingTop: 8 }}>
+            <span className="mono" style={{ fontSize: 12 }}>
+              #{m.id} {m.provider} · {m.model} · {m.scope}
+              {m.scope === 'application' ? ` (${m.application_id})` : ''}
+              {m.is_default ? ' · default' : ''}
+            </span>
+            <div className="row" style={{ gap: 6 }}>
+              <Button size="sm" onClick={() => startEdit(m)}>{tc('save')}</Button>
+              <Button size="sm" variant="primary" onClick={() => handleDelete(m.id)}>{tu('delete')}</Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Self-service password change (all authenticated users)
+// ---------------------------------------------------------------------------
+
+function AccountSection() {
+  const ta = useTranslations('account');
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      await changePassword(current, next);
+      setMsg('ok');
+      setCurrent('');
+      setNext('');
+    } catch (err) {
+      setMsg(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <h2 className="section-title">{ta('title')}</h2>
+      <p className="page-subtitle">{ta('subtitle')}</p>
+      <form className="stack" style={{ maxWidth: 360 }} onSubmit={handleSubmit}>
+        <Input
+          type="password"
+          placeholder={ta('currentPassword')}
+          autoComplete="current-password"
+          value={current}
+          onChange={(e) => setCurrent(e.target.value)}
+        />
+        <Input
+          type="password"
+          placeholder={ta('newPassword')}
+          autoComplete="new-password"
+          value={next}
+          onChange={(e) => setNext(e.target.value)}
+        />
+        {msg && (
+          <p className="muted" style={{ color: msg === 'ok' ? 'var(--success, #4ade80)' : 'var(--danger, #f87171)', fontSize: 13 }}>
+            {msg === 'ok' ? ta('update') + ' ✓' : msg}
+          </p>
+        )}
+        <Button variant="primary" type="submit" disabled={busy || !current || next.length < 8}>
+          {ta('update')}
+        </Button>
+      </form>
+    </Card>
   );
 }
