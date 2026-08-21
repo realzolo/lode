@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +29,30 @@ class ModelConfig:
     model: str
 
 
+def resolve_api_key(api_key_ref: str) -> str:
+    """Resolve an ``api_key_ref`` to the actual secret value.
+
+    Two forms are supported:
+
+    * ``env://NAME`` — read the key from the environment variable ``NAME``.
+      This is the recommended form so real credentials never touch the
+      database and are injected per-deployment.
+    * a literal string — used as-is (e.g. for local dev / self-hosted
+      endpoints behind a trusted network).
+
+    Returns an empty string when an ``env://`` reference points at an unset
+    variable, so the caller gracefully falls back to the heuristic engine.
+    """
+    if api_key_ref.startswith("env://"):
+        name = api_key_ref[len("env://") :]
+        value = os.environ.get(name)
+        if not value:
+            logger.warning("api_key_ref references unset environment variable %s", name)
+            return ""
+        return value
+    return api_key_ref
+
+
 async def complete(
     system_prompt: str,
     user_prompt: str,
@@ -40,10 +65,16 @@ async def complete(
     if config is None or not config.api_key_ref:
         return None
 
+    # Resolve the reference form (env://NAME) to the real secret before any
+    # network call. If it resolves empty, degrade to the offline heuristic.
+    api_key = resolve_api_key(config.api_key_ref)
+    if not api_key:
+        return None
+
     if config.provider == "anthropic":
-        payload, headers = _anthropic_payload(config, system_prompt, user_prompt)
+        payload, headers = _anthropic_payload(api_key, config.base_url, config.model, system_prompt, user_prompt)
     else:  # openai-compatible (default)
-        payload, headers = _openai_payload(config, system_prompt, user_prompt)
+        payload, headers = _openai_payload(api_key, config.base_url, config.model, system_prompt, user_prompt)
 
     headers["Content-Type"] = "application/json"
     data = json.dumps(payload).encode("utf-8")
@@ -61,9 +92,9 @@ async def complete(
         return None
 
 
-def _openai_payload(config: ModelConfig, system: str, user: str) -> tuple[dict, dict]:
+def _openai_payload(api_key: str, base_url: str, model: str, system: str, user: str) -> tuple[dict, dict]:
     payload = {
-        "model": config.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -71,24 +102,24 @@ def _openai_payload(config: ModelConfig, system: str, user: str) -> tuple[dict, 
         "temperature": 0.2,
     }
     headers = {
-        "Authorization": f"Bearer {config.api_key_ref}",
+        "Authorization": f"Bearer {api_key}",
     }
     return payload, headers
 
 
-def _anthropic_payload(config: ModelConfig, system: str, user: str) -> tuple[dict, dict]:
+def _anthropic_payload(api_key: str, base_url: str, model: str, system: str, user: str) -> tuple[dict, dict]:
     # Anthropic Messages API uses a top-level system field (not a message role).
-    base = config.base_url
+    base = base_url
     if not base.endswith("/messages"):
         base = base.rstrip("/") + "/messages"
     payload = {
-        "model": config.model,
+        "model": model,
         "system": system,
         "messages": [{"role": "user", "content": user}],
         "max_tokens": 1024,
     }
     headers = {
-        "x-api-key": config.api_key_ref,
+        "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
     }
     return payload, headers
