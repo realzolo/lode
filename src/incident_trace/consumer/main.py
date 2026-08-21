@@ -24,6 +24,7 @@ from incident_trace.db.models.alert import Alert
 from incident_trace.db.models.analysis import Analysis
 from incident_trace.db.models.application import ApplicationKafka
 from incident_trace.db.session import AsyncSessionLocal
+from incident_trace.engine import run_analysis
 
 logger = logging.getLogger("incident_trace.consumer")
 
@@ -107,8 +108,33 @@ async def process_message(
         )
         session.add(analysis)
         await session.commit()
+        # Hand the analysis off to the engine in a background task so the
+        # consumer keeps ingesting. A fresh session is used in the task to
+        # avoid sharing the request's connection across loops/threads.
+        analysis_id = analysis.id
 
     logger.info("persisted alert dedupe_key=%s application_id=%s", dedupe_key, application_id)
+    asyncio.create_task(_run_analysis_in_background(analysis_id))
+
+
+async def _run_analysis_in_background(analysis_id: int) -> None:
+    """Drive the engine to completion; never crash the consumer on failure."""
+    try:
+        async with AsyncSessionLocal() as session:
+            await run_analysis(analysis_id, session)
+    except Exception as exc:  # noqa: BLE001 - mark failed, keep consumer alive
+        logger.exception("engine failed for analysis %s: %s", analysis_id, exc)
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(Analysis).where(Analysis.id == analysis_id)
+                )
+                analysis = result.scalars().first()
+                if analysis is not None and analysis.status != "completed":
+                    analysis.status = "failed"
+                    await session.commit()
+        except Exception:  # noqa: BLE001 - best-effort only
+            logger.exception("could not mark analysis %s failed", analysis_id)
 
 
 async def main() -> None:
