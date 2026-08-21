@@ -1,38 +1,98 @@
-/* Incident Trace — Geist / Vercel design tokens.
-   Dark is the default theme; .light overrides the same variables. */
+/* Incident Trace — Vercel Geist Design System.
+   A faithful implementation of the Geist design language (vercel.com/geist):
+   the same token model, typography, spacing, radii, focus ring and component
+   styling used across vercel.com. Dark is the default theme; .light overrides
+   the same variables. The Geist typeface is provided by the `geist` package
+   (GeistSans/GeistMono) on <html>.
+
+   Token model (Geist):
+     Background 1/2  — page + secondary surfaces
+     Color 1..10     — component bg, hover, active, borders, high-contrast, text
+     Blue/Red/Amber/Green — semantic scale (Blue is the primary accent) */
 
 :root {
-  --background: #000000;
-  --surface: #0a0a0a;
-  --surface-2: #111111;
-  --border: rgba(255, 255, 255, 0.1);
-  --border-strong: #1f1f1f;
-  --foreground: #ededed;
-  --muted: #a1a1a1;
-  --accent: #0070f3;
-  --accent-foreground: #ffffff;
-  --danger: #ff4d4f;
-  --warning: #f5a623;
-  --success: #0070f3;
+  color-scheme: dark;
+
+  /* Surfaces */
+  --background-1: #000000;
+  --background-2: #0a0a0a;
+
+  /* Component backgrounds */
+  --color-1: #0a0a0a; /* default */
+  --color-2: #1a1a1a; /* hover   */
+  --color-3: #262626; /* active  */
+
+  /* Borders */
+  --color-4: rgba(255, 255, 255, 0.1); /* default */
+  --color-5: rgba(255, 255, 255, 0.2); /* hover   */
+  --color-6: rgba(255, 255, 255, 0.3); /* active  */
+
+  /* High-contrast (primary button) */
+  --color-7: #ffffff;
+  --color-8: #eaeaea;
+
+  /* Text & icons */
+  --color-9: rgba(255, 255, 255, 0.6); /* secondary */
+  --color-10: #ffffff;                  /* primary   */
+
+  /* Semantic scale */
+  --blue: #0070f3;
+  --blue-hover: #3291ff;
+  --red: #ff4d4f;
+  --amber: #ffae00;
+  --green: #00c389;
+
+  /* Semantic aliases (so legacy var(--accent)/var(--danger)/... usages resolve
+     to the Geist scale above; they follow the active theme automatically). */
+  --accent: var(--blue);
+  --foreground: var(--color-10);
+  --muted: var(--color-9);
+  --border: var(--color-4);
+  --surface: var(--background-2);
+  --surface-2: var(--color-2);
+  --danger: var(--red);
+  --warning: var(--amber);
+  --success: var(--green);
+
+  /* Geometry */
   --radius: 6px;
-  --radius-card: 10px;
+  --radius-card: 12px;
+  --radius-pill: 999px;
   --space: 4px;
-  --sidebar-width: 240px;
-  --topbar-height: 56px;
-  --font-geist-sans: var(--font-geist-sans);
-  --font-geist-mono: var(--font-geist-mono);
+  --sidebar-width: 256px;
+  --topbar-height: 64px;
+
+  /* Focus ring (classic Vercel: inner bg, outer blue) */
+  --focus-ring: 0 0 0 2px var(--background-1), 0 0 0 4px var(--blue);
 }
 
 .light {
-  --background: #ffffff;
-  --surface: #fafafa;
-  --surface-2: #f0f0f0;
-  --border: rgba(0, 0, 0, 0.1);
-  --border-strong: #eaeaea;
-  --foreground: #171717;
-  --muted: #666666;
-  --accent: #0070f3;
-  --accent-foreground: #ffffff;
+  color-scheme: light;
+
+  --background-1: #ffffff;
+  --background-2: #fafafa;
+
+  --color-1: #ffffff;
+  --color-2: #f5f5f5;
+  --color-3: #ededed;
+
+  --color-4: #eaeaea;
+  --color-5: #d4d4d4;
+  --color-6: #bdbdbd;
+
+  --color-7: #000000;
+  --color-8: #1a1a1a;
+
+  --color-9: #666666;
+  --color-10: #000000;
+
+  --blue: #0070f3;
+  --blue-hover: #3291ff;
+  --red: #e5484d;
+  --amber: #ffae00;
+  --green: #00c389;
+
+  --focus-ring: 0 0 0 2px var(--background-1), 0 0 0 4px var(--blue);
 }
 
 * {
@@ -46,12 +106,13 @@ body {
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+  background: var(--background-1);
+  color: var(--color-10);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 a {
@@ -61,7 +122,7 @@ a {
 
 code,
 .mono {
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-family: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace;
 }
 
 /* ---- Layout ---- */
@@ -72,7 +133,7 @@ code,
 }
 
 .sidebar {
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--color-4);
   padding: 16px 12px;
   display: flex;
   flex-direction: column;
@@ -80,13 +141,25 @@ code,
   position: sticky;
   top: 0;
   height: 100vh;
+  background: var(--background-1);
 }
 
 .sidebar-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  padding: 8px 10px 16px;
+  padding: 8px 10px 18px;
+  color: var(--color-10);
+}
+
+.sidebar-logo::before {
+  content: "▲";
+  font-size: 13px;
+  line-height: 1;
+  color: var(--color-10);
 }
 
 .nav-item {
@@ -95,18 +168,19 @@ code,
   gap: 10px;
   padding: 8px 10px;
   border-radius: var(--radius);
-  color: var(--muted);
+  color: var(--color-9);
   font-size: 14px;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .nav-item:hover {
-  color: var(--foreground);
-  background: var(--surface);
+  color: var(--color-10);
+  background: var(--color-2);
 }
 
 .nav-item.active {
-  color: var(--foreground);
-  background: var(--surface-2);
+  color: var(--color-10);
+  background: var(--color-2);
 }
 
 .main {
@@ -117,7 +191,7 @@ code,
 
 .topbar {
   height: var(--topbar-height);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--color-4);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -125,7 +199,7 @@ code,
   gap: 12px;
   position: sticky;
   top: 0;
-  background: var(--background);
+  background: var(--background-1);
   z-index: 10;
 }
 
@@ -141,117 +215,163 @@ code,
   width: 100%;
 }
 
-/* ---- Primitives ---- */
+/* ---- Primitives: Button (Geist 40px / 32px sm) ---- */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 36px;
-  padding: 0 14px;
+  height: 40px;
+  padding: 0 16px;
   border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--foreground);
+  border: 1px solid var(--color-4);
+  background: var(--color-1);
+  color: var(--color-10);
   font-size: 14px;
   font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
 .btn:hover {
-  border-color: var(--muted);
+  background: var(--color-2);
+  border-color: var(--color-5);
+}
+
+.btn:active {
+  background: var(--color-3);
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
+/* Primary = high-contrast (white in dark, black in light); text is the inverse */
 .btn-primary {
-  background: #ffffff;
-  color: #000000;
-  border-color: #ffffff;
+  background: var(--color-7);
+  color: var(--background-1);
+  border-color: var(--color-7);
 }
 
 .btn-primary:hover {
-  background: #e6e6e6;
+  background: var(--color-8);
+  border-color: var(--color-8);
+}
+
+.btn-primary:active {
+  background: var(--color-8);
+  border-color: var(--color-8);
 }
 
 .btn-sm {
-  height: 30px;
-  padding: 0 10px;
+  height: 32px;
+  padding: 0 12px;
   font-size: 13px;
 }
 
+/* ---- Card (Geist 12px radius, elevated surface) ---- */
 .card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--color-4);
   border-radius: var(--radius-card);
-  background: var(--surface);
+  background: var(--background-2);
   padding: 16px;
 }
 
-.input {
-  height: 36px;
+/* ---- Input / Textarea (Geist 40px) ---- */
+.input,
+.textarea {
   width: 100%;
   padding: 0 12px;
   border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--background);
-  color: var(--foreground);
+  border: 1px solid var(--color-4);
+  background: var(--background-1);
+  color: var(--color-10);
   font-size: 14px;
   font-family: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
-.input:focus {
-  outline: none;
-  border-color: var(--accent);
+.input {
+  height: 40px;
 }
 
 .textarea {
-  width: 100%;
   min-height: 84px;
   padding: 10px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--background);
-  color: var(--foreground);
-  font-size: 14px;
-  font-family: inherit;
   resize: vertical;
 }
 
+.input:focus,
 .textarea:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--blue);
+  box-shadow: var(--focus-ring);
 }
 
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--color-9);
+}
+
+/* ---- Select (shares input styling) ---- */
+.select {
+  width: auto;
+  height: 40px;
+  cursor: pointer;
+}
+
+.select:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: var(--focus-ring);
+}
+
+/* ---- Badge (Geist pill) ---- */
 .badge {
   display: inline-flex;
   align-items: center;
   height: 22px;
   padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-4);
+  background: var(--color-2);
   font-size: 12px;
-  color: var(--muted);
+  color: var(--color-9);
 }
 
 .badge-accent {
-  color: var(--accent);
+  color: var(--blue);
   border-color: rgba(0, 112, 243, 0.4);
+  background: rgba(0, 112, 243, 0.08);
 }
 
 .badge-danger {
-  color: var(--danger);
+  color: var(--red);
   border-color: rgba(255, 77, 79, 0.4);
+  background: rgba(255, 77, 79, 0.08);
 }
 
 .badge-warning {
-  color: var(--warning);
-  border-color: rgba(245, 166, 35, 0.4);
+  color: var(--amber);
+  border-color: rgba(255, 174, 0, 0.4);
+  background: rgba(255, 174, 0, 0.1);
 }
 
+.badge-success {
+  color: var(--green);
+  border-color: rgba(0, 195, 137, 0.4);
+  background: rgba(0, 195, 137, 0.1);
+}
+
+/* ---- Table (Geist) ---- */
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -262,19 +382,24 @@ code,
 .table td {
   text-align: left;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--color-4);
 }
 
 .table th {
-  color: var(--muted);
+  color: var(--color-9);
   font-weight: 500;
   font-size: 13px;
 }
 
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+/* ---- Tabs ---- */
 .tabs {
   display: flex;
   gap: 4px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--color-4);
   margin-bottom: 16px;
 }
 
@@ -282,30 +407,50 @@ code,
   padding: 8px 12px;
   border: none;
   background: none;
-  color: var(--muted);
+  color: var(--color-9);
   font-size: 14px;
+  font-family: inherit;
   cursor: pointer;
   border-bottom: 1px solid transparent;
   margin-bottom: -1px;
+  transition: color 0.12s ease;
+}
+
+.tab:hover {
+  color: var(--color-10);
 }
 
 .tab.active {
-  color: var(--foreground);
-  border-bottom-color: var(--foreground);
+  color: var(--color-10);
+  border-bottom-color: var(--color-10);
 }
 
+/* ---- Typography ---- */
 .page-title {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 600;
   letter-spacing: -0.02em;
   margin: 0 0 4px;
 }
 
 .page-subtitle {
-  color: var(--muted);
+  color: var(--color-9);
   margin: 0 0 24px;
 }
 
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+}
+
+.field-label {
+  font-size: 13px;
+  color: var(--color-9);
+}
+
+/* ---- Utility ---- */
 .row {
   display: flex;
   align-items: center;
@@ -326,14 +471,19 @@ code,
 }
 
 .muted {
-  color: var(--muted);
+  color: var(--color-9);
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
 }
 
 .spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid var(--border);
-  border-top-color: var(--foreground);
+  border: 2px solid var(--color-4);
+  border-top-color: var(--color-10);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
@@ -348,7 +498,6 @@ code,
 .flow {
   display: flex;
   flex-direction: column;
-  gap: 0;
 }
 
 .flow-node {
@@ -363,39 +512,69 @@ code,
   height: 12px;
   border-radius: 50%;
   margin-top: 4px;
-  border: 2px solid var(--border-strong);
+  border: 2px solid var(--color-5);
   flex-shrink: 0;
 }
 
 .flow-dot.done {
-  border-color: var(--success);
-  background: var(--success);
+  border-color: var(--green);
+  background: var(--green);
 }
 
 .flow-dot.running {
-  border-color: var(--accent);
-  background: var(--accent);
+  border-color: var(--blue);
+  background: var(--blue);
 }
 
 .flow-line {
   width: 2px;
   min-height: 24px;
-  background: var(--border);
+  background: var(--color-4);
   margin-left: 5px;
 }
 
+.flow-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.flow-detail {
+  font-size: 12.5px;
+  margin-top: 2px;
+  color: var(--color-9);
+}
+
+.evidence {
+  background: var(--background-1);
+  border: 1px solid var(--color-4);
+  border-radius: var(--radius);
+  padding: 12px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12.5px;
+  color: var(--color-10);
+  overflow-x: auto;
+  margin: 8px 0 0;
+}
+
+/* ---- Command palette (⌘K) ---- */
 .cmdk {
   height: 32px;
   padding: 0 10px;
   border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--muted);
+  border: 1px solid var(--color-4);
+  background: var(--color-1);
+  color: var(--color-9);
   font-size: 13px;
+  font-family: inherit;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  transition: border-color 0.12s ease;
+}
+
+.cmdk:hover {
+  border-color: var(--color-5);
 }
 
 .icon-btn {
@@ -405,47 +584,21 @@ code,
   align-items: center;
   justify-content: center;
   border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--foreground);
+  border: 1px solid var(--color-4);
+  background: var(--color-1);
+  color: var(--color-10);
   cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
 .icon-btn:hover {
-  border-color: var(--muted);
+  background: var(--color-2);
+  border-color: var(--color-5);
 }
 
-.grow {
-  flex: 1;
-  min-width: 0;
-}
-
-.select {
-  width: auto;
-}
-
-.field-label {
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.section-title {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  margin: 0 0 4px;
-}
-
-.evidence {
-  background: var(--background);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 12.5px;
-  color: var(--foreground);
-  overflow-x: auto;
-  margin: 8px 0 0;
+.icon-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 /* ---- Auth (no shell) ---- */
@@ -471,12 +624,12 @@ code,
 }
 
 .app-card {
-  transition: border-color 0.15s ease;
+  transition: border-color 0.12s ease;
   cursor: pointer;
 }
 
 .app-card:hover {
-  border-color: var(--muted);
+  border-color: var(--color-5);
 }
 
 a .app-card {
@@ -487,18 +640,7 @@ a .app-card {
   font-weight: 500;
 }
 
-/* ---- Workflow node labels ---- */
-.flow-title {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.flow-detail {
-  font-size: 12.5px;
-  margin-top: 2px;
-}
-
-/* ---- Command palette (⌘K) ---- */
+/* ---- Command palette overlay ---- */
 .cmdk-overlay {
   position: fixed;
   inset: 0;
@@ -513,8 +655,8 @@ a .app-card {
 .cmdk-panel {
   width: 520px;
   max-width: 92vw;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--background-2);
+  border: 1px solid var(--color-4);
   border-radius: var(--radius-card);
   padding: 10px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
@@ -534,18 +676,19 @@ a .app-card {
   padding: 9px 10px;
   border: none;
   background: none;
-  color: var(--foreground);
+  color: var(--color-10);
   font-size: 14px;
+  font-family: inherit;
   border-radius: var(--radius);
   cursor: pointer;
 }
 
 .cmdk-item:hover {
-  background: var(--surface-2);
+  background: var(--color-2);
 }
 
 .cmdk-empty {
   padding: 12px 10px;
-  color: var(--muted);
+  color: var(--color-9);
   font-size: 13px;
 }
