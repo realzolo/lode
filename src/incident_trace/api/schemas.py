@@ -133,6 +133,77 @@ class UserOut(BaseModel):
     name: str
     role: str
     status: str
+    created_at: datetime
+
+
+# --- AI model configuration (admin) -------------------------------------
+
+class AiModelConfigIn(BaseModel):
+    scope: str = Field(pattern="^(global|application)$")
+    application_id: int | None = None
+    provider: str = Field(pattern="^(openai|anthropic)$")
+    base_url: str = Field(min_length=1, max_length=1000)
+    # Supports `env://NAME` (preferred, secret stays in env) or a literal key.
+    # Optional on update: when omitted/empty the existing reference is kept, so
+    # operators can edit metadata without re-pasting the secret.
+    api_key_ref: str | None = Field(default=None, max_length=1000)
+    model: str = Field(min_length=1, max_length=200)
+    is_default: bool = False
+
+
+class AiModelConfigOut(BaseModel):
+    id: int
+    scope: str
+    application_id: int | None
+    provider: str
+    base_url: str
+    model: str
+    is_default: bool
+    has_key: bool
+
+
+# --- User management (admin) --------------------------------------------
+
+class UserCreateIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    name: str = Field(default="", max_length=200)
+    role: str = Field(default="user", pattern="^(admin|user)$")
+    password: str = Field(min_length=8, max_length=200)
+
+
+class UserUpdateIn(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    role: str | None = Field(default=None, pattern="^(admin|user)$")
+    status: str | None = Field(default=None, pattern="^(pending|active|disabled)$")
+
+
+class PasswordResetIn(BaseModel):
+    password: str = Field(min_length=8, max_length=200)
+
+
+class PasswordChangeIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+# --- Invitations --------------------------------------------------------
+
+class InviteCreateIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+
+
+class InviteOut(BaseModel):
+    id: int
+    email: str
+    token: str
+    status: str
+    created_at: datetime
+
+
+class InviteAcceptIn(BaseModel):
+    token: str = Field(min_length=1, max_length=500)
+    password: str = Field(min_length=8, max_length=200)
+    name: str = Field(default="", max_length=200)
 
 
 class ReanalyzeOut(BaseModel):

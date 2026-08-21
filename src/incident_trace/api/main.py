@@ -31,8 +31,10 @@ from incident_trace.api.routes.analyses import router as analyses_router
 from incident_trace.api.routes.applications import router as applications_router
 from incident_trace.api.routes.auth import router as auth_router
 from incident_trace.api.routes.health import router as health_router
+from incident_trace.api.routes.invites import router as invites_router
 from incident_trace.api.routes.memories import router as memories_router
 from incident_trace.api.routes.settings import router as settings_router
+from incident_trace.api.routes.users import router as users_router
 from incident_trace.config import settings
 from incident_trace.migrations import run_migrations
 
@@ -137,6 +139,11 @@ app.include_router(applications_router, dependencies=_protected)
 app.include_router(memories_router, dependencies=_protected)
 app.include_router(alerts_router, dependencies=_protected)
 app.include_router(settings_router, dependencies=_protected)
+app.include_router(users_router, dependencies=_protected)
+
+# Invites: admin endpoints carry require_admin (which itself requires auth);
+# the accept endpoint is intentionally left open so new users can onboard.
+app.include_router(invites_router)
 
 
 @app.get("/")
