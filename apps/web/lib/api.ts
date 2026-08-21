@@ -61,7 +61,7 @@ export function mapAnalysisStatus(status: string): AnalysisStatus {
       // canceled == needs human-in-the-loop attention
       return 'needs_human';
     default:
-      return 'pending';
+      throw new Error(`Unknown analysis status: ${status}`);
   }
 }
 
@@ -72,7 +72,7 @@ export function mapStepStatus(status: string): StepStatus {
     case 'running':
       return 'running';
     default:
-      return 'pending';
+      throw new Error(`Unknown step status: ${status}`);
   }
 }
 

@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     kafka_unassigned_topic: str = "incident_trace.unassigned"
 
     # Security / auth
-    secret_key: str = "change-me-in-production"
+    # Required (no default): a missing signing key must fail fast rather than
+    # silently fall back to a known placeholder that would forge verifiable tokens.
+    secret_key: str
     # Comma-separated list of allowed CORS origins (browser fetch sources).
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     jwt_ttl_seconds: int = 86400

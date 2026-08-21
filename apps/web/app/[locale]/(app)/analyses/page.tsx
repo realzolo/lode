@@ -46,7 +46,7 @@ export default function AnalysesPage() {
     <>
       <h1 className="page-title">{t('title')}</h1>
       {loading && <p className="muted">{tc('loading')}</p>}
-      {error && <p className="muted" style={{ color: 'var(--danger, #f87171)' }}>{error}</p>}
+      {error && <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>}
       {!loading && !error && analyses.length === 0 && (
         <p className="muted">{tc('empty')}</p>
       )}

@@ -56,7 +56,7 @@ export default function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
           />
           {error && (
-            <p className="muted" style={{ color: 'var(--danger, #f87171)', fontSize: 13 }}>
+            <p className="muted" style={{ color: 'var(--danger)', fontSize: 13 }}>
               {error}
             </p>
           )}

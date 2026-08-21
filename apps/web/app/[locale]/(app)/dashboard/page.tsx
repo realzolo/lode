@@ -38,7 +38,7 @@ export default function DashboardPage() {
       </div>
 
       {loading && <p className="muted">{tc('loading')}</p>}
-      {error && <p className="muted" style={{ color: 'var(--danger, #f87171)' }}>{error}</p>}
+      {error && <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>}
       {!loading && !error && apps.length === 0 && (
         <p className="muted">{tc('empty')}</p>
       )}

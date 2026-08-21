@@ -43,7 +43,7 @@ function AcceptInviteForm() {
         <h1 className="page-title">{t('title')}</h1>
         <p className="page-subtitle">{tu('inviteSent')}</p>
         {!token && (
-          <p className="muted" style={{ color: 'var(--danger, #f87171)' }}>
+          <p className="muted" style={{ color: 'var(--danger)' }}>
             missing or invalid invite token
           </p>
         )}
@@ -64,7 +64,7 @@ function AcceptInviteForm() {
               onChange={(e) => setPassword(e.target.value)}
             />
             {error && (
-              <p className="muted" style={{ color: 'var(--danger, #f87171)', fontSize: 13 }}>
+              <p className="muted" style={{ color: 'var(--danger)', fontSize: 13 }}>
                 {error}
               </p>
             )}

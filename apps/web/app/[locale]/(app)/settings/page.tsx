@@ -61,7 +61,7 @@ export default function SettingsPage() {
       <h1 className="page-title">{t('title')}</h1>
       {loading && <p className="muted">{tc('loading')}</p>}
       {error && (
-        <p className="muted" style={{ color: 'var(--danger, #f87171)' }}>
+        <p className="muted" style={{ color: 'var(--danger)' }}>
           {error}
         </p>
       )}
@@ -276,7 +276,7 @@ function AiModelManager({
 
       <div className="stack" style={{ marginTop: 12 }}>
         {settings.ai_model_configs.map((m) => (
-          <div key={m.id} className="row-between" style={{ borderTop: '1px solid var(--border, #333)', paddingTop: 8 }}>
+          <div key={m.id} className="row-between" style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
             <span className="mono" style={{ fontSize: 12 }}>
               #{m.id} {m.provider} · {m.model} · {m.scope}
               {m.scope === 'application' ? ` (${m.application_id})` : ''}
@@ -340,7 +340,7 @@ function AccountSection() {
           onChange={(e) => setNext(e.target.value)}
         />
         {msg && (
-          <p className="muted" style={{ color: msg === 'ok' ? 'var(--success, #4ade80)' : 'var(--danger, #f87171)', fontSize: 13 }}>
+          <p className="muted" style={{ color: msg === 'ok' ? 'var(--success)' : 'var(--danger)', fontSize: 13 }}>
             {msg === 'ok' ? ta('update') + ' ✓' : msg}
           </p>
         )}

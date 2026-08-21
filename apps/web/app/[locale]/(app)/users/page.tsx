@@ -160,7 +160,7 @@ export default function UsersPage() {
       <p className="page-subtitle">{t('subtitle')}</p>
       {loading && <p className="muted">{tc('loading')}</p>}
       {error && (
-        <p className="muted" style={{ color: 'var(--danger, #f87171)' }}>
+        <p className="muted" style={{ color: 'var(--danger)' }}>
           {error}
         </p>
       )}

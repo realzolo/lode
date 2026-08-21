@@ -88,7 +88,7 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
   }
 
   if (loading && !detail) return <p className="muted">{tc('loading')}</p>;
-  if (error) return <p className="muted" style={{ color: 'var(--danger, #f87171)' }}>{error}</p>;
+  if (error) return <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>;
   if (!detail) return <p className="muted">{tc('empty')}</p>;
 
   const uiStatus = detail.status as AnalysisStatus;
