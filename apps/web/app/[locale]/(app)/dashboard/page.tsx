@@ -17,7 +17,7 @@ function AppAvatar({ name }: { name: string }) {
   return (
     <div
       aria-hidden="true"
-      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[var(--color-4)] bg-[var(--color-2)] text-[15px] font-semibold leading-none text-[var(--color-10)]"
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[var(--color-4)] bg-[var(--color-2)] text-[14px] font-semibold leading-none text-[var(--color-10)]"
     >
       {name.charAt(0).toUpperCase()}
     </div>
@@ -46,7 +46,7 @@ export default function DashboardPage() {
     <div className="space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-[32px] font-semibold tracking-[-0.02em] leading-[1.15] text-foreground">
+          <h1 className="text-[32px] font-semibold tracking-[-0.04em] leading-[1.15] text-foreground">
             {t('title')}
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">{t('subtitle')}</p>
@@ -72,13 +72,13 @@ export default function DashboardPage() {
           <Link
             key={app.id}
             href={`/applications/${app.id}`}
-            className="group block rounded-xl outline-none transition focus-visible:shadow-geist-focus"
+            className="group block rounded-md outline-none transition focus-visible:shadow-geist-focus"
           >
-            <Card className="flex items-start gap-3.5 p-5 shadow-none group-hover:border-foreground/25 group-hover:bg-accent/40">
+            <Card className="flex items-start gap-3.5 p-6 shadow-none group-hover:border-foreground/25 group-hover:bg-accent/40">
               <AppAvatar name={app.name} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[16px] font-medium leading-none text-foreground">
+                  <span className="truncate text-[16px] font-semibold leading-none text-foreground">
                     {app.name}
                   </span>
                   <Badge

@@ -50,13 +50,19 @@ const config: Config = {
         },
       },
       borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
+        // Geist radius scale: 6px controls/cards, 12px overlays, 16px modals.
+        sm: '6px',
+        md: '6px',
+        lg: '12px',
+        xl: '16px',
+        '2xl': '16px',
+        '3xl': '16px',
+        full: '9999px',
       },
       boxShadow: {
         // Geist focus ring: 2px background-colored gap + 4px blue ring.
-        'geist-focus': '0 0 0 2px var(--background-1), 0 0 0 4px var(--blue)',
+        // Blue lightens to blue-900 in dark mode for accessible contrast.
+        'geist-focus': '0 0 0 2px var(--background-1), 0 0 0 4px var(--focus-blue)',
       },
       keyframes: {
         'accordion-down': {

@@ -277,7 +277,7 @@ function AiModelManager({
 
       <div className="stack" style={{ marginTop: 12 }}>
         {settings.ai_model_configs.map((m) => (
-          <div key={m.id} className="row-between" style={{ borderTop: '1px solid hsl(var(--border))', paddingTop: 8 }}>
+          <div key={m.id} className="row-between" style={{ borderTop: '1px solid var(--color-4)', paddingTop: 8 }}>
             <span className="mono" style={{ fontSize: 12 }}>
               #{m.id} {m.provider} · {m.model} · {m.scope}
               {m.scope === 'application' ? ` (${m.application_id})` : ''}

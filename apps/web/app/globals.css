@@ -15,7 +15,9 @@
       in pages.
 
    Dark is the default theme; `.dark` overrides those vars. next-themes drives
-   the `dark`/`light` class on <html> (see components/providers.tsx). */
+   the `dark`/`light` class on <html> (see components/providers.tsx). The blue
+   `--primary`/`--blue` is Geist blue #006bff (light) / #006efe (dark); the focus
+   ring uses --focus-blue (#006bff light, blue-900 #47a8ff dark) per Geist spec. */
 
 @tailwind base;
 @tailwind components;
@@ -26,25 +28,25 @@
 
   /* shadcn/ui tokens (light) */
   --background: 0 0% 100%;
-  --foreground: 0 0% 3.9%;
+  --foreground: 0 0% 9%;
   --card: 0 0% 100%;
-  --card-foreground: 0 0% 3.9%;
+  --card-foreground: 0 0% 9%;
   --popover: 0 0% 100%;
-  --popover-foreground: 0 0% 3.9%;
-  --primary: 212 100% 48%;
+  --popover-foreground: 0 0% 9%;
+  --primary: 215 100% 50%;
   --primary-foreground: 0 0% 100%;
   --secondary: 0 0% 96.1%;
   --secondary-foreground: 0 0% 9%;
   --muted: 0 0% 96.1%;
-  --muted-foreground: 0 0% 45.1%;
+  --muted-foreground: 0 0% 30%;
   --accent: 0 0% 96.1%;
   --accent-foreground: 0 0% 9%;
   --destructive: 0 84.2% 60.2%;
   --destructive-foreground: 0 0% 98%;
   --border: 0 0% 89.8%;
   --input: 0 0% 89.8%;
-  --ring: 212 100% 48%;
-  --radius: 0.5rem;
+  --ring: 215 100% 50%;
+  --radius: 6px;
 
   /* Geometry */
   --sidebar-width: 256px;
@@ -61,10 +63,11 @@
   --color-6: #bdbdbd;
   --color-7: #000000;
   --color-8: #1a1a1a;
-  --color-9: #666666;
-  --color-10: #000000;
-  --blue: #0070f3;
+  --color-9: #4d4d4d;
+  --color-10: #171717;
+  --blue: #006bff;
   --blue-hover: #3291ff;
+  --focus-blue: #006bff;
   --red: #e5484d;
   --amber: #ffae00;
   --green: #00c389;
@@ -75,12 +78,12 @@
 
   /* shadcn/ui tokens (dark) — true Vercel dark: page #000, card #0a0a0a */
   --background: 0 0% 0%;
-  --foreground: 0 0% 98%;
+  --foreground: 0 0% 93%;
   --card: 0 0% 3.9%;
-  --card-foreground: 0 0% 98%;
+  --card-foreground: 0 0% 93%;
   --popover: 0 0% 3.9%;
-  --popover-foreground: 0 0% 98%;
-  --primary: 212 100% 48%;
+  --popover-foreground: 0 0% 93%;
+  --primary: 215 100% 50%;
   --primary-foreground: 0 0% 100%;
   --secondary: 0 0% 14.9%;
   --secondary-foreground: 0 0% 98%;
@@ -92,7 +95,7 @@
   --destructive-foreground: 0 0% 98%;
   --border: 0 0% 14.9%;
   --input: 0 0% 14.9%;
-  --ring: 212 100% 48%;
+  --ring: 215 100% 50%;
 
   /* App-chrome surface tokens (dark) */
   --background-1: #000000;
@@ -105,11 +108,13 @@
   --color-6: rgba(255, 255, 255, 0.28);
   --color-7: #ffffff;
   --color-8: #eaeaea;
-  --color-9: rgba(255, 255, 255, 0.54);
-  --color-10: #ffffff;
-  --blue: #0070f3;
+  --color-9: rgba(255, 255, 255, 0.63);
+  --color-10: #ededed;
+  --blue: #006efe;
   --blue-hover: #3291ff;
+  --focus-blue: #47a8ff;
   --red: #ff4d4f;
+  --red-tint: rgba(255, 77, 79, 0.15);
   --amber: #ffae00;
   --green: #00c389;
 }
@@ -125,7 +130,11 @@
   --warning: var(--amber);
   --surface: var(--background-2);
   --surface-2: var(--color-2);
-  --focus-ring: 0 0 0 2px var(--background-1), 0 0 0 4px var(--blue);
+  --focus-ring: 0 0 0 2px var(--background-1), 0 0 0 4px var(--focus-blue);
+  /* Geist status badge tints (~15% alpha of the semantic color). */
+  --green-tint: rgba(0, 195, 137, 0.15);
+  --amber-tint: rgba(255, 174, 0, 0.15);
+  --red-tint: rgba(229, 72, 77, 0.15);
 }
 
 * {
@@ -203,7 +212,7 @@ code,
   border-radius: var(--radius);
   color: var(--color-9);
   font-size: 14px;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background 0.15s ease, color 0.15s ease;
   outline: none;
 }
 
@@ -256,8 +265,8 @@ code,
 /* ---- Select (native wrapper, shares input geometry) ---- */
 .input {
   width: 100%;
-  height: 32px;
-  padding: 0 10px;
+  height: 40px;
+  padding: 0 12px;
   border-radius: 6px;
   border: 1px solid var(--color-4);
   background: var(--color-1);
@@ -297,7 +306,7 @@ code,
 
 .table th {
   color: var(--color-9);
-  font-weight: 500;
+  font-weight: 400;
   font-size: 13px;
 }
 
@@ -309,7 +318,7 @@ code,
 .page-title {
   font-size: 32px;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.04em;
   line-height: 1.15;
   margin: 0 0 4px;
 }
@@ -321,7 +330,7 @@ code,
 }
 
 .section-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.01em;
   margin: 0 0 4px;
