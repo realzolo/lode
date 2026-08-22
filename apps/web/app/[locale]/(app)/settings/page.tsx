@@ -18,6 +18,7 @@ import {
   type GlobalSettings,
 } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
+import { IconCheck, IconPlus, IconEdit2, IconTrash2 } from '@/components/icons';
 import type { Application } from '@/lib/types';
 
 export default function SettingsPage() {
@@ -219,7 +220,7 @@ function AiModelManager({
   return (
     <div style={{ marginTop: 16 }}>
       <Button size="sm" variant="primary" onClick={() => { resetForm(); setShowForm((v) => !v); }}>
-        {t('addModel')}
+        <IconPlus size={14} /> {t('addModel')}
       </Button>
 
       {showForm && (
@@ -283,8 +284,8 @@ function AiModelManager({
               {m.is_default ? ' · default' : ''}
             </span>
             <div className="row" style={{ gap: 6 }}>
-              <Button size="sm" onClick={() => startEdit(m)}>{tc('save')}</Button>
-              <Button size="sm" variant="primary" onClick={() => handleDelete(m.id)}>{tu('delete')}</Button>
+              <Button size="sm" onClick={() => startEdit(m)}><IconEdit2 size={14} /> {tc('save')}</Button>
+              <Button size="sm" variant="primary" onClick={() => handleDelete(m.id)}><IconTrash2 size={14} /> {tu('delete')}</Button>
             </div>
           </div>
         ))}
@@ -341,7 +342,13 @@ function AccountSection() {
         />
         {msg && (
           <p className="muted" style={{ color: msg === 'ok' ? 'var(--success)' : 'var(--danger)', fontSize: 13 }}>
-            {msg === 'ok' ? ta('update') + ' ✓' : msg}
+            {msg === 'ok' ? (
+              <span className="row" style={{ gap: 6 }}>
+                <IconCheck size={14} /> {ta('update')}
+              </span>
+            ) : (
+              msg
+            )}
           </p>
         )}
         <Button variant="primary" type="submit" disabled={busy || !current || next.length < 8}>

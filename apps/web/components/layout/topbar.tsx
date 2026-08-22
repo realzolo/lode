@@ -8,6 +8,7 @@ import { CommandPalette } from '@/components/cmdk';
 import { Select } from '@/components/ui/select';
 import { fetchApplications } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
+import { IconGlobe, IconSun, IconMoon, IconLogOut } from '@/components/icons';
 import type { Application } from '@/lib/types';
 
 export function Topbar() {
@@ -18,10 +19,13 @@ export function Topbar() {
   const pathname = usePathname();
   const { clearUser } = useUser();
   const [apps, setApps] = useState<Application[]>([]);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     fetchApplications().then(setApps).catch(() => setApps([]));
   }, []);
+
+  useEffect(() => setMounted(true), []);
 
   const toggleTheme = () =>
     theme.setTheme(theme.resolvedTheme === 'dark' ? 'light' : 'dark');
@@ -33,6 +37,8 @@ export function Topbar() {
     clearUser();
     router.replace('/login');
   };
+
+  const isDark = mounted && theme.resolvedTheme === 'dark';
 
   return (
     <header className="topbar">
@@ -62,7 +68,7 @@ export function Topbar() {
           onClick={toggleLocale}
           title={t('common.language')}
         >
-          {locale === 'zh' ? '中' : 'EN'}
+          <IconGlobe size={16} />
         </button>
         <button
           className="icon-btn"
@@ -70,7 +76,7 @@ export function Topbar() {
           onClick={toggleTheme}
           title={t('common.theme')}
         >
-          {theme.resolvedTheme === 'dark' ? '☾' : '☀'}
+          {isDark ? <IconMoon size={16} /> : <IconSun size={16} />}
         </button>
         <button
           className="icon-btn"
@@ -78,7 +84,7 @@ export function Topbar() {
           onClick={handleLogout}
           title="logout"
         >
-          ⏻
+          <IconLogOut size={16} />
         </button>
       </div>
     </header>

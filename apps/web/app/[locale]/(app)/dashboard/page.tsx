@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Link } from '@/lib/navigation';
 import type { Application } from '@/lib/types';
 import { fetchApplications } from '@/lib/api';
+import { IconPlus } from '@/components/icons';
 
 export default function DashboardPage() {
   const t = useTranslations('dashboard');
@@ -34,7 +35,9 @@ export default function DashboardPage() {
           <h1 className="page-title">{t('title')}</h1>
           <p className="page-subtitle">{t('subtitle')}</p>
         </div>
-        <Button variant="primary">{t('newApplication')}</Button>
+        <Button variant="primary">
+          <IconPlus size={16} /> {t('newApplication')}
+        </Button>
       </div>
 
       {loading && <p className="muted">{tc('loading')}</p>}

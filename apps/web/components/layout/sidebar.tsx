@@ -4,13 +4,20 @@ import { Link, usePathname } from '@/lib/navigation';
 import { useTranslations } from 'next-intl';
 import { cx } from '@/lib/cn';
 import { useUser } from '@/lib/user-context';
+import {
+  IconHome,
+  IconBarChart,
+  IconDatabase,
+  IconSettings,
+  IconUsers,
+} from '@/components/icons';
 
 const NAV = [
-  { key: 'dashboard', href: '/dashboard', adminOnly: false },
-  { key: 'analyses', href: '/analyses', adminOnly: false },
-  { key: 'memories', href: '/memories', adminOnly: false },
-  { key: 'settings', href: '/settings', adminOnly: false },
-  { key: 'users', href: '/users', adminOnly: true },
+  { key: 'dashboard', href: '/dashboard', adminOnly: false, Icon: IconHome },
+  { key: 'analyses', href: '/analyses', adminOnly: false, Icon: IconBarChart },
+  { key: 'memories', href: '/memories', adminOnly: false, Icon: IconDatabase },
+  { key: 'settings', href: '/settings', adminOnly: false, Icon: IconSettings },
+  { key: 'users', href: '/users', adminOnly: true, Icon: IconUsers },
 ] as const;
 
 export function Sidebar() {
@@ -30,6 +37,7 @@ export function Sidebar() {
             href={item.href}
             className={cx('nav-item', active && 'active')}
           >
+            <item.Icon size={16} className="nav-icon" />
             {t(item.key)}
           </Link>
         );

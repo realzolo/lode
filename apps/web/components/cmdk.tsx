@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from '@/lib/navigation';
 import { useTranslations } from 'next-intl';
-import { cx } from '@/lib/cn';
+import { IconSearch } from '@/components/icons';
 
 interface Command {
   id: string;
@@ -49,6 +49,7 @@ export function CommandPalette() {
   if (!open) {
     return (
       <button className="cmdk" onClick={() => setOpen(true)} aria-label={t('common.command')}>
+        <IconSearch size={16} />
         <span className="mono">⌘K</span>
         <span>{t('common.search')}</span>
       </button>

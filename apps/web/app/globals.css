@@ -601,6 +601,16 @@ code,
   box-shadow: var(--focus-ring);
 }
 
+/* ---- Geist icons: crisp, non-shrinking, center-aligned with text ---- */
+.nav-item svg,
+.icon-btn svg,
+.btn svg,
+.cmdk svg,
+.row svg {
+  flex-shrink: 0;
+  display: block;
+}
+
 /* ---- Auth (no shell) ---- */
 .auth-shell {
   min-height: 100vh;

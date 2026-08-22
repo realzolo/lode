@@ -14,6 +14,7 @@ import {
   toUiSteps,
   type AnalysisDetail,
 } from '@/lib/api';
+import { IconRefreshCw, IconPlus } from '@/components/icons';
 
 function statusVariant(status: AnalysisStatus): 'success' | 'warning' | 'danger' | 'accent' | 'default' {
   switch (status) {
@@ -109,7 +110,7 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
         <div className="row">
           <Badge variant={statusVariant(uiStatus)}>{uiStatus}</Badge>
           <Button variant="primary" onClick={handleReanalyze} disabled={busy}>
-            {tc('reanalyze')}
+            <IconRefreshCw size={16} /> {tc('reanalyze')}
           </Button>
         </div>
       </div>
@@ -172,7 +173,7 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
           />
           <div className="row" style={{ justifyContent: 'flex-end' }}>
             <Button variant="primary" onClick={handleAddHint} disabled={busy || !hint.trim()}>
-              {tc('addHint')}
+              <IconPlus size={16} /> {tc('addHint')}
             </Button>
           </div>
         </Card>

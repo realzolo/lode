@@ -16,6 +16,7 @@ import {
   updateUser,
 } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
+import { IconPlus, IconMail, IconTrash2 } from '@/components/icons';
 import type { CurrentUser } from '@/lib/types';
 
 export default function UsersPage() {
@@ -167,10 +168,10 @@ export default function UsersPage() {
 
       <div className="row" style={{ gap: 8, marginTop: 16 }}>
         <Button variant="primary" onClick={() => setShowCreate((v) => !v)}>
-          {t('newUser')}
+          <IconPlus size={16} /> {t('newUser')}
         </Button>
         <Button onClick={() => { setShowInvite((v) => !v); setInviteLink(null); }}>
-          {t('invite')}
+          <IconMail size={16} /> {t('invite')}
         </Button>
       </div>
 
@@ -283,7 +284,7 @@ export default function UsersPage() {
                         {t('resetPw')}
                       </Button>
                       <Button size="sm" variant="primary" onClick={() => handleDelete(u.id)}>
-                        {t('delete')}
+                        <IconTrash2 size={14} /> {t('delete')}
                       </Button>
                     </div>
                     {resetId === u.id && (
