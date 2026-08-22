@@ -21,7 +21,7 @@ const PROTECTED_SEGMENTS = new Set([
   'users',
 ]);
 
-const TOKEN_COOKIE = 'it_token';
+const TOKEN_COOKIE = 'lode_token';
 
 // Split a locale-prefixed pathname into its locale and the remaining path.
 function stripLocale(pathname: string): { locale: string; rest: string } {

@@ -14,12 +14,12 @@ import asyncio
 
 from sqlalchemy import select
 
-from incident_trace.db.models.user import User
-from incident_trace.db.session import AsyncSessionLocal
-from incident_trace.security import hash_password
+from lode.db.models.user import User
+from lode.db.session import AsyncSessionLocal
+from lode.security import hash_password
 
-SEED_ADMIN_EMAIL = "admin@incident-trace.local"
-SEED_ADMIN_PASSWORD = "incident-trace"
+SEED_ADMIN_EMAIL = "admin@lode.local"
+SEED_ADMIN_PASSWORD = "lode"
 
 
 async def main() -> None:

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest_asyncio
 
-from incident_trace.db.session import engine
+from lode.db.session import engine
 
 
 @pytest_asyncio.fixture(autouse=True)

@@ -5,7 +5,7 @@ Revises: 0001_initial
 Create Date: 2026-08-21
 
 Adds a nullable ``password_hash`` column to ``users`` so the platform can
-authenticate with PBKDF2-HMAC-SHA256 (see ``incident_trace.security``). The
+authenticate with PBKDF2-HMAC-SHA256 (see ``lode.security``). The
 column is nullable because invited users have no password until they activate
 their account.
 """

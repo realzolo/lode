@@ -4,7 +4,7 @@ Revision ID: 0001_initial
 Revises:
 Create Date: 2026-08-21
 
-Creates the full Incident Trace schema (16 tables) following PostgreSQL
+Creates the full Lode schema (16 tables) following PostgreSQL
 best practices: lowercase snake_case names, plural table names, bigint
 GENERATED ALWAYS AS IDENTITY primary keys, timestamptz with now() defaults,
 jsonb for semi-structured data, explicit CHECK constraints, partial unique

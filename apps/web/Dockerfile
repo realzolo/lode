@@ -1,4 +1,4 @@
-# Incident Trace — frontend (Next.js) image, using the standalone output.
+# Lode — frontend (Next.js) image, using the standalone output.
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from incident_trace.consumer.alert_schema import AlertMessage
+from lode.consumer.alert_schema import AlertMessage
 
 
 def _valid() -> dict:

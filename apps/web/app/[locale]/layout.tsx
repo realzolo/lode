@@ -9,7 +9,7 @@ import { Providers } from '@/components/providers';
 import '../globals.css';
 
 export const metadata: Metadata = {
-  title: 'Incident Trace',
+  title: 'Lode',
   description: 'AI-powered root-cause analysis for production errors.',
 };
 

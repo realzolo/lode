@@ -1,4 +1,4 @@
-# Incident Trace — developer tasks
+# Lode — developer tasks
 # Always run inside the project virtualenv (see README).
 
 .PHONY: install migrate serve consume dev-up dev-down verify test
@@ -6,23 +6,23 @@
 # Defaults for the `serve` target. Override from the shell if needed — make does
 # NOT read .env (only the Python app does, via pydantic-settings), so without
 # these the recipe expands to an empty --host/--port and uvicorn fails to bind.
-IT_HTTP_HOST ?= 127.0.0.1
-IT_HTTP_PORT ?= 8000
+LODE_HTTP_HOST ?= 127.0.0.1
+LODE_HTTP_PORT ?= 8000
 
 install:
 	pip install -e ".[dev]"
 
-# Auto-execute database migrations (Alembic) against IT_DATABASE_URL.
+# Auto-execute database migrations (Alembic) against LODE_DATABASE_URL.
 migrate:
 	alembic upgrade head
 
 # Run the API server. Migrations run automatically on startup (lifespan hook).
 serve:
-	uvicorn incident_trace.api.main:app --host $(IT_HTTP_HOST) --port $(IT_HTTP_PORT) --reload
+	uvicorn lode.api.main:app --host $(LODE_HTTP_HOST) --port $(LODE_HTTP_PORT) --reload
 
 # Run the Kafka consumer.
 consume:
-	python -m incident_trace.consumer.main
+	python -m lode.consumer.main
 
 # Start Postgres + Kafka via docker-compose.
 dev-up:

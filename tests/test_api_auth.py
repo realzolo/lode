@@ -16,12 +16,12 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
-from incident_trace.api.main import app
-from incident_trace.db.models.user import User
-from incident_trace.db.session import AsyncSessionLocal
-from incident_trace.security import hash_password
+from lode.api.main import app
+from lode.db.models.user import User
+from lode.db.session import AsyncSessionLocal
+from lode.security import hash_password
 
-TEST_EMAIL = f"test-auth-{uuid.uuid4().hex}@incident-trace.local"
+TEST_EMAIL = f"test-auth-{uuid.uuid4().hex}@lode.local"
 TEST_PASSWORD = "test-pass-123"
 
 

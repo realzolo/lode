@@ -4,13 +4,13 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: incident_trace
+      POSTGRES_DB: lode
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d incident_trace"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d lode"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -40,10 +40,10 @@ services:
       dockerfile: Dockerfile
     environment:
       # In-compose services reach Postgres by its service name.
-      IT_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/incident_trace
-      IT_SECRET_KEY: ${IT_SECRET_KEY:-change-me-in-production}
-      IT_CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
-      IT_JWT_TTL_SECONDS: "86400"
+      LODE_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/lode
+      LODE_SECRET_KEY: ${LODE_SECRET_KEY:-change-me-in-production}
+      LODE_CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      LODE_JWT_TTL_SECONDS: "86400"
     ports:
       - "8000:8000"
     depends_on:

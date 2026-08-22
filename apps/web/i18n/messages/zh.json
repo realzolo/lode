@@ -14,7 +14,7 @@
     "allApplications": "所有应用"
   },
   "common": {
-    "appName": "Incident Trace",
+    "appName": "Lode",
     "search": "搜索",
     "command": "命令",
     "theme": "主题",
@@ -34,7 +34,7 @@
     "password": "密码",
     "submit": "继续",
     "asideTitle": "把事故噪音变成根因",
-    "asideDesc": "Incident Trace 将你的 Kafka 流水线接入 AI 根因分析与共享记忆。",
+    "asideDesc": "Lode 将你的 Kafka 流水线接入 AI 根因分析与共享记忆。",
     "feature1": "Kafka 实时接入",
     "feature2": "AI 根因分析",
     "feature3": "跨事故共享记忆",

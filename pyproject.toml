@@ -1,5 +1,5 @@
 [project]
-name = "incident-trace"
+name = "lode"
 version = "0.1.0"
 description = "AI-powered production incident root-cause analysis platform"
 requires-python = ">=3.12"

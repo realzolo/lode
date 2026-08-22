@@ -17,28 +17,28 @@ import logging
 
 from sqlalchemy import select
 
-from incident_trace.consumer.dedupe import compute_dedupe_key
-from incident_trace.db.models.alert import Alert
-from incident_trace.db.models.analysis import Analysis
-from incident_trace.db.models.application import (
+from lode.consumer.dedupe import compute_dedupe_key
+from lode.db.models.alert import Alert
+from lode.db.models.analysis import Analysis
+from lode.db.models.application import (
     Application,
     ApplicationKafka,
     ApplicationRepo,
     DbSource,
     PresetPrompt,
 )
-from incident_trace.db.models.git import GitCredential, GitRepo
-from incident_trace.db.models.memory import Memory
-from incident_trace.db.models.user import User
-from incident_trace.db.session import AsyncSessionLocal
-from incident_trace.engine import run_analysis
-from incident_trace.security import hash_password
+from lode.db.models.git import GitCredential, GitRepo
+from lode.db.models.memory import Memory
+from lode.db.models.user import User
+from lode.db.session import AsyncSessionLocal
+from lode.engine import run_analysis
+from lode.security import hash_password
 
 # Dev-only password assigned to the seed admin so the UI can log in.
-SEED_ADMIN_PASSWORD = "incident-trace"
+SEED_ADMIN_PASSWORD = "lode"
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("incident_trace.seed")
+logger = logging.getLogger("lode.seed")
 
 APP_NAME = "checkout-service"
 TOPIC = "alert.checkout"
@@ -52,7 +52,7 @@ async def _seed_base(session) -> int:
         logger.info("demo application '%s' already exists (id=%s); skipping", APP_NAME, existing.id)
         return existing.id
 
-    user = User(email="admin@incident-trace.local", name="Seed Admin", role="admin", status="active")
+    user = User(email="admin@lode.local", name="Seed Admin", role="admin", status="active")
     user.password_hash = hash_password(SEED_ADMIN_PASSWORD)
     session.add(user)
     await session.flush()

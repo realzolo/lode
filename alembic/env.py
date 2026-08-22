@@ -1,6 +1,6 @@
-"""Alembic environment for Incident Trace (async SQLAlchemy 2.0).
+"""Alembic environment for Lode (async SQLAlchemy 2.0).
 
-The database URL is taken from application settings (``IT_DATABASE_URL``)
+The database URL is taken from application settings (``LODE_DATABASE_URL``)
 so it is never hard-coded here.
 """
 
@@ -12,9 +12,9 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from incident_trace.config import settings
-from incident_trace.db.base import Base
-from incident_trace.db import models  # noqa: F401  (register metadata)
+from lode.config import settings
+from lode.db.base import Base
+from lode.db import models  # noqa: F401  (register metadata)
 
 config = context.config
 

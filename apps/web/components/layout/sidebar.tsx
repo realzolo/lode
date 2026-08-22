@@ -72,7 +72,7 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <Link href="/dashboard" className="sidebar-logo">
-        Incident Trace
+        Lode
       </Link>
 
       {appId ? (

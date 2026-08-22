@@ -1,4 +1,4 @@
-# Incident Trace
+# Lode
 
 AI-powered production incident root-cause analysis platform. Business services
 publish a simplified error to a per-application Kafka topic; the platform consumes
@@ -25,13 +25,13 @@ and the Next.js frontend that visualizes the workflow and supports human-in-the-
 ## Repository layout
 
 ```
-incident-trace/
+lode/
 ├── alembic/                 # migration tool (async env + versions)
 ├── alembic.ini
 ├── Dockerfile               # backend API image (python:3.12-slim)
 ├── docker-compose.yml       # postgres + kafka + api + web
-├── src/incident_trace/
-│   ├── config.py            # settings (IT_* env vars)
+├── src/lode/
+│   ├── config.py            # settings (LODE_* env vars)
 │   ├── security.py          # password hashing + signed tokens (stdlib only)
 │   ├── db/                  # Base, async engine/session, ORM models
 │   │   └── models/          # tables, one module per domain
@@ -63,7 +63,7 @@ incident-trace/
 ## Migrations (Alembic) — auto-executed
 
 The schema is applied by Alembic. The server runs `alembic upgrade head`
-automatically on startup (see `incident_trace.api.main.lifespan`), so a fresh
+automatically on startup (see `lode.api.main.lifespan`), so a fresh
 deploy is always schema-current before serving traffic.
 
 ```bash
@@ -79,7 +79,7 @@ Or manually:
 
 ```bash
 alembic upgrade head
-python -m incident_trace.consumer.main
+python -m lode.consumer.main
 ```
 
 ## Authentication
@@ -89,13 +89,13 @@ All business endpoints require a bearer token. Log in to obtain one:
 ```bash
 curl -X POST http://localhost:8000/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@incident-trace.local","password":"incident-trace"}'
+  -d '{"email":"admin@lode.local","password":"lode"}'
 ```
 
 - Passwords are hashed with PBKDF2-HMAC-SHA256 (per-user salt); tokens are
   HMAC-SHA256-signed JWT-shaped claims (`sub`/`iat`/`exp`). Both use the standard
   library only — no `passlib`/`pyjwt` dependency.
-- `IT_SECRET_KEY` signs tokens; `IT_JWT_TTL_SECONDS` sets lifetime (default 86400).
+- `LODE_SECRET_KEY` signs tokens; `LODE_JWT_TTL_SECONDS` sets lifetime (default 86400).
 - Seeding creates a demo admin. If its password is ever missing, regenerate it:
   `python scripts/set_admin_password.py`.
 

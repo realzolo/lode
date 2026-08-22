@@ -15,16 +15,16 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from incident_trace.api.main import app
-from incident_trace.db.models.ai_model import AiModelConfig
-from incident_trace.db.models.application import Application
-from incident_trace.db.models.user import Invite, User
-from incident_trace.db.session import AsyncSessionLocal
-from incident_trace.security import hash_password
+from lode.api.main import app
+from lode.db.models.ai_model import AiModelConfig
+from lode.db.models.application import Application
+from lode.db.models.user import Invite, User
+from lode.db.session import AsyncSessionLocal
+from lode.security import hash_password
 
-ADMIN_EMAIL = f"admin-{uuid.uuid4().hex}@incident-trace.local"
+ADMIN_EMAIL = f"admin-{uuid.uuid4().hex}@lode.local"
 ADMIN_PASSWORD = "admin-pass-1"
-USER_EMAIL = f"user-{uuid.uuid4().hex}@incident-trace.local"
+USER_EMAIL = f"user-{uuid.uuid4().hex}@lode.local"
 USER_PASSWORD = "user-pass-1"
 
 
@@ -146,7 +146,7 @@ async def test_admin_user_crud(admin):
     _email, _pw, _uid = admin
     token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
     async with _client() as client:
-        email = f"created-{uuid.uuid4().hex}@incident-trace.local"
+        email = f"created-{uuid.uuid4().hex}@lode.local"
         resp = await client.post(
             "/users",
             headers={"Authorization": f"Bearer {token}"},
@@ -265,7 +265,7 @@ async def test_promote_default_stays_scoped_to_application(admin):
 async def test_invite_create_and_accept(admin):
     _email, _pw, _uid = admin
     token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
-    email = f"invited-{uuid.uuid4().hex}@incident-trace.local"
+    email = f"invited-{uuid.uuid4().hex}@lode.local"
     async with _client() as client:
         resp = await client.post(
             "/invites",

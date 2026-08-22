@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────
-# Incident Trace — ignore rules
+# Lode — ignore rules
 # Node/Next build artifacts and Python caches are ignored so the
 # repo ships source only. Real secrets (.env) are ignored; the
 # committed .env.example template is explicitly re-included.

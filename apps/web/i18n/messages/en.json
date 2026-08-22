@@ -14,7 +14,7 @@
     "allApplications": "All applications"
   },
   "common": {
-    "appName": "Incident Trace",
+    "appName": "Lode",
     "search": "Search",
     "command": "Command",
     "theme": "Theme",
@@ -34,7 +34,7 @@
     "password": "Password",
     "submit": "Continue",
     "asideTitle": "Turn incident noise into root cause",
-    "asideDesc": "Incident Trace streams your Kafka pipelines into AI root-cause analysis and shared memory.",
+    "asideDesc": "Lode streams your Kafka pipelines into AI root-cause analysis and shared memory.",
     "feature1": "Real-time Kafka ingestion",
     "feature2": "AI root-cause analysis",
     "feature3": "Shared memory across incidents",

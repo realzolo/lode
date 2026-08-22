@@ -1,4 +1,4 @@
-/* Incident Trace — Vercel/Linear-quality design system.
+/* Lode — Vercel/Linear-quality design system.
    UI primitives (Button, Card, Input, Textarea, Badge, Tabs, Label, Separator)
    are now shadcn/ui components (Tailwind + Radix, vendored in components/ui/*),
    and icons come from lucide-react. Theme tokens live in two layers:

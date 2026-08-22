@@ -15,13 +15,13 @@ import uuid
 import pytest_asyncio
 from sqlalchemy import delete, select
 
-from incident_trace.consumer.dedupe import compute_dedupe_key
-from incident_trace.db.models.alert import Alert
-from incident_trace.db.models.analysis import Analysis, AnalysisStep
-from incident_trace.db.models.application import Application, PresetPrompt
-from incident_trace.db.models.memory import Memory
-from incident_trace.db.session import AsyncSessionLocal
-from incident_trace.engine import run_analysis
+from lode.consumer.dedupe import compute_dedupe_key
+from lode.db.models.alert import Alert
+from lode.db.models.analysis import Analysis, AnalysisStep
+from lode.db.models.application import Application, PresetPrompt
+from lode.db.models.memory import Memory
+from lode.db.session import AsyncSessionLocal
+from lode.engine import run_analysis
 
 
 @pytest_asyncio.fixture

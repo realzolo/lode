@@ -1,7 +1,7 @@
-# Incident Trace — backend API image.
+# Lode — backend API image.
 #
 # The application auto-runs Alembic migrations on startup (see the lifespan
-# hook in incident_trace/api/main.py), so a fresh container is always
+# hook in lode/api/main.py), so a fresh container is always
 # schema-current before it serves traffic. Secrets are supplied via environment
 # variables at runtime — never baked into the image.
 FROM python:3.12-slim
@@ -30,4 +30,4 @@ RUN pip install --upgrade pip && pip install .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "incident_trace.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "lode.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

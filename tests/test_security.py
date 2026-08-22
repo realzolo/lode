@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 
-from incident_trace.security import (
+from lode.security import (
     create_token,
     decode_token,
     hash_password,

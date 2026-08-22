@@ -12,7 +12,7 @@ import re
 
 import pytest
 
-from incident_trace.consumer.dedupe import compute_dedupe_key
+from lode.consumer.dedupe import compute_dedupe_key
 
 
 def test_key_shape_and_format():

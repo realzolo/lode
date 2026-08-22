@@ -1,4 +1,4 @@
-// Thin client for the Incident Trace backend API.
+// Thin client for the Lode backend API.
 //
 // The backend speaks snake_case and uses DB-native statuses
 // (pending/running/completed/failed/canceled). The UI expects camelCase and
@@ -26,7 +26,7 @@ export const API_BASE =
 // requests *before* any HTML is sent — eliminating the client-side flash-of-white.
 // It is a readable (non-HttpOnly) cookie because the cross-origin FastAPI backend
 // is authorized via the `Authorization: Bearer` header (read here), not cookies.
-const TOKEN_KEY = 'it_token';
+const TOKEN_KEY = 'lode_token';
 
 export function getToken(): string | null {
   if (typeof document === 'undefined') return null;
