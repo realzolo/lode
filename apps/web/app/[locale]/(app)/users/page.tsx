@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   createInvite,
   createUser,
@@ -159,7 +160,25 @@ export default function UsersPage() {
     <>
       <h1 className="page-title">{t('title')}</h1>
       <p className="page-subtitle">{t('subtitle')}</p>
-      {loading && <p className="muted">{tc('loading')}</p>}
+      {loading && (
+        <Card style={{ marginTop: 16 }} aria-busy="true">
+          <div className="stack" style={{ gap: 12 }}>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4">
+                <Skeleton className="h-3.5 w-44" />
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-8 w-20" />
+                <Skeleton className="h-8 w-20" />
+                <Skeleton className="h-3.5 w-24" />
+                <div className="ml-auto flex gap-2">
+                  <Skeleton className="h-7 w-14" />
+                  <Skeleton className="h-7 w-14" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       {error && (
         <p className="muted" style={{ color: 'var(--danger)' }}>
           {error}

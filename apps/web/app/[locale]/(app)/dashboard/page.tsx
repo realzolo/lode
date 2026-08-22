@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Link } from '@/lib/navigation';
 import type { Application } from '@/lib/types';
 import { fetchApplications } from '@/lib/api';
@@ -58,7 +59,26 @@ export default function DashboardPage() {
       </div>
 
       {loading && (
-        <p className="text-sm text-muted-foreground">{tc('loading')}</p>
+        <div
+          className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3"
+          aria-busy="true"
+        >
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Card
+              key={i}
+              className="flex items-start gap-3.5 p-6 shadow-none"
+            >
+              <Skeleton variant="rounded" className="h-10 w-10 shrink-0" />
+              <div className="min-w-0 flex-1 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-5 w-12" />
+                </div>
+                <Skeleton className="h-3.5 w-full max-w-[200px]" />
+              </div>
+            </Card>
+          ))}
+        </div>
       )}
       {error && (
         <p className="text-sm text-destructive">{error}</p>

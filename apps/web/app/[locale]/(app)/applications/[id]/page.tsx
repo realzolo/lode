@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select } from '@/components/ui/select';
 import { Tabs } from '@/components/ui/tabs';
+import { Skeleton } from '@/components/ui/skeleton';
 import { fetchApplication } from '@/lib/api';
 
 export default function ApplicationPage({ params }: { params: { id: string } }) {
@@ -27,7 +28,26 @@ export default function ApplicationPage({ params }: { params: { id: string } }) 
     };
   }, [params.id]);
 
-  if (loading) return <p className="muted">{tc('loading')}</p>;
+  if (loading)
+    return (
+      <div aria-busy="true">
+        <h1 className="page-title">
+          <Skeleton className="h-8 w-48" />
+        </h1>
+        <Card className="stack" style={{ marginTop: 16 }}>
+          <Skeleton className="h-3.5 w-24" />
+          <Skeleton className="h-10 w-full max-w-[360px]" />
+        </Card>
+        <div style={{ marginTop: 20 }}>
+          <Skeleton className="h-8 w-72" />
+          <Card className="stack" style={{ marginTop: 16 }}>
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-5/6" />
+            <Skeleton className="h-4 w-2/3" />
+          </Card>
+        </div>
+      </div>
+    );
   if (error) return <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>;
   if (!data) return <p className="muted">{tc('empty')}</p>;
 

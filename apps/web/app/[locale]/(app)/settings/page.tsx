@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   changePassword,
   createAiModel,
@@ -60,7 +61,26 @@ export default function SettingsPage() {
   return (
     <>
       <h1 className="page-title">{t('title')}</h1>
-      {loading && <p className="muted">{tc('loading')}</p>}
+      {loading && (
+        <div className="stack" style={{ marginTop: 24 }} aria-busy="true">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i} className="stack">
+              <Skeleton className="h-5 w-40" />
+              <Skeleton className="h-3.5 w-56" />
+              <div className="stack" style={{ marginTop: 8, gap: 8 }}>
+                <div className="row-between">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-5 w-16" />
+                </div>
+                <div className="row-between">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-4 w-24" />
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
       {error && (
         <p className="muted" style={{ color: 'var(--danger)' }}>
           {error}

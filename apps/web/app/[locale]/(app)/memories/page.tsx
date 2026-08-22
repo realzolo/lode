@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Table, THead, TBody, Tr, Th, Td } from '@/components/ui/table';
 import type { Memory } from '@/lib/types';
 import { fetchMemories } from '@/lib/api';
@@ -29,7 +30,19 @@ export default function MemoriesPage() {
   return (
     <>
       <h1 className="page-title">{t('title')}</h1>
-      {loading && <p className="muted">{tc('loading')}</p>}
+      {loading && (
+        <Card style={{ padding: 0, marginTop: 16, overflow: 'hidden' }} aria-busy="true">
+          <div className="stack" style={{ padding: 12, gap: 12 }}>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4">
+                <Skeleton className="h-3.5 w-32" />
+                <Skeleton className="h-4 flex-1 max-w-[320px]" />
+                <Skeleton className="h-5 w-14" />
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       {error && <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>}
       {!loading && !error && memories.length === 0 && (
         <p className="muted">{tc('empty')}</p>

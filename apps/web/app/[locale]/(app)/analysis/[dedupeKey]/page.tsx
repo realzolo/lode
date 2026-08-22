@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Skeleton } from '@/components/ui/skeleton';
 import type { AnalysisStatus } from '@/lib/types';
 import {
   addHint,
@@ -88,7 +89,52 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
     }
   }
 
-  if (loading && !detail) return <p className="muted">{tc('loading')}</p>;
+  if (loading && !detail)
+    return (
+      <div aria-busy="true">
+        <div className="row-between">
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-56" />
+            <Skeleton className="h-3.5 w-40" />
+          </div>
+          <div className="row gap-2">
+            <Skeleton className="h-5 w-16" />
+            <Skeleton className="h-9 w-24" />
+          </div>
+        </div>
+        <div className="stack" style={{ marginTop: 20 }}>
+          <Card className="stack">
+            <div className="row-between">
+              <Skeleton className="h-5 w-24" />
+              <Skeleton className="h-3.5 w-16" />
+            </div>
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-4/5" />
+          </Card>
+          <Card className="stack">
+            <Skeleton className="h-5 w-20" />
+            <Skeleton className="h-24 w-full" />
+          </Card>
+          <Card className="stack">
+            <Skeleton className="h-5 w-16" />
+            <div className="stack" style={{ gap: 12 }}>
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <Skeleton variant="pill" className="h-3 w-3" />
+                  <Skeleton className="h-4 w-48" />
+                </div>
+              ))}
+            </div>
+          </Card>
+          <Card className="stack">
+            <Skeleton className="h-20 w-full" />
+            <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <Skeleton className="h-9 w-24" />
+            </div>
+          </Card>
+        </div>
+      </div>
+    );
   if (error) return <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>;
   if (!detail) return <p className="muted">{tc('empty')}</p>;
 

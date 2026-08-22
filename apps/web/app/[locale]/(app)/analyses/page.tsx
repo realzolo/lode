@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Table, THead, TBody, Tr, Th, Td } from '@/components/ui/table';
 import { Link } from '@/lib/navigation';
 import type { Analysis, AnalysisStatus } from '@/lib/types';
@@ -45,7 +46,21 @@ export default function AnalysesPage() {
   return (
     <>
       <h1 className="page-title">{t('title')}</h1>
-      {loading && <p className="muted">{tc('loading')}</p>}
+      {loading && (
+        <Card style={{ padding: 0, marginTop: 16, overflow: 'hidden' }} aria-busy="true">
+          <div className="stack" style={{ padding: 12, gap: 12 }}>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4">
+                <Skeleton className="h-4 w-44" />
+                <Skeleton className="h-3.5 w-28" />
+                <Skeleton className="h-5 w-14" />
+                <Skeleton className="h-5 w-16" />
+                <Skeleton className="h-5 w-10 ml-auto" />
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       {error && <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>}
       {!loading && !error && analyses.length === 0 && (
         <p className="muted">{tc('empty')}</p>
