@@ -1,17 +1,21 @@
 'use client';
 
+import { useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { ApplicationLoader, ReposSection } from '../sections';
+import { ApplicationLoader, ReposSection, makeRefreshDispatcher } from '../sections';
 
 export default function ReposPage({ params }: { params: { id: string } }) {
   const t = useTranslations('application');
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const onRefresh = makeRefreshDispatcher(setRefreshNonce);
+
   return (
     <>
       <h1 className="page-title">{t('repositories')}</h1>
-      <ApplicationLoader id={params.id}>
+      <ApplicationLoader id={params.id} refreshNonce={refreshNonce}>
         {(data) => (
           <div style={{ marginTop: 20 }}>
-            <ReposSection data={data} />
+            <ReposSection data={data} appId={params.id} onRefresh={onRefresh} />
           </div>
         )}
       </ApplicationLoader>

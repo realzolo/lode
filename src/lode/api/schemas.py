@@ -93,6 +93,71 @@ class CreateApplicationIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+# --- Application configuration (admin only) ----------------------------
+#
+# These power the per-application edit forms: Kafka topic binding, repository
+# binding, read-only data sources, preset prompts. The on-the-wire shapes are
+# intentionally minimal — only what the Settings tabs need to read back into
+# their forms. Server-side this is enforced via ``require_admin``.
+
+class SetApplicationTopicIn(BaseModel):
+    topic: str | None = Field(default=None, min_length=1, max_length=500)
+    """Set / clear the Kafka topic for an application.
+
+    Sending ``null`` (or omitting) detaches any current binding. Topics are
+    globally unique across applications (DB constraint), so the operation is
+    upsert-or-delete at the row level.
+    """
+
+
+class ApplicationTopicOut(BaseModel):
+    application_id: int
+    topic: str | None
+
+
+class BindRepoIn(BaseModel):
+    repo_id: int = Field(gt=0)
+    description: str = Field(default="", max_length=2000)
+
+
+class ApplicationRepoOut(BaseModel):
+    id: int
+    application_id: int
+    repo_id: int
+    repo_name: str
+    repo_url: str
+    description: str
+
+
+class CreateDbSourceIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    conn_secret_ref: str = Field(min_length=1, max_length=1000)
+    """Reference to a secret (e.g. ``env://DATABASE_URL``) — the actual DSN
+    lives in the deployment environment, never in the DB row.
+    """
+    allowed_tables: list[str] = Field(default_factory=list)
+
+
+class DbSourceOut(BaseModel):
+    id: int
+    application_id: int
+    name: str
+    conn_secret_ref: str
+    allowed_tables: list[str]
+
+
+class CreatePresetPromptIn(BaseModel):
+    type: str = Field(default="deploy", pattern="^(deploy|other)$")
+    content: str = Field(min_length=1, max_length=10000)
+
+
+class PresetPromptOut(BaseModel):
+    id: int
+    application_id: int
+    type: str
+    content: str
+
+
 class MemoryOut(BaseModel):
     id: int
     application_id: int

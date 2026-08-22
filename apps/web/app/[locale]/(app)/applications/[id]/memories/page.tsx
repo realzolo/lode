@@ -15,7 +15,7 @@ export default function AppMemoriesPage({ params }: { params: { id: string } }) 
   return (
     <>
       <h1 className="page-title">{t('title')}</h1>
-      <ApplicationLoader id={params.id}>
+      <ApplicationLoader id={params.id} refreshNonce={0}>
         {() => <AppMemoriesView appId={Number(params.id)} />}
       </ApplicationLoader>
     </>

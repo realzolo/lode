@@ -315,11 +315,147 @@ export async function fetchApplication(id: string): Promise<{
   id: number;
   name: string;
   topic: string | null;
-  repos: { name: string; url: string; description: string }[];
-  preset_prompts: { type: string; content: string }[];
-  db_sources: { name: string; allowed_tables: unknown }[];
+  repos: { id: number; repo_id: number; name: string; url: string; description: string }[];
+  preset_prompts: { id: number; type: string; content: string }[];
+  db_sources: { id: number; name: string; conn_secret_ref: string; allowed_tables: unknown }[];
 }> {
   return getJson(`/applications/${id}`);
+}
+
+// ---------------------------------------------------------------------------
+// Per-application admin writes
+// ---------------------------------------------------------------------------
+//
+// These back the per-application Settings tabs (Kafka topic, repos, prompts,
+// data sources). Every call requires the caller to be an admin; the backend
+// enforces this with ``Depends(require_admin)`` and the 403 surfaces here as a
+// thrown ``Error``.
+
+export async function setApplicationTopic(
+  applicationId: string | number,
+  topic: string | null
+): Promise<{ application_id: number; topic: string | null }> {
+  return putJson(`/applications/${applicationId}/topic`, {
+    topic: topic && topic.trim() ? topic.trim() : null,
+  });
+}
+
+export interface BindRepoInput {
+  repo_id: number;
+  description: string;
+}
+
+export interface ApplicationRepoRow {
+  id: number;
+  application_id: number;
+  repo_id: number;
+  repo_name: string;
+  repo_url: string;
+  description: string;
+}
+
+export async function bindRepo(
+  applicationId: string | number,
+  input: BindRepoInput
+): Promise<ApplicationRepoRow> {
+  return postJson(`/applications/${applicationId}/repos`, input);
+}
+
+export async function unbindRepo(
+  applicationId: string | number,
+  repoId: number
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/applications/${applicationId}/repos/${repoId}`,
+    {
+      method: 'DELETE',
+      headers: authHeaders(),
+    }
+  );
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const b = await res.json().catch(() => null);
+    throw new Error(b?.error?.message ?? `unbind repo failed: ${res.status}`);
+  }
+}
+
+export interface CreateDbSourceInput {
+  name: string;
+  conn_secret_ref: string;
+  allowed_tables: string[];
+}
+
+export interface DbSourceRow {
+  id: number;
+  application_id: number;
+  name: string;
+  conn_secret_ref: string;
+  allowed_tables: string[];
+}
+
+export async function createDbSource(
+  applicationId: string | number,
+  input: CreateDbSourceInput
+): Promise<DbSourceRow> {
+  return postJson(`/applications/${applicationId}/db-sources`, input);
+}
+
+export async function deleteDbSource(
+  applicationId: string | number,
+  sourceId: number
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/applications/${applicationId}/db-sources/${sourceId}`,
+    { method: 'DELETE', headers: authHeaders() }
+  );
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const b = await res.json().catch(() => null);
+    throw new Error(b?.error?.message ?? `delete data source failed: ${res.status}`);
+  }
+}
+
+export interface CreatePresetPromptInput {
+  type: 'deploy' | 'other';
+  content: string;
+}
+
+export interface PresetPromptRow {
+  id: number;
+  application_id: number;
+  type: string;
+  content: string;
+}
+
+export async function createPresetPrompt(
+  applicationId: string | number,
+  input: CreatePresetPromptInput
+): Promise<PresetPromptRow> {
+  return postJson(`/applications/${applicationId}/prompts`, input);
+}
+
+export async function deletePresetPrompt(
+  applicationId: string | number,
+  promptId: number
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/applications/${applicationId}/prompts/${promptId}`,
+    { method: 'DELETE', headers: authHeaders() }
+  );
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const b = await res.json().catch(() => null);
+    throw new Error(b?.error?.message ?? `delete prompt failed: ${res.status}`);
+  }
 }
 
 export interface CreateApplicationInput {
@@ -390,6 +526,10 @@ export interface AiModelInput {
 
 export async function createAiModel(input: AiModelInput): Promise<AiModelConfig> {
   return postJson<AiModelConfig>('/settings/ai-models', input);
+}
+
+export async function fetchAiModelConfigs(): Promise<AiModelConfig[]> {
+  return getJson<AiModelConfig[]>('/settings/ai-models');
 }
 
 export async function updateAiModel(id: number, input: AiModelInput): Promise<AiModelConfig> {
