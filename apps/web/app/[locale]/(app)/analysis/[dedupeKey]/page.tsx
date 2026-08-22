@@ -7,6 +7,14 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from '@/components/ui/dialog';
 import type { AnalysisStatus } from '@/lib/types';
 import {
   addHint,
@@ -42,6 +50,7 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
   const [error, setError] = useState<string | null>(null);
   const [hint, setHint] = useState('');
   const [busy, setBusy] = useState(false);
+  const [hintOpen, setHintOpen] = useState(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
@@ -83,6 +92,7 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
     try {
       await addHint(dedupeKey, hint.trim());
       setHint('');
+      setHintOpen(false);
       await load();
     } finally {
       setBusy(false);
@@ -211,18 +221,34 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
           </Card>
         )}
 
-        <Card className="stack">
-          <Textarea
-            placeholder={t('hintPlaceholder')}
-            value={hint}
-            onChange={(e) => setHint(e.target.value)}
-          />
-          <div className="row" style={{ justifyContent: 'flex-end' }}>
-            <Button variant="primary" onClick={handleAddHint} disabled={busy || !hint.trim()}>
-              <IconPlus size={16} /> {tc('addHint')}
-            </Button>
-          </div>
-        </Card>
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <Button variant="primary" onClick={() => setHintOpen(true)}>
+            <IconPlus size={16} /> {tc('addHint')}
+          </Button>
+        </div>
+
+        <Dialog open={hintOpen} onOpenChange={setHintOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{tc('addHint')}</DialogTitle>
+              <DialogDescription>{t('hintPlaceholder')}</DialogDescription>
+            </DialogHeader>
+            <Textarea
+              placeholder={t('hintPlaceholder')}
+              value={hint}
+              onChange={(e) => setHint(e.target.value)}
+              autoFocus
+            />
+            <DialogFooter>
+              <Button variant="default" onClick={() => setHintOpen(false)} disabled={busy}>
+                {tc('cancel')}
+              </Button>
+              <Button variant="primary" onClick={handleAddHint} disabled={busy || !hint.trim()}>
+                <IconPlus size={16} /> {tc('addHint')}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </>
   );

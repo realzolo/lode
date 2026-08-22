@@ -26,6 +26,8 @@ export {
   RefreshCw as IconRefreshCw,
   MoreVertical as IconMoreVertical,
   ArrowUpRight as IconArrowUpRight,
+  ChevronLeft as IconChevronLeft,
+  ChevronRight as IconChevronRight,
   Link as IconLink,
   Mail as IconMail,
   Terminal as IconTerminal,

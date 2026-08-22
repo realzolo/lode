@@ -9,6 +9,14 @@ import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import {
   createInvite,
   createUser,
   deleteUser,
@@ -186,16 +194,19 @@ export default function UsersPage() {
       )}
 
       <div className="row" style={{ gap: 8, marginTop: 16 }}>
-        <Button variant="primary" onClick={() => setShowCreate((v) => !v)}>
+        <Button variant="primary" onClick={() => setShowCreate(true)}>
           <IconPlus size={16} /> {t('newUser')}
         </Button>
-        <Button onClick={() => { setShowInvite((v) => !v); setInviteLink(null); }}>
+        <Button onClick={() => { setShowInvite(true); setInviteLink(null); }}>
           <IconMail size={16} /> {t('invite')}
         </Button>
       </div>
 
-      {showCreate && (
-        <Card style={{ marginTop: 16 }}>
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('newUser')}</DialogTitle>
+          </DialogHeader>
           <div className="stack">
             <Input
               type="email"
@@ -218,15 +229,26 @@ export default function UsersPage() {
               value={createPassword}
               onChange={(e) => setCreatePassword(e.target.value)}
             />
-            <Button variant="primary" onClick={handleCreate} disabled={busyCreate || !createEmail || createPassword.length < 8}>
+          </div>
+          <DialogFooter>
+            <Button variant="default" onClick={() => setShowCreate(false)}>{tc('cancel')}</Button>
+            <Button
+              variant="primary"
+              onClick={handleCreate}
+              disabled={busyCreate || !createEmail || createPassword.length < 8}
+            >
               {t('newUser')}
             </Button>
-          </div>
-        </Card>
-      )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {showInvite && (
-        <Card style={{ marginTop: 16 }}>
+      <Dialog open={showInvite} onOpenChange={setShowInvite}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('invite')}</DialogTitle>
+            <DialogDescription>{t('subtitle')}</DialogDescription>
+          </DialogHeader>
           <div className="stack">
             <Input
               type="email"
@@ -254,8 +276,11 @@ export default function UsersPage() {
               </div>
             )}
           </div>
-        </Card>
-      )}
+          <DialogFooter>
+            <Button variant="default" onClick={() => setShowInvite(false)}>{tc('cancel')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Card style={{ marginTop: 16 }}>
         <div className="table-wrap">

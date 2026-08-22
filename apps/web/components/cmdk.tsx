@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from '@/lib/navigation';
 import { useTranslations } from 'next-intl';
 import { IconSearch } from '@/components/icons';
+import { fetchApplications } from '@/lib/api';
+import type { Application } from '@/lib/types';
 
 interface Command {
   id: string;
@@ -16,6 +18,7 @@ export function CommandPalette() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [apps, setApps] = useState<Application[]>([]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -29,22 +32,34 @@ export function CommandPalette() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  useEffect(() => {
+    fetchApplications()
+      .then(setApps)
+      .catch(() => setApps([]));
+  }, []);
+
   const go = (path: string) => {
     router.push(path);
     setOpen(false);
     setQuery('');
   };
 
-  const commands: Command[] = [
+  const navCommands: Command[] = [
     { id: 'dashboard', label: t('nav.dashboard'), run: () => go('/dashboard') },
     { id: 'analyses', label: t('nav.analyses'), run: () => go('/analyses') },
     { id: 'memories', label: t('nav.memories'), run: () => go('/memories') },
     { id: 'settings', label: t('nav.settings'), run: () => go('/settings') },
   ];
 
-  const filtered = commands.filter((c) =>
-    c.label.toLowerCase().includes(query.toLowerCase()),
-  );
+  const appCommands: Command[] = apps.map((a) => ({
+    id: `app-${a.id}`,
+    label: a.name,
+    run: () => go(`/applications/${a.id}`),
+  }));
+
+  const q = query.toLowerCase();
+  const filteredNav = navCommands.filter((c) => c.label.toLowerCase().includes(q));
+  const filteredApps = appCommands.filter((c) => c.label.toLowerCase().includes(q));
 
   if (!open) {
     return (
@@ -67,12 +82,24 @@ export function CommandPalette() {
           onChange={(e) => setQuery(e.target.value)}
         />
         <div className="cmdk-list">
-          {filtered.length === 0 && <div className="cmdk-empty">{t('common.empty')}</div>}
-          {filtered.map((c) => (
+          {filteredNav.length === 0 && filteredApps.length === 0 && (
+            <div className="cmdk-empty">{t('common.empty')}</div>
+          )}
+          {filteredNav.map((c) => (
             <button key={c.id} className="cmdk-item" onClick={c.run}>
               {c.label}
             </button>
           ))}
+          {filteredApps.length > 0 && (
+            <>
+              <div className="cmdk-group">{t('nav.applications')}</div>
+              {filteredApps.map((c) => (
+                <button key={c.id} className="cmdk-item" onClick={c.run}>
+                  {c.label}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       </div>
     </div>

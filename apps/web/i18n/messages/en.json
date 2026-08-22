@@ -5,7 +5,13 @@
     "analyses": "Analyses",
     "memories": "Shared Memory",
     "settings": "Global Settings",
-    "users": "Users"
+    "users": "Users",
+    "overview": "Overview",
+    "repositories": "Repositories",
+    "prompts": "Prompts",
+    "dataSources": "Data Sources",
+    "model": "Model",
+    "allApplications": "All applications"
   },
   "common": {
     "appName": "Incident Trace",

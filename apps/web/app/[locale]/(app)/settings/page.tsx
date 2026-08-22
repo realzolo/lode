@@ -9,6 +9,14 @@ import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import {
   changePassword,
   createAiModel,
   deleteAiModel,
@@ -239,61 +247,70 @@ function AiModelManager({
 
   return (
     <div style={{ marginTop: 16 }}>
-      <Button size="sm" variant="primary" onClick={() => { resetForm(); setShowForm((v) => !v); }}>
+      <Button size="sm" variant="primary" onClick={() => { resetForm(); setShowForm(true); }}>
         <IconPlus size={14} /> {t('addModel')}
       </Button>
 
-      {showForm && (
-        <div className="stack" style={{ marginTop: 12 }}>
-          <Select value={scope} onChange={(e) => setScope(e.target.value)}>
-            <option value="global">{t('aiModel')} · global</option>
-            <option value="application">application</option>
-          </Select>
-          {scope === 'application' && (
-            <Select value={applicationId} onChange={(e) => setApplicationId(e.target.value)}>
-              <option value="">— select app —</option>
-              {apps.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
+      <Dialog open={showForm} onOpenChange={setShowForm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingId != null ? tc('save') : t('createModel')}</DialogTitle>
+            <DialogDescription>{t('aiModelDesc')}</DialogDescription>
+          </DialogHeader>
+          <div className="stack">
+            <Select value={scope} onChange={(e) => setScope(e.target.value)}>
+              <option value="global">{t('aiModel')} · global</option>
+              <option value="application">application</option>
             </Select>
-          )}
-          <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
-            <option value="openai">openai</option>
-            <option value="anthropic">anthropic</option>
-          </Select>
-          <Input
-            placeholder="base_url (e.g. https://api.openai.com/v1)"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-          />
-          <Input
-            placeholder="api_key_ref (env://OPENAI_API_KEY or literal)"
-            value={apiKeyRef}
-            onChange={(e) => setApiKeyRef(e.target.value)}
-          />
-          <Input
-            placeholder="model (e.g. gpt-4o-mini)"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          />
-          <label className="row" style={{ gap: 8, fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={isDefault}
-              onChange={(e) => setIsDefault(e.target.checked)}
+            {scope === 'application' && (
+              <Select value={applicationId} onChange={(e) => setApplicationId(e.target.value)}>
+                <option value="">— select app —</option>
+                {apps.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </Select>
+            )}
+            <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
+              <option value="openai">openai</option>
+              <option value="anthropic">anthropic</option>
+            </Select>
+            <Input
+              placeholder="base_url (e.g. https://api.openai.com/v1)"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
             />
-            default for this scope
-          </label>
-          <div className="row" style={{ gap: 8 }}>
-            <Button size="sm" variant="primary" onClick={handleSubmit} disabled={busy || !baseUrl || !model || (scope === 'application' && !applicationId)}>
+            <Input
+              placeholder="api_key_ref (env://OPENAI_API_KEY or literal)"
+              value={apiKeyRef}
+              onChange={(e) => setApiKeyRef(e.target.value)}
+            />
+            <Input
+              placeholder="model (e.g. gpt-4o-mini)"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+            />
+            <label className="row" style={{ gap: 8, fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={isDefault}
+                onChange={(e) => setIsDefault(e.target.checked)}
+              />
+              default for this scope
+            </label>
+          </div>
+          <DialogFooter>
+            <Button size="sm" onClick={() => { resetForm(); setShowForm(false); }}>{tc('cancel')}</Button>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={handleSubmit}
+              disabled={busy || !baseUrl || !model || (scope === 'application' && !applicationId)}
+            >
               {editingId != null ? tc('save') : t('createModel')}
             </Button>
-            {editingId != null && (
-              <Button size="sm" onClick={() => { resetForm(); setShowForm(false); }}>{tc('cancel')}</Button>
-            )}
-          </div>
-        </div>
-      )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="stack" style={{ marginTop: 12 }}>
         {settings.ai_model_configs.map((m) => (

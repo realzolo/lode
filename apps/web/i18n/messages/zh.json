@@ -5,7 +5,13 @@
     "analyses": "分析",
     "memories": "共享记忆",
     "settings": "全局设置",
-    "users": "用户"
+    "users": "用户",
+    "overview": "概览",
+    "repositories": "仓库",
+    "prompts": "提示词",
+    "dataSources": "数据源",
+    "model": "模型",
+    "allApplications": "所有应用"
   },
   "common": {
     "appName": "Incident Trace",
