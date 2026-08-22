@@ -468,6 +468,11 @@ code,
   border-color: var(--color-5);
 }
 
+/* Geist: button labels (incl. CJK) must never wrap onto a second line */
+button {
+  white-space: nowrap;
+}
+
 .icon-btn {
   height: 32px;
   width: 32px;
