@@ -30,6 +30,8 @@ export interface Analysis {
   status: AnalysisStatus;
   confidence: number | null;
   conclusion: string | null;
+  /** Caller's permission on this analysis's application (undefined for admins). */
+  myPerm?: string;
 }
 
 export interface AnalysisStep {

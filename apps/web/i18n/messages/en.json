@@ -11,6 +11,7 @@
     "prompts": "Prompts",
     "dataSources": "Data Sources",
     "model": "Model",
+    "members": "Members",
     "allApplications": "All applications"
   },
   "common": {
@@ -151,5 +152,24 @@
     "currentPassword": "Current password",
     "newPassword": "New password",
     "update": "Update password"
+  },
+  "members": {
+    "title": "Members",
+    "subtitle": "Control who can access this application's analyses and memory.",
+    "user": "User",
+    "globalRole": "Global role",
+    "permission": "Permission",
+    "actions": "Actions",
+    "addMember": "Add member",
+    "addMemberDesc": "Grant a user access to this application.",
+    "selectUser": "Select user",
+    "permRead": "Read",
+    "permAnalyze": "Analyze",
+    "permAdmin": "Admin",
+    "remove": "Remove",
+    "removeTitle": "Remove member?",
+    "removeDesc": "This user will lose access to this application.",
+    "noUsers": "No users available to add.",
+    "lastAdmin": "Cannot remove the last admin of this application."
   }
 }

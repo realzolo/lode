@@ -160,6 +160,7 @@ interface ApiAnalysis {
   conclusion: string | null;
   received_at: string | null;
   updated_at: string;
+  my_perm: string | null;
 }
 
 interface ApiStep {
@@ -201,6 +202,7 @@ export interface AnalysisDetail {
   started_at: string | null;
   finished_at: string | null;
   updated_at: string;
+  my_perm: string | null;
 }
 
 interface ApiApplication {
@@ -237,6 +239,7 @@ export async function fetchAnalyses(): Promise<Analysis[]> {
     status: mapAnalysisStatus(r.status),
     confidence: r.confidence,
     conclusion: r.conclusion,
+    myPerm: r.my_perm ?? undefined,
   }));
 }
 
@@ -472,6 +475,62 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     repoCount: row.repo_count,
     createdAt: row.created_at,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Application membership (admin / app-admin)
+// ---------------------------------------------------------------------------
+
+export type AppPerm = 'read' | 'analyze' | 'admin';
+
+export interface AppMember {
+  user_id: number;
+  email: string;
+  name: string;
+  role: string;
+  status: string;
+  perm: AppPerm;
+}
+
+export async function fetchAppMembers(appId: string | number): Promise<AppMember[]> {
+  return getJson<AppMember[]>(`/applications/${appId}/members`);
+}
+
+export async function addAppMember(
+  appId: string | number,
+  userId: number,
+  perm: AppPerm
+): Promise<AppMember> {
+  return postJson<AppMember>(`/applications/${appId}/members`, {
+    user_id: userId,
+    perm,
+  });
+}
+
+export async function updateAppMember(
+  appId: string | number,
+  userId: number,
+  perm: AppPerm
+): Promise<AppMember> {
+  return putJson<AppMember>(`/applications/${appId}/members/${userId}`, { perm });
+}
+
+export async function removeAppMember(
+  appId: string | number,
+  userId: number
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/applications/${appId}/members/${userId}`,
+    { method: 'DELETE', headers: authHeaders() }
+  );
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const b = await res.json().catch(() => null);
+    throw new Error(b?.error?.message ?? `remove member failed: ${res.status}`);
+  }
 }
 
 export async function fetchMemories(applicationId?: number): Promise<Memory[]> {

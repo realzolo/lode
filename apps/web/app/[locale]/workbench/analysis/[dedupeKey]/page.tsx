@@ -154,6 +154,14 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
     ? JSON.stringify(detail.evidence, null, 2)
     : '';
 
+  // Re-analyze requires at least the "analyze" tier. Global admins (my_perm is
+  // null/undefined) and app admins/analysts may run it; read-only viewers cannot.
+  const canAnalyze =
+    detail.my_perm === undefined ||
+    detail.my_perm === null ||
+    detail.my_perm === 'analyze' ||
+    detail.my_perm === 'admin';
+
   return (
     <>
       <div className="row-between">
@@ -165,9 +173,11 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
         </div>
         <div className="row">
           <Badge variant={statusVariant(uiStatus)}>{uiStatus}</Badge>
-          <Button variant="primary" onClick={handleReanalyze} disabled={busy}>
-            <IconRefreshCw size={16} /> {tc('reanalyze')}
-          </Button>
+          {canAnalyze && (
+            <Button variant="primary" onClick={handleReanalyze} disabled={busy}>
+              <IconRefreshCw size={16} /> {tc('reanalyze')}
+            </Button>
+          )}
         </div>
       </div>
 

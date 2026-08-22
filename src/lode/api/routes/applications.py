@@ -17,13 +17,21 @@ most one default model per (scope, application_id).
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Security
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lode.api.deps import require_admin, require_user
+from lode.api.deps import (
+    permitted_app_ids,
+    require_admin,
+    require_app_perm,
+    require_user,
+)
 from lode.api.schemas import (
+    AppMemberIn,
+    AppMemberOut,
+    AppMemberUpdateIn,
     ApplicationDetailOut,
     ApplicationOut,
     ApplicationRepoOut,
@@ -45,6 +53,8 @@ from lode.db.models.application import (
     PresetPrompt,
 )
 from lode.db.models.git import GitRepo
+from lode.db.models.permission import UserApplicationPerm
+from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
 
 router = APIRouter(prefix="/applications", tags=["applications"])
@@ -57,8 +67,11 @@ async def get_session() -> AsyncSession:
 
 @router.get("", response_model=list[ApplicationOut])
 async def list_applications(
+    user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[ApplicationOut]:
+    user = await session.get(User, user_id)
+    app_ids = await permitted_app_ids(session, user_id, user.role)
     stmt = (
         select(
             Application,
@@ -70,6 +83,8 @@ async def list_applications(
         .group_by(Application.id, ApplicationKafka.topic)
         .order_by(Application.created_at.desc())
     )
+    if app_ids is not None:
+        stmt = stmt.where(Application.id.in_(app_ids))
     rows = (await session.execute(stmt)).all()
 
     out: list[ApplicationOut] = []
@@ -97,6 +112,7 @@ async def list_applications(
 @router.get("/{application_id}", response_model=ApplicationDetailOut)
 async def get_application(
     application_id: int,
+    _auth: int = Security(require_app_perm, scopes=["read"]),
     session: AsyncSession = Depends(get_session),
 ) -> ApplicationDetailOut:
     app = (
@@ -171,6 +187,15 @@ async def create_application(
     """
     app = Application(name=payload.name, created_by=user_id)
     session.add(app)
+    # Flush so the generated application id is available for the perm row.
+    await session.flush()
+    # The creator becomes an application admin so they appear in the Members
+    # list and can manage the application's membership from the start.
+    session.add(
+        UserApplicationPerm(
+            user_id=user_id, application_id=app.id, perm="admin"
+        )
+    )
     await session.commit()
     await session.refresh(app)
     return ApplicationOut(
@@ -417,5 +442,160 @@ async def delete_preset_prompt(
     row = await session.get(PresetPrompt, prompt_id)
     if row is None or row.application_id != application_id:
         raise HTTPException(status_code=404, detail="prompt not found")
+    await session.delete(row)
+    await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Application membership (admin or app-admin)
+# ---------------------------------------------------------------------------
+#
+# These back the per-application Members tab. Every endpoint is guarded by
+# ``require_app_perm`` scope "admin", so both global admins and the
+# application's own admins can manage membership; readers and analysts
+# cannot. ``UserApplicationPerm`` uses a composite primary key of
+# (user_id, application_id), so "add" upserts an existing membership's
+# perm level rather than failing on a duplicate.
+
+
+@router.get(
+    "/{application_id}/members",
+    response_model=list[AppMemberOut],
+)
+async def list_members(
+    application_id: int,
+    _auth: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> list[AppMemberOut]:
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    rows = (
+        await session.execute(
+            select(UserApplicationPerm, User)
+            .join(User, User.id == UserApplicationPerm.user_id)
+            .where(UserApplicationPerm.application_id == application_id)
+            .order_by(User.email)
+        )
+    ).all()
+    return [
+        AppMemberOut(
+            user_id=user.id,
+            email=user.email,
+            name=user.name,
+            role=user.role,
+            status=user.status,
+            perm=perm.perm,
+        )
+        for perm, user in rows
+    ]
+
+
+@router.post(
+    "/{application_id}/members",
+    response_model=AppMemberOut,
+    status_code=201,
+)
+async def add_member(
+    application_id: int,
+    payload: AppMemberIn,
+    _auth: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> AppMemberOut:
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    user = await session.get(User, payload.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    # Upsert: an existing membership simply moves to the new perm level.
+    existing = await session.get(
+        UserApplicationPerm, (payload.user_id, application_id)
+    )
+    if existing is None:
+        existing = UserApplicationPerm(
+            user_id=payload.user_id,
+            application_id=application_id,
+            perm=payload.perm,
+        )
+        session.add(existing)
+    else:
+        existing.perm = payload.perm
+    await session.commit()
+    await session.refresh(existing)
+    return AppMemberOut(
+        user_id=user.id,
+        email=user.email,
+        name=user.name,
+        role=user.role,
+        status=user.status,
+        perm=existing.perm,
+    )
+
+
+@router.put(
+    "/{application_id}/members/{user_id}",
+    response_model=AppMemberOut,
+)
+async def update_member(
+    application_id: int,
+    user_id: int,
+    payload: AppMemberUpdateIn,
+    _auth: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> AppMemberOut:
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    row = await session.get(UserApplicationPerm, (user_id, application_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="membership not found")
+    row.perm = payload.perm
+    await session.commit()
+    await session.refresh(row)
+    user = await session.get(User, user_id)
+    return AppMemberOut(
+        user_id=user.id,
+        email=user.email,
+        name=user.name,
+        role=user.role,
+        status=user.status,
+        perm=row.perm,
+    )
+
+
+@router.delete(
+    "/{application_id}/members/{user_id}",
+    status_code=204,
+)
+async def remove_member(
+    application_id: int,
+    user_id: int,
+    _auth: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    row = await session.get(UserApplicationPerm, (user_id, application_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="membership not found")
+
+    # Guard: never leave an application without at least one admin member.
+    if row.perm == "admin":
+        admin_count = (
+            await session.execute(
+                select(UserApplicationPerm.user_id).where(
+                    UserApplicationPerm.application_id == application_id,
+                    UserApplicationPerm.perm == "admin",
+                )
+            )
+        ).scalars().all()
+        if len(admin_count) <= 1:
+            raise HTTPException(
+                status_code=409,
+                detail="cannot remove the last admin member of this application",
+            )
     await session.delete(row)
     await session.commit()

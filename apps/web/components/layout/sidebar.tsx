@@ -43,6 +43,7 @@ const ADMIN_APP_SUBNAV = [
   { key: 'dataSources', suffix: 'db' },
   { key: 'model', suffix: 'model' },
   { key: 'memories', suffix: 'memories' },
+  { key: 'members', suffix: 'members' },
 ] as const;
 
 export function Sidebar({ portal }: { portal: Portal }) {

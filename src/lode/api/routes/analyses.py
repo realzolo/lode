@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lode.api.deps import assert_app_perm, permitted_app_ids, require_user
 from lode.api.schemas import (
     AddHintIn,
     AnalysisDetailOut,
@@ -22,6 +23,8 @@ from lode.db.models.alert import Alert
 from lode.db.models.analysis import Analysis, AnalysisHint, AnalysisStep
 from lode.db.models.application import Application
 from lode.db.models.memory import Memory
+from lode.db.models.permission import UserApplicationPerm
+from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
 from lode.engine import run_analysis
 
@@ -51,8 +54,11 @@ async def _latest_analysis(session: AsyncSession, dedupe_key: str) -> Analysis:
 async def list_analyses(
     application_id: int | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[AnalysisListOut]:
+    user = await session.get(User, user_id)
+    app_ids = await permitted_app_ids(session, user_id, user.role)
     stmt = (
         select(
             Analysis,
@@ -68,8 +74,24 @@ async def list_analyses(
     )
     if application_id is not None:
         stmt = stmt.where(Analysis.application_id == application_id)
+    if app_ids is not None:
+        stmt = stmt.where(Analysis.application_id.in_(app_ids))
 
     rows = (await session.execute(stmt)).all()
+
+    # Resolve the caller's permission per application so the UI can gate
+    # actions (e.g. re-analyze). Global admins are unrestricted -> "admin".
+    my_perm: dict[int, str] = {}
+    if user.role != "admin":
+        perm_rows = (
+            await session.execute(
+                select(UserApplicationPerm).where(
+                    UserApplicationPerm.user_id == user_id
+                )
+            )
+        ).scalars().all()
+        my_perm = {r.application_id: r.perm for r in perm_rows}
+
     return [
         AnalysisListOut(
             dedupe_key=a.dedupe_key,
@@ -82,6 +104,7 @@ async def list_analyses(
             conclusion=a.conclusion,
             received_at=received_at,
             updated_at=a.updated_at,
+            my_perm="admin" if user.role == "admin" else my_perm.get(a.application_id),
         )
         for a, app_name, alert_title, alert_level, received_at in rows
     ]
@@ -90,9 +113,13 @@ async def list_analyses(
 @router.get("/{dedupe_key}", response_model=AnalysisDetailOut)
 async def get_analysis(
     dedupe_key: str,
+    user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> AnalysisDetailOut:
     analysis = await _latest_analysis(session, dedupe_key)
+
+    user = await session.get(User, user_id)
+    await assert_app_perm(session, user, analysis.application_id, "read")
 
     app_name = await session.execute(
         select(Application.name).where(Application.id == analysis.application_id)
@@ -130,6 +157,14 @@ async def get_analysis(
             .order_by(Memory.updated_at.desc())
         )
     ).scalars().first()
+
+    if user.role == "admin":
+        my_perm = "admin"
+    else:
+        perm_row = await session.get(
+            UserApplicationPerm, (user_id, analysis.application_id)
+        )
+        my_perm = perm_row.perm if perm_row is not None else None
 
     return AnalysisDetailOut(
         dedupe_key=analysis.dedupe_key,
@@ -169,6 +204,7 @@ async def get_analysis(
         started_at=analysis.started_at,
         finished_at=analysis.finished_at,
         updated_at=analysis.updated_at,
+        my_perm=my_perm,
     )
 
 
@@ -176,9 +212,13 @@ async def get_analysis(
 async def add_hint(
     dedupe_key: str,
     payload: AddHintIn,
+    user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> AnalysisHintOut:
     analysis = await _latest_analysis(session, dedupe_key)
+    user = await session.get(User, user_id)
+    # Adding a human hint is annotation-level access — read or above suffices.
+    await assert_app_perm(session, user, analysis.application_id, "read")
     hint = AnalysisHint(
         analysis_id=analysis.id,
         author=payload.author or "anonymous",
@@ -200,9 +240,14 @@ async def _run_in_background(analysis_id: int) -> None:
 @router.post("/{dedupe_key}/reanalyze", response_model=ReanalyzeOut)
 async def reanalyze(
     dedupe_key: str,
+    user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> ReanalyzeOut:
     analysis = await _latest_analysis(session, dedupe_key)
+    user = await session.get(User, user_id)
+    # Re-running the pipeline is an action that consumes compute, so it
+    # requires at least the "analyze" tier (not read-only viewers).
+    await assert_app_perm(session, user, analysis.application_id, "analyze")
     if analysis.status == "running":
         raise HTTPException(status_code=409, detail="analysis is already running")
     analysis.status = "running"

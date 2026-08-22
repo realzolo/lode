@@ -51,6 +51,10 @@ class AnalysisListOut(BaseModel):
     conclusion: str | None
     received_at: datetime | None
     updated_at: datetime
+    # The caller's permission on this analysis's application, or ``None`` when
+    # the caller is a global admin (unrestricted). Surfaced so the UI can gate
+    # actions like re-analyze.
+    my_perm: str | None = None
 
 
 class AnalysisDetailOut(BaseModel):
@@ -68,6 +72,9 @@ class AnalysisDetailOut(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     updated_at: datetime
+    # The caller's permission on this application, or ``None`` for a global
+    # admin (unrestricted).
+    my_perm: str | None = None
 
 
 class ApplicationOut(BaseModel):
@@ -279,3 +286,28 @@ class ReanalyzeOut(BaseModel):
     dedupe_key: str
     status: str
     message: str
+
+
+# --- Application membership (admin / app-admin) -------------------------
+#
+# These power the per-application Members tab. A membership is a row in
+# ``user_application_perms`` (user_id, application_id, perm). The endpoints
+# are guarded by ``require_app_perm`` scope "admin" — global admins and
+# application admins may read and mutate membership; lower tiers cannot.
+
+class AppMemberOut(BaseModel):
+    user_id: int
+    email: str
+    name: str
+    role: str
+    status: str
+    perm: str
+
+
+class AppMemberIn(BaseModel):
+    user_id: int = Field(gt=0)
+    perm: str = Field(pattern="^(read|analyze|admin)$")
+
+
+class AppMemberUpdateIn(BaseModel):
+    perm: str = Field(pattern="^(read|analyze|admin)$")
