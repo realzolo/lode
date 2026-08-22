@@ -21,6 +21,7 @@
     "language": "语言",
     "save": "保存",
     "cancel": "取消",
+    "delete": "删除",
     "loading": "加载中...",
     "empty": "暂无数据",
     "addHint": "添加提示",
@@ -48,7 +49,10 @@
     "aiModel": "AI 模型",
     "aiModelDesc": "当应用未覆盖时使用默认_provider。",
     "addModel": "添加模型",
-    "createModel": "新建模型"
+    "createModel": "新建模型",
+    "delete": "删除",
+    "deleteModelTitle": "删除 AI 模型？",
+    "deleteModelDesc": "这将移除该 provider 的配置，此操作不可恢复。"
   },
   "application": {
     "title": "应用设置",
@@ -96,6 +100,8 @@
     "newUser": "新建用户",
     "resetPw": "重置密码",
     "delete": "删除",
+    "deleteUserTitle": "删除用户？",
+    "deleteUserDesc": "该用户将立即失去访问权限，此操作不可恢复。",
     "password": "密码",
     "newPassword": "新密码",
     "currentPassword": "当前密码",

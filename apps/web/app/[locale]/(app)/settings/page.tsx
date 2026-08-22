@@ -16,6 +16,7 @@ import {
   DialogFooter,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
   changePassword,
   createAiModel,
@@ -182,6 +183,7 @@ function AiModelManager({
   const [model, setModel] = useState('');
   const [isDefault, setIsDefault] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
 
   function resetForm() {
     setEditingId(null);
@@ -235,7 +237,6 @@ function AiModelManager({
   }
 
   async function handleDelete(id: number) {
-    if (!window.confirm(t('aiModel') + '?')) return;
     onError(null);
     try {
       await deleteAiModel(id);
@@ -322,11 +323,24 @@ function AiModelManager({
             </span>
             <div className="row" style={{ gap: 6 }}>
               <Button size="sm" onClick={() => startEdit(m)}><IconEdit2 size={14} /> {tc('save')}</Button>
-              <Button size="sm" variant="primary" onClick={() => handleDelete(m.id)}><IconTrash2 size={14} /> {tu('delete')}</Button>
+              <Button size="sm" variant="destructive" onClick={() => setDeleteId(m.id)}><IconTrash2 size={14} /> {tu('delete')}</Button>
             </div>
           </div>
         ))}
       </div>
+
+      <ConfirmDialog
+        open={deleteId != null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title={t('deleteModelTitle')}
+        description={t('deleteModelDesc')}
+        confirmLabel={tc('delete')}
+        cancelLabel={tc('cancel')}
+        destructive
+        onConfirm={() => {
+          if (deleteId != null) return handleDelete(deleteId);
+        }}
+      />
     </div>
   );
 }

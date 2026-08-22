@@ -21,6 +21,7 @@
     "language": "Language",
     "save": "Save",
     "cancel": "Cancel",
+    "delete": "Delete",
     "loading": "Loading...",
     "empty": "No data yet",
     "addHint": "Add hint",
@@ -48,7 +49,10 @@
     "aiModel": "AI model",
     "aiModelDesc": "Default provider used when an application does not override it.",
     "addModel": "Add model",
-    "createModel": "Create model"
+    "createModel": "Create model",
+    "delete": "Delete",
+    "deleteModelTitle": "Delete AI model?",
+    "deleteModelDesc": "This removes the provider configuration. This action cannot be undone."
   },
   "application": {
     "title": "Application settings",
@@ -96,6 +100,8 @@
     "newUser": "Create user",
     "resetPw": "Reset password",
     "delete": "Delete",
+    "deleteUserTitle": "Delete user?",
+    "deleteUserDesc": "The user will lose access immediately. This action cannot be undone.",
     "password": "Password",
     "newPassword": "New password",
     "currentPassword": "Current password",

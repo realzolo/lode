@@ -16,6 +16,7 @@ import {
   DialogFooter,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
   createInvite,
   createUser,
@@ -52,6 +53,7 @@ export default function UsersPage() {
   // per-row reset-password
   const [resetId, setResetId] = useState<number | null>(null);
   const [resetPassword, setResetPassword] = useState('');
+  const [deleteId, setDeleteId] = useState<number | null>(null);
 
   const isAdmin = useUser().isAdmin;
 
@@ -134,7 +136,6 @@ export default function UsersPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!window.confirm(t('delete') + '?')) return;
     setError(null);
     try {
       await deleteUser(id);
@@ -327,7 +328,7 @@ export default function UsersPage() {
                       <Button size="sm" onClick={() => { setResetId(u.id); setResetPassword(''); }}>
                         {t('resetPw')}
                       </Button>
-                      <Button size="sm" variant="primary" onClick={() => handleDelete(u.id)}>
+                      <Button size="sm" variant="destructive" onClick={() => setDeleteId(u.id)}>
                         <IconTrash2 size={14} /> {t('delete')}
                       </Button>
                     </div>
@@ -351,6 +352,19 @@ export default function UsersPage() {
           </table>
         </div>
       </Card>
+
+      <ConfirmDialog
+        open={deleteId != null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title={t('deleteUserTitle')}
+        description={t('deleteUserDesc')}
+        confirmLabel={tc('delete')}
+        cancelLabel={tc('cancel')}
+        destructive
+        onConfirm={() => {
+          if (deleteId != null) return handleDelete(deleteId);
+        }}
+      />
     </>
   );
 }
