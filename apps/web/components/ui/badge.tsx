@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 // warning | success) so pages don't change. `accent` = blue (primary), the rest
 // are tinted semantic pills that read well on both dark and light surfaces.
 const badgeVariants = cva(
-  'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium transition-colors focus:outline-none',
+  'inline-flex items-center whitespace-nowrap rounded-md border px-2.5 py-0.5 text-xs font-medium transition-colors focus:outline-none',
   {
     variants: {
       variant: {
