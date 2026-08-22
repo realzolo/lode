@@ -1,34 +1,36 @@
-import { Badge as GeistBadgeBase } from '@geist-ui/core';
-import type { ComponentType, HTMLAttributes } from 'react';
-import { cx } from '@/lib/cn';
+import * as React from 'react';
+import { cva, type VariantProps } from 'class-variance-authority';
+import { cn } from '@/lib/utils';
 
-type Variant = 'default' | 'accent' | 'danger' | 'warning' | 'success';
+// shadcn/ui Badge. Keeps the app's `variant` union (default | accent | danger |
+// warning | success) so pages don't change. `accent` = blue (primary), the rest
+// are tinted semantic pills that read well on both dark and light surfaces.
+const badgeVariants = cva(
+  'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium transition-colors focus:outline-none',
+  {
+    variants: {
+      variant: {
+        default: 'border-transparent bg-secondary text-secondary-foreground',
+        accent: 'border-transparent bg-primary text-primary-foreground',
+        success: 'border-transparent bg-emerald-500/15 text-emerald-500',
+        warning: 'border-transparent bg-amber-500/15 text-amber-500',
+        danger: 'border-transparent bg-red-500/15 text-red-500',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+    },
+  },
+);
 
-// Geist's Badge only has neutral/success/error/warning types (no blue "accent"),
-// so we fold our legacy `accent` variant into the neutral default.
-const TYPE: Record<Variant, 'default' | 'success' | 'error' | 'warning'> = {
-  default: 'default',
-  accent: 'default',
-  success: 'success',
-  warning: 'warning',
-  danger: 'error',
-};
+export interface BadgeProps
+  extends React.HTMLAttributes<HTMLSpanElement>,
+    VariantProps<typeof badgeVariants> {}
 
-// @geist-ui/core's published Badge type is generated from a `Pick<…ScaleProps…>`
-// that breaks native-attribute forwarding. Re-type to the span surface plus
-// Geist's extras. The runtime component is unaffected.
-type GeistBadgeProps = HTMLAttributes<HTMLSpanElement> & {
-  type?: 'default' | 'success' | 'error' | 'warning';
-  dot?: boolean;
-  anchor?: boolean;
-};
-const GeistBadge = GeistBadgeBase as unknown as ComponentType<GeistBadgeProps>;
-
-// Thin adapter over the official Geist <Badge>.
-export function Badge({
-  variant = 'default',
-  className,
-  ...props
-}: HTMLAttributes<HTMLSpanElement> & { variant?: Variant }) {
-  return <GeistBadge type={TYPE[variant]} className={cx(className)} {...props} />;
+function Badge({ className, variant, ...props }: BadgeProps) {
+  return (
+    <span className={cn(badgeVariants({ variant }), className)} {...props} />
+  );
 }
+
+export { Badge, badgeVariants };

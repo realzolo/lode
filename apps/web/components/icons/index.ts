@@ -1,9 +1,10 @@
-// Geist icons, re-exported from the official @geist-ui/icons package so the rest
-// of the app can keep importing them as `Icon*` (no per-file imports). These are
-// Vercel's Geist icon set (stroke=currentColor, 1.5 stroke, 24x24 viewBox).
+// Lucide icons, re-exported so the rest of the app can keep importing them as
+// `Icon*` (no per-file imports). Lucide's icon set is stroke=currentColor,
+// 24x24 viewBox, and accepts the same `size` / `className` props the old Geist
+// icons did, so existing usages (`<IconX size={16} />`) work unchanged.
 export {
   Home as IconHome,
-  BarChart as IconBarChart,
+  BarChart3 as IconBarChart,
   Database as IconDatabase,
   Settings as IconSettings,
   Users as IconUsers,
@@ -18,10 +19,10 @@ export {
   Plus as IconPlus,
   ExternalLink as IconExternalLink,
   Copy as IconCopy,
-  Trash as IconTrash2,
-  Edit as IconEdit2,
+  Trash2 as IconTrash2,
+  Pencil as IconEdit2,
   Info as IconInfo,
-  AlertTriangle as IconAlertTriangle,
+  TriangleAlert as IconAlertTriangle,
   RefreshCw as IconRefreshCw,
   MoreVertical as IconMoreVertical,
   ArrowUpRight as IconArrowUpRight,
@@ -29,9 +30,9 @@ export {
   Mail as IconMail,
   Terminal as IconTerminal,
   Server as IconServer,
-  CheckCircle as IconCheckCircle,
-  XCircle as IconXCircle,
+  CircleCheck as IconCheckCircle,
+  CircleX as IconXCircle,
   Minus as IconMinus,
   Send as IconSend,
   Filter as IconFilter,
-} from '@geist-ui/icons';
+} from 'lucide-react';

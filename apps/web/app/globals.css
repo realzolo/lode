@@ -1,99 +1,130 @@
-/* Incident Trace — Vercel Geist Design System.
-   UI primitives (Button, Card, Input, Textarea, Badge, Tabs) come from the
-   official @geist-ui/core component library; icons come from @geist-ui/icons.
-   GeistProvider (see components/providers.tsx) owns the component theme tokens
-   (--geist-*), so this file only ships the global reset, the Geist typeface
-   (GeistSans/GeistMono via the `geist` package on <html>), and the tokens +
-   styles for our custom app chrome (sidebar, topbar, command palette, workflow
-   nodes, auth shell). Dark is the default theme; .light overrides those vars.
+/* Incident Trace — Vercel/Linear-quality design system.
+   UI primitives (Button, Card, Input, Textarea, Badge, Tabs, Label, Separator)
+   are now shadcn/ui components (Tailwind + Radix, vendored in components/ui/*),
+   and icons come from lucide-react. Theme tokens live in two layers:
 
-   App-chrome token model:
-     Background 1/2  — page + secondary surfaces
-     Color 1..10     — surfaces, hover, active, borders, high-contrast, text
-     Blue/Red/Amber/Green — semantic scale (Blue is the primary accent) */
+   1. shadcn/ui tokens (HSL triplets, consumed by tailwind.config.ts as
+      `hsl(var(--x))`): --background, --foreground, --card, --popover, --primary,
+      --secondary, --muted, --accent, --destructive, --border, --input, --ring,
+      --radius. The blue `--primary` is Vercel's #0070f3.
+
+   2. App-chrome tokens (raw colors, used by the custom sidebar/topbar/table/
+      command-palette/flow-node styles below): --background-1/2, --color-1..10,
+      --blue/--red/--amber/--green, plus legacy semantic aliases (--danger/
+      --success/--warning/--surface) for the handful of inline `var(--x)` usages
+      in pages.
+
+   Dark is the default theme; `.dark` overrides those vars. next-themes drives
+   the `dark`/`light` class on <html> (see components/providers.tsx). */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  /* Surfaces */
-  --background-1: #000000;
-  --background-2: #0a0a0a;
-
-  /* Component backgrounds */
-  --color-1: #0a0a0a; /* default */
-  --color-2: #1a1a1a; /* hover   */
-  --color-3: #262626; /* active  */
-
-  /* Borders */
-  --color-4: rgba(255, 255, 255, 0.1); /* default */
-  --color-5: rgba(255, 255, 255, 0.2); /* hover   */
-  --color-6: rgba(255, 255, 255, 0.3); /* active  */
-
-  /* High-contrast (primary button) */
-  --color-7: #ffffff;
-  --color-8: #eaeaea;
-
-  /* Text & icons */
-  --color-9: rgba(255, 255, 255, 0.6); /* secondary */
-  --color-10: #ffffff;                  /* primary   */
-
-  /* Semantic scale */
-  --blue: #0070f3;
-  --blue-hover: #3291ff;
-  --red: #ff4d4f;
-  --amber: #ffae00;
-  --green: #00c389;
-
-  /* Semantic aliases (so legacy var(--accent)/var(--danger)/... usages resolve
-     to the Geist scale above; they follow the active theme automatically). */
-  --accent: var(--blue);
-  --foreground: var(--color-10);
-  --muted: var(--color-9);
-  --border: var(--color-4);
-  --surface: var(--background-2);
-  --surface-2: var(--color-2);
-  --danger: var(--red);
-  --warning: var(--amber);
-  --success: var(--green);
+  /* shadcn/ui tokens (light) */
+  --background: 0 0% 100%;
+  --foreground: 0 0% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 3.9%;
+  --primary: 212 100% 48%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 96.1%;
+  --secondary-foreground: 0 0% 9%;
+  --muted: 0 0% 96.1%;
+  --muted-foreground: 0 0% 45.1%;
+  --accent: 0 0% 96.1%;
+  --accent-foreground: 0 0% 9%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 0 0% 89.8%;
+  --input: 0 0% 89.8%;
+  --ring: 212 100% 48%;
+  --radius: 0.5rem;
 
   /* Geometry */
-  --radius: 6px;
-  --radius-card: 12px;
-  --radius-pill: 999px;
-  --space: 4px;
   --sidebar-width: 256px;
   --topbar-height: 64px;
 
-  /* Focus ring (classic Vercel: inner bg, outer blue) */
-  --focus-ring: 0 0 0 2px var(--background-1), 0 0 0 4px var(--blue);
-}
-
-.light {
-  color-scheme: light;
-
+  /* App-chrome surface tokens (light) */
   --background-1: #ffffff;
   --background-2: #fafafa;
-
   --color-1: #ffffff;
   --color-2: #f5f5f5;
   --color-3: #ededed;
-
   --color-4: #eaeaea;
   --color-5: #d4d4d4;
   --color-6: #bdbdbd;
-
   --color-7: #000000;
   --color-8: #1a1a1a;
-
   --color-9: #666666;
   --color-10: #000000;
-
   --blue: #0070f3;
   --blue-hover: #3291ff;
   --red: #e5484d;
   --amber: #ffae00;
   --green: #00c389;
+}
 
+.dark {
+  color-scheme: dark;
+
+  /* shadcn/ui tokens (dark) */
+  --background: 0 0% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 0 0% 3.9%;
+  --card-foreground: 0 0% 98%;
+  --popover: 0 0% 3.9%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 212 100% 48%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 14.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 0 0% 14.9%;
+  --muted-foreground: 0 0% 63.9%;
+  --accent: 0 0% 14.9%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 0 0% 14.9%;
+  --input: 0 0% 14.9%;
+  --ring: 212 100% 48%;
+
+  /* App-chrome surface tokens (dark) */
+  --background-1: #000000;
+  --background-2: #0a0a0a;
+  --color-1: #0a0a0a;
+  --color-2: #1a1a1a;
+  --color-3: #262626;
+  --color-4: rgba(255, 255, 255, 0.1);
+  --color-5: rgba(255, 255, 255, 0.2);
+  --color-6: rgba(255, 255, 255, 0.3);
+  --color-7: #ffffff;
+  --color-8: #eaeaea;
+  --color-9: rgba(255, 255, 255, 0.6);
+  --color-10: #ffffff;
+  --blue: #0070f3;
+  --blue-hover: #3291ff;
+  --red: #ff4d4f;
+  --amber: #ffae00;
+  --green: #00c389;
+}
+
+/* Legacy semantic aliases (raw `var(--x)` usages in pages). These reference the
+   per-theme --red/--green/--amber/--background-2 so they resolve correctly in
+   both themes. NOTE: --border/--muted/--accent/--foreground are intentionally
+   NOT redefined here — they are the shadcn HSL tokens above. */
+:root,
+.dark {
+  --danger: var(--red);
+  --success: var(--green);
+  --warning: var(--amber);
+  --surface: var(--background-2);
+  --surface-2: var(--color-2);
   --focus-ring: 0 0 0 2px var(--background-1), 0 0 0 4px var(--blue);
 }
 
@@ -217,16 +248,25 @@ code,
   width: 100%;
 }
 
-/* ---- Button is now rendered by @geist-ui/core <Button> (components/ui/button.tsx) ---- */
-
-/* ---- Card / Input / Textarea are now rendered by @geist-ui/core
-   (components/ui/{card,input,textarea}.tsx). Only the native <select> wrapper
-   still uses .select below. ---- */
-
 /* ---- Select (native wrapper, shares input geometry) ---- */
+.input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-4);
+  background: var(--color-1);
+  color: var(--color-10);
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.input:focus {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .select {
-  width: auto;
-  height: 40px;
   cursor: pointer;
 }
 
@@ -236,9 +276,7 @@ code,
   box-shadow: var(--focus-ring);
 }
 
-/* ---- Badge is now rendered by @geist-ui/core <Badge> (components/ui/badge.tsx) ---- */
-
-/* ---- Table (Geist) ---- */
+/* ---- Table (Geist-style) ---- */
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -261,8 +299,6 @@ code,
 .table tr:last-child td {
   border-bottom: none;
 }
-
-/* ---- Tabs are now rendered by @geist-ui/core <Tabs> (components/ui/tabs.tsx) ---- */
 
 /* ---- Typography ---- */
 .page-title {
@@ -440,7 +476,7 @@ code,
   box-shadow: var(--focus-ring);
 }
 
-/* ---- Geist icons: crisp, non-shrinking, center-aligned with text ---- */
+/* ---- Lucide icons: crisp, non-shrinking, center-aligned with text ---- */
 .nav-item svg,
 .icon-btn svg,
 .cmdk svg,
@@ -505,7 +541,7 @@ a .app-card {
   max-width: 92vw;
   background: var(--background-2);
   border: 1px solid var(--color-4);
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-card, 12px);
   padding: 10px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 }

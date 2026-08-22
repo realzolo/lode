@@ -122,10 +122,19 @@ export function mapStepStatus(status: string): StepStatus {
 // ---------------------------------------------------------------------------
 
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    cache: 'no-store',
-    headers: authHeaders(),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      cache: 'no-store',
+      headers: authHeaders(),
+    });
+  } catch {
+    // A rejected promise here is a network-level failure (backend down, CORS
+    // block, offline) — the browser reports it as the unhelpful
+    // "TypeError: Failed to fetch". Surface a clear, actionable message so the
+    // UI can show what actually went wrong instead of the raw TypeError.
+    throw new Error(`network error: ${API_BASE}${path}`);
+  }
   if (res.status === 401) {
     clearToken();
     throw new Error('unauthorized');

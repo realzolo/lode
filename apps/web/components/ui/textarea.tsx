@@ -1,17 +1,20 @@
-import { Textarea as GeistTextareaBase } from '@geist-ui/core';
-import type { ComponentType, TextareaHTMLAttributes } from 'react';
+import * as React from 'react';
+import { cn } from '@/lib/utils';
 
-// @geist-ui/core's published Textarea type is generated from a `Pick<…ScaleProps…>`
-// that breaks native-attribute forwarding. Re-type to the textarea surface plus
-// Geist's extras. The runtime component is unaffected.
-type GeistTextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
-  width?: string | number;
-  resize?: 'none' | 'both' | 'horizontal' | 'vertical' | 'initial' | 'inherit';
-  initialValue?: string;
-};
-const GeistTextarea = GeistTextareaBase as unknown as ComponentType<GeistTextareaProps>;
+export type TextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement>;
 
-// Thin adapter over the official Geist <Textarea>.
-export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <GeistTextarea width="100%" className={className} {...props} />;
-}
+const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
+  ({ className, ...props }, ref) => (
+    <textarea
+      ref={ref}
+      className={cn(
+        'flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
+Textarea.displayName = 'Textarea';
+
+export { Textarea };

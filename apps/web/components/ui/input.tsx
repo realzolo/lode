@@ -1,22 +1,21 @@
-import { Input as GeistInputBase } from '@geist-ui/core';
-import type { ComponentType, InputHTMLAttributes, ReactNode } from 'react';
+import * as React from 'react';
+import { cn } from '@/lib/utils';
 
-// @geist-ui/core's published Input type is generated from a `Pick<…ScaleProps…>`
-// that breaks native-attribute forwarding. Re-type to the input surface plus
-// Geist's extras. The runtime component is unaffected.
-type GeistInputProps = InputHTMLAttributes<HTMLInputElement> & {
-  type?: 'default' | 'secondary' | 'success' | 'error' | 'warning';
-  htmlType?: string;
-  width?: string | number;
-  icon?: ReactNode;
-  iconRight?: ReactNode;
-};
-const GeistInput = GeistInputBase as unknown as ComponentType<GeistInputProps>;
+export type InputProps = React.InputHTMLAttributes<HTMLInputElement>;
 
-// Thin adapter over the official Geist <Input>. The native HTML type (text/
-// password/...) is forwarded as `htmlType` because Geist reserves `type` for its
-// own visual variants (default/secondary/success/error/warning). Width defaults
-// to 100% so inputs fill form rows like the previous wrapper did.
-export function Input({ className, type, ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <GeistInput width="100%" htmlType={type} className={className} {...props} />;
-}
+const Input = React.forwardRef<HTMLInputElement, InputProps>(
+  ({ className, type, ...props }, ref) => (
+    <input
+      type={type}
+      ref={ref}
+      className={cn(
+        'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
+Input.displayName = 'Input';
+
+export { Input };

@@ -1,8 +1,7 @@
 'use client';
 
 import { ReactNode } from 'react';
-import { GeistProvider } from '@geist-ui/core';
-import { ThemeProvider, useTheme } from 'next-themes';
+import { ThemeProvider } from 'next-themes';
 import { NextIntlClientProvider } from 'next-intl';
 import type { AbstractIntlMessages } from 'use-intl';
 import { UserProvider } from '@/lib/user-context';
@@ -21,27 +20,14 @@ interface ProvidersProps {
   now: Date;
 }
 
-// The Geist design system's theme variables are owned by <GeistProvider>, so it
-// must wrap everything. We drive its light/dark mode from next-themes so the
-// existing theme toggle keeps working. (CssBaseline is intentionally omitted:
-// this app already ships its own global reset + Geist-token layout in globals.css,
-// and CssBaseline would fight those base styles.)
-function ThemedGeist({ children }: { children: ReactNode }) {
-  const { resolvedTheme } = useTheme();
-  return (
-    <GeistProvider themeType={(resolvedTheme as 'dark' | 'light') ?? 'dark'}>
-      {children}
-    </GeistProvider>
-  );
-}
-
+// Theme (dark/light) is owned by shadcn/ui's CSS variables + next-themes, which
+// toggles the `dark`/`light` class on <html>. shadcn/ui components read those
+// variables directly, so no provider wrapper is needed (unlike @geist-ui/core).
 export function Providers({ children, messages, locale, timeZone, now }: ProvidersProps) {
   return (
     <NextIntlClientProvider messages={messages} locale={locale} timeZone={timeZone} now={now}>
       <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
-        <ThemedGeist>
-          <UserProvider>{children}</UserProvider>
-        </ThemedGeist>
+        <UserProvider>{children}</UserProvider>
       </ThemeProvider>
     </NextIntlClientProvider>
   );
