@@ -19,7 +19,8 @@ export default function ApplicationOverviewPage({ params }: { params: { id: stri
             <Card className="stack" style={{ marginTop: 16 }}>
               <label className="field-label">{t('topic')}</label>
               <Input
-                defaultValue={data.topic ?? `alert.${params.id}`}
+                defaultValue={data.topic ?? ''}
+                placeholder="—"
                 className="grow"
                 style={{ maxWidth: 360 }}
                 readOnly

@@ -53,10 +53,13 @@
   "application": {
     "title": "应用设置",
     "topic": "Kafka topic",
+    "repositories": "仓库",
     "repos": "仓库",
     "reposDesc": "选择仓库并描述每个模块。",
     "prompts": "预制提示词",
+    "dataSources": "数据源",
     "dbSources": "只读数据源",
+    "model": "模型",
     "modelOverride": "模型覆盖"
   },
   "analyses": {

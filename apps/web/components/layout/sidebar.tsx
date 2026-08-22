@@ -81,7 +81,7 @@ export function Sidebar() {
             <IconChevronLeft size={16} className="nav-icon" />
             {t('allApplications')}
           </Link>
-          <div className="sidebar-label">{currentApp?.name ?? t('applications')}</div>
+          <div className="sidebar-label" title={currentApp?.name ?? undefined}>{currentApp?.name ?? t('applications')}</div>
           {APP_SUBNAV.map((sub) => {
             const href = sub.suffix
               ? `/applications/${appId}/${sub.suffix}`

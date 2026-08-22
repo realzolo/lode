@@ -242,6 +242,9 @@ code,
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--color-9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .nav-subitem {
   padding-left: 24px;

@@ -53,10 +53,13 @@
   "application": {
     "title": "Application settings",
     "topic": "Kafka topic",
+    "repositories": "Repositories",
     "repos": "Repositories",
     "reposDesc": "Select repositories and describe each module.",
     "prompts": "Preset prompts",
+    "dataSources": "Data Sources",
     "dbSources": "Read-only data sources",
+    "model": "Model",
     "modelOverride": "Model override"
   },
   "analyses": {
