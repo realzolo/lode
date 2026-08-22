@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -10,36 +10,14 @@ import type { Application } from '@/lib/types';
 import { fetchApplications } from '@/lib/api';
 import { IconPlus } from '@/components/icons';
 
-// Vercel-style project avatar: small gradient tile with the first letter of the
-// app name. The color is hash-stable so the same app always shows the same tile.
-const APP_GRADIENTS = [
-  'from-[#0070f3] to-[#3291ff]',
-  'from-[#ff4d4f] to-[#ff7a45]',
-  'from-[#00c389] to-[#3ed598]',
-  'from-[#ffae00] to-[#ffcd3a]',
-  'from-[#8b5cf6] to-[#a78bfa]',
-  'from-[#ec4899] to-[#f472b6]',
-  'from-[#06b6d4] to-[#22d3ee]',
-  'from-[#f97316] to-[#fb923c]',
-];
-
-function hashName(name: string): number {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) {
-    h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  }
-  return h;
-}
-
+// Geist avatar: a neutral grayscale tile showing the app's initial. Geist reserves
+// color for status/meaning, never decoration — so the tile stays monochrome and the
+// level badge (red/amber) carries the status color.
 function AppAvatar({ name }: { name: string }) {
-  const gradient = useMemo(
-    () => APP_GRADIENTS[hashName(name) % APP_GRADIENTS.length],
-    [name],
-  );
   return (
     <div
       aria-hidden="true"
-      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-gradient-to-br ${gradient} text-[15px] font-semibold leading-none text-white shadow-sm`}
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[var(--color-4)] bg-[var(--color-2)] text-[15px] font-semibold leading-none text-[var(--color-10)]"
     >
       {name.charAt(0).toUpperCase()}
     </div>
@@ -68,7 +46,7 @@ export default function DashboardPage() {
     <div className="space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+          <h1 className="text-[32px] font-semibold tracking-[-0.02em] leading-[1.15] text-foreground">
             {t('title')}
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">{t('subtitle')}</p>
@@ -94,13 +72,13 @@ export default function DashboardPage() {
           <Link
             key={app.id}
             href={`/applications/${app.id}`}
-            className="group block rounded-xl outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            className="group block rounded-xl outline-none transition focus-visible:shadow-geist-focus"
           >
-            <Card className="flex items-start gap-3.5 p-5 shadow-none transition-colors group-hover:border-foreground/25 group-hover:bg-accent/40">
+            <Card className="flex items-start gap-3.5 p-5 shadow-none group-hover:border-foreground/25 group-hover:bg-accent/40">
               <AppAvatar name={app.name} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[15px] font-medium leading-none text-foreground">
+                  <span className="truncate text-[16px] font-medium leading-none text-foreground">
                     {app.name}
                   </span>
                   <Badge
@@ -110,7 +88,7 @@ export default function DashboardPage() {
                     {app.level}
                   </Badge>
                 </div>
-                <div className="mono mt-2 truncate text-xs text-muted-foreground">
+                <div className="mono mt-2 truncate text-[13px] text-muted-foreground">
                   {app.topic}
                 </div>
               </div>

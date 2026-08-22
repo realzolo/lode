@@ -54,6 +54,10 @@ const config: Config = {
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
       },
+      boxShadow: {
+        // Geist focus ring: 2px background-colored gap + 4px blue ring.
+        'geist-focus': '0 0 0 2px var(--background-1), 0 0 0 4px var(--blue)',
+      },
       keyframes: {
         'accordion-down': {
           from: { height: '0' },
