@@ -32,6 +32,7 @@ const APP_SUBNAV = [
   { key: 'prompts', suffix: 'prompts' },
   { key: 'dataSources', suffix: 'db' },
   { key: 'model', suffix: 'model' },
+  { key: 'memories', suffix: 'memories' },
 ] as const;
 
 export function Sidebar() {

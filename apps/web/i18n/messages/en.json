@@ -37,7 +37,8 @@
     "title": "Applications",
     "subtitle": "Each application maps to one Kafka topic.",
     "newApplication": "New application",
-    "topic": "Topic"
+    "topic": "Topic",
+    "namePlaceholder": "e.g. payments-service"
   },
   "settings": {
     "title": "Global Settings",

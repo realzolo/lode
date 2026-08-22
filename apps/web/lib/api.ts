@@ -322,8 +322,25 @@ export async function fetchApplication(id: string): Promise<{
   return getJson(`/applications/${id}`);
 }
 
-export async function fetchMemories(): Promise<Memory[]> {
-  const rows = await getJson<ApiMemory[]>('/memories');
+export interface CreateApplicationInput {
+  name: string;
+}
+
+export async function createApplication(input: CreateApplicationInput): Promise<Application> {
+  const row = await postJson<ApiApplication>('/applications', input);
+  return {
+    id: String(row.id),
+    name: row.name,
+    topic: row.topic ?? '',
+    level: (row.latest_level as Level) ?? 'WARNING',
+    repoCount: row.repo_count,
+    createdAt: row.created_at,
+  };
+}
+
+export async function fetchMemories(applicationId?: number): Promise<Memory[]> {
+  const qs = applicationId != null ? `?application_id=${applicationId}` : '';
+  const rows = await getJson<ApiMemory[]>(`/memories${qs}`);
   return rows.map((r) => ({
     id: String(r.id),
     applicationName: r.application_name,

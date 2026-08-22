@@ -37,7 +37,8 @@
     "title": "应用",
     "subtitle": "每个应用对应一个 Kafka topic。",
     "newApplication": "新建应用",
-    "topic": "Topic"
+    "topic": "Topic",
+    "namePlaceholder": "例如 payments-service"
   },
   "settings": {
     "title": "全局设置",

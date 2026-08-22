@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from incident_trace.api.schemas import ApplicationDetailOut, ApplicationOut
+from incident_trace.api.deps import require_user
+from incident_trace.api.schemas import (
+    ApplicationDetailOut,
+    ApplicationOut,
+    CreateApplicationIn,
+)
 from incident_trace.db.models.alert import Alert
 from incident_trace.db.models.application import (
     Application,
@@ -117,4 +122,30 @@ async def get_application(
         db_sources=[
             {"name": s.name, "allowed_tables": s.allowed_tables or []} for s in sources
         ],
+    )
+
+
+@router.post("", response_model=ApplicationOut, status_code=201)
+async def create_application(
+    payload: CreateApplicationIn,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationOut:
+    """Create a new application (isolation unit).
+
+    Only the name is required up-front; the Kafka topic, repos, preset prompts,
+    data sources, and model override are configured later via the per-app
+    settings tabs. ``created_by`` is stamped from the authenticated caller.
+    """
+    app = Application(name=payload.name, created_by=user_id)
+    session.add(app)
+    await session.commit()
+    await session.refresh(app)
+    return ApplicationOut(
+        id=app.id,
+        name=app.name,
+        topic=None,
+        latest_level="WARNING",
+        repo_count=0,
+        created_at=app.created_at,
     )

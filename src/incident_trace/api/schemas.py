@@ -89,6 +89,10 @@ class ApplicationDetailOut(BaseModel):
     db_sources: list[dict]
 
 
+class CreateApplicationIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
 class MemoryOut(BaseModel):
     id: int
     application_id: int
