@@ -578,8 +578,8 @@ export function DbSourcesSection({
 // AI model override
 // ---------------------------------------------------------------------------
 //
-// The application-scope AI model config lives under ``/settings/ai-models``;
-// admins add/select it on `/settings` (so there's a single form code path).
+// The application-scope AI model config lives under ``/admin/settings/ai-models``;
+// admins add/select it on `/admin/settings` (so there's a single form code path).
 // Here we only render the rows that *already* target this application and let
 // admins promote one to default or remove it.
 

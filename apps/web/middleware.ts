@@ -9,17 +9,11 @@ const intlMiddleware = createMiddleware({
   localePrefix,
 });
 
-// Routes that require an authenticated session. Every page under the (app) route
-// group maps to one of these top-level segments.
-const PROTECTED_SEGMENTS = new Set([
-  'dashboard',
-  'analyses',
-  'analysis',
-  'applications',
-  'memories',
-  'settings',
-  'users',
-]);
+// Routes that require an authenticated session. The app is split into two
+// portals under real top-level segments: `/admin` (Admin Console) and
+// `/workbench` (Developer Workbench). Everything under either is gated, so we
+// only need to protect those two segments — deeper paths inherit the parent.
+const PROTECTED_SEGMENTS = new Set(['admin', 'workbench']);
 
 const TOKEN_COOKIE = 'lode_token';
 
@@ -66,13 +60,17 @@ export default function middleware(request: NextRequest): NextResponse {
 
   if (PROTECTED_SEGMENTS.has(segment) && !authed) {
     const url = new URL(`/${locale}/login`, request.url);
-    url.searchParams.set('redirect', rest === '/' ? '/dashboard' : rest);
+    // Preserve the originally-requested path so login can bounce back. Fall
+    // back to the admin console (the client role gate re-routes non-admins).
+    url.searchParams.set('redirect', rest === '/' ? '/admin' : rest);
     return NextResponse.redirect(url);
   }
 
-  // Already-authenticated users shouldn't land on the login screen.
+  // Already-authenticated users shouldn't land on the login screen. We can't
+  // read role from the (role-less) JWT here, so bounce to /admin and let the
+  // client-side gate send non-admins to /workbench.
   if (segment === 'login' && authed) {
-    return NextResponse.redirect(new URL(`/${locale}/dashboard`, request.url));
+    return NextResponse.redirect(new URL(`/${locale}/admin`, request.url));
   }
 
   return intlMiddleware(request);

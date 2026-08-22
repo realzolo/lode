@@ -45,9 +45,9 @@ export default function ApplicationOverviewPage({ params }: { params: { id: stri
             </Card>
 
             <div className="row" style={{ gap: 12, marginTop: 20, flexWrap: 'wrap' }}>
-              <StatCard label={tn('repositories')} count={data.repos.length} href={`/applications/${params.id}/repos`} />
-              <StatCard label={tn('prompts')} count={data.preset_prompts.length} href={`/applications/${params.id}/prompts`} />
-              <StatCard label={tn('dataSources')} count={data.db_sources.length} href={`/applications/${params.id}/db`} />
+              <StatCard label={tn('repositories')} count={data.repos.length} href={`/admin/applications/${params.id}/repos`} />
+              <StatCard label={tn('prompts')} count={data.preset_prompts.length} href={`/admin/applications/${params.id}/prompts`} />
+              <StatCard label={tn('dataSources')} count={data.db_sources.length} href={`/admin/applications/${params.id}/db`} />
             </div>
           </>
         )}

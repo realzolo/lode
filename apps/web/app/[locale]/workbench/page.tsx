@@ -90,7 +90,7 @@ export default function AnalysesPage() {
                   <Badge variant={statusVariant(a.status)}>{a.status}</Badge>
                 </Td>
                 <Td className="row" style={{ justifyContent: 'flex-end' }}>
-                  <Link href={`/analysis/${a.dedupeKey}`}>
+                  <Link href={`/workbench/analysis/${a.dedupeKey}`}>
                     <Badge variant="accent">{t('view')}</Badge>
                   </Link>
                 </Td>

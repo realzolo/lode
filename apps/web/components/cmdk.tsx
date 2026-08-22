@@ -1,11 +1,16 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from '@/lib/navigation';
+import { useRouter, usePathname } from '@/lib/navigation';
 import { useTranslations } from 'next-intl';
 import { IconSearch } from '@/components/icons';
 import { fetchApplications } from '@/lib/api';
 import type { Application } from '@/lib/types';
+
+// Command palette (⌘K). Scoped to the active portal so it never offers a route
+// the user can't reach: the admin console lists management screens + apps, the
+// workbench lists analysis surfaces. This keeps the two ends from leaking into
+// each other even through the search shortcut.
 
 interface Command {
   id: string;
@@ -13,12 +18,27 @@ interface Command {
   run: () => void;
 }
 
+const ADMIN_NAV: { id: string; key: string; href: string }[] = [
+  { id: 'applications', key: 'nav.applications', href: '/admin' },
+  { id: 'settings', key: 'nav.settings', href: '/admin/settings' },
+  { id: 'users', key: 'nav.users', href: '/admin/users' },
+  { id: 'memories', key: 'nav.memories', href: '/admin/memories' },
+];
+
+const WORKBENCH_NAV: { id: string; key: string; href: string }[] = [
+  { id: 'analyses', key: 'nav.analyses', href: '/workbench' },
+  { id: 'memories', key: 'nav.memories', href: '/workbench/memories' },
+];
+
 export function CommandPalette() {
   const t = useTranslations();
   const router = useRouter();
+  const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [apps, setApps] = useState<Application[]>([]);
+
+  const portal = pathname.startsWith('/admin') ? 'admin' : 'workbench';
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -33,10 +53,11 @@ export function CommandPalette() {
   }, []);
 
   useEffect(() => {
+    if (portal !== 'admin') return;
     fetchApplications()
       .then(setApps)
       .catch(() => setApps([]));
-  }, []);
+  }, [portal]);
 
   const go = (path: string) => {
     router.push(path);
@@ -44,18 +65,20 @@ export function CommandPalette() {
     setQuery('');
   };
 
-  const navCommands: Command[] = [
-    { id: 'dashboard', label: t('nav.dashboard'), run: () => go('/dashboard') },
-    { id: 'analyses', label: t('nav.analyses'), run: () => go('/analyses') },
-    { id: 'memories', label: t('nav.memories'), run: () => go('/memories') },
-    { id: 'settings', label: t('nav.settings'), run: () => go('/settings') },
-  ];
-
-  const appCommands: Command[] = apps.map((a) => ({
-    id: `app-${a.id}`,
-    label: a.name,
-    run: () => go(`/applications/${a.id}`),
+  const navCommands: Command[] = (portal === 'admin' ? ADMIN_NAV : WORKBENCH_NAV).map((n) => ({
+    id: n.id,
+    label: t(n.key),
+    run: () => go(n.href),
   }));
+
+  const appCommands: Command[] =
+    portal === 'admin'
+      ? apps.map((a) => ({
+          id: `app-${a.id}`,
+          label: a.name,
+          run: () => go(`/admin/applications/${a.id}`),
+        }))
+      : [];
 
   const q = query.toLowerCase();
   const filteredNav = navCommands.filter((c) => c.label.toLowerCase().includes(q));

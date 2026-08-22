@@ -35,10 +35,14 @@ export default function LoginPage() {
       // boundary and deopt the page to client rendering).
       const params = new URLSearchParams(window.location.search);
       const redirectRaw = params.get('redirect');
+      // The JWT carries no role claim, so landing is decided from the user
+      // object returned by /auth/login (same authority as /auth/me). A pinned
+      // ?redirect (set by the middleware) always wins over the role default.
+      const roleDefault = result.user.role === 'admin' ? '/admin' : '/workbench';
       const redirect =
         redirectRaw && redirectRaw.startsWith('/') && !redirectRaw.startsWith('//')
           ? redirectRaw
-          : '/dashboard';
+          : roleDefault;
       router.replace(redirect);
     } catch (err) {
       setError(String(err));

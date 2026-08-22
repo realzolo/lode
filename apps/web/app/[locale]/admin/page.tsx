@@ -71,7 +71,7 @@ export default function DashboardPage() {
       setApps((prev) => [created, ...prev]);
       setNewOpen(false);
       setNewName('');
-      router.push(`/applications/${created.id}`);
+      router.push(`/admin/applications/${created.id}`);
     } catch (e) {
       setFormError(String(e));
     } finally {
@@ -132,7 +132,7 @@ export default function DashboardPage() {
         {apps.map((app) => (
           <Link
             key={app.id}
-            href={`/applications/${app.id}`}
+            href={`/admin/applications/${app.id}`}
             className="group block rounded-md outline-none transition focus-visible:shadow-geist-focus"
           >
             <Card className="flex h-full flex-col gap-3.5 p-6 shadow-none transition group-hover:border-foreground/25 group-hover:bg-accent/40">
