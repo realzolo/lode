@@ -8,9 +8,11 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { clearToken, login, setToken } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
+import { IconDatabase, IconTerminal, IconBarChart, IconArrowUpRight } from '@/components/icons';
 
 export default function LoginPage() {
   const t = useTranslations('login');
+  const tc = useTranslations('common');
   const router = useRouter();
   const { setUser } = useUser();
   const [email, setEmail] = useState('');
@@ -46,35 +48,93 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="auth-shell">
-      <Card className="auth-card">
-        <h1 className="page-title">{t('title')}</h1>
-        <p className="page-subtitle">{t('subtitle')}</p>
-        <form className="stack" onSubmit={handleSubmit}>
-          <Input
-            type="email"
-            placeholder={t('email')}
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <Input
-            type="password"
-            placeholder={t('password')}
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          {error && (
-            <p className="muted" style={{ color: 'var(--danger)', fontSize: 13 }}>
-              {error}
-            </p>
-          )}
-          <Button variant="primary" type="submit" disabled={busy || !email || !password}>
-            {t('submit')}
-          </Button>
-        </form>
-      </Card>
+    <div className="login-split">
+      {/* ---- Brand / hero panel ---- */}
+      <aside className="login-aside">
+        <div className="login-aside-inner">
+          <div className="login-brand">
+            <span className="login-mark" aria-hidden="true">▲</span>
+            <span className="login-brand-name">{tc('appName')}</span>
+          </div>
+
+          <div className="login-hero">
+            <h2 className="login-hero-title">{t('asideTitle')}</h2>
+            <p className="login-hero-desc">{t('asideDesc')}</p>
+          </div>
+
+          <ul className="login-features">
+            <li>
+              <span className="login-feature-icon"><IconDatabase size={16} /></span>
+              <span>{t('feature1')}</span>
+            </li>
+            <li>
+              <span className="login-feature-icon"><IconTerminal size={16} /></span>
+              <span>{t('feature2')}</span>
+            </li>
+            <li>
+              <span className="login-feature-icon"><IconBarChart size={16} /></span>
+              <span>{t('feature3')}</span>
+            </li>
+          </ul>
+        </div>
+
+        <p className="login-aside-foot">© 2026 {tc('appName')}</p>
+      </aside>
+
+      {/* ---- Form panel ---- */}
+      <main className="login-main">
+        <Card className="login-form-card">
+          <div className="login-form-brand">
+            <span className="login-mark" aria-hidden="true">▲</span>
+            <span className="login-brand-name">{tc('appName')}</span>
+          </div>
+
+          <h1 className="login-form-title">{t('title')}</h1>
+          <p className="login-form-subtitle">{t('subtitle')}</p>
+
+          <form className="stack" style={{ gap: 16 }} onSubmit={handleSubmit}>
+            <div className="field">
+              <label className="field-label" htmlFor="email">{t('email')}</label>
+              <Input
+                id="email"
+                type="email"
+                placeholder={t('email')}
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label className="field-label" htmlFor="password">{t('password')}</label>
+              <Input
+                id="password"
+                type="password"
+                placeholder={t('password')}
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+
+            {error && (
+              <p className="auth-error" role="alert">{error}</p>
+            )}
+
+            <Button
+              className="w-full"
+              variant="primary"
+              type="submit"
+              disabled={busy || !email || !password}
+            >
+              {busy ? <span className="spinner" /> : null}
+              {t('submit')}
+              {!busy && <IconArrowUpRight size={16} />}
+            </Button>
+          </form>
+
+          <p className="login-note">{t('newHere')}</p>
+        </Card>
+      </main>
     </div>
   );
 }

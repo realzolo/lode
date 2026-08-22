@@ -544,18 +544,188 @@ button {
   display: block;
 }
 
-/* ---- Auth (no shell) ---- */
-.auth-shell {
+/* ---- Auth (no shell) — premium Vercel/Geist split layout ---- */
+.login-split {
   min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+}
+
+/* Brand / hero panel */
+.login-aside {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 48px;
+  padding: 56px;
+  border-right: 1px solid var(--color-4);
+  background:
+    radial-gradient(120% 120% at 0% 0%, rgba(0, 110, 254, 0.14), transparent 46%),
+    radial-gradient(120% 120% at 100% 100%, rgba(0, 110, 254, 0.08), transparent 46%),
+    var(--background-1);
+}
+
+.login-aside-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
+.login-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-10);
+}
+
+.login-mark {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--color-10);
+}
+
+.login-hero-title {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  color: var(--color-10);
+}
+
+.login-hero-desc {
+  margin: 14px 0 0;
+  max-width: 30ch;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--color-9);
+}
+
+.login-features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.login-features li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--color-10);
+}
+
+.login-feature-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--color-4);
+  background: var(--color-2);
+  color: var(--color-10);
+  flex-shrink: 0;
+}
+
+.login-aside-foot {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-9);
+}
+
+/* Form panel */
+.login-main {
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
+  background: var(--background-1);
 }
 
-.auth-card {
-  width: 360px;
+.login-form-card {
+  width: 400px;
   max-width: 100%;
+  padding: 40px;
+}
+
+.login-form-brand {
+  display: none;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 28px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-10);
+}
+
+.login-form-title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  color: var(--color-10);
+}
+
+.login-form-subtitle {
+  margin: 6px 0 28px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-9);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-error {
+  margin: 0;
+  background: var(--red-tint);
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 28%, transparent);
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.login-note {
+  margin: 20px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-9);
+  text-align: center;
+}
+
+/* Responsive: collapse to a single centered column on narrow screens */
+@media (max-width: 880px) {
+  .login-split {
+    grid-template-columns: 1fr;
+  }
+
+  .login-aside {
+    display: none;
+  }
+
+  .login-form-brand {
+    display: inline-flex;
+  }
+
+  .login-form-card {
+    padding: 32px 24px;
+  }
 }
 
 /* ---- Command palette overlay ---- */

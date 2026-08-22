@@ -32,7 +32,13 @@
     "subtitle": "Use your invite link to activate your account.",
     "email": "Email",
     "password": "Password",
-    "submit": "Continue"
+    "submit": "Continue",
+    "asideTitle": "Turn incident noise into root cause",
+    "asideDesc": "Incident Trace streams your Kafka pipelines into AI root-cause analysis and shared memory.",
+    "feature1": "Real-time Kafka ingestion",
+    "feature2": "AI root-cause analysis",
+    "feature3": "Shared memory across incidents",
+    "newHere": "New here? Activate your account with an invite link."
   },
   "dashboard": {
     "title": "Applications",
