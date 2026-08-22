@@ -11,9 +11,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka.errors import KafkaConnectionError
 from pydantic import ValidationError
 from sqlalchemy import select
 
@@ -30,6 +31,12 @@ logger = logging.getLogger("lode.consumer")
 
 ERROR_MAX_LENGTH = 500
 
+# Default scheduler: run the analysis engine off the consumer's event loop so
+# ingestion keeps moving. Tests inject a no-op to keep the consumer hermetic.
+_DEFAULT_SCHEDULE: Callable[[int], Awaitable[Any]] = lambda analysis_id: asyncio.create_task(
+    _run_analysis_in_background(analysis_id)
+)
+
 
 async def _produce(producer: AIOKafkaProducer, topic: str, value: dict[str, Any]) -> None:
     await producer.send_and_wait(
@@ -45,8 +52,19 @@ async def resolve_application_id(session, topic: str) -> int | None:
 
 
 async def process_message(
-    topic: str, raw: bytes, producer: AIOKafkaProducer
+    topic: str,
+    raw: bytes,
+    producer: AIOKafkaProducer,
+    session: Any = None,
+    schedule: Callable[[int], Awaitable[Any]] | None = None,
 ) -> None:
+    """Validate, route, and persist one alert message.
+
+    ``session`` and ``schedule`` are injectable so the function can be exercised
+    without a live broker or database. When ``session`` is omitted a real
+    ``AsyncSessionLocal`` is used; when ``schedule`` is omitted the analysis is
+    handed to the engine via the event loop.
+    """
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -71,15 +89,15 @@ async def process_message(
         event_type=msg.event_type, title=msg.title, fields=msg.fields
     )
 
-    async with AsyncSessionLocal() as session:
-        application_id = await resolve_application_id(session, topic)
+    async def _persist(db: Any) -> int | None:
+        application_id = await resolve_application_id(db, topic)
         if application_id is None:
             await _produce(
                 producer,
                 settings.kafka_unassigned_topic,
                 {"topic": topic, "dedupe_key": dedupe_key, "raw": data},
             )
-            return
+            return None
 
         error_value = msg.fields.get("error")
         error_message = (
@@ -97,8 +115,8 @@ async def process_message(
             fields=msg.fields,
             raw_payload=data,
         )
-        session.add(alert)
-        await session.flush()
+        db.add(alert)
+        await db.flush()
 
         analysis = Analysis(
             dedupe_key=dedupe_key,
@@ -106,15 +124,21 @@ async def process_message(
             alert_id=alert.id,
             status="pending",
         )
-        session.add(analysis)
-        await session.commit()
-        # Hand the analysis off to the engine in a background task so the
-        # consumer keeps ingesting. A fresh session is used in the task to
-        # avoid sharing the request's connection across loops/threads.
-        analysis_id = analysis.id
+        db.add(analysis)
+        await db.commit()
+        logger.info(
+            "persisted alert dedupe_key=%s application_id=%s", dedupe_key, application_id
+        )
+        return analysis.id
 
-    logger.info("persisted alert dedupe_key=%s application_id=%s", dedupe_key, application_id)
-    asyncio.create_task(_run_analysis_in_background(analysis_id))
+    if session is not None:
+        analysis_id = await _persist(session)
+    else:
+        async with AsyncSessionLocal() as db:
+            analysis_id = await _persist(db)
+
+    if analysis_id is not None:
+        (schedule or _DEFAULT_SCHEDULE)(analysis_id)
 
 
 async def _run_analysis_in_background(analysis_id: int) -> None:
@@ -138,25 +162,46 @@ async def _run_analysis_in_background(analysis_id: int) -> None:
 
 
 async def main() -> None:
-    consumer = AIOKafkaConsumer(
-        settings.kafka_topic_pattern,
-        bootstrap_servers=settings.kafka_bootstrap_servers,
-        group_id=settings.kafka_group_id,
-        enable_auto_commit=False,
-        auto_offset_reset="earliest",
-    )
-    producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers)
+    """Run the consumer, reconnecting transparently if Kafka is unavailable.
 
-    await consumer.start()
-    await producer.start()
-    logger.info("consumer started on %s", settings.kafka_bootstrap_servers)
-    try:
-        async for record in consumer:
-            await process_message(record.topic, record.value, producer)
-            await consumer.commit()
-    finally:
-        await consumer.stop()
-        await producer.stop()
+    The loop tolerates a broker that is slow to come up (common in
+    docker-compose) and survives transient per-message failures by logging and
+    committing the offset so ingestion always makes forward progress.
+    """
+    while True:
+        try:
+            consumer = AIOKafkaConsumer(
+                settings.kafka_topic_pattern,
+                bootstrap_servers=settings.kafka_bootstrap_servers,
+                group_id=settings.kafka_group_id,
+                enable_auto_commit=False,
+                auto_offset_reset="earliest",
+            )
+            producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers)
+            await consumer.start()
+            await producer.start()
+            logger.info("consumer started on %s", settings.kafka_bootstrap_servers)
+            try:
+                async for record in consumer:
+                    try:
+                        await process_message(record.topic, record.value, producer)
+                    except Exception:  # noqa: BLE001 - one bad message must not kill the stream
+                        logger.exception(
+                            "failed to process message on topic %s", record.topic
+                        )
+                    await consumer.commit()
+            finally:
+                await consumer.stop()
+                await producer.stop()
+            return
+        except KafkaConnectionError as exc:
+            logger.warning("kafka unavailable, retrying in 5s: %s", exc)
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - restart the consumer instead of dying
+            logger.exception("consumer error, retrying in 5s: %s", exc)
+            await asyncio.sleep(5)
 
 
 if __name__ == "__main__":

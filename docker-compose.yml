@@ -51,6 +51,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Same image as the API, but runs the Kafka consumer instead of uvicorn.
+    command: ["python", "-m", "lode.consumer.main"]
+    environment:
+      LODE_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/lode
+      LODE_SECRET_KEY: ${LODE_SECRET_KEY:-change-me-in-production}
+      LODE_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LODE_JWT_TTL_SECONDS: "86400"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    restart: unless-stopped
+
   web:
     build:
       context: ./apps/web
