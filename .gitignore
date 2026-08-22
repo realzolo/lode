@@ -34,8 +34,8 @@ node_modules/
 .pnp.js
 .yarn/
 .next/
+.next.old/
 out/
-.next/
 .swc/
 .vercel
 next-env.d.ts
