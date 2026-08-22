@@ -29,6 +29,14 @@ export default async function LocaleLayout({
 
   const messages = await getMessages();
 
+  // `NextIntlClientProvider` is rendered inside the client `Providers` component,
+  // so it cannot reach next-intl's server-only `getNow()`/`getTimeZone()` helpers.
+  // We therefore compute these here (once per request) and forward them explicitly,
+  // otherwise client components fall back to an undefined `now`/`timeZone` and the
+  // formatter logs a benign-but-noisy `ENVIRONMENT_FALLBACK` error on every render.
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = new Date();
+
   return (
     <html
       lang={locale}
@@ -36,7 +44,7 @@ export default async function LocaleLayout({
       suppressHydrationWarning
     >
       <body>
-        <Providers messages={messages} locale={locale}>
+        <Providers messages={messages} locale={locale} timeZone={timeZone} now={now}>
           {children}
         </Providers>
       </body>

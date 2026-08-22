@@ -3,6 +3,12 @@
 
 .PHONY: install migrate serve consume dev-up dev-down verify test
 
+# Defaults for the `serve` target. Override from the shell if needed — make does
+# NOT read .env (only the Python app does, via pydantic-settings), so without
+# these the recipe expands to an empty --host/--port and uvicorn fails to bind.
+IT_HTTP_HOST ?= 127.0.0.1
+IT_HTTP_PORT ?= 8000
+
 install:
 	pip install -e ".[dev]"
 

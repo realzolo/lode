@@ -8,13 +8,22 @@ automatically when present.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolve `.env` against the project root rather than the current working
+# directory. This file lives at `src/incident_trace/config.py`, so the root is
+# three levels up. Making the path absolute means settings load correctly no
+# matter where the process is launched from (one-off scripts, `make serve`,
+# the test runner, cron, etc.) — previously a non-project CWD caused `.env` to
+# be missed and `secret_key` (a required field) to fail validation.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(PROJECT_ROOT / ".env"),
         env_prefix="IT_",
         extra="ignore",
         case_sensitive=False,

@@ -13,11 +13,16 @@ interface ProvidersProps {
   // messages fail at compile time rather than silently rendering blanks.
   messages: AbstractIntlMessages;
   locale: string;
+  // Forwarded from the server layout because the client provider cannot reach
+  // next-intl's server-only `getNow()`/`getTimeZone()` helpers. Required to
+  // silence the formatter's `ENVIRONMENT_FALLBACK` error.
+  timeZone: string;
+  now: Date;
 }
 
-export function Providers({ children, messages, locale }: ProvidersProps) {
+export function Providers({ children, messages, locale, timeZone, now }: ProvidersProps) {
   return (
-    <NextIntlClientProvider messages={messages} locale={locale}>
+    <NextIntlClientProvider messages={messages} locale={locale} timeZone={timeZone} now={now}>
       <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
         <UserProvider>{children}</UserProvider>
       </ThemeProvider>
