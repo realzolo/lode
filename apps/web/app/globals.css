@@ -1,13 +1,15 @@
 /* Incident Trace — Vercel Geist Design System.
-   A faithful implementation of the Geist design language (vercel.com/geist):
-   the same token model, typography, spacing, radii, focus ring and component
-   styling used across vercel.com. Dark is the default theme; .light overrides
-   the same variables. The Geist typeface is provided by the `geist` package
-   (GeistSans/GeistMono) on <html>.
+   UI primitives (Button, Card, Input, Textarea, Badge, Tabs) come from the
+   official @geist-ui/core component library; icons come from @geist-ui/icons.
+   GeistProvider (see components/providers.tsx) owns the component theme tokens
+   (--geist-*), so this file only ships the global reset, the Geist typeface
+   (GeistSans/GeistMono via the `geist` package on <html>), and the tokens +
+   styles for our custom app chrome (sidebar, topbar, command palette, workflow
+   nodes, auth shell). Dark is the default theme; .light overrides those vars.
 
-   Token model (Geist):
+   App-chrome token model:
      Background 1/2  — page + secondary surfaces
-     Color 1..10     — component bg, hover, active, borders, high-contrast, text
+     Color 1..10     — surfaces, hover, active, borders, high-contrast, text
      Blue/Red/Amber/Green — semantic scale (Blue is the primary accent) */
 
 :root {
@@ -215,113 +217,13 @@ code,
   width: 100%;
 }
 
-/* ---- Primitives: Button (Geist 40px / 32px sm) ---- */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 40px;
-  padding: 0 16px;
-  border-radius: var(--radius);
-  border: 1px solid var(--color-4);
-  background: var(--color-1);
-  color: var(--color-10);
-  font-size: 14px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
-}
+/* ---- Button is now rendered by @geist-ui/core <Button> (components/ui/button.tsx) ---- */
 
-.btn:hover {
-  background: var(--color-2);
-  border-color: var(--color-5);
-}
+/* ---- Card / Input / Textarea are now rendered by @geist-ui/core
+   (components/ui/{card,input,textarea}.tsx). Only the native <select> wrapper
+   still uses .select below. ---- */
 
-.btn:active {
-  background: var(--color-3);
-}
-
-.btn:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-
-/* Primary = high-contrast (white in dark, black in light); text is the inverse */
-.btn-primary {
-  background: var(--color-7);
-  color: var(--background-1);
-  border-color: var(--color-7);
-}
-
-.btn-primary:hover {
-  background: var(--color-8);
-  border-color: var(--color-8);
-}
-
-.btn-primary:active {
-  background: var(--color-8);
-  border-color: var(--color-8);
-}
-
-.btn-sm {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-}
-
-/* ---- Card (Geist 12px radius, elevated surface) ---- */
-.card {
-  border: 1px solid var(--color-4);
-  border-radius: var(--radius-card);
-  background: var(--background-2);
-  padding: 16px;
-}
-
-/* ---- Input / Textarea (Geist 40px) ---- */
-.input,
-.textarea {
-  width: 100%;
-  padding: 0 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--color-4);
-  background: var(--background-1);
-  color: var(--color-10);
-  font-size: 14px;
-  font-family: inherit;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
-}
-
-.input {
-  height: 40px;
-}
-
-.textarea {
-  min-height: 84px;
-  padding: 10px 12px;
-  resize: vertical;
-}
-
-.input:focus,
-.textarea:focus {
-  outline: none;
-  border-color: var(--blue);
-  box-shadow: var(--focus-ring);
-}
-
-.input::placeholder,
-.textarea::placeholder {
-  color: var(--color-9);
-}
-
-/* ---- Select (shares input styling) ---- */
+/* ---- Select (native wrapper, shares input geometry) ---- */
 .select {
   width: auto;
   height: 40px;
@@ -334,42 +236,7 @@ code,
   box-shadow: var(--focus-ring);
 }
 
-/* ---- Badge (Geist pill) ---- */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--color-4);
-  background: var(--color-2);
-  font-size: 12px;
-  color: var(--color-9);
-}
-
-.badge-accent {
-  color: var(--blue);
-  border-color: rgba(0, 112, 243, 0.4);
-  background: rgba(0, 112, 243, 0.08);
-}
-
-.badge-danger {
-  color: var(--red);
-  border-color: rgba(255, 77, 79, 0.4);
-  background: rgba(255, 77, 79, 0.08);
-}
-
-.badge-warning {
-  color: var(--amber);
-  border-color: rgba(255, 174, 0, 0.4);
-  background: rgba(255, 174, 0, 0.1);
-}
-
-.badge-success {
-  color: var(--green);
-  border-color: rgba(0, 195, 137, 0.4);
-  background: rgba(0, 195, 137, 0.1);
-}
+/* ---- Badge is now rendered by @geist-ui/core <Badge> (components/ui/badge.tsx) ---- */
 
 /* ---- Table (Geist) ---- */
 .table {
@@ -395,35 +262,7 @@ code,
   border-bottom: none;
 }
 
-/* ---- Tabs ---- */
-.tabs {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--color-4);
-  margin-bottom: 16px;
-}
-
-.tab {
-  padding: 8px 12px;
-  border: none;
-  background: none;
-  color: var(--color-9);
-  font-size: 14px;
-  font-family: inherit;
-  cursor: pointer;
-  border-bottom: 1px solid transparent;
-  margin-bottom: -1px;
-  transition: color 0.12s ease;
-}
-
-.tab:hover {
-  color: var(--color-10);
-}
-
-.tab.active {
-  color: var(--color-10);
-  border-bottom-color: var(--color-10);
-}
+/* ---- Tabs are now rendered by @geist-ui/core <Tabs> (components/ui/tabs.tsx) ---- */
 
 /* ---- Typography ---- */
 .page-title {
@@ -604,7 +443,6 @@ code,
 /* ---- Geist icons: crisp, non-shrinking, center-aligned with text ---- */
 .nav-item svg,
 .icon-btn svg,
-.btn svg,
 .cmdk svg,
 .row svg {
   flex-shrink: 0;

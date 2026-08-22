@@ -1,7 +1,7 @@
 'use client';
 
-import { ReactNode, useState } from 'react';
-import { cx } from '@/lib/cn';
+import { Tabs as GeistTabsBase } from '@geist-ui/core';
+import type { ComponentType, ReactNode } from 'react';
 
 export interface TabItem {
   value: string;
@@ -9,6 +9,21 @@ export interface TabItem {
   content: ReactNode;
 }
 
+// @geist-ui/core's root `Tabs` export is typed as a bare ForwardRefExoticComponent
+// and omits the compound `.Item`/`.Tab` members (they exist at runtime). Re-type
+// to expose `Item` and accept our props. The runtime component is unaffected.
+type GeistTabsType = ComponentType<{
+  initialValue?: string;
+  value?: string;
+  onChange?: (val: string) => void;
+  className?: string;
+  children?: ReactNode;
+}> & {
+  Item: ComponentType<{ label: ReactNode; value: string; disabled?: boolean; children?: ReactNode }>;
+};
+const GeistTabs = GeistTabsBase as unknown as GeistTabsType;
+
+// Thin adapter over the official Geist <Tabs> (uses Tabs.Item under the hood).
 export function Tabs({
   items,
   defaultIndex = 0,
@@ -16,24 +31,14 @@ export function Tabs({
   items: TabItem[];
   defaultIndex?: number;
 }) {
-  const [active, setActive] = useState(defaultIndex);
-
+  const initial = items[defaultIndex]?.value ?? items[0]?.value;
   return (
-    <div>
-      <div className="tabs" role="tablist">
-        {items.map((item, i) => (
-          <button
-            key={item.value}
-            role="tab"
-            aria-selected={i === active}
-            className={cx('tab', i === active && 'active')}
-            onClick={() => setActive(i)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-      <div role="tabpanel">{items[active].content}</div>
-    </div>
+    <GeistTabs initialValue={initial}>
+      {items.map((item) => (
+        <GeistTabs.Item key={item.value} label={item.label} value={item.value}>
+          {item.content}
+        </GeistTabs.Item>
+      ))}
+    </GeistTabs>
   );
 }

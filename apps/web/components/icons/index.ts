@@ -1,34 +1,37 @@
-// Geist Design System icons (vendored from the official Geist open-source icon set).
-// Each is a thin React wrapper around the Geist SVG with stroke=currentColor.
-export { IconHome } from './Home';
-export { IconBarChart } from './BarChart';
-export { IconDatabase } from './Database';
-export { IconSettings } from './Settings';
-export { IconUsers } from './Users';
-export { IconSearch } from './Search';
-export { IconGlobe } from './Globe';
-export { IconSun } from './Sun';
-export { IconMoon } from './Moon';
-export { IconLogOut } from './LogOut';
-export { IconCheck } from './Check';
-export { IconX } from './X';
-export { IconChevronDown } from './ChevronDown';
-export { IconPlus } from './Plus';
-export { IconExternalLink } from './ExternalLink';
-export { IconCopy } from './Copy';
-export { IconTrash2 } from './Trash2';
-export { IconEdit2 } from './Edit2';
-export { IconInfo } from './Info';
-export { IconAlertTriangle } from './AlertTriangle';
-export { IconRefreshCw } from './RefreshCw';
-export { IconMoreVertical } from './MoreVertical';
-export { IconArrowUpRight } from './ArrowUpRight';
-export { IconLink } from './Link';
-export { IconMail } from './Mail';
-export { IconTerminal } from './Terminal';
-export { IconServer } from './Server';
-export { IconCheckCircle } from './CheckCircle';
-export { IconXCircle } from './XCircle';
-export { IconMinus } from './Minus';
-export { IconSend } from './Send';
-export { IconFilter } from './Filter';
+// Geist icons, re-exported from the official @geist-ui/icons package so the rest
+// of the app can keep importing them as `Icon*` (no per-file imports). These are
+// Vercel's Geist icon set (stroke=currentColor, 1.5 stroke, 24x24 viewBox).
+export {
+  Home as IconHome,
+  BarChart as IconBarChart,
+  Database as IconDatabase,
+  Settings as IconSettings,
+  Users as IconUsers,
+  Search as IconSearch,
+  Globe as IconGlobe,
+  Sun as IconSun,
+  Moon as IconMoon,
+  LogOut as IconLogOut,
+  Check as IconCheck,
+  X as IconX,
+  ChevronDown as IconChevronDown,
+  Plus as IconPlus,
+  ExternalLink as IconExternalLink,
+  Copy as IconCopy,
+  Trash as IconTrash2,
+  Edit as IconEdit2,
+  Info as IconInfo,
+  AlertTriangle as IconAlertTriangle,
+  RefreshCw as IconRefreshCw,
+  MoreVertical as IconMoreVertical,
+  ArrowUpRight as IconArrowUpRight,
+  Link as IconLink,
+  Mail as IconMail,
+  Terminal as IconTerminal,
+  Server as IconServer,
+  CheckCircle as IconCheckCircle,
+  XCircle as IconXCircle,
+  Minus as IconMinus,
+  Send as IconSend,
+  Filter as IconFilter,
+} from '@geist-ui/icons';
