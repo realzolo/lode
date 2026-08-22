@@ -18,6 +18,8 @@ export interface Application {
   name: string;
   topic: string;
   level: Level;
+  repoCount: number;
+  createdAt: string;
 }
 
 export interface Analysis {

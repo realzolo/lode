@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
+import { ChevronRight } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -9,6 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Link } from '@/lib/navigation';
 import type { Application } from '@/lib/types';
 import { fetchApplications } from '@/lib/api';
+import { relativeTime } from '@/lib/utils';
 import { IconPlus } from '@/components/icons';
 
 // Geist avatar: a neutral grayscale tile showing the app's initial. Geist reserves
@@ -28,6 +30,7 @@ function AppAvatar({ name }: { name: string }) {
 export default function DashboardPage() {
   const t = useTranslations('dashboard');
   const tc = useTranslations('common');
+  const locale = useLocale();
   const [apps, setApps] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,15 +69,20 @@ export default function DashboardPage() {
           {Array.from({ length: 6 }).map((_, i) => (
             <Card
               key={i}
-              className="flex items-start gap-3.5 p-6 shadow-none"
+              className="flex h-full flex-col gap-3.5 p-6 shadow-none"
             >
-              <Skeleton variant="rounded" className="h-10 w-10 shrink-0" />
-              <div className="min-w-0 flex-1 space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <Skeleton className="h-4 w-32" />
-                  <Skeleton className="h-5 w-12" />
+              <div className="flex items-start gap-3.5">
+                <Skeleton variant="rounded" className="h-10 w-10 shrink-0" />
+                <div className="min-w-0 flex-1 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <Skeleton className="h-4 w-32" />
+                    <Skeleton className="h-5 w-12" />
+                  </div>
+                  <Skeleton className="h-3.5 w-full max-w-[200px]" />
                 </div>
-                <Skeleton className="h-3.5 w-full max-w-[200px]" />
+              </div>
+              <div className="mt-auto space-y-2.5 border-t border-[var(--color-4)] pt-3.5">
+                <Skeleton className="h-3.5 w-40" />
               </div>
             </Card>
           ))}
@@ -94,23 +102,35 @@ export default function DashboardPage() {
             href={`/applications/${app.id}`}
             className="group block rounded-md outline-none transition focus-visible:shadow-geist-focus"
           >
-            <Card className="flex items-start gap-3.5 p-6 shadow-none group-hover:border-foreground/25 group-hover:bg-accent/40">
-              <AppAvatar name={app.name} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[16px] font-semibold leading-none text-foreground">
-                    {app.name}
-                  </span>
-                  <Badge
-                    variant={app.level === 'CRITICAL' ? 'danger' : 'warning'}
-                    className="shrink-0"
-                  >
-                    {app.level}
-                  </Badge>
+            <Card className="flex h-full flex-col gap-3.5 p-6 shadow-none transition group-hover:border-foreground/25 group-hover:bg-accent/40">
+              <div className="flex items-start gap-3.5">
+                <AppAvatar name={app.name} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-[16px] font-semibold leading-none text-foreground">
+                      {app.name}
+                    </span>
+                    <Badge
+                      variant={app.level === 'CRITICAL' ? 'danger' : 'warning'}
+                      className="shrink-0"
+                    >
+                      {app.level}
+                    </Badge>
+                  </div>
+                  <div className="mono mt-2 truncate text-[13px] text-muted-foreground">
+                    {app.topic || '—'}
+                  </div>
                 </div>
-                <div className="mono mt-2 truncate text-[13px] text-muted-foreground">
-                  {app.topic}
-                </div>
+              </div>
+              <div className="mt-auto flex items-center gap-1.5 border-t border-[var(--color-4)] pt-3.5 text-[13px] text-muted-foreground">
+                <span>
+                  {app.repoCount} {app.repoCount === 1 ? 'repo' : 'repos'}
+                </span>
+                <span aria-hidden="true" className="text-[var(--color-6)]">
+                  ·
+                </span>
+                <span>Created {relativeTime(app.createdAt, locale)}</span>
+                <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
               </div>
             </Card>
           </Link>

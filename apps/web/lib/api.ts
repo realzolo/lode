@@ -306,6 +306,8 @@ export async function fetchApplications(): Promise<Application[]> {
     name: r.name,
     topic: r.topic ?? '',
     level: (r.latest_level as Level) ?? 'WARNING',
+    repoCount: r.repo_count,
+    createdAt: r.created_at,
   }));
 }
 
