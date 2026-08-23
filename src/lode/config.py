@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     # (0 = identical direction, 2 = opposite). 0.25 ≙ similarity ≥ 0.75.
     embedding_threshold: float = 0.25
 
+    # Rate limiting (M6 hardening)
+    # In-memory fixed-window limiter applied to every non-exempt route. The
+    # limit is generous by default so normal usage (and the test suite) is never
+    # throttled; lower it for production abuse protection. Set
+    # ``rate_limit_enabled`` to false to disable entirely.
+    rate_limit_enabled: bool = True
+    rate_limit_per_minute: int = 600
+
 
 @lru_cache
 def get_settings() -> Settings:

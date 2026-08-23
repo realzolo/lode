@@ -74,14 +74,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow the configured browser origins (local dev server, preview host) to call the API.
-_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+# M6 hardening: rate limiting + baseline security headers. CORS is added last
+# (below) so it remains the outermost layer and still stamps CORS headers on
+# rate-limited (429) responses.
+from lode.api.rate_limit import HardeningMiddleware, RateLimiter  # noqa: E402
+
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    HardeningMiddleware,
+    limiter=RateLimiter(settings.rate_limit_per_minute),
+    enabled=settings.rate_limit_enabled,
 )
 
 
@@ -151,3 +152,15 @@ app.include_router(invites_router)
 @app.get("/")
 async def root() -> dict[str, str]:
     return {"service": "lode", "status": "ok"}
+
+
+# CORS is registered last so it stays the outermost middleware: it stamps
+# CORS headers on every response, including rate-limited (429) ones.
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
