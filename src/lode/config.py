@@ -68,14 +68,36 @@ class Settings(BaseSettings):
     evidence_git_max_bytes: int = 200_000
     evidence_git_snippet_lines: int = 12
     evidence_git_clone_timeout_seconds: int = 60
+    # Evidence retention (M3): how many days an EvidenceArtifact stays valid
+    # before the startup reaper hard-deletes it. 0 disables expiry (keep forever).
+    evidence_retention_days: int = 90
+
+    # Read-only DB proxy hardening (M3)
+    # When true, any *structured* (host-based) data source without ``sslmode`` in
+    # {require, verify-full} is rejected so a cross-network link to a production
+    # replica cannot downgrade to cleartext. Leave false for local dev.
+    db_proxy_require_tls: bool = False
+    # Server-side lock timeout (seconds) applied to every proxied query so a
+    # contended table lock cannot hang the read-only connection.
+    db_proxy_lock_timeout_seconds: float = 3.0
 
     # Security / auth
     # Required (no default): a missing signing key must fail fast rather than
     # silently fall back to a known placeholder that would forge verifiable tokens.
+    # This key signs JWTs (the *auth* signing key). Data-source credential
+    # encryption uses a separate key — see ``data_encryption_key_ref``.
     secret_key: str
     # Comma-separated list of allowed CORS origins (browser fetch sources).
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     jwt_ttl_seconds: int = 86400
+    # Data-encryption key for at-rest secrets (data-source passwords). Separation
+    # of duties: the auth signing key (``secret_key``) MUST NOT also encrypt
+    # data, so a JWT-signing key leak cannot decrypt stored credentials. This is
+    # strictly an ``env://NAME`` reference (never a plaintext literal); the
+    # referenced value is derived into a Fernet key. When empty, encryption
+    # derives the key from ``secret_key`` for backward compatibility with data
+    # already encrypted under the legacy scheme — new deployments should set this.
+    data_encryption_key_ref: str = ""
 
     # Embeddings (opt-in semantic shared memory / M5)
     # Leave ``embedding_api_key_ref`` empty to disable semantic matching; the

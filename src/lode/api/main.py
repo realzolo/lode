@@ -107,6 +107,18 @@ async def lifespan(app: FastAPI) -> None:
                 logger.info("reaped %d expired shared memory entr(y/ies)", reaped)
         except Exception:
             logger.exception("failed to reap expired shared memories")
+
+    # Reap evidence artifacts past their retention window (M3). Like the memory
+    # reaper, best-effort so a transient DB error never blocks startup.
+    async with AsyncSessionLocal() as session:
+        try:
+            from lode.db.models.intake import reap_expired_evidence
+
+            reaped = await reap_expired_evidence(session)
+            if reaped:
+                logger.info("reaped %d expired evidence artifact(s)", reaped)
+        except Exception:
+            logger.exception("failed to reap expired evidence artifacts")
     yield
 
 

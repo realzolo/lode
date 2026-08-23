@@ -264,3 +264,25 @@ class AuditEvent(Base):
         Index("ix_audit_events_actor_id", "actor_id"),
         Index("ix_audit_events_action", "action"),
     )
+
+
+async def reap_expired_evidence(session) -> int:
+    """Hard-delete evidence artifacts past their retention window (M3).
+
+    Best-effort cleanup so stale DB-query / git evidence does not accumulate
+    indefinitely. Called at startup alongside the shared-memory reaper; a
+    transient DB error is the caller's responsibility to swallow so startup
+    never blocks.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import delete
+
+    now = datetime.now(UTC)
+    result = await session.execute(
+        delete(EvidenceArtifact)
+        .where(EvidenceArtifact.retention_until.isnot(None))
+        .where(EvidenceArtifact.retention_until < now)
+    )
+    await session.commit()
+    return result.rowcount

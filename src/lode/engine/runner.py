@@ -320,7 +320,9 @@ async def run_analysis(analysis_id: int, session) -> None:
         "; ".join(code["modules_searched"]) or "no repositories registered",
     )
 
-    ro = await run_readonly_query(session, application_id)
+    ro = await run_readonly_query(
+        session, application_id, analysis_id=analysis.id
+    )
 
     # Semantic memory: embed the incident signature once and reuse the vector
     # both for retrieval (get_memory) and for storage on the new memory row.

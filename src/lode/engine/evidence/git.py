@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -272,6 +272,10 @@ async def collect_git_evidence(
         )
         for hit in hits:
             masked, categories = mask_secrets(hit["snippet"])
+            retention = None
+            days = settings.evidence_retention_days
+            if days and days > 0:
+                retention = datetime.now(timezone.utc) + timedelta(days=days)
             artifact = EvidenceArtifact(
                 analysis_id=analysis_id,
                 artifact_type="git_file",
@@ -287,6 +291,7 @@ async def collect_git_evidence(
                     "ref": ref,
                     "secret_categories": categories,
                 },
+                retention_until=retention,
             )
             session.add(artifact)
             artifacts.append(

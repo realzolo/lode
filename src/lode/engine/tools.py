@@ -13,11 +13,12 @@ secret ref), and masks sensitive columns before returning rows.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import or_, select
 
+from lode.config import settings
 from lode.crypto import decrypt_secret
 from lode.db.models.alert import Alert
 from lode.db.models.application import (
@@ -26,6 +27,7 @@ from lode.db.models.application import (
     PresetPrompt,
 )
 from lode.db.models.git import GitRepo
+from lode.db.models.intake import EvidenceArtifact
 from lode.db.models.memory import Memory
 from lode.engine.db_proxy import DbConnector, DbProxyError, execute_query
 
@@ -75,14 +77,19 @@ async def run_readonly_query(
     sql: str | None = None,
     source_id: int | None = None,
     connector: DbConnector | None = None,
-    desensitize: bool = True,
+    analysis_id: int | None = None,
 ) -> dict[str, Any]:
     """Read-only proxy for an application's whitelisted data sources.
 
     With no ``sql`` this returns the allow-list (used to brief the analysis
     agent about what it may read). When ``sql`` is provided the statement is
     validated against the chosen source's ``allowed_tables`` and executed
-    read-only against the resolved replica, with sensitive columns masked.
+    read-only against the resolved replica, with sensitive columns **always**
+    masked.
+
+    When ``analysis_id`` is supplied the (already-masked) result set is persisted
+    as an ``EvidenceArtifact`` (type ``db_query``) so the query becomes citable,
+    auditable evidence for that analysis run.
     """
     result = await session.execute(
         select(DbSource).where(DbSource.application_id == application_id)
@@ -138,11 +145,87 @@ async def run_readonly_query(
         sslmode=chosen.sslmode,
         sensitive_columns=chosen.sensitive_columns or [],
         connector=connector,
-        mask=desensitize,
     )
     res["source_id"] = chosen.id
     res["source_name"] = chosen.name
+
+    if analysis_id is not None:
+        artifact_id = await persist_db_query_artifact(
+            session,
+            analysis_id=analysis_id,
+            source_id=chosen.id,
+            source_name=chosen.name,
+            sql=sql,
+            columns=res["columns"],
+            rows=res["rows"],
+            truncated=res["truncated"],
+            referenced_tables=res["tables"],
+        )
+        res["evidence_artifact_id"] = artifact_id
     return res
+
+
+# How much of a DB-query result set to store as an evidence excerpt, and how long
+# the excerpt string / the originating SQL may be before truncation.
+_DB_QUERY_EXCERPT_ROWS = 50
+_DB_QUERY_EXCERPT_CHARS = 20_000
+_DB_QUERY_SQL_CHARS = 10_000
+
+
+async def persist_db_query_artifact(
+    session,
+    *,
+    analysis_id: int,
+    source_id: int,
+    source_name: str,
+    sql: str,
+    columns: list[str],
+    rows: list[dict],
+    truncated: bool,
+    referenced_tables: list[str],
+) -> int:
+    """Persist a DB-query result as an ``EvidenceArtifact`` (type ``db_query``).
+
+    Rows are stored *already masked* (the proxy desensitizes before returning),
+    so the artifact never holds raw PII. A SHA-256 ``content_hash`` lets the UI
+    dedupe identical result sets, and ``retention_until`` honors the platform
+    retention policy. Returns the new artifact id.
+    """
+    import hashlib
+    import json
+
+    excerpt_rows = rows[:_DB_QUERY_EXCERPT_ROWS]
+    excerpt = json.dumps(
+        {"columns": columns, "rows": excerpt_rows, "truncated": truncated},
+        default=str,
+    )
+    digest = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
+
+    retention = None
+    days = settings.evidence_retention_days
+    if days and days > 0:
+        retention = datetime.now(UTC) + timedelta(days=days)
+
+    artifact = EvidenceArtifact(
+        analysis_id=analysis_id,
+        artifact_type="db_query",
+        source_kind="db",
+        source_id=source_id,
+        locator=f"db://source/{source_id}?name={source_name}",
+        content_hash=digest,
+        redacted_excerpt=excerpt[:_DB_QUERY_EXCERPT_CHARS],
+        metadata_={
+            "statement": sql[:_DB_QUERY_SQL_CHARS],
+            "columns": columns,
+            "row_count": len(rows),
+            "truncated": truncated,
+            "tables": sorted(referenced_tables),
+        },
+        retention_until=retention,
+    )
+    session.add(artifact)
+    await session.flush()
+    return artifact.id
 
 
 async def get_memory(

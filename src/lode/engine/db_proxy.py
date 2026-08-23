@@ -9,8 +9,9 @@ replica. Every query is validated *before* it reaches the database:
   allow-list. CTE names and subquery aliases are excluded from the check so
   legitimate CTE usage is not mistaken for a forbidden table.
 
-Sensitive columns (passwords, tokens, emails, …) are masked in the rows that
-come back so the read-only replica never leaks PII through the UI.
+Sensitive columns (passwords, tokens, emails, …) are *always* masked in the
+rows that come back, so the read-only replica never leaks PII through the UI.
+There is deliberately no opt-out: masking is fail-closed.
 
 The actual connection is resolved from either structured connection fields or
 a ``conn_secret_ref``:
@@ -39,10 +40,13 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from typing import Any, Protocol, runtime_checkable
 
 import asyncpg
+import sqlglot
+from sqlglot import exp
+
+from lode.config import settings
 
 logger = logging.getLogger("lode.engine.db_proxy")
 
@@ -106,199 +110,113 @@ class QueryExecutionError(DbProxyError):
 
 
 # ---------------------------------------------------------------------------
-# SQL inspection helpers
+# SQL inspection (PostgreSQL AST)
 # ---------------------------------------------------------------------------
+#
+# Validation is performed by parsing the statement into a real SQL AST with
+# ``sqlglot`` (PostgreSQL dialect) instead of brittle regexes. Tables are
+# discovered by walking the tree, so they cannot hide in string literals or
+# subqueries, and any write/DDL node anywhere in the tree — including a
+# data-modifying CTE such as ``WITH t AS (...) INSERT ...`` — is rejected. Only a
+# single read-only ``SELECT`` (optionally wrapped in a read-only CTE) is accepted.
 
-# Keywords that terminate a FROM/JOIN item's relation list at the top level
-# (i.e. once we hit one of these we are no longer reading table names).
-_RELATION_STOPPERS = {
-    "where",
-    "group",
-    "order",
-    "having",
-    "limit",
-    "offset",
-    "union",
-    "on",
-    "using",
-    "window",
-    "fetch",
-    "for",
-    "returning",
-    "join",
-    "from",
-    "as",
-    "inner",
-    "left",
-    "right",
-    "full",
-    "outer",
-    "cross",
-    "natural",
-    "lateral",
-    "only",
-}
-
-_FROMJOIN_RE = re.compile(r"\b(from|join)\b", re.IGNORECASE)
-_RELATION_RE = re.compile(
-    r'(?:"?)([A-Za-z_][A-Za-z0-9_]*)(?:"?)'
-    r'(?:\.(?:"?)([A-Za-z_][A-Za-z0-9_]*)(?:"?))?'
+# Statement node types that are never allowed: any DML/DDL/transaction-control
+# node found anywhere in the tree (including inside a CTE body) rejects the
+# query. This is what makes a data-modifying CTE fail closed. Function calls
+# (``exp.Call``) are deliberately NOT listed: ``SELECT count(*) FROM t`` is a
+# legitimate read and must stay permitted.
+_WRITE_DDL_TYPES = (
+    exp.Insert,
+    exp.Update,
+    exp.Delete,
+    exp.Merge,
+    exp.Create,
+    exp.Drop,
+    exp.Alter,
+    exp.TruncateTable,
+    exp.Grant,
+    exp.Revoke,
+    exp.Comment,
+    exp.Command,
+    exp.Commit,
+    exp.Rollback,
+    exp.Use,
+    exp.Set,
+    exp.Execute,
 )
-_CTE_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+as\s*\(", re.IGNORECASE)
 
-
-def _strip_sql(sql: str) -> str:
-    """Remove comments and single-quoted string literals.
-
-    Stripping strings matters: a literal such as ``'select from orders'`` or a
-    stray ``;`` inside a string must not be mistaken for real SQL structure.
-    """
-    sql = re.sub(r"--[^\n]*", " ", sql)
-    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
-    sql = re.sub(r"'(?:[^']|'')*'", " ", sql)
-    return sql
-
-
-def _classify(sql: str) -> str:
-    """Return the *main* command of a statement.
-
-    For ``WITH`` queries the CTE block is skipped and the command that follows
-    it is reported, so a data-modifying CTE (``WITH ... INSERT``) is correctly
-    classified as ``INSERT`` and rejected.
-    """
-    sql = _strip_sql(sql).strip().rstrip(";").strip()
-    if not sql:
-        raise DisallowedQueryError("empty statement")
-    if ";" in sql:
-        raise DisallowedQueryError("multiple statements are not allowed")
-
-    if re.match(r"^\s*\(", sql, re.IGNORECASE):
-        # A bare parenthesized subquery — treat as a read.
-        return "SELECT"
-
-    if sql[:4].upper() == "WITH":
-        depth = 0
-        i = 4
-        n = len(sql)
-        while i < n:
-            c = sql[i]
-            if c == "(":
-                depth += 1
-            elif c == ")":
-                depth -= 1
-            elif depth == 0 and c.isalpha():
-                word = sql[i : i + 8]
-                m = re.match(r"[A-Za-z]+", word)
-                if m:
-                    cmd = m.group(0).upper()
-                    if cmd in {
-                        "SELECT",
-                        "INSERT",
-                        "UPDATE",
-                        "DELETE",
-                        "MERGE",
-                        "CREATE",
-                        "DROP",
-                        "ALTER",
-                        "TRUNCATE",
-                        "GRANT",
-                        "REVOKE",
-                    }:
-                        return cmd
-            i += 1
-        return "UNKNOWN"
-
-    m = re.match(r"\s*([A-Za-z]+)", sql)
-    return m.group(1).upper() if m else "UNKNOWN"
-
-
-def _scan_relations(sql: str, start: int) -> tuple[int, set[str]]:
-    """Starting just after a FROM/JOIN keyword, collect relation names.
-
-    Handles comma-joined lists (``FROM a, b``), trailing aliases (``FROM a b``),
-    and stops at the first clause keyword (``WHERE``, ``ON``, …) so we never
-    wander into the predicate.
-    """
-    tables: set[str] = set()
-    i = start
-    n = len(sql)
-    while i < n:
-        while i < n and sql[i].isspace():
-            i += 1
-        if i >= n:
-            break
-        ch = sql[i]
-        if ch == "(":
-            # Subquery / function — not a top-level relation list here.
-            break
-        if ch == ",":
-            i += 1
-            continue
-        rel = _RELATION_RE.match(sql, i)
-        if not rel:
-            break
-        schema, tbl = rel.group(1), rel.group(2)
-        tables.add((tbl or schema).lower())
-        i = rel.end()
-        # A single trailing identifier is an alias; skip exactly one so it is
-        # not mistaken for a second relation.
-        j = i
-        while j < n and sql[j].isspace():
-            j += 1
-        if j < n and sql[j] == ",":
-            continue
-        if j < n:
-            wm = re.match(r"[A-Za-z_][A-Za-z0-9_]*", sql[j:])
-            if wm and wm.group(0).lower() not in _RELATION_STOPPERS:
-                # A single trailing identifier is an alias; skip it and let the
-                # outer loop re-detect the next FROM/JOIN clause.
-                i = j + len(wm.group(0))
-            else:
-                i = j
-        break
-    return i, tables
-
-
-def _extract_tables(sql: str) -> set[str]:
-    sql = _strip_sql(sql)
-    tables: set[str] = set()
-    i = 0
-    n = len(sql)
-    while i < n:
-        m = _FROMJOIN_RE.search(sql, i)
-        if not m:
-            break
-        i, found = _scan_relations(sql, m.end())
-        tables |= found
-    return tables
-
-
-def _extract_cte_names(sql: str) -> set[str]:
-    return {m.group(1).lower() for m in _CTE_RE.finditer(_strip_sql(sql))}
+# Top-level node types that constitute a read.
+_READ_TYPES = (exp.Select, exp.Union, exp.With, exp.Subquery)
 
 
 def validate_readonly_sql(sql: str, allowed_tables: list[str]) -> dict[str, Any]:
     """Validate ``sql`` against the read-only policy and allow-list.
 
-    Raises :class:`DisallowedQueryError` when the statement is not a read or
-    references a table outside ``allowed_tables``. Returns a small summary on
-    success.
+    Raises :class:`DisallowedQueryError` when the statement is not a single
+    read-only query, references a table outside ``allowed_tables``, or fails to
+    parse. Returns a small summary (command kind + referenced tables) on success.
     """
-    command = _classify(sql)
-    if command != "SELECT":
+    if not sql or not sql.strip():
+        raise DisallowedQueryError("empty statement")
+
+    try:
+        statements = [s for s in sqlglot.parse(sql, read="postgres") if s is not None]
+    except Exception as exc:  # sqlglot raises on syntax errors
+        raise DisallowedQueryError(f"could not parse SQL: {exc}") from exc
+
+    if len(statements) != 1:
+        raise DisallowedQueryError("multiple statements are not allowed")
+
+    root = statements[0]
+
+    # Reject any write/DDL node anywhere in the tree (covers data-modifying CTEs).
+    first_offence = next(iter(root.find_all(*_WRITE_DDL_TYPES)), None)
+    if first_offence is not None:
         raise DisallowedQueryError(
-            f"only SELECT queries are permitted (found {command})"
+            "only read-only queries are permitted "
+            f"(found {type(first_offence).__name__})"
         )
 
-    cte_names = _extract_cte_names(sql)
-    referenced = _extract_tables(sql) - cte_names
+    if not isinstance(root, _READ_TYPES):
+        raise DisallowedQueryError(
+            f"only SELECT queries are permitted (found {type(root).__name__})"
+        )
+
+    referenced, cte_names = _collect_tables_and_ctes(root)
     allowed_set = {str(t).lower() for t in (allowed_tables or [])}
     not_allowed = sorted(t for t in referenced if t not in allowed_set)
     if not_allowed:
         raise DisallowedQueryError(
             "tables not in allow-list: " + ", ".join(not_allowed)
         )
-    return {"command": "SELECT", "tables": sorted(referenced)}
+
+    command = "WITH" if cte_names else "SELECT"
+    return {"command": command, "tables": sorted(referenced)}
+
+
+def _collect_tables_and_ctes(expression: exp.Expression) -> tuple[set[str], set[str]]:
+    """Return ``(real_tables, cte_names)`` for an AST.
+
+    CTE names are excluded from ``real_tables`` so a CTE reference (e.g.
+    ``FROM recent``) is not mistaken for a forbidden table, while the *real*
+    tables a CTE reads (e.g. ``FROM orders`` inside the CTE body) are still
+    checked against the allow-list.
+    """
+    cte_names: set[str] = set()
+    for cte in expression.find_all(exp.CTE):
+        name = cte.alias_or_name
+        if name:
+            cte_names.add(name.lower())
+
+    tables: set[str] = set()
+    for tbl in expression.find_all(exp.Table):
+        name = tbl.name
+        if not name:
+            continue
+        if name.lower() in cte_names:
+            continue
+        tables.add(name.lower())
+    return tables, cte_names
 
 
 def resolve_dsn(
@@ -448,14 +366,63 @@ class DbConnector(Protocol):
         ...
 
 
+def _wrap_with_limit(sql: str, max_rows: int) -> str:
+    """Wrap a validated read in a server-side row cap.
+
+    Guarantees the database returns at most ``max_rows`` rows regardless of what
+    the analyst wrote, bounding both the result set and the bytes sent over the
+    wire. The inner statement has already been AST-validated as a read-only
+    SELECT, so wrapping it as a derived table is always safe.
+    """
+    body = sql.strip()
+    while body.endswith(";"):
+        body = body[:-1].strip()
+    return f"SELECT * FROM (\n{body}\n) AS _lode_q LIMIT {int(max_rows)}"
+
+
+def _read_only_server_settings(timeout: float) -> dict[str, str]:
+    """Server settings that enforce read-only + bounded execution."""
+    lock_ms = int(getattr(settings, "db_proxy_lock_timeout_seconds", 3.0) * 1000)
+    return {
+        # Defense in depth: even if validation were bypassed, the session cannot
+        # mutate data.
+        "default_transaction_read_only": "on",
+        # Bound runaway queries at the server.
+        "statement_timeout": str(int(timeout * 1000)),
+        "lock_timeout": str(lock_ms),
+    }
+
+
+def assert_source_readiness(*, host: str | None, sslmode: str | None) -> None:
+    """Fail closed when a structured source violates deployment readiness.
+
+    When ``settings.db_proxy_require_tls`` is set, any structured (host-based)
+    source without ``sslmode`` in ``{require, verify-full}`` is rejected so a
+    cross-network link to a production replica cannot downgrade to cleartext.
+    """
+    if host and getattr(settings, "db_proxy_require_tls", False):
+        if sslmode not in ("require", "verify-full"):
+            raise SourceNotResolvableError(
+                "data source requires TLS (sslmode=require|verify-full) in this "
+                "deployment; configure sslmode or disable db_proxy_require_tls"
+            )
+
+
 class AsyncpgConnector:
-    """Real connector that talks to PostgreSQL via ``asyncpg``."""
+    """Real connector that talks to PostgreSQL via ``asyncpg``.
+
+    Every connection is opened in a **read-only transaction** (defense in depth:
+    even a query that slips past AST validation cannot mutate data) and capped by
+    a server-side ``LIMIT`` plus ``statement_timeout`` / ``lock_timeout``.
+    """
 
     async def execute(
         self, dsn: str, sql: str, *, timeout: float, max_rows: int
     ) -> tuple[list[str], list[dict[str, Any]]]:
         try:
-            conn = await asyncpg.connect(dsn, timeout=timeout)
+            conn = await asyncpg.connect(
+                dsn, timeout=timeout, server_settings=_read_only_server_settings(timeout)
+            )
         except asyncpg.InvalidAuthorizationSpecificationError as exc:
             raise SourceNotResolvableError(
                 f"authentication failed for data source: {exc}"
@@ -507,7 +474,11 @@ async def _open_and_close(dsn: str, *, connector: DbConnector, timeout: float) -
     start = time.monotonic()
     if isinstance(connector, AsyncpgConnector):
         try:
-            conn = await asyncpg.connect(dsn, timeout=timeout)
+            conn = await asyncpg.connect(
+                dsn,
+                timeout=timeout,
+                server_settings=_read_only_server_settings(timeout),
+            )
         except asyncpg.InvalidAuthorizationSpecificationError as exc:
             raise SourceNotResolvableError(
                 f"authentication failed for data source: {exc}"
@@ -544,7 +515,6 @@ async def execute_query(
     sslmode: str | None = None,
     sensitive_columns: list[str] | None = None,
     connector: DbConnector | None = None,
-    mask: bool = True,
     timeout: float = DEFAULT_QUERY_TIMEOUT_SECONDS,
     max_rows: int = DEFAULT_MAX_ROWS,
 ) -> dict[str, Any]:
@@ -556,11 +526,15 @@ async def execute_query(
     connections; ``sensitive_columns`` extends column masking beyond the
     built-in heuristic.
 
-    Returns a result envelope with ``columns``, ``rows``, ``row_count``,
-    ``truncated``, ``desensitized``, and ``allowed_tables``. Propagates
+    Sensitive columns are **always** masked — there is no opt-out. A single
+    read-only PostgreSQL connection is opened (read-only transaction, statement/
+    lock timeouts, server-side row cap). Returns an envelope with ``columns``,
+    ``rows``, ``row_count``, ``truncated``, ``desensitized`` (always ``True``),
+    ``tables`` (referenced), and ``allowed_tables``. Propagates
     :class:`DbProxyError` subclasses for policy / source / execution failures.
     """
-    validate_readonly_sql(sql, allowed_tables or [])
+    validation = validate_readonly_sql(sql, allowed_tables or [])
+    assert_source_readiness(host=host, sslmode=sslmode)
     dsn = resolve_dsn(
         conn_secret_ref,
         host=host,
@@ -571,15 +545,19 @@ async def execute_query(
         sslmode=sslmode,
     )
     conn = connector or AsyncpgConnector()
-    columns, rows = await conn.execute(dsn, sql, timeout=timeout, max_rows=max_rows)
+    # Server-side row cap: guarantees the database returns at most ``max_rows``
+    # rows regardless of what the analyst wrote (bounds bytes over the wire).
+    capped = _wrap_with_limit(sql, max_rows)
+    columns, rows = await conn.execute(dsn, capped, timeout=timeout, max_rows=max_rows)
     truncated = len(rows) >= max_rows
-    if mask:
-        rows = desensitize(columns, rows, extra_columns=sensitive_columns)
+    # Always desensitize: fail-closed, no desensitize=false escape hatch.
+    rows = desensitize(columns, rows, extra_columns=sensitive_columns)
     return {
         "columns": columns,
         "rows": rows,
         "row_count": len(rows),
         "truncated": truncated,
-        "desensitized": mask,
+        "desensitized": True,
+        "tables": validation["tables"],
         "allowed_tables": [str(t) for t in (allowed_tables or [])],
     }

@@ -97,20 +97,19 @@ async def test_complete_falls_back_when_network_always_fails(monkeypatch):
     assert await complete("sys", "user", cfg) is None
 
 
-# --- T10 schema version compat ---------------------------------------------
+# --- T10 schema version (strict 1.1, no backward-compat shims) ---------------
 
-def test_schema_accepts_1_x_and_rejects_2_x():
+def test_schema_accepts_only_1_1():
     base = {
         "level": "CRITICAL",
         "title": "oops",
         "env": "prod",
         "timestamp": "2026-08-23T00:00:00Z",
     }
-    # 1.1 (current) and 1.2 (forward-compatible minor) are accepted.
+    # Only the exact current contract (1.1) is accepted. There are deliberately
+    # no backward-compat shims: 1.0, 1.2, and the breaking 2.0 contract are all
+    # rejected by the strict pattern (and therefore route to the DLQ).
     assert AlertMessage(schema_version="1.1", **base)
-    assert AlertMessage(schema_version="1.2", **base)
-    # A breaking 2.0 contract must be rejected by the pattern (routes to DLQ).
-    with pytest.raises(Exception):
-        AlertMessage(schema_version="2.0", **base)
-    with pytest.raises(Exception):
-        AlertMessage(schema_version="1", **base)
+    for bad in ("1.0", "1.2", "2.0", "1", "1.1.0"):
+        with pytest.raises(Exception):
+            AlertMessage(schema_version=bad, **base)

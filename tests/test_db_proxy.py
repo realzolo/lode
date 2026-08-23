@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import pytest
 
+from lode.db.models.intake import EvidenceArtifact
 from lode.engine import db_proxy
+from lode.engine import tools
 from lode.engine.db_proxy import (
     DbProxyError,
     DisallowedQueryError,
@@ -501,3 +503,250 @@ async def test_test_connection_failure_propagates():
         await db_test_connection(
             "postgresql://localhost/test", connector=_FailingConnector()
         )
+
+
+# ---------------------------------------------------------------------------
+# M3: AST validation edge cases the regex engine could not cover
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_function_call_is_allowed():
+    # COUNT(*) is a read; a function call must not be mistaken for a write.
+    info = validate_readonly_sql("SELECT count(*) FROM orders", ["orders"])
+    assert info["command"] == "SELECT"
+    assert info["tables"] == ["orders"]
+
+
+def test_subquery_table_is_checked_against_allowlist():
+    # A table hidden inside a subquery must still be allow-listed.
+    with pytest.raises(DisallowedQueryError) as exc:
+        validate_readonly_sql(
+            "SELECT * FROM (SELECT id FROM secrets) AS s", ["orders"]
+        )
+    assert "secrets" in str(exc.value)
+
+
+def test_cte_body_table_is_checked_but_cte_reference_is_not():
+    # `orders` (read by the CTE) must be allowed; `recent` (the CTE name) must
+    # not be treated as a forbidden table.
+    validate_readonly_sql(
+        "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent",
+        ["orders"],
+    )
+
+
+def test_union_read_is_allowed():
+    info = validate_readonly_sql(
+        "SELECT * FROM orders UNION SELECT * FROM payments",
+        ["orders", "payments"],
+    )
+    assert sorted(info["tables"]) == ["orders", "payments"]
+
+
+# ---------------------------------------------------------------------------
+# M3: server-side row cap + read-only enforcement surfaced to the connector
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_query_wraps_with_server_side_limit():
+    conn = FakeConnector()
+    await execute_query(
+        "postgresql://localhost/test",
+        ["orders"],
+        "SELECT * FROM orders",
+        connector=conn,
+        max_rows=10,
+    )
+    sent_sql = conn.calls[0][1]
+    assert sent_sql.startswith("SELECT * FROM (")
+    assert sent_sql.rstrip().endswith("LIMIT 10")
+    assert "SELECT * FROM orders" in sent_sql
+
+
+@pytest.mark.asyncio
+async def test_execute_query_strips_trailing_semicolon_before_wrap():
+    conn = FakeConnector()
+    await execute_query(
+        "postgresql://localhost/test",
+        ["orders"],
+        "SELECT * FROM orders;",
+        connector=conn,
+        max_rows=5,
+    )
+    sent_sql = conn.calls[0][1]
+    assert sent_sql.rstrip().endswith("LIMIT 5")
+    assert ";;" not in sent_sql
+
+
+# ---------------------------------------------------------------------------
+# M3: deployment readiness (TLS) — fail closed
+# ---------------------------------------------------------------------------
+
+
+def test_assert_source_readiness_requires_tls_when_configured(monkeypatch):
+    monkeypatch.setattr(db_proxy.settings, "db_proxy_require_tls", True)
+    with pytest.raises(SourceNotResolvableError):
+        db_proxy.assert_source_readiness(host="h", sslmode=None)
+    # sslmode=require / verify-full is accepted.
+    db_proxy.assert_source_readiness(host="h", sslmode="require")
+    db_proxy.assert_source_readiness(host="h", sslmode="verify-full")
+    # A non-structured (secret-ref) source is not subject to TLS enforcement.
+    db_proxy.assert_source_readiness(host=None, sslmode=None)
+
+
+@pytest.mark.asyncio
+async def test_execute_query_enforces_tls_when_required(monkeypatch):
+    monkeypatch.setattr(db_proxy.settings, "db_proxy_require_tls", True)
+    with pytest.raises(SourceNotResolvableError):
+        await execute_query(
+            None,
+            ["orders"],
+            "SELECT * FROM orders",
+            host="h",
+            database="d",
+            connector=FakeConnector(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# M3: DB-query results persisted as evidence artifacts
+# ---------------------------------------------------------------------------
+
+
+class _FakePersistSession:
+    """Minimal async session that records added objects and assigns ids."""
+
+    def __init__(self):
+        self.added = []
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        for obj in self.added:
+            if getattr(obj, "id", None) is None:
+                obj.id = len(self.added)
+
+
+@pytest.mark.asyncio
+async def test_persist_db_query_artifact_creates_row():
+    session = _FakePersistSession()
+    artifact_id = await tools.persist_db_query_artifact(
+        session,
+        analysis_id=5,
+        source_id=9,
+        source_name="src",
+        sql="SELECT * FROM orders",
+        columns=["id", "email"],
+        rows=[{"id": 1, "email": "a@x.com"}],
+        truncated=False,
+        referenced_tables=["orders"],
+    )
+    assert artifact_id == 1
+    art = session.added[0]
+    assert isinstance(art, EvidenceArtifact)
+    assert art.artifact_type == "db_query"
+    assert art.source_kind == "db"
+    assert art.source_id == 9
+    assert art.analysis_id == 5
+    assert art.locator == "db://source/9?name=src"
+    assert art.content_hash  # sha256 hex digest
+    assert art.metadata_["tables"] == ["orders"]
+    assert art.metadata_["row_count"] == 1
+    # Retention is set by default (90 days).
+    assert art.retention_until is not None
+
+
+class _FakeFullSession(_FakeSession):
+    """Extends the source-lookup fake with add/flush for persistence."""
+
+    def __init__(self, sources):
+        super().__init__(sources)
+        self.added = []
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        for obj in self.added:
+            if getattr(obj, "id", None) is None:
+                obj.id = len(self.added)
+
+
+@pytest.mark.asyncio
+async def test_run_readonly_query_persists_evidence_when_analysis_id():
+    session = _FakeFullSession([_FakeDbSource(9, "postgresql://localhost/a", ["orders"])])
+    res = await tools.run_readonly_query(
+        session,
+        7,
+        sql="SELECT * FROM orders",
+        analysis_id=42,
+        connector=FakeConnector(),
+    )
+    assert res["source_id"] == 9
+    assert "evidence_artifact_id" in res
+    # The email column is masked before persistence (no raw PII stored).
+    art = session.added[0]
+    assert isinstance(art, EvidenceArtifact)
+    assert art.analysis_id == 42
+    assert "***" in art.redacted_excerpt
+    assert "a@x.com" not in art.redacted_excerpt
+
+
+@pytest.mark.asyncio
+async def test_run_readonly_query_no_persist_without_analysis_id():
+    session = _FakeFullSession([_FakeDbSource(9, "postgresql://localhost/a", ["orders"])])
+    res = await tools.run_readonly_query(
+        session, 7, sql="SELECT * FROM orders", connector=FakeConnector()
+    )
+    assert "evidence_artifact_id" not in res
+    assert session.added == []
+
+
+# ---------------------------------------------------------------------------
+# M3: crypto key splitting (AUTH_SIGNING_KEY vs DATA_ENCRYPTION_KEY_REF)
+# ---------------------------------------------------------------------------
+
+
+def test_data_encryption_key_uses_env_ref(monkeypatch):
+    from lode import crypto
+
+    monkeypatch.setenv("LODE_TEST_DATA_KEY", "a-distinct-data-key")
+    monkeypatch.setattr(crypto.settings, "data_encryption_key_ref", "env://LODE_TEST_DATA_KEY")
+    monkeypatch.setattr(crypto.settings, "secret_key", "auth-signing-only")
+    crypto._fernet = None
+    try:
+        ct = crypto.encrypt_secret("topsecret")
+        assert crypto.decrypt_secret(ct) == "topsecret"
+    finally:
+        crypto._fernet = None
+
+
+def test_data_encryption_key_plaintext_ref_rejected(monkeypatch):
+    from lode import crypto
+
+    monkeypatch.setattr(crypto.settings, "data_encryption_key_ref", "plaintext-key")
+    monkeypatch.setattr(crypto.settings, "secret_key", "auth")
+    crypto._fernet = None
+    try:
+        with pytest.raises(crypto.CryptoError):
+            crypto.encrypt_secret("x")
+    finally:
+        crypto._fernet = None
+
+
+def test_data_encryption_key_missing_env_raises(monkeypatch):
+    from lode import crypto
+
+    monkeypatch.setattr(
+        crypto.settings, "data_encryption_key_ref", "env://LODE_MISSING_DATA_KEY"
+    )
+    monkeypatch.setattr(crypto.settings, "secret_key", "auth")
+    monkeypatch.delenv("LODE_MISSING_DATA_KEY", raising=False)
+    crypto._fernet = None
+    try:
+        with pytest.raises(crypto.CryptoError):
+            crypto.encrypt_secret("x")
+    finally:
+        crypto._fernet = None

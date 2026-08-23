@@ -15,6 +15,10 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "cryptography>=44.0.0",
     "prometheus-client>=0.21.0",
+    # Real SQL AST parser (PostgreSQL dialect) used by the read-only DB proxy to
+    # replace brittle regex validation. Pure-Python, no native build, so it is
+    # safe in the hermetic test environment.
+    "sqlglot>=25.0.0",
 ]
 
 [build-system]

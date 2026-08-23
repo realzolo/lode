@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -29,13 +30,44 @@ class CryptoError(Exception):
     """Raised when a value cannot be encrypted or decrypted."""
 
 
+def _resolve_data_encryption_key() -> bytes:
+    """Resolve the Fernet key used to encrypt at-rest data-source secrets.
+
+    Separation of duties: the auth signing key (``settings.secret_key``) MUST NOT
+    also encrypt data, so a JWT-signing-key leak cannot decrypt stored
+    credentials. The dedicated key is supplied via ``data_encryption_key_ref``,
+    which is strictly an ``env://NAME`` reference (never a plaintext literal) —
+    the referenced value is derived into a 32-byte url-safe base64 Fernet key.
+
+    When ``data_encryption_key_ref`` is empty we fall back to deriving the key
+    from ``secret_key``. This preserves the ability to decrypt data already
+    encrypted under the legacy single-key scheme; it is the documented default,
+    not a compatibility shim layered on top of the new path.
+    """
+    ref = settings.data_encryption_key_ref
+    if ref:
+        if not ref.startswith("env://"):
+            raise CryptoError(
+                "DATA_ENCRYPTION_KEY_REF must be an env:// reference, never a "
+                "plaintext literal"
+            )
+        name = ref[len("env://") :]
+        value = os.environ.get(name)
+        if not value:
+            raise CryptoError(f"environment variable '{name}' is not set")
+        digest = hashlib.sha256(value.encode("utf-8")).digest()
+        return base64.urlsafe_b64encode(digest)
+    digest = hashlib.sha256(settings.secret_key.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest)
+
+
 def _get_fernet() -> Fernet:
     global _fernet
     if _fernet is None:
-        # Fernet expects a 32-byte url-safe base64 key. SHA-256 of the signing
-        # secret yields exactly 32 bytes; re-encoding makes it url-safe base64.
-        digest = hashlib.sha256(settings.secret_key.encode("utf-8")).digest()
-        _fernet = Fernet(base64.urlsafe_b64encode(digest))
+        # Fernet expects a 32-byte url-safe base64 key. SHA-256 of the resolved
+        # data-encryption key material yields exactly 32 bytes; re-encoding makes
+        # it url-safe base64.
+        _fernet = Fernet(_resolve_data_encryption_key())
     return _fernet
 
 

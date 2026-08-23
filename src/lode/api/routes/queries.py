@@ -39,8 +39,8 @@ async def run_query(
     """Execute a validated, read-only query against the application's replica.
 
     Rejects writes, queries that touch non-allow-listed tables, and any source
-    that cannot be resolved. Masked sensitive columns are returned as ``***``
-    unless ``desensitize`` is explicitly set to false.
+    that cannot be resolved. Sensitive columns are always masked (``***``) —
+    there is no opt-out, by design.
     """
     try:
         return await run_readonly_query(
@@ -48,7 +48,6 @@ async def run_query(
             application_id,
             sql=payload.sql,
             source_id=payload.source_id,
-            desensitize=payload.desensitize,
         )
     except DbProxyError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))

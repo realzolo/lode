@@ -236,7 +236,6 @@ class UpdateDbSourceIn(BaseModel):
 class RunQueryIn(BaseModel):
     sql: str = Field(min_length=1, max_length=20000)
     source_id: int | None = None
-    desensitize: bool = True
 
 
 class CreatePresetPromptIn(BaseModel):
