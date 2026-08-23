@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     jwt_ttl_seconds: int = 86400
 
+    # Embeddings (opt-in semantic shared memory / M5)
+    # Leave ``embedding_api_key_ref`` empty to disable semantic matching; the
+    # runner then falls back to exact trigger_signature matching. The key is a
+    # ``env://NAME`` reference (or a literal) resolved by ``resolve_api_key``.
+    embedding_base_url: str = "https://api.openai.com/v1/embeddings"
+    embedding_api_key_ref: str = ""
+    embedding_model: str = "text-embedding-3-small"
+    # Cosine distance at or below which a retrieved memory is considered a match
+    # (0 = identical direction, 2 = opposite). 0.25 ≙ similarity ≥ 0.75.
+    embedding_threshold: float = 0.25
+
 
 @lru_cache
 def get_settings() -> Settings:

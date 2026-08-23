@@ -24,7 +24,14 @@ from sqlalchemy import select
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.analysis import Analysis, AnalysisStep, AnalysisHint
 from lode.db.models.memory import Memory
+from lode.config import settings
 from lode.engine.llm import ModelConfig, complete
+from lode.engine.embeddings import (
+    EmbeddingConfig,
+    build_query_text,
+    embed,
+)
+from lode.engine.memory_search import semantic_search
 from lode.engine.tools import (
     get_deploy_context,
     get_memory,
@@ -110,6 +117,23 @@ async def _resolve_model_config(session, application_id: int) -> ModelConfig | N
     )
 
 
+def _resolve_embedding_config() -> EmbeddingConfig | None:
+    """Build an embedding config from settings, or ``None`` when disabled.
+
+    Semantic memory is opt-in: when ``embedding_api_key_ref`` is empty the
+    feature is turned off and the runner degrades to exact trigger_signature
+    matching. Embeddings are read through ``resolve_api_key`` just like the
+    chat client, so real credentials live in the environment, never the DB.
+    """
+    if not settings.embedding_api_key_ref:
+        return None
+    return EmbeddingConfig(
+        base_url=settings.embedding_base_url,
+        api_key_ref=settings.embedding_api_key_ref,
+        model=settings.embedding_model,
+    )
+
+
 def _build_prompts(alert, deploy_prompt, modules, allowed_tables, memory_content) -> tuple[str, str]:
     system = (
         "You are a senior SRE performing root-cause analysis for a production "
@@ -183,7 +207,27 @@ async def run_analysis(analysis_id: int, session) -> None:
           (ctx["deploy_prompt"] or "no deploy description configured")[:280])
 
     ro = await run_readonly_query(session, application_id)
-    memory = await get_memory(session, application_id, analysis.dedupe_key)
+
+    # Semantic memory: embed the incident signature once and reuse the vector
+    # both for retrieval (get_memory) and for storage on the new memory row.
+    embedding_cfg = _resolve_embedding_config()
+    query_text = build_query_text(alert)
+    _query_vec: dict[str, list[float] | None] = {"v": None}
+
+    async def _embed(text: str) -> list[float] | None:
+        if _query_vec["v"] is None and embedding_cfg is not None:
+            _query_vec["v"] = await embed(text, embedding_cfg)
+        return _query_vec["v"]
+
+    memory = await get_memory(
+        session,
+        application_id,
+        query_text=query_text,
+        dedupe_key=analysis.dedupe_key,
+        embed_fn=_embed if embedding_cfg else None,
+        search_fn=semantic_search if embedding_cfg else None,
+        threshold=settings.embedding_threshold,
+    )
 
     model_config = await _resolve_model_config(session, application_id)
     system, user = _build_prompts(
@@ -225,7 +269,14 @@ async def run_analysis(analysis_id: int, session) -> None:
           conclusion[:280])
 
     if memory["matched"]:
-        _step("memory", "completed", "Matched shared memory",
+        suffix = ""
+        mtype = memory.get("match_type")
+        sim = memory.get("similarity")
+        if mtype == "semantic" and sim is not None:
+            suffix = f" (semantic, similarity {sim:.2f})"
+        elif mtype == "exact":
+            suffix = " (exact)"
+        _step("memory", "completed", f"Matched shared memory{suffix}",
               memory["content"][:280])
     else:
         _step("memory", "completed", "No prior memory",
@@ -233,7 +284,9 @@ async def run_analysis(analysis_id: int, session) -> None:
 
     # Grow shared memory when we are confident and had no prior match.
     # Upsert by trigger_signature so repeated re-analyses never create
-    # duplicate memory rows.
+    # duplicate memory rows. When embeddings are enabled the triggering
+    # incident signature is embedded and stored so future *similar* incidents
+    # can find this conclusion via cosine search.
     if not memory["matched"] and confidence >= 0.7 and conclusion:
         prior = await session.execute(
             select(Memory)
@@ -241,6 +294,7 @@ async def run_analysis(analysis_id: int, session) -> None:
             .where(Memory.trigger_signature == analysis.dedupe_key)
         )
         existing = prior.scalars().first()
+        mem_embedding = _query_vec["v"]
         if existing is None:
             session.add(
                 Memory(
@@ -249,12 +303,14 @@ async def run_analysis(analysis_id: int, session) -> None:
                     content=conclusion,
                     source_analysis_id=analysis_id,
                     is_valid=True,
+                    embedding=mem_embedding,
                 )
             )
         else:
             existing.content = conclusion
             existing.is_valid = True
             existing.source_analysis_id = analysis_id
+            existing.embedding = mem_embedding
 
     evidence = {
         "engine": engine_used,
@@ -263,6 +319,8 @@ async def run_analysis(analysis_id: int, session) -> None:
         "modules": code["modules_searched"],
         "allowed_tables": ro["allowed_tables"],
         "matched_memory": bool(memory["matched"]),
+        "matched_memory_type": memory.get("match_type"),
+        "matched_memory_similarity": memory.get("similarity"),
         **evidence,
     }
 

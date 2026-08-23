@@ -15,7 +15,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from sqlalchemy import ARRAY, Float
+
 from lode.db.base import Base
+from lode.db.vector import EMBEDDING_DIM
 
 
 class Memory(Base):
@@ -29,6 +32,14 @@ class Memory(Base):
     )
     trigger_signature: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Semantic embedding of the triggering incident signature, stored as a
+    # native PostgreSQL ``real[]`` (no pgvector extension required). NULL for
+    # memories recorded before embedding was enabled, or when no embedding
+    # provider is configured. Used for cosine-similarity retrieval in
+    # ``get_memory`` (semantic memory). Dimension is fixed at EMBEDDING_DIM.
+    embedding: Mapped[list[float] | None] = mapped_column(
+        ARRAY(Float), nullable=True
+    )
     source_analysis_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("analyses.id", ondelete="SET NULL")
     )

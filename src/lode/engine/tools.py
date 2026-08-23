@@ -127,19 +127,106 @@ async def run_readonly_query(
     return res
 
 
-async def get_memory(session, application_id: int, trigger_signature: str) -> dict[str, Any]:
-    """Find a previously stored, still-valid conclusion for this signature."""
-    result = await session.execute(
-        select(Memory)
-        .where(Memory.application_id == application_id)
-        .where(Memory.trigger_signature == trigger_signature)
-        .where(Memory.is_valid.is_(True))
-        .order_by(Memory.updated_at.desc())
-    )
-    memory = result.scalars().first()
-    if memory is None:
-        return {"matched": False, "content": None, "memory_id": None}
-    return {"matched": True, "content": memory.content, "memory_id": memory.id}
+async def get_memory(
+    session,
+    application_id: int,
+    *,
+    query_text: str | None = None,
+    dedupe_key: str | None = None,
+    embed_fn=None,
+    search_fn=None,
+    top_k: int = 5,
+    threshold: float = 0.25,
+) -> dict[str, Any]:
+    """Find a previously stored, still-valid conclusion for an incident.
+
+    Resolution order:
+
+    1. **Exact match** — if ``dedupe_key`` is supplied and a still-valid memory
+       shares that trigger_signature, it wins. This preserves the original
+       deterministic behaviour and guarantees re-analysis of the same incident
+       returns its recorded conclusion.
+    2. **Semantic match** — when both ``embed_fn`` and ``search_fn`` are wired
+       (an embedding provider is configured), embed ``query_text`` and ask
+       ``search_fn`` for the nearest memories by cosine distance; the closest
+       candidate within ``threshold`` distance is returned. This is what lets
+       a *new* incident reuse a conclusion from a semantically similar past
+       incident even when the exact signature differs.
+    3. **No match** — otherwise an explicit miss is returned.
+
+    Returns a dict with ``matched``, ``content``, ``memory_id``, ``similarity``,
+    ``match_type`` (``exact`` | ``semantic`` | ``none``) and ``candidates``
+    (the ranked semantic neighbours, for transparency in the UI/evidence).
+    """
+    # 1. Exact signature override (deterministic + backward compatible).
+    if dedupe_key:
+        exact = (
+            await session.execute(
+                select(Memory)
+                .where(Memory.application_id == application_id)
+                .where(Memory.trigger_signature == dedupe_key)
+                .where(Memory.is_valid.is_(True))
+                .order_by(Memory.updated_at.desc())
+            )
+        ).scalars().first()
+        if exact is not None:
+            return {
+                "matched": True,
+                "content": exact.content,
+                "memory_id": exact.id,
+                "similarity": 1.0,
+                "match_type": "exact",
+                "candidates": [],
+            }
+
+    # 2. Semantic nearest-neighbour search when embeddings are available.
+    if embed_fn is not None and search_fn is not None and query_text:
+        query_vec = await embed_fn(query_text)
+        if query_vec:
+            ranked = await search_fn(session, application_id, query_vec, top_k)
+            candidates = _rank_to_candidates(ranked)
+            best = next(
+                (c for c in candidates if c["distance"] <= threshold), None
+            )
+            if best is not None:
+                mem = next(m for m, _ in ranked if m.id == best["memory_id"])
+                return {
+                    "matched": True,
+                    "content": mem.content,
+                    "memory_id": mem.id,
+                    "similarity": best["similarity"],
+                    "match_type": "semantic",
+                    "candidates": candidates,
+                }
+            return {
+                "matched": False,
+                "content": None,
+                "memory_id": None,
+                "similarity": None,
+                "match_type": "semantic",
+                "candidates": candidates,
+            }
+
+    # 3. Fallback: no embeddings configured, no exact hit.
+    return {
+        "matched": False,
+        "content": None,
+        "memory_id": None,
+        "similarity": None,
+        "match_type": "none",
+        "candidates": [],
+    }
+
+
+def _rank_to_candidates(ranked) -> list[dict]:
+    return [
+        {
+            "memory_id": mem.id,
+            "distance": round(float(dist), 4),
+            "similarity": round(max(0.0, 1.0 - float(dist)), 4),
+        }
+        for mem, dist in ranked
+    ]
 
 
 async def load_alert(session, alert_id: int | None) -> Alert | None:
