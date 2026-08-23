@@ -31,6 +31,7 @@ from lode.api.deps import require_user
 from lode.api.routes.alerts import router as alerts_router
 from lode.api.routes.analyses import router as analyses_router
 from lode.api.routes.applications import router as applications_router
+from lode.api.routes.audit import router as audit_router
 from lode.api.routes.auth import router as auth_router
 from lode.api.routes.dead_letters import router as dead_letters_router
 from lode.api.routes.health import router as health_router
@@ -196,6 +197,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # Open routes.
 app.include_router(health_router)
 app.include_router(dead_letters_router)
+app.include_router(audit_router)
 app.include_router(metrics_router)
 app.include_router(auth_router)
 

@@ -32,6 +32,7 @@ export {
   Mail as IconMail,
   Terminal as IconTerminal,
   Server as IconServer,
+  Shield as IconShield,
   CircleCheck as IconCheckCircle,
   CircleX as IconXCircle,
   Minus as IconMinus,

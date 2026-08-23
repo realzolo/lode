@@ -11,6 +11,8 @@ import type {
   AnalysisStep,
   AiModelConfig,
   Application,
+  AuditEvent,
+  AuditEventList,
   CurrentUser,
   Invite,
   Level,
@@ -863,6 +865,33 @@ export async function acceptInvite(token: string, password: string, name: string
     const body = await res.json().catch(() => null);
     throw new Error(body?.error?.message ?? `accept invite failed: ${res.status}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Audit log (admin read)
+// ---------------------------------------------------------------------------
+
+export interface AuditQuery {
+  action?: string;
+  actor_id?: number;
+  actor_email?: string;
+  target_type?: string;
+  target_id?: string;
+  application_id?: number;
+  result?: 'ok' | 'error';
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function fetchAuditEvents(query: AuditQuery = {}): Promise<AuditEventList> {
+  const params = new URLSearchParams();
+  (Object.entries(query) as [string, unknown][]).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+  });
+  const qs = params.toString();
+  return getJson<AuditEventList>(`/audit${qs ? `?${qs}` : ''}`);
 }
 
 // ---------------------------------------------------------------------------

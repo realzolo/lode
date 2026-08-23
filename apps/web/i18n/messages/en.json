@@ -6,6 +6,7 @@
     "memories": "Shared Memory",
     "settings": "Global Settings",
     "users": "Users",
+    "audit": "Audit Log",
     "overview": "Overview",
     "repositories": "Repositories",
     "prompts": "Prompts",
@@ -230,5 +231,24 @@
     "failed": "Query failed",
     "empty": "No rows returned.",
     "sqlPlaceholder": "SELECT * FROM <allowed_table> LIMIT 50;"
+  },
+  "audit": {
+    "title": "Audit Log",
+    "subtitle": "Every privileged control-plane action is recorded here. Use the filters to narrow the trail.",
+    "time": "Time",
+    "action": "Action",
+    "actor": "Actor",
+    "target": "Target",
+    "result": "Result",
+    "detail": "Detail",
+    "filterAction": "Action (e.g. application.create)",
+    "filterApp": "Application ID",
+    "all": "All",
+    "ok": "Success",
+    "error": "Error",
+    "search": "Search",
+    "loadMore": "Load more",
+    "total": "{count} event(s)",
+    "showing": "Showing {shown} of {total}"
   }
 }

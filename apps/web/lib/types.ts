@@ -81,3 +81,25 @@ export interface Invite {
   status: string;
   created_at: string;
 }
+
+export interface AuditEvent {
+  id: number;
+  actor_id: number | null;
+  actor_email: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  application_id: number | null;
+  request_id: string | null;
+  trace_id: string | null;
+  result: 'ok' | 'error';
+  detail: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface AuditEventList {
+  total: number;
+  limit: number;
+  offset: number;
+  items: AuditEvent[];
+}

@@ -6,6 +6,7 @@
     "memories": "共享记忆",
     "settings": "全局设置",
     "users": "用户",
+    "audit": "审计日志",
     "overview": "概览",
     "repositories": "仓库",
     "prompts": "提示词",
@@ -230,5 +231,24 @@
     "failed": "查询失败",
     "empty": "无返回结果。",
     "sqlPlaceholder": "SELECT * FROM <白名单表> LIMIT 50;"
+  },
+  "audit": {
+    "title": "审计日志",
+    "subtitle": "所有特权控制面操作都会记录在此。使用筛选条件缩小范围。",
+    "time": "时间",
+    "action": "动作",
+    "actor": "操作人",
+    "target": "对象",
+    "result": "结果",
+    "detail": "详情",
+    "filterAction": "动作（如 application.create）",
+    "filterApp": "应用 ID",
+    "all": "全部",
+    "ok": "成功",
+    "error": "失败",
+    "search": "查询",
+    "loadMore": "加载更多",
+    "total": "共 {count} 条",
+    "showing": "显示 {shown} / {total} 条"
   }
 }

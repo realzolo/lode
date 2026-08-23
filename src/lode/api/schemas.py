@@ -297,6 +297,38 @@ class ReplayOut(BaseModel):
     status: str
 
 
+# --- Audit log (admin read) -------------------------------------------------
+#
+# The append-only `audit_events` table is written by every privileged
+# control-plane mutation (see `audit_action`). These schemas make that trail
+# *observable*: `AuditEventOut` is the per-row projection and `AuditEventListOut`
+# carries pagination metadata (total / limit / offset) so the UI can page
+# without re-counting on the client.
+
+class AuditEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    actor_id: int | None
+    actor_email: str | None
+    action: str
+    target_type: str | None
+    target_id: str | None
+    application_id: int | None
+    request_id: str | None
+    trace_id: str | None
+    result: str
+    detail: dict | None
+    created_at: datetime
+
+
+class AuditEventListOut(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[AuditEventOut]
+
+
 class AuthLoginIn(BaseModel):
     email: str
     password: str
