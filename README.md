@@ -10,6 +10,30 @@ Kafka ingestion contract, the agentic analysis engine, the authenticated REST AP
 and the Next.js frontend that visualizes the workflow and supports human-in-the-loop
 (hints / re-analysis).
 
+## Implemented milestones (M1–M6)
+
+The platform is feature-complete for its current scope. Each milestone below is
+committed and covered by tests.
+
+- **M1 — Per-application authorization & members (FR-602):** `read` / `analyze` /
+  `admin` permission ranks, a per-application `require_app_perm` guard, member CRUD
+  with last-admin protection, and `my_perm` surfaced to the frontend.
+- **M2 — Kafka consumer resilience:** reconnect backoff on slow brokers, per-message
+  failure isolation, DLQ / unassigned-topic routing, and offset commit even after a
+  failed message.
+- **M3 — Interactive workflow graph:** a pannable/zoomable canvas of the six pipeline
+  steps (`receive → git_sync → context → ai_analysis → memory → conclusion`) on the
+  analysis detail page, built dependency-free.
+- **M4 — Read-only DB proxy & query console:** a per-source table allow-list with
+  write/DDL rejection, column desensitization, and `POST /applications/{id}/query`
+  (gated by the `analyze` scope).
+- **M5 — Semantic shared memory:** an exact `trigger_signature` match plus embedding
+  cosine similarity (OpenAI-compatible `/embeddings`); an optional `pgvector` backend
+  offloads distance to the `<=>` operator. Details below.
+- **M6 — Rate limiting & security hardening:** an in-memory fixed-window limiter
+  (per user/IP), `429` + `Retry-After` + `X-RateLimit-*`, baseline security headers
+  on every response, and CORS as the outermost layer. Details below.
+
 ## Stack
 
 - Python 3.12+ (async), FastAPI, SQLAlchemy 2.0 (async), Alembic
@@ -142,6 +166,67 @@ The Kafka consumer (`make consume`) validates each v1.1 alert, persists the
 task so the full `receive → git_sync → context → ai_analysis → memory →
 conclusion` workflow runs without blocking ingestion. A failed run is marked
 `failed` rather than crashing the consumer.
+
+## Read-only database proxy (M4)
+
+Analyses can pull context from read-only data sources without exposing write access.
+`POST /applications/{id}/query` (requires the `analyze` scope) runs a validated
+read-only SQL statement against a configured source:
+
+- Only `SELECT` (and read-only CTEs) are permitted; `INSERT`/`UPDATE`/`DELETE`/`DROP`
+  and multi-statements are rejected, and a per-source table allow-list is enforced.
+- Sensitive columns (password / token / email / phone / …) are desensitized in the
+  returned rows.
+- A bare `sql` body returns the source's allowed-table whitelist — the safe default
+  used by the runner agent when no statement is supplied.
+
+## Semantic shared memory (M5)
+
+When an embedding provider is configured via `LODE_EMBEDDING_API_KEY_REF` (an
+`env://NAME` reference or literal, resolved by the same path as model keys), the
+engine embeds each incident's signature and stores the vector on the memory row. On a
+new incident, `get_memory` first tries an exact `trigger_signature` match, then falls
+back to a semantic top-k within a cosine-distance threshold
+(`LODE_EMBEDDING_THRESHOLD`, default `0.25` ≙ similarity ≥ `0.75`).
+
+Embeddings are stored in a portable `real[]` column and ranked in Python by default —
+no `pgvector` extension required.
+
+**Optional pgvector backend.** Set `LODE_EMBEDDING_BACKEND=pgvector` to offload
+distance computation to the database via the `<=>` operator. The `real[]` column is
+cast to `vector` at query time, so **no column-type migration is needed**; if the
+`vector` extension is unavailable the search transparently falls back to the Python
+backend. For large tables, add an HNSW index manually:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE INDEX IF NOT EXISTS ix_memories_embedding_hnsw
+    ON memories USING hnsw ((embedding::vector) vector_cosine_ops);
+```
+
+Install the optional dependency with `pip install "lode[pgvector]"`. The default
+backend has no extra dependency.
+
+## Rate limiting & security hardening (M6)
+
+`HardeningMiddleware` (raw ASGI, not `BaseHTTPMiddleware`) applies an in-memory
+fixed-window rate limiter to every non-exempt route (`/`, `/health`, `/docs`,
+`/openapi.json`, `/redoc` are exempt). Authenticated callers are bucketed by user id
+(the HMAC token `sub`); others by client IP. Exceeding `LODE_RATE_LIMIT_PER_MINUTE`
+(default `600`) returns `429` with `Retry-After` and `X-RateLimit-*` headers.
+
+Baseline security headers are stamped on every non-exempt response — including
+throttled ones:
+
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `Referrer-Policy: no-referrer`
+- `Cross-Origin-Opener-Policy: same-origin`
+- a strict `Content-Security-Policy`
+
+`CORSMiddleware` is registered as the **outermost** layer so CORS headers survive on
+`429` / error responses. Disable the limiter entirely with
+`LODE_RATE_LIMIT_ENABLED=false`.
 
 ## Running the full stack (Docker)
 
