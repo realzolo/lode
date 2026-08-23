@@ -45,10 +45,10 @@ from lode.db.models.ai_model import reencrypt_plaintext_keys
 from lode.db.models.memory import Memory
 from lode.db.session import AsyncSessionLocal
 from lode.migrations import run_migrations
+from lode.api.audit import _request_id
 
-# Per-request id, exposed to every logger via a logging filter. Falls back to
-# "-" when code logs outside of an active HTTP request (engine, migrations, cron).
-_request_id: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+# Note: ``_request_id`` lives in ``lode.api.audit`` so audit records and the
+# logger share one source of truth. Re-exported here for the request middleware.
 
 
 class RequestIdFilter(logging.Filter):

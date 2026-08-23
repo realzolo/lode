@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.config import settings
+from lode.api.audit import audit_action
 from lode.api.deps import assert_app_perm, permitted_app_ids, require_user
 from lode.api.schemas import (
     AddHintIn,
@@ -311,6 +312,16 @@ async def reanalyze(
     )
     session.add(job)
     await session.commit()
+    await audit_action(
+        session,
+        action="analysis.create",
+        actor_id=user_id,
+        target_type="application",
+        target_id=str(analysis.application_id),
+        application_id=analysis.application_id,
+        result="ok",
+        detail={"dedupe_key": dedupe_key, "job_id": job.public_id},
+    )
     return ReanalyzeOut(
         dedupe_key=dedupe_key,
         job_id=job.public_id,

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aiokafka import AIOKafkaProducer
 
+from lode.api.audit import audit_action
 from lode.api.deps import require_admin
 from lode.api.schemas import DeadLetterOut, ReplayOut
 from lode.config import settings
@@ -79,8 +80,27 @@ async def replay_dead_letter(
             await producer.stop()
     except Exception as exc:  # noqa: BLE001 - surface infra errors to the operator
         logger.exception("replay producer failed for dead letter %s", dead_letter_id)
+        await audit_action(
+            session,
+            action="dlq.replay",
+            actor_id=_admin,
+            target_type="dead_letter",
+            target_id=str(dead_letter_id),
+            application_id=dl.application_id,
+            result="error",
+            detail={"error": str(exc)},
+        )
         raise HTTPException(status_code=502, detail=f"kafka producer failed: {exc}")
 
     dl.replayed = True
     await session.commit()
+    await audit_action(
+        session,
+        action="dlq.replay",
+        actor_id=_admin,
+        target_type="dead_letter",
+        target_id=str(dead_letter_id),
+        application_id=dl.application_id,
+        result="ok",
+    )
     return ReplayOut(id=dl.id, topic=dl.topic, status="replayed")

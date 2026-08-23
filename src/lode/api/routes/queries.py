@@ -15,6 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Security
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lode.api.audit import audit_action
 from lode.api.deps import require_app_perm
 from lode.api.schemas import RunQueryIn
 from lode.db.session import AsyncSessionLocal
@@ -43,11 +44,32 @@ async def run_query(
     there is no opt-out, by design.
     """
     try:
-        return await run_readonly_query(
+        res = await run_readonly_query(
             session,
             application_id,
             sql=payload.sql,
             source_id=payload.source_id,
         )
+        await audit_action(
+            session,
+            action="query.execute",
+            actor_id=_auth,
+            target_type="application",
+            target_id=str(application_id),
+            application_id=application_id,
+            result="ok",
+            detail={"source_id": res.get("source_id"), "tables": res.get("tables")},
+        )
+        return res
     except DbProxyError as exc:
+        await audit_action(
+            session,
+            action="query.execute",
+            actor_id=_auth,
+            target_type="application",
+            target_id=str(application_id),
+            application_id=application_id,
+            result="error",
+            detail={"error": str(exc)},
+        )
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
