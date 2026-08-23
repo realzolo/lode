@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    Integer,
     Text,
     UniqueConstraint,
 )
@@ -112,7 +113,18 @@ class DbSource(Base):
         BigInteger, ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    conn_secret_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    # Connection can be supplied two ways (mutually exclusive in practice):
+    #  * structured fields below (host/port/database/username/password) — the
+    #    DSN is built at query time; OR
+    #  * conn_secret_ref — an env:// / vault:// / bare-literal reference resolved
+    #    at query time so real credentials never have to live in this row.
+    # At least one of the two must be provided (enforced in the schema layer).
+    conn_secret_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    host: Mapped[str | None] = mapped_column(Text, nullable=True)
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    database: Mapped[str | None] = mapped_column(Text, nullable=True)
+    username: Mapped[str | None] = mapped_column(Text, nullable=True)
+    password: Mapped[str | None] = mapped_column(Text, nullable=True)
     allowed_tables: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default="[]"
     )

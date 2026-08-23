@@ -119,6 +119,11 @@ async def run_readonly_query(
         chosen.conn_secret_ref,
         chosen.allowed_tables or [],
         sql,
+        host=chosen.host,
+        port=chosen.port,
+        database=chosen.database,
+        username=chosen.username,
+        password=chosen.password,
         connector=connector,
         mask=desensitize,
     )

@@ -109,13 +109,21 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Drop the non-serializable ``ctx`` (which holds the raw raised exception,
+    # e.g. a ValueError from a model_validator) so the 422 payload itself never
+    # fails to serialize. Keep loc / msg / type which are what clients need.
+    raw = exc.errors()
+    details = [
+        {k: v for k, v in err.items() if k not in ("ctx", "input")}
+        for err in raw
+    ]
     return JSONResponse(
         status_code=422,
         content={
             "error": {
                 "code": 422,
                 "message": "validation error",
-                "details": exc.errors(),
+                "details": details,
             }
         },
     )

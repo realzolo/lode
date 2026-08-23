@@ -42,6 +42,7 @@ import {
   fetchSettings,
   unbindRepo,
   updateAiModel,
+  type CreateDbSourceInput,
   type CreatePresetPromptInput,
 } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
@@ -422,11 +423,27 @@ export function DbSourcesSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [connSecretRef, setConnSecretRef] = useState('env://');
+  const [connSecretRef, setConnSecretRef] = useState('');
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState('5432');
+  const [database, setDatabase] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [allowedTablesRaw, setAllowedTablesRaw] = useState('');
   const [deleteSource, setDeleteSource] = useState<BoundDbSource | null>(null);
 
   const sources = data.db_sources;
+
+  function resetForm() {
+    setName('');
+    setConnSecretRef('');
+    setHost('');
+    setPort('5432');
+    setDatabase('');
+    setUsername('');
+    setPassword('');
+    setAllowedTablesRaw('');
+  }
 
   async function handleCreate() {
     setBusy(true);
@@ -435,16 +452,25 @@ export function DbSourcesSection({
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
+    const input: CreateDbSourceInput = {
+      name: name.trim(),
+      allowed_tables,
+    };
+    // Structured connection mode takes precedence when a host is supplied.
+    if (host.trim()) {
+      input.host = host.trim();
+      const parsedPort = parseInt(port, 10);
+      if (!Number.isNaN(parsedPort)) input.port = parsedPort;
+      if (database.trim()) input.database = database.trim();
+      if (username.trim()) input.username = username.trim();
+      if (password) input.password = password;
+    } else if (connSecretRef.trim()) {
+      input.conn_secret_ref = connSecretRef.trim();
+    }
     try {
-      await createDbSource(appId, {
-        name: name.trim(),
-        conn_secret_ref: connSecretRef.trim(),
-        allowed_tables,
-      });
+      await createDbSource(appId, input);
       setOpen(false);
-      setName('');
-      setConnSecretRef('env://');
-      setAllowedTablesRaw('');
+      resetForm();
       onRefresh();
     } catch (e) {
       setError(String(e));
@@ -483,9 +509,7 @@ export function DbSourcesSection({
             onClick={() => {
               setOpen(true);
               setError(null);
-              setName('');
-              setConnSecretRef('env://');
-              setAllowedTablesRaw('');
+              resetForm();
             }}
           >
             <IconPlus size={14} /> {tAdmin('addDbSource')}
@@ -511,6 +535,14 @@ export function DbSourcesSection({
                 )}
               </div>
               <p className="muted mono" style={{ fontSize: 13 }}>
+                {s.host
+                  ? `${s.username ? s.username + '@' : ''}${s.host}${
+                      s.port ? ':' + s.port : ''
+                    }/${s.database ?? ''}`
+                  : s.conn_secret_ref ?? '—'}
+                {s.has_password ? ' • •••' : ''}
+              </p>
+              <p className="muted mono" style={{ fontSize: 13 }}>
                 allowed_tables:{' '}
                 {Array.isArray(s.allowed_tables)
                   ? (s.allowed_tables as unknown[]).join(', ')
@@ -534,7 +566,39 @@ export function DbSourcesSection({
               disabled={busy}
             />
             <Input
-              placeholder="env://VAR_NAME"
+              placeholder={tAdmin('dbHost')}
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              disabled={busy}
+            />
+            <Input
+              placeholder={tAdmin('dbPort')}
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              disabled={busy}
+              inputMode="numeric"
+            />
+            <Input
+              placeholder={tAdmin('dbDatabase')}
+              value={database}
+              onChange={(e) => setDatabase(e.target.value)}
+              disabled={busy}
+            />
+            <Input
+              placeholder={tAdmin('dbUsername')}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              disabled={busy}
+            />
+            <Input
+              type="password"
+              placeholder={tAdmin('dbPassword')}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+            />
+            <Input
+              placeholder={tAdmin('dbSecretRef')}
               value={connSecretRef}
               onChange={(e) => setConnSecretRef(e.target.value)}
               disabled={busy}
@@ -551,7 +615,11 @@ export function DbSourcesSection({
             <Button
               variant="primary"
               onClick={handleCreate}
-              disabled={busy || !name.trim() || !connSecretRef.trim()}
+              disabled={
+                busy ||
+                !name.trim() ||
+                (!host.trim() && !connSecretRef.trim())
+              }
             >
               {tc('save')}
             </Button>

@@ -14,7 +14,12 @@ import type { Application } from '@/lib/types';
 interface SourceRow {
   id: number;
   name: string;
-  conn_secret_ref: string;
+  conn_secret_ref: string | null;
+  host: string | null;
+  port: number | null;
+  database: string | null;
+  username: string | null;
+  has_password: boolean;
   allowed_tables: string[];
 }
 
@@ -60,6 +65,11 @@ export default function ExplorePage() {
           id: s.id,
           name: s.name,
           conn_secret_ref: s.conn_secret_ref,
+          host: s.host,
+          port: s.port,
+          database: s.database,
+          username: s.username,
+          has_password: s.has_password,
           allowed_tables: Array.isArray(s.allowed_tables)
             ? (s.allowed_tables as unknown[]).map(String)
             : [],

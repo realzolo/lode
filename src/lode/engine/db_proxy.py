@@ -12,14 +12,23 @@ replica. Every query is validated *before* it reaches the database:
 Sensitive columns (passwords, tokens, emails, …) are masked in the rows that
 come back so the read-only replica never leaks PII through the UI.
 
-The actual connection is resolved from ``conn_secret_ref``:
+The actual connection is resolved from either structured connection fields or
+a ``conn_secret_ref``:
 
-* ``env://NAME`` — read the DSN from the ``NAME`` environment variable. This is
-  the recommended form so real credentials never touch the database row.
-* ``vault://...`` — reserved for a future secret-manager backend. It fails
-  closed (we refuse to run) until that integration ships.
-* a bare ``postgresql://...`` literal — accepted for local development only and
-  logged as a warning, because storing a raw DSN in the row is discouraged.
+* **Structured fields** (``host``/``port``/``database``/``username``/
+  ``password``) — assembled into a ``postgresql://`` DSN at query time. This is
+  what the admin UI posts when an operator types a connection in directly; the
+  password is stored on the ``db_sources`` row (acceptable for a self-hosted
+  admin console).
+* ``conn_secret_ref`` can still be supplied instead:
+
+  * ``env://NAME`` — read the DSN from the ``NAME`` environment variable. This
+    is the recommended form so real credentials never touch the database row.
+  * ``vault://...`` — reserved for a future secret-manager backend. It fails
+    closed (we refuse to run) until that integration ships.
+  * a bare ``postgresql://...`` literal — accepted for local development only
+    and logged as a warning, because storing a raw DSN in the row is
+    discouraged.
 
 Execution goes through a single injectable connector so the validation,
 desensitization, and orchestration logic is fully testable without a live
@@ -292,10 +301,73 @@ def validate_readonly_sql(sql: str, allowed_tables: list[str]) -> dict[str, Any]
     return {"command": "SELECT", "tables": sorted(referenced)}
 
 
-def resolve_dsn(conn_secret_ref: str) -> str:
-    """Resolve a ``conn_secret_ref`` to a real DSN string."""
+def resolve_dsn(
+    conn_secret_ref: str | None = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    database: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+) -> str:
+    """Resolve a data source to a real DSN string.
+
+    Two modes are supported:
+
+    * **Structured** — when ``host`` is set, the DSN is assembled from the
+      structured connection fields (``host``/``port``/``database``/
+      ``username``/``password``). This is the mode the admin UI uses when an
+      operator types a connection in directly.
+    * **Secret ref** — when only ``conn_secret_ref`` is supplied, it is
+      resolved via :func:`_resolve_ref` (``env://`` / ``vault://`` / bare
+      literal), keeping real credentials out of the DB row.
+
+    Structured mode takes precedence when both are present.
+    """
+    if host:
+        return _build_dsn(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+        )
+    return _resolve_ref(conn_secret_ref)
+
+
+def _build_dsn(
+    *,
+    host: str,
+    port: int | None,
+    database: str | None,
+    username: str | None,
+    password: str | None,
+) -> str:
+    """Assemble a ``postgresql://`` DSN from structured connection fields.
+
+    Userinfo is only included when a username is present, matching libpq
+    semantics (an empty password is omitted rather than sent as an empty auth).
+    """
+    port_part = f":{port}" if port else ""
+    if username:
+        # Avoid leaking the password into logs via the DSN string returned to
+        # callers; we still need it in the connect call, so build it here.
+        userinfo = username
+        if password:
+            userinfo += f":{password}"
+        userinfo += "@"
+    else:
+        userinfo = ""
+    db_part = f"/{database}" if database else ""
+    return f"postgresql://{userinfo}{host}{port_part}{db_part}"
+
+
+def _resolve_ref(conn_secret_ref: str | None) -> str:
+    """Resolve a ``conn_secret_ref`` string to a real DSN (legacy mode)."""
     if not conn_secret_ref:
-        raise SourceNotResolvableError("empty conn_secret_ref")
+        raise SourceNotResolvableError(
+            "no connection configured: set conn_secret_ref or host"
+        )
     if conn_secret_ref.startswith("env://"):
         name = conn_secret_ref[len("env://") :]
         value = os.environ.get(name)
@@ -396,10 +468,15 @@ class AsyncpgConnector:
 
 
 async def execute_query(
-    conn_secret_ref: str,
-    allowed_tables: list[str],
-    sql: str,
+    conn_secret_ref: str | None = None,
+    allowed_tables: list[str] | None = None,
+    sql: str = "",
     *,
+    host: str | None = None,
+    port: int | None = None,
+    database: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
     connector: DbConnector | None = None,
     mask: bool = True,
     timeout: float = DEFAULT_QUERY_TIMEOUT_SECONDS,
@@ -407,12 +484,23 @@ async def execute_query(
 ) -> dict[str, Any]:
     """Validate, resolve, execute, and desensitize a read-only query.
 
+    Connection can be supplied as a legacy ``conn_secret_ref`` or as structured
+    fields (``host``/``port``/``database``/``username``/``password``); the two
+    are forwarded to :func:`resolve_dsn`.
+
     Returns a result envelope with ``columns``, ``rows``, ``row_count``,
     ``truncated``, ``desensitized``, and ``allowed_tables``. Propagates
     :class:`DbProxyError` subclasses for policy / source / execution failures.
     """
-    validate_readonly_sql(sql, allowed_tables)
-    dsn = resolve_dsn(conn_secret_ref)
+    validate_readonly_sql(sql, allowed_tables or [])
+    dsn = resolve_dsn(
+        conn_secret_ref,
+        host=host,
+        port=port,
+        database=database,
+        username=username,
+        password=password,
+    )
     conn = connector or AsyncpgConnector()
     columns, rows = await conn.execute(dsn, sql, timeout=timeout, max_rows=max_rows)
     truncated = len(rows) >= max_rows

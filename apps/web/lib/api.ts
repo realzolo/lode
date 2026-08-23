@@ -320,7 +320,17 @@ export async function fetchApplication(id: string): Promise<{
   topic: string | null;
   repos: { id: number; repo_id: number; name: string; url: string; description: string }[];
   preset_prompts: { id: number; type: string; content: string }[];
-  db_sources: { id: number; name: string; conn_secret_ref: string; allowed_tables: unknown }[];
+  db_sources: {
+    id: number;
+    name: string;
+    conn_secret_ref: string | null;
+    host: string | null;
+    port: number | null;
+    database: string | null;
+    username: string | null;
+    has_password: boolean;
+    allowed_tables: unknown;
+  }[];
 }> {
   return getJson(`/applications/${id}`);
 }
@@ -387,7 +397,15 @@ export async function unbindRepo(
 
 export interface CreateDbSourceInput {
   name: string;
-  conn_secret_ref: string;
+  // Mode 1: structured connection fields (built into a DSN at query time).
+  host?: string;
+  port?: number;
+  database?: string;
+  username?: string;
+  password?: string;
+  // Mode 2: secret reference (env:// / bare DSN). Either this or the
+  // structured fields must be supplied.
+  conn_secret_ref?: string;
   allowed_tables: string[];
 }
 
@@ -395,7 +413,12 @@ export interface DbSourceRow {
   id: number;
   application_id: number;
   name: string;
-  conn_secret_ref: string;
+  conn_secret_ref: string | null;
+  host: string | null;
+  port: number | null;
+  database: string | null;
+  username: string | null;
+  has_password: boolean;
   allowed_tables: string[];
 }
 

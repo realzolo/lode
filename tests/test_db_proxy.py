@@ -150,6 +150,35 @@ def test_resolve_dsn_literal_passthrough():
     assert resolve_dsn("postgresql://host/db") == "postgresql://host/db"
 
 
+def test_resolve_dsn_structured_builds_dsn():
+    dsn = resolve_dsn(
+        host="10.0.0.5",
+        port=5433,
+        database="orders",
+        username="ro",
+        password="secret",
+    )
+    assert dsn == "postgresql://ro:secret@10.0.0.5:5433/orders"
+
+
+def test_resolve_dsn_structured_without_credentials():
+    dsn = resolve_dsn(host="db.local", database="app")
+    assert dsn == "postgresql://db.local/app"
+
+
+def test_resolve_dsn_neither_raises():
+    with pytest.raises(SourceNotResolvableError):
+        resolve_dsn()
+
+
+def test_resolve_dsn_structured_takes_precedence():
+    # When both are supplied the structured fields win.
+    dsn = resolve_dsn(
+        conn_secret_ref="env://IGNORED", host="h", database="d"
+    )
+    assert dsn == "postgresql://h/d"
+
+
 # ---------------------------------------------------------------------------
 # Desensitization
 # ---------------------------------------------------------------------------
@@ -265,11 +294,27 @@ class _FakeSession:
 
 
 class _FakeDbSource:
-    def __init__(self, id, conn_secret_ref, allowed_tables, name="src"):
+    def __init__(
+        self,
+        id,
+        conn_secret_ref,
+        allowed_tables,
+        name="src",
+        host=None,
+        port=None,
+        database=None,
+        username=None,
+        password=None,
+    ):
         self.id = id
         self.name = name
         self.conn_secret_ref = conn_secret_ref
         self.allowed_tables = allowed_tables
+        self.host = host
+        self.port = port
+        self.database = database
+        self.username = username
+        self.password = password
 
 
 @pytest.mark.asyncio

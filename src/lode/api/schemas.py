@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AnalysisStepOut(BaseModel):
@@ -138,18 +138,44 @@ class ApplicationRepoOut(BaseModel):
 
 class CreateDbSourceIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    conn_secret_ref: str = Field(min_length=1, max_length=1000)
-    """Reference to a secret (e.g. ``env://DATABASE_URL``) — the actual DSN
-    lives in the deployment environment, never in the DB row.
-    """
+    # Mode 1 (structured): enter connection fields directly. The DSN is built
+    # at query time and the password lives in this DB row (acceptable for a
+    # self-hosted admin console; prefer env:// for stricter deployments).
+    host: str | None = Field(default=None, max_length=500)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    database: str | None = Field(default=None, max_length=200)
+    username: str | None = Field(default=None, max_length=200)
+    password: str | None = Field(default=None, max_length=2000)
+    # Mode 2 (secret ref): conn_secret_ref keeps real credentials out of the
+    # row. Either this OR (host + database) must be supplied.
+    conn_secret_ref: str | None = Field(default=None, max_length=1000)
     allowed_tables: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _require_connection(self) -> "CreateDbSourceIn":
+        structured = bool(self.host) and bool(self.database)
+        if not self.conn_secret_ref and not structured:
+            raise ValueError(
+                "provide either conn_secret_ref or both host and database"
+            )
+        if self.host and not self.database:
+            raise ValueError("database is required when host is set")
+        if self.database and not self.host:
+            raise ValueError("host is required when database is set")
+        return self
 
 
 class DbSourceOut(BaseModel):
     id: int
     application_id: int
     name: str
-    conn_secret_ref: str
+    conn_secret_ref: str | None
+    host: str | None
+    port: int | None
+    database: str | None
+    username: str | None
+    # Whether a password is configured. We never echo the raw password back.
+    has_password: bool
     allowed_tables: list[str]
 
 

@@ -354,9 +354,16 @@ async def create_db_source(
 ) -> DbSourceOut:
     """Add an application-scoped read-only data source.
 
-    The DSN itself lives in the environment (``conn_secret_ref`` is an
-    ``env://NAME`` ref or similar); ``allowed_tables`` is the SQL whitelist
-    the analysis engine respects when querying.
+    Two connection modes are supported (the schema enforces that exactly one
+    is supplied):
+
+    * **Structured** — ``host`` / ``port`` / ``database`` / ``username`` /
+      ``password`` are stored on the row and the DSN is built at query time.
+    * **Secret ref** — ``conn_secret_ref`` (``env://NAME`` / bare DSN) keeps
+      the real credentials in the deployment environment rather than this row.
+
+    ``allowed_tables`` is the SQL whitelist the analysis engine respects when
+    querying this source.
     """
     app = await session.get(Application, application_id)
     if app is None:
@@ -366,6 +373,11 @@ async def create_db_source(
         application_id=application_id,
         name=payload.name,
         conn_secret_ref=payload.conn_secret_ref,
+        host=payload.host,
+        port=payload.port,
+        database=payload.database,
+        username=payload.username,
+        password=payload.password,
         allowed_tables=payload.allowed_tables,
     )
     session.add(row)
@@ -376,6 +388,11 @@ async def create_db_source(
         application_id=row.application_id,
         name=row.name,
         conn_secret_ref=row.conn_secret_ref,
+        host=row.host,
+        port=row.port,
+        database=row.database,
+        username=row.username,
+        has_password=bool(row.password),
         allowed_tables=list(row.allowed_tables or []),
     )
 

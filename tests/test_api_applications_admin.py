@@ -364,6 +364,77 @@ async def test_admin_create_and_delete_db_source(fresh_app: int, admin: int) -> 
             assert row is None
 
 
+async def test_admin_create_db_source_with_structured_fields(
+    fresh_app: int, admin: int
+) -> None:
+    """An admin can create a source by typing the connection in directly
+    (structured host/port/database/username/password) instead of a secret ref.
+    """
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    headers = {"Authorization": f"Bearer {token}"}
+    async with _client() as client:
+        resp = await client.post(
+            f"/applications/{fresh_app}/db-sources",
+            headers=headers,
+            json={
+                "name": "orders-db",
+                "host": "10.0.0.5",
+                "port": 5433,
+                "database": "orders",
+                "username": "readonly",
+                "password": "super-secret",
+                "allowed_tables": ["orders", "order_items"],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["name"] == "orders-db"
+        assert body["host"] == "10.0.0.5"
+        assert body["port"] == 5433
+        assert body["database"] == "orders"
+        assert body["username"] == "readonly"
+        assert body["has_password"] is True
+        # The raw password must never be echoed back to the client.
+        assert "password" not in body
+        assert body["allowed_tables"] == ["orders", "order_items"]
+
+        async with AsyncSessionLocal() as session:
+            row = await session.get(DbSource, body["id"])
+            assert row is not None
+            assert row.host == "10.0.0.5"
+            assert row.password == "super-secret"
+
+
+async def test_admin_create_db_source_requires_connection(
+    fresh_app: int, admin: int
+) -> None:
+    """Neither a secret ref nor structured fields -> 422 validation error."""
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    headers = {"Authorization": f"Bearer {token}"}
+    async with _client() as client:
+        resp = await client.post(
+            f"/applications/{fresh_app}/db-sources",
+            headers=headers,
+            json={"name": "broken", "allowed_tables": []},
+        )
+        assert resp.status_code == 422, resp.text
+
+
+async def test_admin_create_db_source_requires_database_with_host(
+    fresh_app: int, admin: int
+) -> None:
+    """Host without a database is rejected by the schema validator."""
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    headers = {"Authorization": f"Bearer {token}"}
+    async with _client() as client:
+        resp = await client.post(
+            f"/applications/{fresh_app}/db-sources",
+            headers=headers,
+            json={"name": "broken", "host": "10.0.0.5", "allowed_tables": []},
+        )
+        assert resp.status_code == 422, resp.text
+
+
 async def test_admin_delete_db_source_wrong_app_returns_404(fresh_app: int, admin: int) -> None:
     """A source belonging to *another* application must not be deletable via
     this app's URL — prevents cross-app writes from leaking the resource ID."""
