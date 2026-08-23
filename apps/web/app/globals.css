@@ -367,7 +367,7 @@ code,
   width: 100%;
 }
 
-/* ---- Select (native wrapper, shares input geometry) ---- */
+/* ---- Form input (native <input>/<textarea> geometry; <Select> uses Tailwind) ---- */
 .input {
   width: 100%;
   height: 40px;
@@ -382,16 +382,6 @@ code,
 
 .input:focus {
   outline: none;
-  box-shadow: var(--focus-ring);
-}
-
-.select {
-  cursor: pointer;
-}
-
-.select:focus {
-  outline: none;
-  border-color: var(--blue);
   box-shadow: var(--focus-ring);
 }
 
