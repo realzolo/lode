@@ -38,7 +38,7 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-border bg-card p-6 text-card-foreground shadow-[0_8px_30px_rgba(0,0,0,0.18)] focus:outline-none focus-visible:shadow-geist-focus data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+        'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border border-border bg-card p-6 text-card-foreground shadow-elevation-5 focus:outline-none focus-visible:shadow-geist-focus data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
         className,
       )}
       {...props}
@@ -46,7 +46,7 @@ const DialogContent = React.forwardRef<
       {children}
       {showClose && (
         <DialogPrimitive.Close
-          className="absolute right-4 top-4 rounded-md p-1 text-muted-foreground opacity-70 transition hover:bg-accent hover:opacity-100 focus:outline-none focus-visible:shadow-geist-focus"
+          className="absolute right-4 top-4 rounded-sm p-1 text-muted-foreground opacity-70 transition hover:bg-accent hover:opacity-100 focus:outline-none focus-visible:shadow-geist-focus"
           aria-label="Close"
         >
           <IconX size={16} />

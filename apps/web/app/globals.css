@@ -423,6 +423,35 @@ code,
   border-bottom: none;
 }
 
+/* Horizontal scroll container for wide tables (DESIGN.md ex-data-table-cell).
+   Referenced by pages that render a raw <table className="table"> inside a Card. */
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Geist row hover — a faint canvas-soft-2 wash so rows read as interactive
+   without a heavy highlight. */
+.table tbody tr {
+  transition: background 0.12s ease;
+}
+
+.table tbody tr:hover {
+  background: var(--color-2);
+}
+
+/* Keep the first/last cells off the card edge when a table is flush
+   (Card with padding:0). DESIGN.md cell-padding = {spacing.xs} {spacing.sm}. */
+.table th:first-child,
+.table td:first-child {
+  padding-left: 16px;
+}
+
+.table th:last-child,
+.table td:last-child {
+  padding-right: 16px;
+}
+
 /* ---- Typography (Geist scale: heading-32 page title, negative tracking) ---- */
 .page-title {
   font-size: 32px;
