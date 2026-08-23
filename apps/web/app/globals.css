@@ -26,65 +26,100 @@
 :root {
   color-scheme: light;
 
-  /* shadcn/ui tokens (light) */
-  --background: 0 0% 100%;
-  --foreground: 0 0% 9%;
+  /* shadcn/ui tokens (light) — DESIGN.md: primary = ink #171717, page =
+     canvas-soft #fafafa, cards pure white, hairline #ebebeb, link blue #0070f3 */
+  --background: 0 0% 100%;            /* #ffffff — cards / inputs / popovers */
+  --foreground: 0 0% 9%;             /* #171717 ink */
   --card: 0 0% 100%;
   --card-foreground: 0 0% 9%;
   --popover: 0 0% 100%;
   --popover-foreground: 0 0% 9%;
-  --primary: 215 100% 50%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 0 0% 96.1%;
+  --primary: 0 0% 9%;                /* #171717 — the CTA color (black ink) */
+  --primary-foreground: 0 0% 100%;   /* white on black */
+  --secondary: 0 0% 98%;             /* #fafafa canvas-soft */
   --secondary-foreground: 0 0% 9%;
-  --muted: 0 0% 96.1%;
-  --muted-foreground: 0 0% 30%;
+  --muted: 0 0% 98%;                 /* #fafafa */
+  --muted-foreground: 0 0% 30%;      /* #4d4d4d body */
   --accent: 0 0% 96.1%;
   --accent-foreground: 0 0% 9%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 0 0% 98%;
-  --border: 0 0% 89.8%;
-  --input: 0 0% 89.8%;
-  --ring: 215 100% 50%;
-  --radius: 6px;
+  --destructive: 0 84% 60%;          /* ~#ee0000 */
+  --destructive-foreground: 0 0% 100%;
+  --border: 0 0% 92%;                /* ~#ebebeb hairline */
+  --input: 0 0% 92%;
+  --ring: 215 100% 50%;              /* #0070f3 link blue */
+  --radius: 8px;                     /* DESIGN.md rounded.md */
 
   /* Geometry */
   --sidebar-width: 256px;
   --topbar-height: 64px;
 
-  /* App-chrome surface tokens (light) */
-  --background-1: #ffffff;
-  --background-2: #fafafa;
-  --color-1: #ffffff;
-  --color-2: #f5f5f5;
+  /* ---- DESIGN.md brand tokens (raw colors) ---- */
+  --ink: #171717;
+  --body: #4d4d4d;
+  --mute: #888888;
+  --canvas: #ffffff;
+  --canvas-soft: #fafafa;
+  --canvas-soft-2: #f5f5f5;
+  --hairline: #ebebeb;
+  --hairline-strong: #a1a1a1;
+  --link: #0070f3;
+  --link-deep: #0761d1;
+  --link-bg-soft: #d3e5ff;
+  --warning: #f5a623;
+  --warning-soft: #ffefcf;
+  --warning-deep: #ab570a;
+  --violet: #7928ca;
+  --cyan: #50e3c2;
+  --highlight-pink: #ff0080;
+  /* Brand mesh-gradient stops (cyan / blue / magenta / amber) */
+  --grad-develop-start: #007cf0;
+  --grad-develop-end: #00dfd8;
+  --grad-preview-start: #7928ca;
+  --grad-preview-end: #ff0080;
+  --grad-ship-start: #ff4d4d;
+  --grad-ship-end: #f9cb28;
+  /* Focus ring (blue, per DESIGN.md) */
+  --focus-blue: #0070f3;
+
+  /* App-chrome surface tokens (light) — mirror the brand tokens above */
+  --background-1: var(--canvas-soft);   /* page body */
+  --background-2: var(--canvas-soft-2);
+  --color-1: var(--canvas);             /* cards / inputs */
+  --color-2: var(--canvas-soft-2);      /* inset / hover */
   --color-3: #ededed;
-  --color-4: #eaeaea;
-  --color-5: #d4d4d4;
+  --color-4: var(--hairline);
+  --color-5: var(--hairline-strong);
   --color-6: #bdbdbd;
   --color-7: #000000;
   --color-8: #1a1a1a;
-  --color-9: #4d4d4d;
-  --color-10: #171717;
-  --blue: #006bff;
+  --color-9: var(--body);
+  --color-10: var(--ink);
+  --blue: var(--link);
   --blue-hover: #3291ff;
-  --focus-blue: #006bff;
-  --red: #e5484d;
-  --amber: #ffae00;
+  --red: #ee0000;
+  --amber: #f5a623;
   --green: #00c389;
+
+  /* Stacked-elevation shadow variables (consumed by tailwind elevation-*).
+     Light: faint black drops + dark hairline ring. */
+  --shadow-color: rgba(0, 0, 0, 0.04);
+  --shadow-color-modal: rgba(0, 0, 0, 0.06);
+  --hairline-ring: rgba(0, 0, 0, 0.08);
 }
 
 .dark {
   color-scheme: dark;
 
-  /* shadcn/ui tokens (dark) — true Vercel dark: page #000, card #0a0a0a */
-  --background: 0 0% 0%;
+  /* shadcn/ui tokens (dark) — true Vercel dark: page #000, card #0a0a0a,
+     primary button flips to white, text near-white */
+  --background: 0 0% 4%;              /* #0a0a0a card */
   --foreground: 0 0% 93%;
-  --card: 0 0% 3.9%;
+  --card: 0 0% 4%;
   --card-foreground: 0 0% 93%;
-  --popover: 0 0% 3.9%;
+  --popover: 0 0% 4%;
   --popover-foreground: 0 0% 93%;
-  --primary: 215 100% 50%;
-  --primary-foreground: 0 0% 100%;
+  --primary: 0 0% 100%;              /* white CTA on dark */
+  --primary-foreground: 0 0% 9%;
   --secondary: 0 0% 14.9%;
   --secondary-foreground: 0 0% 98%;
   --muted: 0 0% 14.9%;
@@ -97,26 +132,55 @@
   --input: 0 0% 14.9%;
   --ring: 215 100% 50%;
 
+  /* DESIGN.md brand tokens (dark) */
+  --ink: #ededed;
+  --body: rgba(255, 255, 255, 0.63);
+  --mute: #888888;
+  --canvas: #0a0a0a;
+  --canvas-soft: #000000;
+  --canvas-soft-2: #1a1a1a;
+  --hairline: rgba(255, 255, 255, 0.10);
+  --hairline-strong: rgba(255, 255, 255, 0.22);
+  --link: #3291ff;
+  --link-deep: #0070f3;
+  --link-bg-soft: rgba(0, 112, 243, 0.18);
+  --warning: #f5a623;
+  --warning-soft: rgba(245, 166, 35, 0.15);
+  --warning-deep: #ab570a;
+  --violet: #a970ff;
+  --cyan: #50e3c2;
+  --highlight-pink: #ff4d9e;
+  --grad-develop-start: #007cf0;
+  --grad-develop-end: #00dfd8;
+  --grad-preview-start: #a970ff;
+  --grad-preview-end: #ff4d9e;
+  --grad-ship-start: #ff4d4d;
+  --grad-ship-end: #f9cb28;
+  --focus-blue: #47a8ff;
+
   /* App-chrome surface tokens (dark) */
-  --background-1: #000000;
-  --background-2: #0a0a0a;
-  --color-1: #0a0a0a;
-  --color-2: #1a1a1a;
+  --background-1: var(--canvas-soft);
+  --background-2: var(--canvas-soft-2);
+  --color-1: var(--canvas);
+  --color-2: var(--canvas-soft-2);
   --color-3: #262626;
-  --color-4: rgba(255, 255, 255, 0.14);
-  --color-5: rgba(255, 255, 255, 0.22);
+  --color-4: var(--hairline);
+  --color-5: var(--hairline-strong);
   --color-6: rgba(255, 255, 255, 0.28);
   --color-7: #ffffff;
   --color-8: #eaeaea;
-  --color-9: rgba(255, 255, 255, 0.63);
-  --color-10: #ededed;
-  --blue: #006efe;
+  --color-9: var(--body);
+  --color-10: var(--ink);
+  --blue: var(--link);
   --blue-hover: #3291ff;
-  --focus-blue: #47a8ff;
   --red: #ff4d4f;
-  --red-tint: rgba(255, 77, 79, 0.15);
-  --amber: #ffae00;
+  --amber: #f5a623;
   --green: #00c389;
+
+  /* Elevation: dark uses a stronger black drop + light hairline ring */
+  --shadow-color: rgba(0, 0, 0, 0.5);
+  --shadow-color-modal: rgba(0, 0, 0, 0.6);
+  --hairline-ring: rgba(255, 255, 255, 0.10);
 }
 
 /* Legacy semantic aliases (raw `var(--x)` usages in pages). These reference the
@@ -134,7 +198,7 @@
   /* Geist status badge tints (~15% alpha of the semantic color). */
   --green-tint: rgba(0, 195, 137, 0.15);
   --amber-tint: rgba(255, 174, 0, 0.15);
-  --red-tint: rgba(229, 72, 77, 0.15);
+  --red-tint: rgba(238, 0, 0, 0.12);
 }
 
 * {
@@ -183,7 +247,7 @@ code,
   position: sticky;
   top: 0;
   height: 100vh;
-  background: var(--background-1);
+  background: var(--canvas);
 }
 
 .sidebar-logo {
@@ -228,6 +292,9 @@ code,
 .nav-item.active {
   color: var(--color-10);
   background: var(--color-2);
+  /* DESIGN.md ex-app-shell-row: active state uses brand primary as a left-edge
+     indicator bar. var(--primary) is ink in light, white in dark. */
+  box-shadow: inset 2px 0 0 0 var(--primary);
 }
 
 /* ---- In-app second-level nav (Vercel-style nested menu) ---- */
@@ -343,9 +410,13 @@ code,
 }
 
 .table th {
-  color: var(--color-9);
+  color: var(--mute);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-weight: 400;
-  font-size: 13px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  background: var(--canvas-soft-2);
 }
 
 .table tr:last-child td {
@@ -684,10 +755,14 @@ button {
   gap: 48px;
   padding: 56px;
   border-right: 1px solid var(--color-4);
+  /* DESIGN.md mesh gradient — the brand's only decorative chrome (cyan / blue /
+     magenta / amber). Atmospheric backdrop at hero scale, never miniaturised. */
   background:
-    radial-gradient(120% 120% at 0% 0%, rgba(0, 110, 254, 0.14), transparent 46%),
-    radial-gradient(120% 120% at 100% 100%, rgba(0, 110, 254, 0.08), transparent 46%),
-    var(--background-1);
+    radial-gradient(70% 90% at 12% 6%, rgba(0, 124, 240, 0.42), transparent 60%),
+    radial-gradient(60% 80% at 90% 10%, rgba(121, 40, 202, 0.38), transparent 62%),
+    radial-gradient(70% 90% at 82% 94%, rgba(255, 0, 128, 0.32), transparent 60%),
+    radial-gradient(60% 80% at 6% 96%, rgba(0, 223, 216, 0.36), transparent 62%),
+    var(--canvas);
 }
 
 .login-aside-inner {
@@ -953,4 +1028,77 @@ button {
   .skeleton::after {
     animation: none;
   }
+}
+
+/* ============================================================
+   DESIGN.md — brand utilities
+   ============================================================ */
+
+/* Mesh gradient: the brand's only decorative chrome (cyan / blue / magenta /
+   amber). Atmospheric backdrop at hero scale only — never miniaturised or cropped. */
+.mesh-gradient {
+  background:
+    radial-gradient(60% 80% at 15% 10%, rgba(0, 124, 240, 0.45), transparent 60%),
+    radial-gradient(50% 70% at 85% 15%, rgba(121, 40, 202, 0.40), transparent 60%),
+    radial-gradient(60% 80% at 75% 90%, rgba(255, 0, 128, 0.35), transparent 60%),
+    radial-gradient(55% 75% at 10% 95%, rgba(0, 223, 216, 0.38), transparent 60%),
+    var(--canvas);
+}
+
+/* Subtle variant for in-page section backdrops (feature-mesh-band). */
+.mesh-gradient-soft {
+  background:
+    radial-gradient(45% 60% at 20% 0%, rgba(0, 124, 240, 0.18), transparent 70%),
+    radial-gradient(45% 60% at 90% 20%, rgba(255, 0, 128, 0.14), transparent 70%),
+    var(--canvas);
+}
+
+/* Technical eyebrow / label — mono, uppercase. DESIGN.md caption-mono. */
+.eyebrow {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+
+/* Inline body link — DESIGN.md link-inline (#0070f3, underline on hover). */
+.link-inline {
+  color: var(--link);
+  text-decoration: none;
+}
+.link-inline:hover {
+  text-decoration: underline;
+}
+
+/* Small metadata pill — DESIGN.md badge-secondary. */
+.badge-secondary {
+  display: inline-flex;
+  align-items: center;
+  background: var(--canvas-soft-2);
+  color: var(--body);
+  font-size: 12px;
+  line-height: 16px;
+  padding: 0 8px;
+  border-radius: 9999px;
+}
+
+/* Marketing announcement pill — DESIGN.md banner-marketing. */
+.banner-marketing {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--canvas-soft-2);
+  color: var(--body);
+  font-size: 14px;
+  line-height: 20px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+}
+
+/* Polarity-flipped dark band — DESIGN.md showcase-band-dark. */
+.showcase-band-dark {
+  background: var(--ink);
+  color: #ffffff;
 }

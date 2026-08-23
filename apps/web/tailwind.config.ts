@@ -48,21 +48,63 @@ const config: Config = {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
+        // DESIGN.md brand tokens — raw colors consumed as `bg-ink`, `text-body`,
+        // `border-hairline`, `text-link`, etc. Sit beside the shadcn HSL tokens
+        // so both primitive components and hand-authored CSS share one palette.
+        ink: 'var(--ink)',
+        body: 'var(--body)',
+        mute: 'var(--mute)',
+        canvas: 'var(--canvas)',
+        'canvas-soft': 'var(--canvas-soft)',
+        'canvas-soft-2': 'var(--canvas-soft-2)',
+        hairline: 'var(--hairline)',
+        'hairline-strong': 'var(--hairline-strong)',
+        link: 'var(--link)',
+        'link-deep': 'var(--link-deep)',
+        'link-bg-soft': 'var(--link-bg-soft)',
+        warning: 'var(--warning)',
+        'warning-soft': 'var(--warning-soft)',
+        'warning-deep': 'var(--warning-deep)',
+        violet: 'var(--violet)',
+        cyan: 'var(--cyan)',
+        'highlight-pink': 'var(--highlight-pink)',
       },
       borderRadius: {
-        // Geist radius scale: 6px controls/cards, 12px overlays, 16px modals.
+        // DESIGN.md radius scale: 6px in-app controls, 8px marketing cards,
+        // 12px overlays/large cards, 16px modals, 64px tab pills, 100px CTA pills.
         sm: '6px',
-        md: '6px',
+        md: '8px',
         lg: '12px',
         xl: '16px',
         '2xl': '16px',
         '3xl': '16px',
+        'pill-sm': '64px',
+        pill: '100px',
         full: '9999px',
       },
       boxShadow: {
         // Geist focus ring: 2px background-colored gap + 4px blue ring.
         // Blue lightens to blue-900 in dark mode for accessible contrast.
         'geist-focus': '0 0 0 2px var(--background-1), 0 0 0 4px var(--focus-blue)',
+        // DESIGN.md stacked elevation — multiple small offsets + inset hairline
+        // ring. Drop opacity rides `--shadow-color`, the crisp edge rides
+        // `--hairline-ring`, so both adapt to light/dark automatically.
+        'elevation-1': 'inset 0 0 0 1px var(--hairline-ring)',
+        'elevation-2':
+          '0 1px 1px rgba(0,0,0,0.02), 0 2px 2px var(--shadow-color), inset 0 0 0 1px var(--hairline-ring)',
+        'elevation-3':
+          '0 2px 2px var(--shadow-color), 0 8px 8px -8px var(--shadow-color), inset 0 0 0 1px var(--hairline-ring)',
+        'elevation-4':
+          '0 2px 2px var(--shadow-color), 0 8px 16px -4px var(--shadow-color), inset 0 0 0 1px var(--hairline-ring)',
+        'elevation-5':
+          '0 1px 1px rgba(0,0,0,0.02), 0 8px 16px -4px var(--shadow-color), 0 24px 32px -8px var(--shadow-color-modal), inset 0 0 0 1px var(--hairline-ring)',
+      },
+      fontFamily: {
+        // Geist is loaded via `geist/font` in the locale layout and exposed as
+        // --font-geist-sans / --font-geist-mono. Inter/JetBrains Mono are the
+        // documented open-source fallbacks (DESIGN.md §Typography).
+        sans: ['var(--font-geist-sans)', 'Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        mono: ['var(--font-geist-mono)', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       keyframes: {
         'accordion-down': {
