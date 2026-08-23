@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import (
+    ARRAY,
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Identity,
     Index,
@@ -15,10 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from sqlalchemy import ARRAY, Float
-
 from lode.db.base import Base
-from lode.db.vector import EMBEDDING_DIM
 
 
 class Memory(Base):
@@ -46,6 +45,14 @@ class Memory(Base):
     is_valid: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true"
     )
+    # Time-to-live for a reusable conclusion. NULL means "never expires".
+    # When set, the memory is treated as stale (not returned by get_memory and
+    # reaped by the startup reaper) once ``expires_at`` passes — so a conclusion
+    # from a long-resolved incident does not keep shadowing fresh analyses
+    # forever. Set from ``settings.memory_ttl_days`` on write.
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
     )
@@ -56,4 +63,16 @@ class Memory(Base):
     __table_args__ = (
         Index("ix_memories_application_id", "application_id"),
         Index("ix_memories_trigger_signature", "trigger_signature"),
+        Index("ix_memories_expires_at", "expires_at"),
     )
+
+    @staticmethod
+    def ttl_expiry(ttl_days: int) -> datetime | None:
+        """Compute ``expires_at`` for a memory written now with the given TTL.
+
+        Returns ``None`` when ``ttl_days <= 0`` (no expiry).
+        """
+        if ttl_days <= 0:
+            return None
+        return datetime.now(UTC) + timedelta(days=ttl_days)
+

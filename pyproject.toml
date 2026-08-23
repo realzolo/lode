@@ -14,6 +14,7 @@ dependencies = [
     "aiokafka>=0.12.0",
     "python-dotenv>=1.0.1",
     "cryptography>=44.0.0",
+    "prometheus-client>=0.21.0",
 ]
 
 [build-system]

@@ -11,14 +11,19 @@ heuristic. That keeps the product fully runnable without external API keys.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from lode.config import settings
 from lode.crypto import decrypt_secret
+from lode.metrics import LLM_CALLS, LLM_LATENCY
 
 logger = logging.getLogger("lode.engine.llm")
 
@@ -59,6 +64,19 @@ def resolve_api_key(api_key_ref: str) -> str:
     return decrypt_secret(api_key_ref) or ""
 
 
+def _is_retryable(exc: Exception) -> bool:
+    """Classify a failure as transient (worth retrying) or fatal.
+
+    * Network errors (DNS, refused, reset) and timeouts are transient.
+    * HTTP 5xx from the provider (overload, gateway) are transient.
+    * HTTP 4xx are client errors (bad key, bad request) — retrying cannot fix
+      them, so we fail closed to the heuristic immediately.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return 500 <= getattr(exc, "code", 0) <= 599
+    return True
+
+
 async def complete(
     system_prompt: str,
     user_prompt: str,
@@ -67,6 +85,10 @@ async def complete(
     """Return the assistant message text, or ``None`` if unavailable.
 
     The call is executed in a worker thread because ``urllib`` is blocking.
+    Transient failures (network blips, provider 5xx) are retried with bounded
+    exponential backoff; after exhausting retries the engine degrades to the
+    deterministic offline heuristic so the product never hard-fails on an LLM
+    outage.
     """
     if config is None or not config.api_key_ref:
         return None
@@ -87,16 +109,38 @@ async def complete(
 
     def _post() -> str:
         req = urllib.request.Request(config.base_url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (internal)
+        with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         return _extract_text(config.provider, body)
 
-    try:
-        return await _run_blocking(_post)
-    except Exception as exc:  # noqa: BLE001 - degrade gracefully to heuristic
-        logger.warning("LLM call failed, using heuristic fallback: %s", exc)
-        return None
+    max_retries = settings.llm_max_retries
+    base_delay = settings.llm_retry_base_delay
+    last_exc: Exception | None = None
+    # Time only the network round-trip(s); retries add their own sleep that is
+    # not part of "provider latency". A successful call reports one observation.
+    started = time.monotonic()
+    for attempt in range(1, max_retries + 1):
+        try:
+            text = await _run_blocking(_post)
+            LLM_LATENCY.observe(time.monotonic() - started)
+            LLM_CALLS.labels(outcome="success").inc()
+            return text
+        except Exception as exc:  # noqa: BLE001 - retry transient, degrade on exhaustion
+            last_exc = exc
+            if attempt >= max_retries or not _is_retryable(exc):
+                break
+            delay = base_delay * (2 ** (attempt - 1))
+            logger.warning(
+                "LLM call attempt %d/%d failed (transient), retrying in %.1fs: %s",
+                attempt, max_retries, delay, exc,
+            )
+            await asyncio.sleep(delay)
 
+    LLM_LATENCY.observe(time.monotonic() - started)
+    LLM_CALLS.labels(outcome="fallback").inc()
+    logger.warning("LLM call failed after %d attempt(s), using heuristic fallback: %s",
+                   max_retries, last_exc)
+    return None
 
 def _openai_payload(api_key: str, base_url: str, model: str, system: str, user: str) -> tuple[dict, dict]:
     payload = {

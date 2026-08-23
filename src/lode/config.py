@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     kafka_topic_pattern: str = r"alert\..*"
     kafka_dlq_topic: str = "lode.dlq"
     kafka_unassigned_topic: str = "lode.unassigned"
+    # Max analyses allowed to run concurrently inside one consumer process.
+    # Caps DB-connection and LLM-provider pressure during redelivery bursts.
+    engine_concurrency: int = 5
 
     # Security / auth
     # Required (no default): a missing signing key must fail fast rather than
@@ -81,6 +84,18 @@ class Settings(BaseSettings):
     # ``rate_limit_enabled`` to false to disable entirely.
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 600
+
+    # LLM resilience (T9): bounded exponential-backoff retries on transient
+    # errors (network blips, provider 5xx). 4xx are never retried. After the
+    # retries are exhausted the runner degrades to the deterministic heuristic.
+    llm_max_retries: int = 3
+    llm_retry_base_delay: float = 0.5
+
+    # Shared-memory aging (T8): reusable conclusions (the ``memories`` table) are
+    # given this many days of validity when written. Expired memories are no
+    # longer returned by retrieval and are reaped at startup. Set to 0 to disable
+    # expiry (keep memories forever).
+    memory_ttl_days: int = 90
 
 
 @lru_cache

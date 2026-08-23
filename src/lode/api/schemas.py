@@ -279,6 +279,25 @@ class AddHintIn(BaseModel):
     author: str = Field(default="", max_length=120)
 
 
+class DeadLetterOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str
+    topic: str
+    dedupe_key: str | None = None
+    payload: dict | None = None
+    reason: str | None = None
+    replayed: bool
+    created_at: datetime
+
+
+class ReplayOut(BaseModel):
+    id: int
+    topic: str
+    status: str
+
+
 class AuthLoginIn(BaseModel):
     email: str
     password: str

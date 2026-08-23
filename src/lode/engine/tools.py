@@ -13,10 +13,12 @@ secret ref), and masks sensitive columns before returning rows.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
+from lode.crypto import decrypt_secret
 from lode.db.models.alert import Alert
 from lode.db.models.application import (
     ApplicationRepo,
@@ -24,9 +26,8 @@ from lode.db.models.application import (
     PresetPrompt,
 )
 from lode.db.models.git import GitRepo
-from lode.crypto import decrypt_secret
 from lode.db.models.memory import Memory
-from lode.engine.db_proxy import DbProxyError, DbConnector, execute_query
+from lode.engine.db_proxy import DbConnector, DbProxyError, execute_query
 
 
 async def search_code(session, application_id: int) -> dict[str, Any]:
@@ -177,12 +178,16 @@ async def get_memory(
     """
     # 1. Exact signature override (deterministic + backward compatible).
     if dedupe_key:
+        # Skip expired conclusions (T8): a stale memory must not shadow a fresh
+        # analysis of the same incident.
+        now_utc = datetime.now(UTC)
         exact = (
             await session.execute(
                 select(Memory)
                 .where(Memory.application_id == application_id)
                 .where(Memory.trigger_signature == dedupe_key)
                 .where(Memory.is_valid.is_(True))
+                .where(or_(Memory.expires_at.is_(None), Memory.expires_at > now_utc))
                 .order_by(Memory.updated_at.desc())
             )
         ).scalars().first()

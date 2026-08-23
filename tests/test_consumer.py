@@ -48,6 +48,26 @@ class FakeSession:
                 self._next_id += 1
                 setattr(obj, "id", self._next_id)
 
+    async def execute(self, stmt):
+        # Minimal stub for the idempotency lookup (select in-flight Analysis by
+        # dedupe_key). Defaults to "no in-flight analysis"; tests that need a
+        # match monkeypatch this method on the instance.
+        class _Scalars:
+            def first(self):
+                return None
+
+            def all(self):
+                return []
+
+        class _Result:
+            def scalars(self):
+                return _Scalars()
+
+            def scalar_one_or_none(self):
+                return None
+
+        return _Result()
+
 
 VALID_MSG = {
     "schema_version": "1.1",
@@ -137,3 +157,49 @@ async def test_valid_message_persists_and_schedules() -> None:
     assert analysis.alert_id == alert.id
     # The analysis engine should have been scheduled with the new analysis id.
     assert scheduled["analysis_id"] == analysis.id
+
+
+async def test_duplicate_in_flight_is_reused() -> None:
+    producer = FakeProducer()
+    session = FakeSession()
+    scheduled: dict[str, int] = {}
+
+    def fake_schedule(analysis_id: int) -> None:
+        scheduled["analysis_id"] = analysis_id
+
+    async def fake_resolve(db, topic):
+        return 7
+
+    async def fake_execute(stmt):
+        # Simulate an existing in-flight (pending/running) analysis for the key.
+        class _Scalars:
+            def first(self):
+                return 99
+
+        class _Result:
+            def scalars(self):
+                return _Scalars()
+
+            def scalar_one_or_none(self):
+                return 99
+
+        return _Result()
+
+    session.execute = fake_execute  # type: ignore[assignment]
+    saved = consumer_main.resolve_application_id
+    consumer_main.resolve_application_id = fake_resolve
+    try:
+        await consumer_main.process_message(
+            "alert.prod.x",
+            json.dumps(VALID_MSG).encode(),
+            producer,
+            session=session,
+            schedule=fake_schedule,
+        )
+    finally:
+        consumer_main.resolve_application_id = saved
+
+    # No Alert/Analysis should be created and the engine must not be scheduled.
+    assert producer.sent == {}
+    assert session.added == []
+    assert "analysis_id" not in scheduled

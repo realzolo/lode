@@ -18,11 +18,13 @@ import contextvars
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import select, update
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from lode.api.deps import require_user
@@ -30,14 +32,18 @@ from lode.api.routes.alerts import router as alerts_router
 from lode.api.routes.analyses import router as analyses_router
 from lode.api.routes.applications import router as applications_router
 from lode.api.routes.auth import router as auth_router
+from lode.api.routes.dead_letters import router as dead_letters_router
 from lode.api.routes.health import router as health_router
 from lode.api.routes.invites import router as invites_router
-from lode.api.routes.queries import router as queries_router
 from lode.api.routes.memories import router as memories_router
+from lode.api.routes.metrics import router as metrics_router
+from lode.api.routes.queries import router as queries_router
 from lode.api.routes.settings import router as settings_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
 from lode.db.models.ai_model import reencrypt_plaintext_keys
+from lode.db.models.analysis import Analysis
+from lode.db.models.memory import Memory
 from lode.db.session import AsyncSessionLocal
 from lode.migrations import run_migrations
 
@@ -73,8 +79,50 @@ async def lifespan(app: FastAPI) -> None:
             count = await reencrypt_plaintext_keys(session)
             if count:
                 logger.info("re-encrypted %d legacy AI-model key(s)", count)
-        except Exception:  # noqa: BLE001 - best-effort, never block startup
+        except Exception:
             logger.exception("failed to re-encrypt legacy AI-model keys")
+
+    # Recover zombie analyses left "running" by a crashed/restarted worker. A
+    # status that sticks at "running" would hide a missing conclusion from the
+    # UI forever; mark them failed so operators can re-analyze. Best-effort so
+    # a broken recovery never blocks startup.
+    async with AsyncSessionLocal() as session:
+        try:
+            zombies = (
+                await session.execute(
+                    select(Analysis).where(Analysis.status == "running")
+                )
+            ).scalars().all()
+            for z in zombies:
+                z.status = "failed"
+                z.evidence = {**(z.evidence or {}), "recovered_on_startup": True}
+            if zombies:
+                await session.commit()
+                logger.warning("recovered %d zombie running analysis(es)", len(zombies))
+        except Exception:
+            logger.exception("failed to recover zombie analyses")
+
+    # Reap shared memories that have aged past their TTL (T8). Renewed memories
+    # get a fresh ``expires_at`` on write, so only truly stale conclusions are
+    # retired here. Best-effort so a transient DB error never blocks startup.
+    async with AsyncSessionLocal() as session:
+        try:
+            now_utc = datetime.now(UTC)
+            reap = (
+                await session.execute(
+                    update(Memory)
+                    .where(Memory.expires_at.isnot(None))
+                    .where(Memory.expires_at < now_utc)
+                    .where(Memory.is_valid.is_(True))
+                    .values(is_valid=False)
+                )
+            )
+            reaped = reap.rowcount
+            if reaped:
+                await session.commit()
+                logger.info("reaped %d expired shared memory entr(y/ies)", reaped)
+        except Exception:
+            logger.exception("failed to reap expired shared memories")
     yield
 
 
@@ -88,7 +136,7 @@ app = FastAPI(
 # M6 hardening: rate limiting + baseline security headers. CORS is added last
 # (below) so it remains the outermost layer and still stamps CORS headers on
 # rate-limited (429) responses.
-from lode.api.rate_limit import HardeningMiddleware, RateLimiter  # noqa: E402
+from lode.api.rate_limit import HardeningMiddleware, RateLimiter
 
 app.add_middleware(
     HardeningMiddleware,
@@ -151,6 +199,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 # Open routes.
 app.include_router(health_router)
+app.include_router(dead_letters_router)
+app.include_router(metrics_router)
 app.include_router(auth_router)
 
 # Protected business routes (require a valid bearer token).

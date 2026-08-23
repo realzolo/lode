@@ -25,9 +25,9 @@ dependency (hermetic tests swap it for an in-memory stub).
 
 from __future__ import annotations
 
-from typing import Sequence
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from lode.config import settings
 from lode.db.models.memory import Memory
@@ -38,6 +38,16 @@ _PGVECTOR_BACKENDS = frozenset({"pgvector"})
 
 def _use_pgvector(backend: str | None) -> bool:
     return (backend or settings.embedding_backend) in _PGVECTOR_BACKENDS
+
+
+def _not_expired_clause():
+    """Clause excluding TTL-expired memories (T8).
+
+    NULL ``expires_at`` means permanent; otherwise the row must still be in the
+    future. Computed once per call so all candidates in one search share a clock.
+    """
+    now_utc = datetime.now(UTC)
+    return or_(Memory.expires_at.is_(None), Memory.expires_at > now_utc)
 
 
 async def semantic_search(
@@ -98,6 +108,7 @@ def _build_pgvector_stmt(
         .where(Memory.application_id == application_id)
         .where(Memory.is_valid.is_(True))
         .where(Memory.embedding.isnot(None))
+        .where(_not_expired_clause())
         .order_by("distance")
         .limit(top_k)
     )
@@ -127,6 +138,7 @@ async def _semantic_search_python(
         .where(Memory.application_id == application_id)
         .where(Memory.is_valid.is_(True))
         .where(Memory.embedding.isnot(None))
+        .where(_not_expired_clause())
     )
     rows = (await session.execute(stmt)).scalars().all()
 

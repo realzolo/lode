@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -108,4 +109,38 @@ class AnalysisStep(Base):
             name="status",
         ),
         Index("ix_analysis_steps_analysis_id", "analysis_id"),
+    )
+
+
+class DeadLetter(Base):
+    """Messages that failed intake (DLQ) or arrived on an unmapped topic.
+
+    Persisted (in addition to being sent to the Kafka DLQ/unassigned topic) so
+    operators can audit and replay them via the API instead of losing them
+    silently in a topic nobody consumes.
+    """
+
+    __tablename__ = "dead_letters"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=True), primary_key=True
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)  # "dlq" | "unassigned"
+    topic: Mapped[str] = mapped_column(Text, nullable=False)
+    dedupe_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    replayed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        Index("ix_dead_letters_kind", "kind"),
+        Index("ix_dead_letters_created_at", "created_at"),
     )
