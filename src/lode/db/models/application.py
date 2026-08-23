@@ -125,7 +125,18 @@ class DbSource(Base):
     database: Mapped[str | None] = mapped_column(Text, nullable=True)
     username: Mapped[str | None] = mapped_column(Text, nullable=True)
     password: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # TLS mode for structured connections. ``None`` leaves libpq's default
+    # (prefer); ``require`` / ``verify-full`` force an encrypted link so a
+    # cross-network connection to a production replica can't downgrade to
+    # cleartext. Only meaningful for structured (host-based) sources.
+    sslmode: Mapped[str | None] = mapped_column(Text, nullable=True)
     allowed_tables: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    # Per-source extra column names to mask on top of the built-in heuristic
+    # hints. Lets an operator desensitize application-specific PII columns that
+    # the generic name-matcher would otherwise let through.
+    sensitive_columns: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default="[]"
     )
     created_at: Mapped[datetime] = mapped_column(

@@ -7,7 +7,9 @@ operators register OpenAI-/Anthropic-compatible endpoints.
 
 Secrets (``api_key_ref``) are never returned to the client — only non-sensitive
 metadata. We support ``env://NAME`` references so the real credential stays in
-the deployment environment and never lands in the database row.
+the deployment environment and never lands in the database row. A literal key
+supplied directly is encrypted at rest (Fernet, keyed off ``secret_key``) so the
+plaintext never persists in the ``ai_model_configs`` table.
 """
 
 from __future__ import annotations
@@ -19,11 +21,23 @@ from lode.api.schemas import (
     AiModelConfigIn,
     AiModelConfigOut,
 )
+from lode.crypto import encrypt_secret
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.application import Application
 from lode.db.models.git import GitCredential, GitRepo
 from lode.db.session import AsyncSessionLocal
 from sqlalchemy import select
+
+
+def _store_key_ref(api_key_ref: str) -> str:
+    """Normalize an ``api_key_ref`` for storage.
+
+    ``env://NAME`` references are kept verbatim. A literal key is encrypted with
+    :func:`encrypt_secret` so the plaintext never lands in the database row.
+    """
+    if api_key_ref.startswith("env://"):
+        return api_key_ref
+    return encrypt_secret(api_key_ref) or ""
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -161,7 +175,7 @@ async def create_ai_model(
             application_id=payload.application_id,
             provider=payload.provider,
             base_url=payload.base_url,
-            api_key_ref=payload.api_key_ref,
+            api_key_ref=_store_key_ref(payload.api_key_ref),
             model=payload.model,
             is_default=payload.is_default,
         )
@@ -198,9 +212,10 @@ async def update_ai_model(
         model.provider = payload.provider
         model.base_url = payload.base_url
         # Only overwrite the secret when a non-empty value is supplied, so
-        # operators can update metadata without re-pasting the key.
+        # operators can update metadata without re-pasting the key. A literal
+        # value is re-encrypted at rest; an ``env://`` reference is kept as-is.
         if payload.api_key_ref:
-            model.api_key_ref = payload.api_key_ref
+            model.api_key_ref = _store_key_ref(payload.api_key_ref)
         model.model = payload.model
 
         if payload.is_default:

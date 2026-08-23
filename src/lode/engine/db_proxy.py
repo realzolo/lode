@@ -309,6 +309,7 @@ def resolve_dsn(
     database: str | None = None,
     username: str | None = None,
     password: str | None = None,
+    sslmode: str | None = None,
 ) -> str:
     """Resolve a data source to a real DSN string.
 
@@ -322,7 +323,8 @@ def resolve_dsn(
       resolved via :func:`_resolve_ref` (``env://`` / ``vault://`` / bare
       literal), keeping real credentials out of the DB row.
 
-    Structured mode takes precedence when both are present.
+    Structured mode takes precedence when both are present. ``sslmode`` is only
+    applied to structured DSNs (secret refs carry their own query string).
     """
     if host:
         return _build_dsn(
@@ -331,6 +333,7 @@ def resolve_dsn(
             database=database,
             username=username,
             password=password,
+            sslmode=sslmode,
         )
     return _resolve_ref(conn_secret_ref)
 
@@ -342,12 +345,16 @@ def _build_dsn(
     database: str | None,
     username: str | None,
     password: str | None,
+    sslmode: str | None = None,
 ) -> str:
     """Assemble a ``postgresql://`` DSN from structured connection fields.
 
     Userinfo is only included when a username is present, matching libpq
     semantics (an empty password is omitted rather than sent as an empty auth).
     When ``port`` is omitted the standard PostgreSQL port (5432) is assumed.
+    When ``sslmode`` is supplied it is appended as a query parameter so a
+    cross-network link can be forced onto TLS (e.g. ``require`` /
+    ``verify-full``) instead of silently falling back to cleartext.
     """
     resolved_port = port or 5432
     port_part = f":{resolved_port}"
@@ -361,7 +368,10 @@ def _build_dsn(
     else:
         userinfo = ""
     db_part = f"/{database}" if database else ""
-    return f"postgresql://{userinfo}{host}{port_part}{db_part}"
+    dsn = f"postgresql://{userinfo}{host}{port_part}{db_part}"
+    if sslmode:
+        dsn += f"?sslmode={sslmode}"
+    return dsn
 
 
 def _resolve_ref(conn_secret_ref: str | None) -> str:
@@ -395,9 +405,21 @@ def _is_sensitive(column: str) -> bool:
     return any(hint in c for hint in SENSITIVE_COLUMN_HINTS)
 
 
-def desensitize(columns: list[str], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Mask values in sensitive columns. Returns a new list of row dicts."""
-    sensitive_idx = [c for c in columns if _is_sensitive(c)]
+def desensitize(
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    extra_columns: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Mask values in sensitive columns. Returns a new list of row dicts.
+
+    A column is masked when its name matches a built-in heuristic hint *or* it
+    is listed in ``extra_columns`` (per-source operator configuration), so
+    application-specific PII columns can be protected without code changes.
+    """
+    extra = {str(c).lower() for c in (extra_columns or [])}
+    sensitive_idx = [
+        c for c in columns if _is_sensitive(c) or c.lower() in extra
+    ]
     if not sensitive_idx:
         return rows
     out: list[dict[str, Any]] = []
@@ -464,6 +486,46 @@ class AsyncpgConnector:
             await conn.close()
 
 
+async def test_connection(dsn: str, *, connector: DbConnector | None = None, timeout: float = 5.0) -> float:
+    """Open a connection to ``dsn`` and immediately close it.
+
+    Used by the pre-save "test connection" flow. Returns the round-trip time in
+    seconds. Any failure (auth, network, bad DSN, unsupported ``vault://``
+    reference) propagates as an exception so the caller can surface it as a
+    structured ``{ok: false, error}`` result rather than a 500.
+    """
+    conn = connector or AsyncpgConnector()
+    # The real connector's ``execute`` would run SQL; for a pure connectivity
+    # check we just open/close. ``_FakeConnector``-style injectables implement
+    # ``execute`` too, so we expose a dedicated path here.
+    return await _open_and_close(dsn, connector=conn, timeout=timeout)
+
+
+async def _open_and_close(dsn: str, *, connector: DbConnector, timeout: float) -> float:
+    import time
+
+    start = time.monotonic()
+    if isinstance(connector, AsyncpgConnector):
+        try:
+            conn = await asyncpg.connect(dsn, timeout=timeout)
+        except asyncpg.InvalidAuthorizationSpecificationError as exc:
+            raise SourceNotResolvableError(
+                f"authentication failed for data source: {exc}"
+            ) from exc
+        except Exception as exc:  # connection refused, timeout, bad DSN
+            raise SourceNotResolvableError(
+                f"could not connect to data source: {exc}"
+            ) from exc
+        try:
+            await conn.execute("SELECT 1")
+        finally:
+            await conn.close()
+    else:
+        # Injectable connector: run the harmless probe query through it.
+        await connector.execute(dsn, "SELECT 1", timeout=timeout, max_rows=1)
+    return time.monotonic() - start
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -479,6 +541,8 @@ async def execute_query(
     database: str | None = None,
     username: str | None = None,
     password: str | None = None,
+    sslmode: str | None = None,
+    sensitive_columns: list[str] | None = None,
     connector: DbConnector | None = None,
     mask: bool = True,
     timeout: float = DEFAULT_QUERY_TIMEOUT_SECONDS,
@@ -488,7 +552,9 @@ async def execute_query(
 
     Connection can be supplied as a legacy ``conn_secret_ref`` or as structured
     fields (``host``/``port``/``database``/``username``/``password``); the two
-    are forwarded to :func:`resolve_dsn`.
+    are forwarded to :func:`resolve_dsn`. ``sslmode`` forces TLS for structured
+    connections; ``sensitive_columns`` extends column masking beyond the
+    built-in heuristic.
 
     Returns a result envelope with ``columns``, ``rows``, ``row_count``,
     ``truncated``, ``desensitized``, and ``allowed_tables``. Propagates
@@ -502,12 +568,13 @@ async def execute_query(
         database=database,
         username=username,
         password=password,
+        sslmode=sslmode,
     )
     conn = connector or AsyncpgConnector()
     columns, rows = await conn.execute(dsn, sql, timeout=timeout, max_rows=max_rows)
     truncated = len(rows) >= max_rows
     if mask:
-        rows = desensitize(columns, rows)
+        rows = desensitize(columns, rows, extra_columns=sensitive_columns)
     return {
         "columns": columns,
         "rows": rows,

@@ -37,6 +37,8 @@ from lode.api.routes.memories import router as memories_router
 from lode.api.routes.settings import router as settings_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
+from lode.db.models.ai_model import reencrypt_plaintext_keys
+from lode.db.session import AsyncSessionLocal
 from lode.migrations import run_migrations
 
 # Per-request id, exposed to every logger via a logging filter. Falls back to
@@ -64,6 +66,15 @@ logger = logging.getLogger("lode.api")
 async def lifespan(app: FastAPI) -> None:
     # Auto-execute database migrations before accepting traffic.
     await asyncio.get_running_loop().run_in_executor(None, run_migrations)
+    # Re-encrypt any legacy plaintext AI-model keys at rest so the key resolver
+    # can decrypt strictly (no plaintext fallback). Idempotent.
+    async with AsyncSessionLocal() as session:
+        try:
+            count = await reencrypt_plaintext_keys(session)
+            if count:
+                logger.info("re-encrypted %d legacy AI-model key(s)", count)
+        except Exception:  # noqa: BLE001 - best-effort, never block startup
+            logger.exception("failed to re-encrypt legacy AI-model keys")
     yield
 
 

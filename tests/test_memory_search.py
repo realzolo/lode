@@ -151,10 +151,13 @@ async def test_embed_real_payload_and_extraction(monkeypatch):
         return _FakeResp()
 
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    # resolve_api_key is strict: a key reference must be `env://NAME` or an
+    # encrypted token, never a plaintext literal. Use the env form here.
+    monkeypatch.setenv("LODE_TEST_EMBED_KEY", "sk-test-123")
 
     cfg = EmbeddingConfig(
         base_url="https://api.openai.com/v1/embeddings",
-        api_key_ref="sk-test-123",
+        api_key_ref="env://LODE_TEST_EMBED_KEY",
         model="text-embedding-3-small",
         dimensions=EMBEDDING_DIM,
     )
@@ -186,9 +189,10 @@ async def test_embed_real_appends_embeddings_path(monkeypatch):
         return _FakeResp()
 
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setenv("LODE_TEST_EMBED_KEY2", "k")
 
     cfg = EmbeddingConfig(
-        base_url="https://example.com/v1/", api_key_ref="k", model="m"
+        base_url="https://example.com/v1/", api_key_ref="env://LODE_TEST_EMBED_KEY2", model="m"
     )
     await embed("x", cfg)
     assert captured["url"] == "https://example.com/v1/embeddings"
@@ -199,8 +203,9 @@ async def test_embed_real_failure_degrades(monkeypatch):
         raise OSError("boom")
 
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setenv("LODE_TEST_EMBED_KEY3", "k")
 
-    cfg = EmbeddingConfig(base_url="https://x/embeddings", api_key_ref="k", model="m")
+    cfg = EmbeddingConfig(base_url="https://x/embeddings", api_key_ref="env://LODE_TEST_EMBED_KEY3", model="m")
     assert await embed("x", cfg) is None
 
 

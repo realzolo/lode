@@ -40,10 +40,13 @@ import {
   fetchAiModelConfigs,
   fetchApplication,
   fetchSettings,
+  testDbSource,
   unbindRepo,
   updateAiModel,
+  updateDbSource,
   type CreateDbSourceInput,
   type CreatePresetPromptInput,
+  type UpdateDbSourceInput,
 } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
 import { IconPlus, IconTrash2 } from '@/components/icons';
@@ -420,8 +423,10 @@ export function DbSourcesSection({
   const tAdmin = useTranslations('admin');
   const isAdmin = useUser().isAdmin;
   const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; latency_ms: number | null; error: string | null } | null>(null);
   const [name, setName] = useState('');
   const [connSecretRef, setConnSecretRef] = useState('');
   const [host, setHost] = useState('');
@@ -429,12 +434,15 @@ export function DbSourcesSection({
   const [database, setDatabase] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [sslmode, setSslmode] = useState('');
   const [allowedTablesRaw, setAllowedTablesRaw] = useState('');
+  const [sensitiveColumnsRaw, setSensitiveColumnsRaw] = useState('');
   const [deleteSource, setDeleteSource] = useState<BoundDbSource | null>(null);
 
   const sources = data.db_sources;
 
   function resetForm() {
+    setEditingId(null);
     setName('');
     setConnSecretRef('');
     setHost('');
@@ -442,19 +450,43 @@ export function DbSourcesSection({
     setDatabase('');
     setUsername('');
     setPassword('');
+    setSslmode('');
     setAllowedTablesRaw('');
+    setSensitiveColumnsRaw('');
+    setTestResult(null);
+    setError(null);
   }
 
-  async function handleCreate() {
-    setBusy(true);
+  function startEdit(s: BoundDbSource) {
+    setEditingId(s.id);
+    setName(s.name);
+    setConnSecretRef(s.conn_secret_ref ?? '');
+    setHost(s.host ?? '');
+    setPort(s.port ? String(s.port) : '5432');
+    setDatabase(s.database ?? '');
+    setUsername(s.username ?? '');
+    setPassword(''); // never echo; only set to overwrite
+    setSslmode(s.sslmode ?? '');
+    setAllowedTablesRaw((s.allowed_tables as unknown[]).join(', '));
+    setSensitiveColumnsRaw((s.sensitive_columns as unknown[]).join(', '));
+    setTestResult(null);
     setError(null);
+    setOpen(true);
+  }
+
+  function buildInput(): CreateDbSourceInput {
     const allowed_tables = allowedTablesRaw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const sensitive_columns = sensitiveColumnsRaw
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
     const input: CreateDbSourceInput = {
       name: name.trim(),
       allowed_tables,
+      sensitive_columns,
     };
     // Structured connection mode takes precedence when a host is supplied.
     if (host.trim()) {
@@ -464,16 +496,48 @@ export function DbSourcesSection({
       if (database.trim()) input.database = database.trim();
       if (username.trim()) input.username = username.trim();
       if (password) input.password = password;
+      if (sslmode.trim()) input.sslmode = sslmode.trim();
     } else if (connSecretRef.trim()) {
       input.conn_secret_ref = connSecretRef.trim();
     }
+    return input;
+  }
+
+  async function handleSubmit() {
+    setBusy(true);
+    setError(null);
     try {
-      await createDbSource(appId, input);
+      const input = buildInput();
+      if (editingId != null) {
+        const update: UpdateDbSourceInput = { ...input };
+        // On edit, omit unchanged secret ref / password unless re-entered.
+        if (!connSecretRef.trim() && !host.trim()) {
+          delete update.conn_secret_ref;
+        }
+        if (!password) delete update.password;
+        await updateDbSource(appId, editingId, update);
+      } else {
+        await createDbSource(appId, input);
+      }
       setOpen(false);
       resetForm();
       onRefresh();
     } catch (e) {
       setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleTest() {
+    setBusy(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      const res = await testDbSource(appId, buildInput());
+      setTestResult(res);
+    } catch (e) {
+      setTestResult({ ok: false, latency_ms: null, error: String(e) });
     } finally {
       setBusy(false);
     }
@@ -508,7 +572,6 @@ export function DbSourcesSection({
             variant="primary"
             onClick={() => {
               setOpen(true);
-              setError(null);
               resetForm();
             }}
           >
@@ -525,20 +588,25 @@ export function DbSourcesSection({
               <div className="row-between">
                 <span className="field-label">{s.name}</span>
                 {isAdmin && (
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => setDeleteSource(s)}
-                  >
-                    <IconTrash2 size={14} /> {tc('delete')}
-                  </Button>
+                  <div className="row" style={{ gap: 6 }}>
+                    <Button size="sm" variant="ghost" onClick={() => startEdit(s)}>
+                      {tc('edit')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => setDeleteSource(s)}
+                    >
+                      <IconTrash2 size={14} /> {tc('delete')}
+                    </Button>
+                  </div>
                 )}
               </div>
               <p className="muted mono" style={{ fontSize: 13 }}>
                 {s.host
                   ? `${s.username ? s.username + '@' : ''}${s.host}${
                       s.port ? ':' + s.port : ''
-                    }/${s.database ?? ''}`
+                    }/${s.database ?? ''}${s.sslmode ? `?sslmode=${s.sslmode}` : ''}`
                   : s.conn_secret_ref ?? '—'}
                 {s.has_password ? ' • •••' : ''}
               </p>
@@ -547,6 +615,12 @@ export function DbSourcesSection({
                 {Array.isArray(s.allowed_tables)
                   ? (s.allowed_tables as unknown[]).join(', ')
                   : '—'}
+                {(s.sensitive_columns as unknown[]).length > 0 ? (
+                  <>
+                    {'  ·  sensitive: '}
+                    {(s.sensitive_columns as unknown[]).join(', ')}
+                  </>
+                ) : null}
               </p>
             </div>
           ))}
@@ -555,7 +629,9 @@ export function DbSourcesSection({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{tAdmin('addDbSource')}</DialogTitle>
+            <DialogTitle>
+              {editingId != null ? tAdmin('editDbSource') : tAdmin('addDbSource')}
+            </DialogTitle>
             <DialogDescription>{t('dbSources')}</DialogDescription>
           </DialogHeader>
           <div className="stack">
@@ -592,7 +668,9 @@ export function DbSourcesSection({
             />
             <Input
               type="password"
-              placeholder={tAdmin('dbPassword')}
+              placeholder={
+                editingId != null ? tAdmin('dbPasswordLeaveBlank') : tAdmin('dbPassword')
+              }
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               disabled={busy}
@@ -604,17 +682,45 @@ export function DbSourcesSection({
               disabled={busy}
             />
             <Input
+              placeholder={tAdmin('dbSslmode')}
+              value={sslmode}
+              onChange={(e) => setSslmode(e.target.value)}
+              disabled={busy}
+            />
+            <Input
               placeholder={tAdmin('dbAllowedTables')}
               value={allowedTablesRaw}
               onChange={(e) => setAllowedTablesRaw(e.target.value)}
               disabled={busy}
             />
+            <Input
+              placeholder={tAdmin('dbSensitiveColumns')}
+              value={sensitiveColumnsRaw}
+              onChange={(e) => setSensitiveColumnsRaw(e.target.value)}
+              disabled={busy}
+            />
+            {testResult && (
+              <p
+                className="muted mono"
+                style={{
+                  fontSize: 13,
+                  color: testResult.ok ? 'var(--success)' : 'var(--danger)',
+                }}
+              >
+                {testResult.ok
+                  ? tAdmin('dbTestOk', { ms: String(testResult.latency_ms) })
+                  : tAdmin('dbTestFail', { error: testResult.error ?? '' })}
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button onClick={() => setOpen(false)} disabled={busy}>{tc('cancel')}</Button>
+            <Button variant="ghost" onClick={handleTest} disabled={busy}>
+              {tAdmin('dbTest')}
+            </Button>
             <Button
               variant="primary"
-              onClick={handleCreate}
+              onClick={handleSubmit}
               disabled={
                 busy ||
                 !name.trim() ||

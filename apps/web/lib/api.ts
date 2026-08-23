@@ -320,17 +320,7 @@ export async function fetchApplication(id: string): Promise<{
   topic: string | null;
   repos: { id: number; repo_id: number; name: string; url: string; description: string }[];
   preset_prompts: { id: number; type: string; content: string }[];
-  db_sources: {
-    id: number;
-    name: string;
-    conn_secret_ref: string | null;
-    host: string | null;
-    port: number | null;
-    database: string | null;
-    username: string | null;
-    has_password: boolean;
-    allowed_tables: unknown;
-  }[];
+  db_sources: DbSourceRow[];
 }> {
   return getJson(`/applications/${id}`);
 }
@@ -406,7 +396,22 @@ export interface CreateDbSourceInput {
   // Mode 2: secret reference (env:// / bare DSN). Either this or the
   // structured fields must be supplied.
   conn_secret_ref?: string;
+  sslmode?: string | null;
   allowed_tables: string[];
+  sensitive_columns: string[];
+}
+
+export interface UpdateDbSourceInput {
+  name?: string;
+  host?: string;
+  port?: number;
+  database?: string;
+  username?: string;
+  password?: string;
+  conn_secret_ref?: string;
+  sslmode?: string | null;
+  allowed_tables?: string[];
+  sensitive_columns?: string[];
 }
 
 export interface DbSourceRow {
@@ -419,7 +424,9 @@ export interface DbSourceRow {
   database: string | null;
   username: string | null;
   has_password: boolean;
+  sslmode: string | null;
   allowed_tables: string[];
+  sensitive_columns: string[];
 }
 
 export async function createDbSource(
@@ -427,6 +434,21 @@ export async function createDbSource(
   input: CreateDbSourceInput
 ): Promise<DbSourceRow> {
   return postJson(`/applications/${applicationId}/db-sources`, input);
+}
+
+export async function updateDbSource(
+  applicationId: string | number,
+  sourceId: number,
+  input: UpdateDbSourceInput
+): Promise<DbSourceRow> {
+  return putJson(`/applications/${applicationId}/db-sources/${sourceId}`, input);
+}
+
+export async function testDbSource(
+  applicationId: string | number,
+  input: CreateDbSourceInput
+): Promise<{ ok: boolean; latency_ms: number | null; error: string | null }> {
+  return postJson(`/applications/${applicationId}/db-sources/test`, input);
 }
 
 export async function deleteDbSource(

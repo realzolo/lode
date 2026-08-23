@@ -5,9 +5,10 @@ database (repository registry, preset prompts, table whitelist, shared
 memory). They are the safe, auditable surface the agent is allowed to use —
 no arbitrary shell, no write access to production data.
 
-In a later phase ``run_readonly_query`` will proxy to the real read-only
-replica. For now it returns the whitelisted tables so the agent (and the UI)
-can see exactly what it would be permitted to read.
+``run_readonly_query`` proxies validated, read-only SQL to an application's
+configured replica (see :mod:`lode.engine.db_proxy`): it enforces the
+allow-list, rejects writes, resolves the connection (structured fields or a
+secret ref), and masks sensitive columns before returning rows.
 """
 
 from __future__ import annotations
@@ -133,6 +134,8 @@ async def run_readonly_query(
         database=chosen.database,
         username=chosen.username,
         password=source_password,
+        sslmode=chosen.sslmode,
+        sensitive_columns=chosen.sensitive_columns or [],
         connector=connector,
         mask=desensitize,
     )

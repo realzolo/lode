@@ -19,6 +19,7 @@ from lode.engine.db_proxy import (
     desensitize,
     execute_query,
     resolve_dsn,
+    test_connection as db_test_connection,
     validate_readonly_sql,
 )
 
@@ -336,6 +337,8 @@ class _FakeDbSource:
         database=None,
         username=None,
         password=None,
+        sslmode=None,
+        sensitive_columns=None,
     ):
         self.id = id
         self.name = name
@@ -346,6 +349,8 @@ class _FakeDbSource:
         self.database = database
         self.username = username
         self.password = password
+        self.sslmode = sslmode
+        self.sensitive_columns = sensitive_columns
 
 
 @pytest.mark.asyncio
@@ -405,3 +410,94 @@ def test_asyncpg_connector_is_importable():
     # Ensure the real connector class is defined without importing asyncpg at
     # call time in a way that breaks import; it must be a DbConnector.
     assert db_proxy.AsyncpgConnector is not None
+
+
+# ---------------------------------------------------------------------------
+# sslmode forwarding (P3)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_dsn_structured_with_sslmode():
+    dsn = resolve_dsn(
+        host="10.0.0.5",
+        port=5433,
+        database="orders",
+        username="ro",
+        password="secret",
+        sslmode="require",
+    )
+    assert dsn == "postgresql://ro:secret@10.0.0.5:5433/orders?sslmode=require"
+
+
+def test_resolve_dsn_sslmode_omitted_when_none():
+    dsn = resolve_dsn(host="h", database="d")
+    assert "?sslmode" not in dsn
+    assert dsn == "postgresql://h:5432/d"
+
+
+@pytest.mark.asyncio
+async def test_execute_query_applies_sslmode_and_sensitive_columns():
+    conn = FakeConnector(
+        columns=("id", "notes"), rows=[{"id": 1, "notes": "confidential"}]
+    )
+    res = await execute_query(
+        None,
+        ["orders"],
+        "SELECT * FROM orders",
+        host="h",
+        database="d",
+        sslmode="verify-full",
+        sensitive_columns=["notes"],
+        connector=conn,
+    )
+    # The connector received a DSN carrying the sslmode query parameter.
+    assert conn.calls[0][0] == "postgresql://h:5432/d?sslmode=verify-full"
+    # The per-source column is masked even though "notes" is not a heuristic hint.
+    assert res["rows"][0]["notes"] == "***"
+    assert res["desensitized"] is True
+
+
+# ---------------------------------------------------------------------------
+# Per-source sensitive_columns masking (O3)
+# ---------------------------------------------------------------------------
+
+
+def test_desensitize_extra_columns():
+    columns = ["id", "internal_notes", "customer_note"]
+    rows = [{"id": 1, "internal_notes": "x", "customer_note": "y"}]
+    out = desensitize(columns, rows, extra_columns=["internal_notes"])
+    assert out[0]["internal_notes"] == "***"
+    # Not listed as extra (even if its name looks sensitive-ish) -> untouched.
+    assert out[0]["customer_note"] == "y"
+    assert out[0]["id"] == 1
+
+
+# ---------------------------------------------------------------------------
+# test_connection (O1) — hermetic via an injected connector
+# ---------------------------------------------------------------------------
+
+
+class _FailingConnector:
+    """Injectable connector whose probe raises, simulating a dead source."""
+
+    async def execute(self, dsn, sql, *, timeout, max_rows):  # noqa: D401
+        raise SourceNotResolvableError("could not connect to data source: ECONNREFUSED")
+
+
+@pytest.mark.asyncio
+async def test_test_connection_fake_connector():
+    conn = FakeConnector()
+    latency = await db_test_connection(
+        "postgresql://localhost/test", connector=conn, timeout=2.0
+    )
+    # Probe ran through the connector's execute() with the SELECT 1 sentinel.
+    assert conn.calls == [("postgresql://localhost/test", "SELECT 1", 2.0, 1)]
+    assert isinstance(latency, float) and latency >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_test_connection_failure_propagates():
+    with pytest.raises(SourceNotResolvableError):
+        await db_test_connection(
+            "postgresql://localhost/test", connector=_FailingConnector()
+        )

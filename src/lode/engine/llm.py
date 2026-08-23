@@ -18,6 +18,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from lode.crypto import decrypt_secret
+
 logger = logging.getLogger("lode.engine.llm")
 
 
@@ -37,11 +39,15 @@ def resolve_api_key(api_key_ref: str) -> str:
     * ``env://NAME`` — read the key from the environment variable ``NAME``.
       This is the recommended form so real credentials never touch the
       database and are injected per-deployment.
-    * a literal string — used as-is (e.g. for local dev / self-hosted
-      endpoints behind a trusted network).
+    * an encrypted literal — a Fernet token produced by ``encrypt_secret``,
+      decrypted back to the plaintext key. Literal keys are stored encrypted at
+      rest so the plaintext never lands in the database row.
 
-    Returns an empty string when an ``env://`` reference points at an unset
-    variable, so the caller gracefully falls back to the heuristic engine.
+    Any existing plaintext literal rows are re-encrypted once at startup (see
+    ``lode.api.main``), so this path always receives an encrypted value and has
+    no plaintext fallback. Returns an empty string when an ``env://`` reference
+    points at an unset variable, so the caller gracefully falls back to the
+    heuristic engine.
     """
     if api_key_ref.startswith("env://"):
         name = api_key_ref[len("env://") :]
@@ -50,7 +56,7 @@ def resolve_api_key(api_key_ref: str) -> str:
             logger.warning("api_key_ref references unset environment variable %s", name)
             return ""
         return value
-    return api_key_ref
+    return decrypt_secret(api_key_ref) or ""
 
 
 async def complete(

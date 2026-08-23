@@ -93,7 +93,7 @@ class ApplicationDetailOut(BaseModel):
     created_at: datetime
     repos: list[dict]
     preset_prompts: list[dict]
-    db_sources: list[dict]
+    db_sources: list[DbSourceListItem]
 
 
 class CreateApplicationIn(BaseModel):
@@ -149,7 +149,13 @@ class CreateDbSourceIn(BaseModel):
     # Mode 2 (secret ref): conn_secret_ref keeps real credentials out of the
     # row. Either this OR (host + database) must be supplied.
     conn_secret_ref: str | None = Field(default=None, max_length=1000)
+    # TLS mode for structured connections (NULL/omitted = libpq default
+    # "prefer"). Use "require"/"verify-full" for cross-network links.
+    sslmode: str | None = Field(default=None, max_length=32)
     allowed_tables: list[str] = Field(default_factory=list)
+    # Operator-supplied extra column names to mask in results, on top of the
+    # built-in heuristic hints.
+    sensitive_columns: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _require_connection(self) -> "CreateDbSourceIn":
@@ -165,6 +171,30 @@ class CreateDbSourceIn(BaseModel):
         return self
 
 
+class DbSourceListItem(BaseModel):
+    """Read shape for a data source as returned inside an application detail.
+
+    A strict, explicit projection (not a loose ``dict``) so the frontend can
+    rely on every field being present or explicitly ``None``. The raw password
+    is never included; ``has_password`` is the only signal about its presence.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    application_id: int
+    name: str
+    conn_secret_ref: str | None
+    host: str | None
+    port: int | None
+    database: str | None
+    username: str | None
+    has_password: bool
+    sslmode: str | None
+    allowed_tables: list[str]
+    sensitive_columns: list[str]
+
+
 class DbSourceOut(BaseModel):
     id: int
     application_id: int
@@ -176,7 +206,31 @@ class DbSourceOut(BaseModel):
     username: str | None
     # Whether a password is configured. We never echo the raw password back.
     has_password: bool
+    sslmode: str | None
     allowed_tables: list[str]
+    sensitive_columns: list[str]
+
+
+class UpdateDbSourceIn(BaseModel):
+    """Partial update for an existing data source.
+
+    Every field is optional. ``password`` is only overwritten when a non-empty
+    value is supplied, so an operator can rotate metadata without re-pasting the
+    secret. Supplying neither a structured connection nor a secret ref leaves
+    the existing connection mode untouched (you cannot blank out the only way to
+    reach the source).
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    host: str | None = Field(default=None, max_length=500)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    database: str | None = Field(default=None, max_length=200)
+    username: str | None = Field(default=None, max_length=200)
+    password: str | None = Field(default=None, max_length=2000)
+    conn_secret_ref: str | None = Field(default=None, max_length=1000)
+    sslmode: str | None = Field(default=None, max_length=32)
+    allowed_tables: list[str] | None = None
+    sensitive_columns: list[str] | None = None
 
 
 class RunQueryIn(BaseModel):

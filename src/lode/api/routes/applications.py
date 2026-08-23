@@ -40,9 +40,11 @@ from lode.api.schemas import (
     CreateApplicationIn,
     CreateDbSourceIn,
     CreatePresetPromptIn,
+    DbSourceListItem,
     DbSourceOut,
     PresetPromptOut,
     SetApplicationTopicIn,
+    UpdateDbSourceIn,
 )
 from lode.db.models.alert import Alert
 from lode.db.models.application import (
@@ -57,6 +59,7 @@ from lode.db.models.permission import UserApplicationPerm
 from lode.crypto import encrypt_secret
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
+from lode.engine.db_proxy import test_connection
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 
@@ -163,12 +166,20 @@ async def get_application(
             {"id": p.id, "type": p.type, "content": p.content} for p in prompts
         ],
         db_sources=[
-            {
-                "id": s.id,
-                "name": s.name,
-                "conn_secret_ref": s.conn_secret_ref,
-                "allowed_tables": list(s.allowed_tables or []),
-            }
+            DbSourceListItem(
+                id=s.id,
+                application_id=s.application_id,
+                name=s.name,
+                conn_secret_ref=s.conn_secret_ref,
+                host=s.host,
+                port=s.port,
+                database=s.database,
+                username=s.username,
+                has_password=bool(s.password),
+                sslmode=s.sslmode,
+                allowed_tables=list(s.allowed_tables or []),
+                sensitive_columns=list(s.sensitive_columns or []),
+            )
             for s in sources
         ],
     )
@@ -360,11 +371,13 @@ async def create_db_source(
 
     * **Structured** — ``host`` / ``port`` / ``database`` / ``username`` /
       ``password`` are stored on the row and the DSN is built at query time.
+      ``sslmode`` forces TLS when the replica is reached over a network.
     * **Secret ref** — ``conn_secret_ref`` (``env://NAME`` / bare DSN) keeps
       the real credentials in the deployment environment rather than this row.
 
     ``allowed_tables`` is the SQL whitelist the analysis engine respects when
-    querying this source.
+    querying this source; ``sensitive_columns`` are extra result columns masked
+    on top of the built-in heuristic.
     """
     app = await session.get(Application, application_id)
     if app is None:
@@ -379,7 +392,9 @@ async def create_db_source(
         database=payload.database,
         username=payload.username,
         password=encrypt_secret(payload.password),
+        sslmode=payload.sslmode,
         allowed_tables=payload.allowed_tables,
+        sensitive_columns=payload.sensitive_columns,
     )
     session.add(row)
     await session.commit()
@@ -394,7 +409,9 @@ async def create_db_source(
         database=row.database,
         username=row.username,
         has_password=bool(row.password),
+        sslmode=row.sslmode,
         allowed_tables=list(row.allowed_tables or []),
+        sensitive_columns=list(row.sensitive_columns or []),
     )
 
 
@@ -413,6 +430,110 @@ async def delete_db_source(
         raise HTTPException(status_code=404, detail="data source not found")
     await session.delete(row)
     await session.commit()
+
+
+@router.put(
+    "/{application_id}/db-sources/{source_id}",
+    response_model=DbSourceOut,
+)
+async def update_db_source(
+    application_id: int,
+    source_id: int,
+    payload: UpdateDbSourceIn,
+    _admin: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> DbSourceOut:
+    """Update an existing data source.
+
+    All fields are optional. The stored password is only replaced when a
+    non-empty ``password`` is supplied, so metadata can be rotated without
+    re-pasting the secret. Supplying neither a structured connection nor a
+    secret ref leaves the existing connection mode untouched.
+    """
+    row = await session.get(DbSource, source_id)
+    if row is None or row.application_id != application_id:
+        raise HTTPException(status_code=404, detail="data source not found")
+
+    if payload.name is not None:
+        row.name = payload.name
+    if payload.host is not None:
+        row.host = payload.host
+    if payload.port is not None:
+        row.port = payload.port
+    if payload.database is not None:
+        row.database = payload.database
+    if payload.username is not None:
+        row.username = payload.username
+    if payload.password:
+        row.password = encrypt_secret(payload.password)
+    if payload.conn_secret_ref is not None:
+        row.conn_secret_ref = payload.conn_secret_ref
+    if payload.sslmode is not None:
+        row.sslmode = payload.sslmode
+    if payload.allowed_tables is not None:
+        row.allowed_tables = payload.allowed_tables
+    if payload.sensitive_columns is not None:
+        row.sensitive_columns = payload.sensitive_columns
+
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return DbSourceOut(
+        id=row.id,
+        application_id=row.application_id,
+        name=row.name,
+        conn_secret_ref=row.conn_secret_ref,
+        host=row.host,
+        port=row.port,
+        database=row.database,
+        username=row.username,
+        has_password=bool(row.password),
+        sslmode=row.sslmode,
+        allowed_tables=list(row.allowed_tables or []),
+        sensitive_columns=list(row.sensitive_columns or []),
+    )
+
+
+@router.post(
+    "/{application_id}/db-sources/test",
+    status_code=200,
+)
+async def test_db_source_connection(
+    application_id: int,
+    payload: CreateDbSourceIn,
+    _admin: int = Depends(require_admin),
+) -> dict:
+    """Validate a structured/secret-ref connection without persisting it.
+
+    Lets an admin catch a typo in host/port/credentials (or a missing TLS
+    setup) *before* saving. Secret refs resolve through the same path as a real
+    query; a ``vault://`` reference is rejected closed, exactly like at query
+    time. Returns ``{ok, latency_ms, error}``.
+    """
+    dsn = _resolve_create_dsn(payload)
+    try:
+        latency = await test_connection(dsn)
+    except Exception as exc:  # surfaced as a structured result, not 500
+        return {"ok": False, "latency_ms": None, "error": str(exc)}
+    return {"ok": True, "latency_ms": round(latency * 1000, 1), "error": None}
+
+
+def _resolve_create_dsn(payload: CreateDbSourceIn) -> str:
+    """Build the DSN a create/test payload would resolve to.
+
+    Mirrors the query-time resolution so the test exercises the exact
+    connection string the engine would use.
+    """
+    from lode.engine.db_proxy import resolve_dsn
+
+    return resolve_dsn(
+        payload.conn_secret_ref,
+        host=payload.host,
+        port=payload.port,
+        database=payload.database,
+        username=payload.username,
+        password=payload.password,
+    )
 
 
 @router.post(

@@ -481,6 +481,30 @@ async def test_admin_delete_db_source_wrong_app_returns_404(fresh_app: int, admi
                 await session.commit()
 
 
+async def test_admin_test_db_source_unreachable_returns_error(
+    fresh_app: int, admin: int
+) -> None:
+    """The pre-save ``/db-sources/test`` endpoint must surface a connection
+    failure as a structured ``{ok: false, error}`` result — never a 500."""
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    headers = {"Authorization": f"Bearer {token}"}
+    async with _client() as client:
+        resp = await client.post(
+            f"/applications/{fresh_app}/db-sources/test",
+            headers=headers,
+            json={
+                "name": "probe",
+                "conn_secret_ref": "postgresql://u:p@127.0.0.1:1/none",
+                "allowed_tables": [],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["latency_ms"] is None
+        assert body["error"]
+
+
 # ---------------------------------------------------------------------------
 # Preset prompts (admin)
 # ---------------------------------------------------------------------------

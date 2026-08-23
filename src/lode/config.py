@@ -53,8 +53,10 @@ class Settings(BaseSettings):
 
     # Embeddings (opt-in semantic shared memory / M5)
     # Leave ``embedding_api_key_ref`` empty to disable semantic matching; the
-    # runner then falls back to exact trigger_signature matching. The key is a
-    # ``env://NAME`` reference (or a literal) resolved by ``resolve_api_key``.
+    # runner then falls back to exact trigger_signature matching. The key is
+    # resolved by ``resolve_api_key`` and MUST be an ``env://NAME`` reference or
+    # an encrypted token (never a plaintext literal): ``resolve_api_key`` is
+    # strict and fails closed on a non-token value.
     embedding_base_url: str = "https://api.openai.com/v1/embeddings"
     embedding_api_key_ref: str = ""
     embedding_model: str = "text-embedding-3-small"
