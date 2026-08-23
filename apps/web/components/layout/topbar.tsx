@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslations, useLocale } from 'next-intl';
 import { useTheme } from 'next-themes';
+import { toast } from 'sonner';
 import { useRouter, usePathname } from '@/lib/navigation';
 import { CommandPalette } from '@/components/cmdk';
 import { useUser } from '@/lib/user-context';
@@ -30,6 +31,7 @@ export function Topbar() {
 
   const handleLogout = () => {
     clearUser();
+    toast.success(t('common.loggedOut'));
     router.replace('/login');
   };
 

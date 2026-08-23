@@ -1,9 +1,10 @@
 'use client';
 
 import { ReactNode } from 'react';
-import { ThemeProvider } from 'next-themes';
+import { ThemeProvider, useTheme } from 'next-themes';
 import { NextIntlClientProvider } from 'next-intl';
 import type { AbstractIntlMessages } from 'use-intl';
+import { Toaster } from 'sonner';
 import { UserProvider } from '@/lib/user-context';
 
 interface ProvidersProps {
@@ -24,11 +25,20 @@ interface ProvidersProps {
 // toggles the `dark`/`light` class on <html>. shadcn/ui components read those
 // variables directly, so no provider wrapper is needed (unlike @geist-ui/core).
 export function Providers({ children, messages, locale, timeZone, now }: ProvidersProps) {
+  const theme = useTheme();
   return (
-    <NextIntlClientProvider messages={messages} locale={locale} timeZone={timeZone} now={now}>
-      <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
-        <UserProvider>{children}</UserProvider>
-      </ThemeProvider>
-    </NextIntlClientProvider>
+    <>
+      <NextIntlClientProvider messages={messages} locale={locale} timeZone={timeZone} now={now}>
+        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
+          <UserProvider>{children}</UserProvider>
+        </ThemeProvider>
+      </NextIntlClientProvider>
+      <Toaster
+        theme={(theme.resolvedTheme as 'light' | 'dark') ?? 'dark'}
+        richColors
+        position="bottom-right"
+        closeButton
+      />
+    </>
   );
 }

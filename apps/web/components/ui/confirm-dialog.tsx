@@ -1,6 +1,8 @@
 'use client';
 
 import * as React from 'react';
+import { useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
@@ -28,6 +30,16 @@ export interface ConfirmDialogProps {
   destructive?: boolean;
   /** Async or sync action run when the user confirms. Dialog closes on success. */
   onConfirm: () => void | Promise<void>;
+  /**
+   * Toast shown after `onConfirm` resolves. Defaults to a generic success
+   * message; pass a translated string to be specific (e.g. "Member removed").
+   */
+  successMessage?: string;
+  /**
+   * Toast shown if `onConfirm` rejects. Defaults to a generic failure message.
+   * The dialog stays open on error so any inline error UI remains visible too.
+   */
+  errorMessage?: string;
 }
 
 /**
@@ -50,7 +62,10 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   destructive = false,
   onConfirm,
+  successMessage,
+  errorMessage,
 }: ConfirmDialogProps) {
+  const t = useTranslations();
   const [busy, setBusy] = React.useState(false);
 
   async function handleConfirm() {
@@ -61,8 +76,11 @@ export function ConfirmDialog({
       // Close only after the action settles successfully; on error the dialog
       // stays open so the caller's error message remains visible.
       onOpenChange(false);
+      toast.success(successMessage ?? t('common.actionSuccess'));
     } catch {
-      // Errors are owned by the caller's surrounding UI.
+      // Errors are owned by the caller's surrounding UI (inline message). A
+      // toast makes the failure visible even while the modal is still open.
+      toast.error(errorMessage ?? t('common.actionFailed'));
     } finally {
       setBusy(false);
     }

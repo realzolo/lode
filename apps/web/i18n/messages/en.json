@@ -28,7 +28,10 @@
     "loading": "Loading...",
     "empty": "No data yet",
     "addHint": "Add hint",
-    "reanalyze": "Re-analyze"
+    "reanalyze": "Re-analyze",
+    "actionSuccess": "Action completed",
+    "actionFailed": "Action failed",
+    "loggedOut": "Signed out"
   },
   "login": {
     "title": "Sign in",

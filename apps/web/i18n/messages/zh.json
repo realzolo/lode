@@ -28,7 +28,10 @@
     "loading": "加载中...",
     "empty": "暂无数据",
     "addHint": "添加提示",
-    "reanalyze": "重新分析"
+    "reanalyze": "重新分析",
+    "actionSuccess": "操作成功",
+    "actionFailed": "操作失败",
+    "loggedOut": "已退出登录"
   },
   "login": {
     "title": "登录",
