@@ -32,6 +32,7 @@ from lode.engine.embeddings import (
 )
 from lode.engine.llm import ModelConfig, complete
 from lode.engine.memory_search import semantic_search
+from lode.engine.evidence import collect_git_evidence
 from lode.engine.tools import (
     get_deploy_context,
     get_memory,
@@ -218,6 +219,16 @@ async def run_analysis(analysis_id: int, session) -> None:
     _step("context", "completed", "Deploy context gathered",
           (ctx["deploy_prompt"] or "no deploy description configured")[:280])
 
+    # Real evidence: clone each registered repo at a pinned ref, search for the
+    # incident's symbols, and persist citable EvidenceArtifact rows. The runner
+    # keeps the analysis transaction open; collect_git_evidence only flushes.
+    git_evidence = await collect_git_evidence(session, application_id, alert, analysis_id)
+    _step(
+        "git_sync", "completed",
+        f"Source inspected ({git_evidence['artifact_count']} evidence artifact(s))",
+        "; ".join(code["modules_searched"]) or "no repositories registered",
+    )
+
     ro = await run_readonly_query(session, application_id)
 
     # Semantic memory: embed the incident signature once and reuse the vector
@@ -262,6 +273,18 @@ async def run_analysis(analysis_id: int, session) -> None:
         memory["content"] if memory["matched"] else None,
         human_hints=human_hints,
     )
+    # Surface the citable source evidence to the model so it grounds its
+    # conclusion in locators (repo@ref:path:line) rather than guessing.
+    if git_evidence["artifact_count"]:
+        lines = ["<<<SOURCE_EVIDENCE>>>"]
+        for f in git_evidence["files"][: settings.evidence_git_max_files]:
+            lines.append(
+                f"- {f['locator']} (matched: {', '.join(f['terms'])}; "
+                f"line {f['line']})"
+            )
+        lines.append("<<<END_SOURCE_EVIDENCE>>>")
+        user = user + "\n" + "\n".join(lines)
+
     llm_text = await complete(system, user, model_config)
 
     if llm_text:
@@ -349,6 +372,16 @@ async def run_analysis(analysis_id: int, session) -> None:
         "error_message": getattr(alert, "error_message", ""),
         "modules": code["modules_searched"],
         "allowed_tables": ro["allowed_tables"],
+        "git_artifact_count": git_evidence["artifact_count"],
+        "git_evidence": [
+            {
+                "locator": f["locator"],
+                "line": f["line"],
+                "terms": f["terms"],
+                "secret_categories": f["secret_categories"],
+            }
+            for f in git_evidence["files"]
+        ],
         "matched_memory": bool(memory["matched"]),
         "matched_memory_type": memory.get("match_type"),
         "matched_memory_similarity": memory.get("similarity"),
