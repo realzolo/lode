@@ -16,6 +16,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException
 
 from lode.api.deps import require_admin
+from lode.api.audit import audit_action
 from lode.api.schemas import (
     InviteAcceptIn,
     InviteCreateIn,
@@ -46,6 +47,12 @@ async def create_invite(
         session.add(invite)
         await session.commit()
         await session.refresh(invite)
+        await audit_action(
+            action="invite.create",
+            actor_id=admin_id,
+            target_type="invite",
+            target_id=str(invite.id),
+        )
         return InviteOut(
             id=invite.id,
             email=invite.email,
@@ -96,4 +103,11 @@ async def accept_invite(payload: InviteAcceptIn) -> dict[str, str]:
         session.add(user)
         invite.status = "accepted"
         await session.commit()
+        await audit_action(
+            action="invite.accept",
+            actor_email=invite.email,
+            target_type="user",
+            target_id=str(user.id),
+            detail={"invite_id": str(invite.id)},
+        )
         return {"status": "ok", "message": "account activated", "email": invite.email}

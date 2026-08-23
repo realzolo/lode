@@ -13,7 +13,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from lode.api.deps import require_admin, require_user
-from lode.api.schemas import (
+from lode.api.audit import audit_action
+from lode.api.schemas import(
     PasswordResetIn,
     UserCreateIn,
     UserOut,
@@ -67,6 +68,12 @@ async def create_user(
         session.add(user)
         await session.commit()
         await session.refresh(user)
+        await audit_action(
+            action="user.create",
+            actor_id=_admin,
+            target_type="user",
+            target_id=str(user.id),
+        )
         return UserOut(
             id=user.id,
             email=user.email,
@@ -107,6 +114,12 @@ async def update_user(
             user.status = payload.status
         await session.commit()
         await session.refresh(user)
+        await audit_action(
+            action="user.update",
+            actor_id=_admin,
+            target_type="user",
+            target_id=str(user_id),
+        )
         return UserOut(
             id=user.id,
             email=user.email,
@@ -127,6 +140,12 @@ async def reset_password(
             raise HTTPException(status_code=404, detail="user not found")
         user.password_hash = hash_password(payload.password)
         await session.commit()
+        await audit_action(
+            action="user.reset_password",
+            actor_id=_admin,
+            target_type="user",
+            target_id=str(user_id),
+        )
         return {"status": "ok", "message": "password reset"}
 
 
@@ -151,3 +170,9 @@ async def delete_user(user_id: int, admin_id: int = Depends(require_admin)) -> N
                 )
         await session.delete(user)
         await session.commit()
+        await audit_action(
+            action="user.delete",
+            actor_id=admin_id,
+            target_type="user",
+            target_id=str(user_id),
+        )

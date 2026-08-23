@@ -17,6 +17,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from lode.api.deps import require_admin
+from lode.api.audit import audit_action
 from lode.api.schemas import (
     AiModelConfigIn,
     AiModelConfigOut,
@@ -199,6 +200,12 @@ async def create_ai_model(
             await _promote_if_no_default(session, payload.scope, payload.application_id)
         await session.commit()
         await session.refresh(model)
+        await audit_action(
+            action="ai_model.create",
+            actor_id=_admin,
+            target_type="ai_model",
+            target_id=str(model.id),
+        )
         return _row_to_out(model)
 
 
@@ -246,6 +253,12 @@ async def update_ai_model(
 
         await session.commit()
         await session.refresh(model)
+        await audit_action(
+            action="ai_model.update",
+            actor_id=_admin,
+            target_type="ai_model",
+            target_id=str(model_id),
+        )
         return _row_to_out(model)
 
 
@@ -265,6 +278,12 @@ async def delete_ai_model(model_id: int, _admin: int = Depends(require_admin)) -
         if was_default:
             await _promote_if_no_default(session, scope, application_id)
         await session.commit()
+        await audit_action(
+            action="ai_model.delete",
+            actor_id=_admin,
+            target_type="ai_model",
+            target_id=str(model_id),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +318,12 @@ async def create_git_credential(
         session.add(cred)
         await session.commit()
         await session.refresh(cred)
+        await audit_action(
+            action="git_credential.create",
+            actor_id=_admin,
+            target_type="git_credential",
+            target_id=str(cred.id),
+        )
         return _cred_to_out(cred)
 
 
@@ -324,6 +349,12 @@ async def update_git_credential(
             cred.note = payload.note
         await session.commit()
         await session.refresh(cred)
+        await audit_action(
+            action="git_credential.update",
+            actor_id=_admin,
+            target_type="git_credential",
+            target_id=str(cred_id),
+        )
         return _cred_to_out(cred)
 
 
@@ -338,6 +369,12 @@ async def delete_git_credential(cred_id: int, _admin: int = Depends(require_admi
         # when the row is deleted.
         await session.delete(cred)
         await session.commit()
+        await audit_action(
+            action="git_credential.delete",
+            actor_id=_admin,
+            target_type="git_credential",
+            target_id=str(cred_id),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +428,12 @@ async def create_git_repo(
         session.add(repo)
         await session.commit()
         await session.refresh(repo)
+        await audit_action(
+            action="git_repo.create",
+            actor_id=_admin,
+            target_type="git_repo",
+            target_id=str(repo.id),
+        )
         return _repo_to_out(repo)
 
 
@@ -425,6 +468,12 @@ async def update_git_repo(
             repo.credential_id = payload.credential_id
         await session.commit()
         await session.refresh(repo)
+        await audit_action(
+            action="git_repo.update",
+            actor_id=_admin,
+            target_type="git_repo",
+            target_id=str(repo_id),
+        )
         return _repo_to_out(repo)
 
 
@@ -436,3 +485,9 @@ async def delete_git_repo(repo_id: int, _admin: int = Depends(require_admin)) ->
             raise HTTPException(status_code=404, detail="git repo not found")
         await session.delete(repo)
         await session.commit()
+        await audit_action(
+            action="git_repo.delete",
+            actor_id=_admin,
+            target_type="git_repo",
+            target_id=str(repo_id),
+        )

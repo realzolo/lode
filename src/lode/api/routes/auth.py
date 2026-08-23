@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.api.deps import require_user
+from lode.api.audit import audit_action
 from lode.api.schemas import (
     AuthLoginIn,
     PasswordChangeIn,
@@ -32,11 +33,33 @@ async def login(payload: AuthLoginIn, session: AsyncSession = Depends(get_sessio
     user = result.scalars().first()
     # Constant-ish failure: never reveal whether the email exists.
     if user is None or user.password_hash is None or user.status != "active":
+        await audit_action(
+            action="auth.login",
+            actor_email=payload.email,
+            target_type="user",
+            result="error",
+            detail={"reason": "no_such_active_account"},
+        )
         raise HTTPException(status_code=401, detail="invalid credentials")
     if not verify_password(payload.password, user.password_hash):
+        await audit_action(
+            action="auth.login",
+            actor_id=user.id,
+            target_type="user",
+            target_id=str(user.id),
+            result="error",
+            detail={"reason": "bad_password"},
+        )
         raise HTTPException(status_code=401, detail="invalid credentials")
 
     token = create_token(user.id, settings.secret_key, settings.jwt_ttl_seconds)
+    await audit_action(
+        action="auth.login",
+        actor_id=user.id,
+        target_type="user",
+        target_id=str(user.id),
+        result="ok",
+    )
     return TokenOut(
         token=token,
         user=UserOut(
@@ -80,4 +103,10 @@ async def change_password(
         raise HTTPException(status_code=400, detail="current password is incorrect")
     user.password_hash = hash_password(payload.new_password)
     await session.commit()
+    await audit_action(
+        action="auth.change_password",
+        actor_id=user_id,
+        target_type="user",
+        target_id=str(user_id),
+    )
     return {"status": "ok", "message": "password updated"}

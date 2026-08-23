@@ -51,7 +51,6 @@ async def run_query(
             source_id=payload.source_id,
         )
         await audit_action(
-            session,
             action="query.execute",
             actor_id=_auth,
             target_type="application",
@@ -63,7 +62,6 @@ async def run_query(
         return res
     except DbProxyError as exc:
         await audit_action(
-            session,
             action="query.execute",
             actor_id=_auth,
             target_type="application",

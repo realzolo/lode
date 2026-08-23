@@ -28,6 +28,7 @@ from lode.api.deps import (
     require_app_perm,
     require_user,
 )
+from lode.api.audit import audit_action
 from lode.api.schemas import (
     AppMemberIn,
     AppMemberOut,
@@ -210,6 +211,13 @@ async def create_application(
     )
     await session.commit()
     await session.refresh(app)
+    await audit_action(
+        action="application.create",
+        actor_id=user_id,
+        target_type="application",
+        target_id=str(app.id),
+        application_id=app.id,
+    )
     return ApplicationOut(
         id=app.id,
         name=app.name,
@@ -256,7 +264,15 @@ async def set_application_topic(
         existing = await session.get(ApplicationKafka, application_id)
         if existing is not None:
             await session.delete(existing)
-            await session.commit()
+        await session.commit()
+        await audit_action(
+            action="application.set_topic",
+            actor_id=_admin,
+            target_type="application",
+            target_id=str(application_id),
+            application_id=application_id,
+            detail={"topic": None},
+        )
         return ApplicationTopicOut(application_id=application_id, topic=None)
 
     # Upsert: if no row exists for this app, insert; otherwise update in place.
@@ -275,6 +291,14 @@ async def set_application_topic(
             detail=f"topic '{payload.topic}' is already bound to another application",
         )
     await session.refresh(existing)
+    await audit_action(
+        action="application.set_topic",
+        actor_id=_admin,
+        target_type="application",
+        target_id=str(application_id),
+        application_id=application_id,
+        detail={"topic": existing.topic},
+    )
     return ApplicationTopicOut(application_id=application_id, topic=existing.topic)
 
 
@@ -318,6 +342,13 @@ async def bind_repo(
             detail=f"repo {payload.repo_id} is already bound to this application",
         )
     await session.refresh(row)
+    await audit_action(
+        action="application.bind_repo",
+        actor_id=_admin,
+        target_type="git_repo",
+        target_id=str(repo_id),
+        application_id=application_id,
+    )
     return ApplicationRepoOut(
         id=row.id,
         application_id=row.application_id,
@@ -351,6 +382,13 @@ async def unbind_repo(
         raise HTTPException(status_code=404, detail="repo binding not found")
     await session.delete(row)
     await session.commit()
+    await audit_action(
+        action="application.unbind_repo",
+        actor_id=_admin,
+        target_type="git_repo",
+        target_id=str(repo_id),
+        application_id=application_id,
+    )
 
 
 @router.post(
@@ -399,6 +437,14 @@ async def create_db_source(
     session.add(row)
     await session.commit()
     await session.refresh(row)
+    await audit_action(
+        action="db_source.create",
+        actor_id=_admin,
+        target_type="db_source",
+        target_id=str(row.id),
+        application_id=application_id,
+        detail={"name": row.name},
+    )
     return DbSourceOut(
         id=row.id,
         application_id=row.application_id,
@@ -430,6 +476,13 @@ async def delete_db_source(
         raise HTTPException(status_code=404, detail="data source not found")
     await session.delete(row)
     await session.commit()
+    await audit_action(
+        action="db_source.delete",
+        actor_id=_admin,
+        target_type="db_source",
+        target_id=str(source_id),
+        application_id=application_id,
+    )
 
 
 @router.put(
@@ -478,6 +531,13 @@ async def update_db_source(
     session.add(row)
     await session.commit()
     await session.refresh(row)
+    await audit_action(
+        action="db_source.update",
+        actor_id=_admin,
+        target_type="db_source",
+        target_id=str(source_id),
+        application_id=application_id,
+    )
     return DbSourceOut(
         id=row.id,
         application_id=row.application_id,
@@ -514,7 +574,24 @@ async def test_db_source_connection(
     try:
         latency = await test_connection(dsn)
     except Exception as exc:  # surfaced as a structured result, not 500
+        await audit_action(
+            action="db_source.test",
+            actor_id=_admin,
+            target_type="application",
+            target_id=str(application_id),
+            application_id=application_id,
+            result="error",
+            detail={"error": str(exc)},
+        )
         return {"ok": False, "latency_ms": None, "error": str(exc)}
+    await audit_action(
+        action="db_source.test",
+        actor_id=_admin,
+        target_type="application",
+        target_id=str(application_id),
+        application_id=application_id,
+        result="ok",
+    )
     return {"ok": True, "latency_ms": round(latency * 1000, 1), "error": None}
 
 
@@ -560,6 +637,14 @@ async def create_preset_prompt(
     session.add(row)
     await session.commit()
     await session.refresh(row)
+    await audit_action(
+        action="preset_prompt.create",
+        actor_id=_admin,
+        target_type="preset_prompt",
+        target_id=str(row.id),
+        application_id=application_id,
+        detail={"type": row.type},
+    )
     return PresetPromptOut(
         id=row.id,
         application_id=row.application_id,
@@ -583,6 +668,13 @@ async def delete_preset_prompt(
         raise HTTPException(status_code=404, detail="prompt not found")
     await session.delete(row)
     await session.commit()
+    await audit_action(
+        action="preset_prompt.delete",
+        actor_id=_admin,
+        target_type="preset_prompt",
+        target_id=str(prompt_id),
+        application_id=application_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -663,6 +755,14 @@ async def add_member(
         existing.perm = payload.perm
     await session.commit()
     await session.refresh(existing)
+    await audit_action(
+        action="member.add",
+        actor_id=_auth,
+        target_type="member",
+        target_id=str(user_id),
+        application_id=application_id,
+        detail={"perm": payload.perm},
+    )
     return AppMemberOut(
         user_id=user.id,
         email=user.email,
@@ -694,6 +794,14 @@ async def update_member(
     await session.commit()
     await session.refresh(row)
     user = await session.get(User, user_id)
+    await audit_action(
+        action="member.update",
+        actor_id=_auth,
+        target_type="member",
+        target_id=str(user_id),
+        application_id=application_id,
+        detail={"perm": payload.perm},
+    )
     return AppMemberOut(
         user_id=user.id,
         email=user.email,
@@ -738,3 +846,10 @@ async def remove_member(
             )
     await session.delete(row)
     await session.commit()
+    await audit_action(
+        action="member.remove",
+        actor_id=_auth,
+        target_type="member",
+        target_id=str(user_id),
+        application_id=application_id,
+    )

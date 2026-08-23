@@ -81,7 +81,6 @@ async def replay_dead_letter(
     except Exception as exc:  # noqa: BLE001 - surface infra errors to the operator
         logger.exception("replay producer failed for dead letter %s", dead_letter_id)
         await audit_action(
-            session,
             action="dlq.replay",
             actor_id=_admin,
             target_type="dead_letter",
@@ -95,7 +94,6 @@ async def replay_dead_letter(
     dl.replayed = True
     await session.commit()
     await audit_action(
-        session,
         action="dlq.replay",
         actor_id=_admin,
         target_type="dead_letter",

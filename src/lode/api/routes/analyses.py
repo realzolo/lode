@@ -313,7 +313,6 @@ async def reanalyze(
     session.add(job)
     await session.commit()
     await audit_action(
-        session,
         action="analysis.create",
         actor_id=user_id,
         target_type="application",
