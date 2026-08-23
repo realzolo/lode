@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     # Cosine distance at or below which a retrieved memory is considered a match
     # (0 = identical direction, 2 = opposite). 0.25 ≙ similarity ≥ 0.75.
     embedding_threshold: float = 0.25
+    # Semantic search backend for shared memory. ``"python"`` (default) ranks
+    # candidates in-process with ``cosine_distance`` and works against any
+    # PostgreSQL with no extension. ``"pgvector"`` offloads distance computation
+    # (and ANN search with an HNSW index) to the database via the ``<=>``
+    # operator, casting the stored ``real[]`` column to ``vector`` at query time.
+    # Requires the ``pgvector`` extension on the host; if that extension is
+    # missing the search transparently falls back to the Python backend, so the
+    # feature never hard-breaks. No column-type migration is required either way
+    # — the portable ``real[]`` storage is preserved.
+    embedding_backend: str = "python"
 
     # Rate limiting (M6 hardening)
     # In-memory fixed-window limiter applied to every non-exempt route. The

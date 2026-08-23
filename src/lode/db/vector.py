@@ -1,18 +1,41 @@
-"""Embedding dimensionality + storage notes for semantic memory.
+"""Embedding dimensionality + pgvector integration notes for semantic memory.
 
-Semantic memory stores each memory's embedding as a native PostgreSQL
-``real[]`` array. This keeps the feature dependency-free: it works against any
-PostgreSQL (the local dev DB, the ``postgres:16`` compose image, and managed
-hosts) without requiring the ``pgvector`` extension to be installed.
+Semantic memory stores each memory's embedding as a native PostgreSQL ``real[]``
+array. This keeps the feature dependency-free: it works against any PostgreSQL
+(the local dev DB, the ``postgres:16`` compose image, and managed hosts)
+without requiring the ``pgvector`` extension to be installed.
 
-Cosine similarity / ranking is computed in Python over the small per-application
-candidate set (see ``lode.engine.memory_search``), which is more than fast
-enough for shared-memory volumes and stays fully hermetic-testable.
+Cosine ranking is computed in one of two backends, selected by
+``settings.embedding_backend`` (see ``lode.engine.memory_search``):
 
-Upgrade path to pgvector (for large-scale ANN indexing): swap the column type
-to ``pgvector.sqlalchemy.Vector(EMBEDDING_DIM)`` here and in the migration, add
-``CREATE EXTENSION vector`` + an HNSW cosine index, and let ``memory_search``
-use the ``<=>`` operator. No application logic changes.
+* ``"python"`` (default): rank in Python over the small per-application
+  candidate set. Fully hermetic-testable, no extension needed.
+* ``"pgvector"``: offload to the database via the ``<=>`` operator by casting
+  the stored ``real[]`` column to ``vector`` at query time. **No column-type
+  migration is required** — the portable ``real[]`` storage is preserved, and
+  if the ``vector`` extension is missing the search automatically falls back to
+  the Python backend.
+
+Optional HNSW acceleration (pgvector hosts only)
+------------------------------------------------
+When the ``vector`` extension is available and the table is large, add an HNSW
+cosine index on the cast expression to turn the ``<=>`` scan into an ANN
+lookup. This is a *manual, opt-in* step (kept out of the auto-migrate chain so
+it never runs on extension-less hosts)::
+
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE INDEX IF NOT EXISTS ix_memories_embedding_hnsw
+        ON memories USING hnsw ((embedding::vector) vector_cosine_ops);
+
+The cast ``embedding::vector`` relies on pgvector's array→vector parsing; if a
+given pgvector build rejects it, wrap as ``(embedding::text::vector)``.
+
+Upgrade note: if you ever want to change the *stored* type to a native
+``pgvector.sqlalchemy.Vector(EMBEDDING_DIM)`` column (instead of casting), swap
+the column in ``lode.db.models.memory`` and add an Alembic migration that does
+``CREATE EXTENSION vector`` + ``ALTER COLUMN embedding TYPE vector(EMBEDDING_DIM)
+USING (embedding::text::vector)``. The current design deliberately avoids this
+to stay portable.
 """
 
 from __future__ import annotations
