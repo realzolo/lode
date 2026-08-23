@@ -300,6 +300,85 @@ class UserOut(BaseModel):
 
 # --- AI model configuration (admin) -------------------------------------
 
+# --- Git credentials & repository registry (admin) -----------------------
+#
+# Global, read-only Git accounts (``git_credentials``) and the repository
+# registry (``git_repos``) that applications bind to. Both are admin-only
+# write surfaces. The ``secret_ref`` is encrypted at rest via ``_store_key_ref``
+# (same pattern as AI-model keys); on update it is optional so an operator can
+# rotate metadata without re-pasting the secret.
+
+class GitCredentialIn(BaseModel):
+    auth_type: str = Field(pattern="^(ssh|https)$")
+    username: str = Field(default="", max_length=200)
+    # Supports ``env://NAME`` (preferred) or a literal secret. Required on
+    # create; optional on update.
+    secret_ref: str = Field(min_length=1, max_length=2000)
+    readonly: bool = True
+    note: str = Field(default="", max_length=2000)
+
+
+class GitCredentialUpdateIn(BaseModel):
+    """Partial update for an existing Git credential.
+
+    Every field is optional. ``secret_ref`` is only overwritten when a
+    non-empty value is supplied, so metadata can be rotated without re-pasting
+    the secret. Supplying nothing leaves the existing credential untouched.
+    """
+
+    auth_type: str | None = Field(default=None, pattern="^(ssh|https)$")
+    username: str | None = Field(default=None, max_length=200)
+    secret_ref: str | None = Field(default=None, max_length=2000)
+    readonly: bool | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class GitCredentialOut(BaseModel):
+    id: int
+    auth_type: str
+    username: str
+    readonly: bool
+    note: str
+    has_secret: bool
+
+
+class GitRepoIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    # Unique across the registry (DB constraint); the route returns 409 on a
+    # duplicate.
+    repo_url: str = Field(min_length=1, max_length=2000)
+    default_branch: str = Field(default="main", max_length=200)
+    # Provider family: github / gitlab / gitee / bitbucket / other. Free-text
+    # so new hosts can be onboarded without a schema change.
+    repo_type: str = Field(default="other", max_length=32)
+    # Optional link to a global credential. ``None`` leaves the repo without a
+    # default account (repos fall back to the global read-only account).
+    credential_id: int | None = Field(default=None, gt=0)
+
+
+class GitRepoUpdateIn(BaseModel):
+    """Partial update for an existing repository.
+
+    Every field is optional; ``repo_url`` uniqueness is still enforced on
+    update (a 409 is returned if the new value collides with another repo).
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    repo_url: str | None = Field(default=None, min_length=1, max_length=2000)
+    default_branch: str | None = Field(default=None, max_length=200)
+    repo_type: str | None = Field(default=None, max_length=32)
+    credential_id: int | None = Field(default=None, gt=0)
+
+
+class GitRepoOut(BaseModel):
+    id: int
+    name: str
+    repo_url: str
+    default_branch: str
+    repo_type: str
+    credential_id: int | None
+
+
 class AiModelConfigIn(BaseModel):
     scope: str = Field(pattern="^(global|application)$")
     application_id: int | None = None

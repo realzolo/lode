@@ -52,6 +52,12 @@ class GitRepo(Base):
     default_branch: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="main"
     )
+    # Provider family (github / gitlab / gitee / bitbucket / other). Kept as a
+    # free-text tag so new hosts can be onboarded without a schema change; the
+    # settings UI offers a curated dropdown of the common ones.
+    repo_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="other"
+    )
     credential_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("git_credentials.id", ondelete="SET NULL")
     )

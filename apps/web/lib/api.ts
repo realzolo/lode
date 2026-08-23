@@ -629,7 +629,7 @@ export function toUiSteps(steps: ApiStep[]): AnalysisStep[] {
 
 export interface GlobalSettings {
   git_credentials: { id: number; auth_type: string; username: string; readonly: boolean; note: string; has_secret: boolean }[];
-  git_repos: { id: number; name: string; repo_url: string; default_branch: string }[];
+  git_repos: { id: number; name: string; repo_url: string; default_branch: string; repo_type: string; credential_id: number | null }[];
   ai_model_configs: {
     id: number;
     scope: string;
@@ -678,6 +678,88 @@ export async function deleteAiModel(id: number): Promise<void> {
     throw new Error('unauthorized');
   }
   if (!res.ok) throw new Error(`delete ai model failed: ${res.status}`);
+}
+
+// ---------------------------------------------------------------------------
+// Git credentials (admin)
+// ---------------------------------------------------------------------------
+
+export interface GitCredentialInput {
+  auth_type: string;
+  username: string;
+  secret_ref: string;
+  readonly: boolean;
+  note: string;
+}
+
+export interface GitCredentialRow {
+  id: number;
+  auth_type: string;
+  username: string;
+  readonly: boolean;
+  note: string;
+  has_secret: boolean;
+}
+
+export async function createGitCredential(input: GitCredentialInput): Promise<GitCredentialRow> {
+  return postJson<GitCredentialRow>('/settings/git-credentials', input);
+}
+
+export async function updateGitCredential(id: number, input: Partial<GitCredentialInput>): Promise<GitCredentialRow> {
+  return putJson<GitCredentialRow>(`/settings/git-credentials/${id}`, input);
+}
+
+export async function deleteGitCredential(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/settings/git-credentials/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) throw new Error(`delete git credential failed: ${res.status}`);
+}
+
+// ---------------------------------------------------------------------------
+// Git repository registry (admin)
+// ---------------------------------------------------------------------------
+
+export interface GitRepoInput {
+  name: string;
+  repo_url: string;
+  default_branch: string;
+  repo_type: string;
+  credential_id: number | null;
+}
+
+export interface GitRepoRow {
+  id: number;
+  name: string;
+  repo_url: string;
+  default_branch: string;
+  repo_type: string;
+  credential_id: number | null;
+}
+
+export async function createGitRepo(input: GitRepoInput): Promise<GitRepoRow> {
+  return postJson<GitRepoRow>('/settings/git-repos', input);
+}
+
+export async function updateGitRepo(id: number, input: Partial<GitRepoInput>): Promise<GitRepoRow> {
+  return putJson<GitRepoRow>(`/settings/git-repos/${id}`, input);
+}
+
+export async function deleteGitRepo(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/settings/git-repos/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) throw new Error(`delete git repo failed: ${res.status}`);
 }
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Dialog,
@@ -20,11 +21,21 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
   changePassword,
   createAiModel,
+  createGitCredential,
+  createGitRepo,
   deleteAiModel,
+  deleteGitCredential,
+  deleteGitRepo,
   fetchApplications,
   fetchSettings,
   updateAiModel,
+  updateGitCredential,
+  updateGitRepo,
   type AiModelInput,
+  type GitCredentialInput,
+  type GitCredentialRow,
+  type GitRepoInput,
+  type GitRepoRow,
   type GlobalSettings,
 } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
@@ -104,12 +115,18 @@ export default function SettingsPage() {
             {settings.git_credentials.length === 0 && <p className="muted">{tc('empty')}</p>}
             {settings.git_credentials.map((c) => (
               <div key={c.id} className="row-between" style={{ marginTop: 8 }}>
-                <span className="mono">{c.username || '—'}</span>
+                <span className="mono">
+                  {c.username || '—'} · {c.auth_type}
+                  {c.readonly ? ' · readonly' : ' · rw'}
+                </span>
                 <Badge variant={c.readonly ? 'success' : 'warning'}>
                   {c.readonly ? 'readonly' : 'rw'}
                 </Badge>
               </div>
             ))}
+            {isAdmin && (
+              <GitCredentialManager settings={settings} onChanged={reload} onError={setError} />
+            )}
           </Card>
 
           <Card>
@@ -119,10 +136,15 @@ export default function SettingsPage() {
               {settings.git_repos.map((r) => (
                 <div key={r.id} className="row-between">
                   <span className="mono">{r.name}</span>
-                  <span className="muted" style={{ fontSize: 12 }}>{r.repo_url}</span>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {r.repo_type} · {r.repo_url}
+                  </span>
                 </div>
               ))}
             </div>
+            {isAdmin && (
+              <GitRepoManager settings={settings} onChanged={reload} onError={setError} />
+            )}
           </Card>
 
           <Card>
@@ -290,14 +312,16 @@ function AiModelManager({
               value={model}
               onChange={(e) => setModel(e.target.value)}
             />
-            <label className="row" style={{ gap: 8, fontSize: 13 }}>
-              <input
-                type="checkbox"
+            <div className="row" style={{ gap: 8, fontSize: 13, alignItems: 'center' }}>
+              <Switch
+                id="ai-model-is-default"
                 checked={isDefault}
-                onChange={(e) => setIsDefault(e.target.checked)}
+                onCheckedChange={setIsDefault}
               />
-              default for this scope
-            </label>
+              <label htmlFor="ai-model-is-default" style={{ cursor: 'pointer' }}>
+                default for this scope
+              </label>
+            </div>
           </div>
           <DialogFooter>
             <Button size="sm" onClick={() => { resetForm(); setShowForm(false); }}>{tc('cancel')}</Button>
@@ -334,6 +358,346 @@ function AiModelManager({
         onOpenChange={(open) => !open && setDeleteId(null)}
         title={t('deleteModelTitle')}
         description={t('deleteModelDesc')}
+        confirmLabel={tc('delete')}
+        cancelLabel={tc('cancel')}
+        destructive
+        onConfirm={() => {
+          if (deleteId != null) return handleDelete(deleteId);
+        }}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Admin-only Git credential CRUD
+// ---------------------------------------------------------------------------
+
+function GitCredentialManager({
+  settings,
+  onChanged,
+  onError,
+}: {
+  settings: GlobalSettings;
+  onChanged: () => Promise<void> | void;
+  onError: (msg: string | null) => void;
+}) {
+  const t = useTranslations('settings');
+  const tc = useTranslations('common');
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [authType, setAuthType] = useState('ssh');
+  const [username, setUsername] = useState('');
+  const [secretRef, setSecretRef] = useState('');
+  const [readonly, setReadonly] = useState(true);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+
+  function resetForm() {
+    setEditingId(null);
+    setAuthType('ssh');
+    setUsername('');
+    setSecretRef('');
+    setReadonly(true);
+    setNote('');
+  }
+
+  function startEdit(c: GitCredentialRow) {
+    setEditingId(c.id);
+    setAuthType(c.auth_type);
+    setUsername(c.username);
+    setSecretRef('');
+    setReadonly(c.readonly);
+    setNote(c.note);
+    setShowForm(true);
+  }
+
+  async function handleSubmit() {
+    setBusy(true);
+    onError(null);
+    // On edit, only send ``secret_ref`` when the operator actually typed one —
+    // the backend keeps the existing secret otherwise.
+    const payload: Partial<GitCredentialInput> = {
+      auth_type: authType,
+      username,
+      readonly,
+      note,
+    };
+    if (secretRef) payload.secret_ref = secretRef;
+    try {
+      if (editingId != null) {
+        await updateGitCredential(editingId, payload);
+      } else {
+        await createGitCredential({ ...(payload as GitCredentialInput), secret_ref: secretRef });
+      }
+      resetForm();
+      setShowForm(false);
+      await onChanged();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(id: number) {
+    onError(null);
+    try {
+      await deleteGitCredential(id);
+      await onChanged();
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <Button size="sm" variant="primary" onClick={() => { resetForm(); setShowForm(true); }}>
+        <IconPlus size={14} /> {t('addGitAccount')}
+      </Button>
+
+      <Dialog open={showForm} onOpenChange={setShowForm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingId != null ? t('editGitAccount') : t('createGitAccount')}</DialogTitle>
+            <DialogDescription>{t('gitAccountDesc')}</DialogDescription>
+          </DialogHeader>
+          <div className="stack">
+            <Select value={authType} onChange={(e) => setAuthType(e.target.value)}>
+              <option value="ssh">{t('ssh')}</option>
+              <option value="https">{t('https')}</option>
+            </Select>
+            <Input
+              placeholder={t('username')}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+            <Input
+              type="password"
+              placeholder={t('secretRef')}
+              value={secretRef}
+              onChange={(e) => setSecretRef(e.target.value)}
+            />
+            <div className="row" style={{ gap: 8, fontSize: 13, alignItems: 'center' }}>
+              <Switch
+                id="git-credential-readonly"
+                checked={readonly}
+                onCheckedChange={setReadonly}
+              />
+              <label htmlFor="git-credential-readonly" style={{ cursor: 'pointer' }}>
+                {t('readonly')}
+              </label>
+            </div>
+            <Input
+              placeholder={t('note')}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button size="sm" onClick={() => { resetForm(); setShowForm(false); }}>{tc('cancel')}</Button>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={handleSubmit}
+              disabled={busy || !username || (!editingId && !secretRef)}
+            >
+              {editingId != null ? tc('save') : t('createGitAccount')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <div className="stack" style={{ marginTop: 12 }}>
+        {settings.git_credentials.map((c) => (
+          <div key={c.id} className="row-between" style={{ borderTop: '1px solid var(--color-4)', paddingTop: 8 }}>
+            <span className="mono" style={{ fontSize: 12 }}>
+              #{c.id} {c.username || '—'} · {c.auth_type}
+              {c.readonly ? ' · readonly' : ' · rw'}
+              {c.has_secret ? ' · secret' : ''}
+            </span>
+            <div className="row" style={{ gap: 6 }}>
+              <Button size="sm" onClick={() => startEdit(c)}><IconEdit2 size={14} /> {tc('edit')}</Button>
+              <Button size="sm" variant="destructive" onClick={() => setDeleteId(c.id)}><IconTrash2 size={14} /> {tc('delete')}</Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <ConfirmDialog
+        open={deleteId != null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title={t('deleteGitAccountTitle')}
+        description={t('deleteGitAccountDesc')}
+        confirmLabel={tc('delete')}
+        cancelLabel={tc('cancel')}
+        destructive
+        onConfirm={() => {
+          if (deleteId != null) return handleDelete(deleteId);
+        }}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Admin-only repository registry CRUD
+// ---------------------------------------------------------------------------
+
+const REPO_TYPES = ['github', 'gitlab', 'gitee', 'bitbucket', 'other'] as const;
+
+function GitRepoManager({
+  settings,
+  onChanged,
+  onError,
+}: {
+  settings: GlobalSettings;
+  onChanged: () => Promise<void> | void;
+  onError: (msg: string | null) => void;
+}) {
+  const t = useTranslations('settings');
+  const tc = useTranslations('common');
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [name, setName] = useState('');
+  const [repoUrl, setRepoUrl] = useState('');
+  const [defaultBranch, setDefaultBranch] = useState('main');
+  const [repoType, setRepoType] = useState<string>('github');
+  const [credentialId, setCredentialId] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+
+  function resetForm() {
+    setEditingId(null);
+    setName('');
+    setRepoUrl('');
+    setDefaultBranch('main');
+    setRepoType('github');
+    setCredentialId('');
+  }
+
+  function startEdit(r: GitRepoRow) {
+    setEditingId(r.id);
+    setName(r.name);
+    setRepoUrl(r.repo_url);
+    setDefaultBranch(r.default_branch);
+    setRepoType(r.repo_type);
+    setCredentialId(r.credential_id != null ? String(r.credential_id) : '');
+    setShowForm(true);
+  }
+
+  async function handleSubmit() {
+    setBusy(true);
+    onError(null);
+    const payload: Partial<GitRepoInput> = {
+      name,
+      repo_url: repoUrl,
+      default_branch: defaultBranch,
+      repo_type: repoType,
+      credential_id: credentialId ? Number(credentialId) : null,
+    };
+    try {
+      if (editingId != null) {
+        await updateGitRepo(editingId, payload);
+      } else {
+        await createGitRepo(payload as GitRepoInput);
+      }
+      resetForm();
+      setShowForm(false);
+      await onChanged();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(id: number) {
+    onError(null);
+    try {
+      await deleteGitRepo(id);
+      await onChanged();
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <Button size="sm" variant="primary" onClick={() => { resetForm(); setShowForm(true); }}>
+        <IconPlus size={14} /> {t('addRepo')}
+      </Button>
+
+      <Dialog open={showForm} onOpenChange={setShowForm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingId != null ? t('editRepo') : t('createRepo')}</DialogTitle>
+            <DialogDescription>{t('repoRegistry')}</DialogDescription>
+          </DialogHeader>
+          <div className="stack">
+            <Input
+              placeholder={t('repoName')}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+            <Input
+              placeholder={t('repoUrl')}
+              value={repoUrl}
+              onChange={(e) => setRepoUrl(e.target.value)}
+            />
+            <Select value={repoType} onChange={(e) => setRepoType(e.target.value)}>
+              {REPO_TYPES.map((rt) => (
+                <option key={rt} value={rt}>{rt}</option>
+              ))}
+            </Select>
+            <Input
+              placeholder={t('defaultBranch')}
+              value={defaultBranch}
+              onChange={(e) => setDefaultBranch(e.target.value)}
+            />
+            <Select value={credentialId} onChange={(e) => setCredentialId(e.target.value)}>
+              <option value="">{t('noCredential')}</option>
+              {settings.git_credentials.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.username || '—'} · {c.auth_type}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button size="sm" onClick={() => { resetForm(); setShowForm(false); }}>{tc('cancel')}</Button>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={handleSubmit}
+              disabled={busy || !name || !repoUrl}
+            >
+              {editingId != null ? tc('save') : t('createRepo')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <div className="stack" style={{ marginTop: 12 }}>
+        {settings.git_repos.map((r) => (
+          <div key={r.id} className="row-between" style={{ borderTop: '1px solid var(--color-4)', paddingTop: 8 }}>
+            <span className="mono" style={{ fontSize: 12 }}>
+              #{r.id} {r.name} · {r.repo_type} · {r.default_branch}
+            </span>
+            <div className="row" style={{ gap: 6 }}>
+              <Button size="sm" onClick={() => startEdit(r)}><IconEdit2 size={14} /> {tc('edit')}</Button>
+              <Button size="sm" variant="destructive" onClick={() => setDeleteId(r.id)}><IconTrash2 size={14} /> {tc('delete')}</Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <ConfirmDialog
+        open={deleteId != null}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        title={t('deleteRepoTitle')}
+        description={t('deleteRepoDesc')}
         confirmLabel={tc('delete')}
         cancelLabel={tc('cancel')}
         destructive

@@ -20,6 +20,12 @@ from lode.api.deps import require_admin
 from lode.api.schemas import (
     AiModelConfigIn,
     AiModelConfigOut,
+    GitCredentialIn,
+    GitCredentialOut,
+    GitCredentialUpdateIn,
+    GitRepoIn,
+    GitRepoOut,
+    GitRepoUpdateIn,
 )
 from lode.crypto import encrypt_secret
 from lode.db.models.ai_model import AiModelConfig
@@ -62,7 +68,14 @@ async def get_settings() -> dict:
             for c in creds
         ],
         "git_repos": [
-            {"id": r.id, "name": r.name, "repo_url": r.repo_url, "default_branch": r.default_branch}
+            {
+                "id": r.id,
+                "name": r.name,
+                "repo_url": r.repo_url,
+                "default_branch": r.default_branch,
+                "repo_type": r.repo_type,
+                "credential_id": r.credential_id,
+            }
             for r in repos
         ],
         "ai_model_configs": [
@@ -251,4 +264,175 @@ async def delete_ai_model(model_id: int, _admin: int = Depends(require_admin)) -
         # keeps working.
         if was_default:
             await _promote_if_no_default(session, scope, application_id)
+        await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Git credentials (admin only)
+# ---------------------------------------------------------------------------
+
+def _cred_to_out(c: GitCredential) -> GitCredentialOut:
+    return GitCredentialOut(
+        id=c.id,
+        auth_type=c.auth_type,
+        username=c.username,
+        readonly=c.readonly,
+        note=c.note,
+        has_secret=bool(c.secret_ref),
+    )
+
+
+@router.post("/git-credentials", response_model=GitCredentialOut, status_code=201)
+async def create_git_credential(
+    payload: GitCredentialIn, _admin: int = Depends(require_admin)
+) -> GitCredentialOut:
+    async with AsyncSessionLocal() as session:
+        cred = GitCredential(
+            auth_type=payload.auth_type,
+            username=payload.username,
+            # Encrypt a literal secret at rest; keep ``env://`` references
+            # verbatim so the real credential stays in the deployment env.
+            secret_ref=_store_key_ref(payload.secret_ref),
+            readonly=payload.readonly,
+            note=payload.note,
+        )
+        session.add(cred)
+        await session.commit()
+        await session.refresh(cred)
+        return _cred_to_out(cred)
+
+
+@router.put("/git-credentials/{cred_id}", response_model=GitCredentialOut)
+async def update_git_credential(
+    cred_id: int, payload: GitCredentialUpdateIn, _admin: int = Depends(require_admin)
+) -> GitCredentialOut:
+    async with AsyncSessionLocal() as session:
+        cred = await session.get(GitCredential, cred_id)
+        if cred is None:
+            raise HTTPException(status_code=404, detail="git credential not found")
+        if payload.auth_type is not None:
+            cred.auth_type = payload.auth_type
+        if payload.username is not None:
+            cred.username = payload.username
+        # Only overwrite the secret when a non-empty value is supplied, so
+        # operators can rotate metadata without re-pasting the credential.
+        if payload.secret_ref:
+            cred.secret_ref = _store_key_ref(payload.secret_ref)
+        if payload.readonly is not None:
+            cred.readonly = payload.readonly
+        if payload.note is not None:
+            cred.note = payload.note
+        await session.commit()
+        await session.refresh(cred)
+        return _cred_to_out(cred)
+
+
+@router.delete("/git-credentials/{cred_id}", status_code=204)
+async def delete_git_credential(cred_id: int, _admin: int = Depends(require_admin)) -> None:
+    async with AsyncSessionLocal() as session:
+        cred = await session.get(GitCredential, cred_id)
+        if cred is None:
+            raise HTTPException(status_code=404, detail="git credential not found")
+        # Repositories pointing at this credential use ``ondelete="SET NULL"``
+        # at the FK level, so their ``credential_id`` is cleared automatically
+        # when the row is deleted.
+        await session.delete(cred)
+        await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Git repository registry (admin only)
+# ---------------------------------------------------------------------------
+
+def _repo_to_out(r: GitRepo) -> GitRepoOut:
+    return GitRepoOut(
+        id=r.id,
+        name=r.name,
+        repo_url=r.repo_url,
+        default_branch=r.default_branch,
+        repo_type=r.repo_type,
+        credential_id=r.credential_id,
+    )
+
+
+async def _assert_credential(session, credential_id: int | None) -> None:
+    """Validate a ``credential_id`` reference if one is supplied.
+
+    A ``None`` value is always allowed (the repo simply has no bound account).
+    A non-existent id is rejected with 404 so we never store a dangling FK.
+    """
+    if credential_id is None:
+        return
+    cred = await session.get(GitCredential, credential_id)
+    if cred is None:
+        raise HTTPException(status_code=404, detail="git credential not found")
+
+
+@router.post("/git-repos", response_model=GitRepoOut, status_code=201)
+async def create_git_repo(
+    payload: GitRepoIn, _admin: int = Depends(require_admin)
+) -> GitRepoOut:
+    async with AsyncSessionLocal() as session:
+        existing = (
+            await session.execute(
+                select(GitRepo).where(GitRepo.repo_url == payload.repo_url)
+            )
+        ).scalars().first()
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="repo_url already registered")
+        await _assert_credential(session, payload.credential_id)
+        repo = GitRepo(
+            name=payload.name,
+            repo_url=payload.repo_url,
+            default_branch=payload.default_branch,
+            repo_type=payload.repo_type,
+            credential_id=payload.credential_id,
+        )
+        session.add(repo)
+        await session.commit()
+        await session.refresh(repo)
+        return _repo_to_out(repo)
+
+
+@router.put("/git-repos/{repo_id}", response_model=GitRepoOut)
+async def update_git_repo(
+    repo_id: int, payload: GitRepoUpdateIn, _admin: int = Depends(require_admin)
+) -> GitRepoOut:
+    async with AsyncSessionLocal() as session:
+        repo = await session.get(GitRepo, repo_id)
+        if repo is None:
+            raise HTTPException(status_code=404, detail="git repo not found")
+        if payload.repo_url is not None and payload.repo_url != repo.repo_url:
+            colliding = (
+                await session.execute(
+                    select(GitRepo).where(GitRepo.repo_url == payload.repo_url)
+                )
+            ).scalars().first()
+            if colliding is not None and colliding.id != repo.id:
+                raise HTTPException(status_code=409, detail="repo_url already registered")
+        if payload.name is not None:
+            repo.name = payload.name
+        if payload.repo_url is not None:
+            repo.repo_url = payload.repo_url
+        if payload.default_branch is not None:
+            repo.default_branch = payload.default_branch
+        if payload.repo_type is not None:
+            repo.repo_type = payload.repo_type
+        # ``credential_id`` may be cleared (set to ``None``) to unbind, or
+        # pointed at a different existing credential.
+        if payload.credential_id is not None or "credential_id" in payload.model_fields_set:
+            await _assert_credential(session, payload.credential_id)
+            repo.credential_id = payload.credential_id
+        await session.commit()
+        await session.refresh(repo)
+        return _repo_to_out(repo)
+
+
+@router.delete("/git-repos/{repo_id}", status_code=204)
+async def delete_git_repo(repo_id: int, _admin: int = Depends(require_admin)) -> None:
+    async with AsyncSessionLocal() as session:
+        repo = await session.get(GitRepo, repo_id)
+        if repo is None:
+            raise HTTPException(status_code=404, detail="git repo not found")
+        await session.delete(repo)
         await session.commit()

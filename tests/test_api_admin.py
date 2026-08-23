@@ -16,8 +16,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from lode.api.main import app
+from lode.crypto import decrypt_secret
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.application import Application
+from lode.db.models.git import GitCredential, GitRepo
 from lode.db.models.user import Invite, User
 from lode.db.session import AsyncSessionLocal
 from lode.security import hash_password
@@ -138,6 +140,178 @@ async def test_admin_crud_ai_model(admin):
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 204
+
+
+# --- Git credentials (admin) ---------------------------------------------
+
+async def test_non_admin_cannot_manage_git(user):
+    _email, _pw, _uid = user
+    token = await _login(USER_EMAIL, USER_PASSWORD)
+    async with _client() as client:
+        resp = await client.post(
+            "/settings/git-credentials",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"auth_type": "ssh", "username": "x", "secret_ref": "env://X", "readonly": True, "note": ""},
+        )
+        assert resp.status_code == 403
+        resp = await client.post(
+            "/settings/git-repos",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "r", "repo_url": "https://github.com/o/r", "default_branch": "main", "repo_type": "github", "credential_id": None},
+        )
+        assert resp.status_code == 403
+
+
+async def test_admin_crud_git_credential(admin):
+    _email, _pw, _uid = admin
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    async with _client() as client:
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # create with an ``env://`` reference -> stored verbatim.
+        resp = await client.post(
+            "/settings/git-credentials",
+            headers=headers,
+            json={"auth_type": "ssh", "username": "deploy", "secret_ref": "env://GH_DEPLOY", "readonly": True, "note": "ci key"},
+        )
+        assert resp.status_code == 201, resp.text
+        cid = resp.json()["id"]
+        assert resp.json()["has_secret"] is True
+
+        # the env ref is kept as-is in the DB row.
+        async with AsyncSessionLocal() as session:
+            row = await session.get(GitCredential, cid)
+            assert row.secret_ref == "env://GH_DEPLOY"
+
+        # create with a literal secret -> encrypted at rest (not stored as plaintext).
+        resp = await client.post(
+            "/settings/git-credentials",
+            headers=headers,
+            json={"auth_type": "https", "username": "robot", "secret_ref": "ghp_literalabc123", "readonly": False, "note": ""},
+        )
+        assert resp.status_code == 201, resp.text
+        cid2 = resp.json()["id"]
+        async with AsyncSessionLocal() as session:
+            row = await session.get(GitCredential, cid2)
+            assert row.secret_ref != "ghp_literalabc123"
+            # and it decrypts back to the original literal.
+            assert decrypt_secret(row.secret_ref) == "ghp_literalabc123"
+
+        # update without re-supplying the secret -> existing secret preserved.
+        resp = await client.put(
+            f"/settings/git-credentials/{cid2}",
+            headers=headers,
+            json={"auth_type": "https", "username": "robot", "secret_ref": "", "readonly": True, "note": "rotated meta"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["readonly"] is True
+        assert resp.json()["note"] == "rotated meta"
+        async with AsyncSessionLocal() as session:
+            row = await session.get(GitCredential, cid2)
+            assert decrypt_secret(row.secret_ref) == "ghp_literalabc123"
+
+        # update supplying a new env ref -> stored verbatim.
+        resp = await client.put(
+            f"/settings/git-credentials/{cid2}",
+            headers=headers,
+            json={"auth_type": "https", "username": "robot", "secret_ref": "env://GH_ROBOT", "readonly": True, "note": "rotated meta"},
+        )
+        assert resp.status_code == 200, resp.text
+        async with AsyncSessionLocal() as session:
+            row = await session.get(GitCredential, cid2)
+            assert row.secret_ref == "env://GH_ROBOT"
+
+        # 404 on missing credential.
+        resp = await client.put(
+            "/settings/git-credentials/999999",
+            headers=headers,
+            json={"auth_type": "ssh", "username": "x", "secret_ref": "", "readonly": True, "note": ""},
+        )
+        assert resp.status_code == 404
+
+        # delete both.
+        for c in (cid, cid2):
+            resp = await client.delete(f"/settings/git-credentials/{c}", headers=headers)
+            assert resp.status_code == 204
+
+
+# --- Git repository registry (admin) -------------------------------------
+
+async def test_admin_crud_git_repo(admin):
+    _email, _pw, _uid = admin
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    async with _client() as client:
+        headers = {"Authorization": f"Bearer {token}"}
+
+        resp = await client.post(
+            "/settings/git-repos",
+            headers=headers,
+            json={"name": "core", "repo_url": "https://github.com/o/core", "default_branch": "main", "repo_type": "github", "credential_id": None},
+        )
+        assert resp.status_code == 201, resp.text
+        rid = resp.json()["id"]
+        assert resp.json()["repo_type"] == "github"
+        assert resp.json()["default_branch"] == "main"
+
+        # duplicate repo_url -> 409.
+        resp = await client.post(
+            "/settings/git-repos",
+            headers=headers,
+            json={"name": "core-dup", "repo_url": "https://github.com/o/core", "default_branch": "main", "repo_type": "github", "credential_id": None},
+        )
+        assert resp.status_code == 409, resp.text
+
+        # update repo_type + name.
+        resp = await client.put(
+            f"/settings/git-repos/{rid}",
+            headers=headers,
+            json={"name": "core-renamed", "repo_url": "https://github.com/o/core", "default_branch": "release", "repo_type": "gitlab", "credential_id": None},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["repo_type"] == "gitlab"
+        assert resp.json()["name"] == "core-renamed"
+        assert resp.json()["default_branch"] == "release"
+
+        # 404 on missing repo.
+        resp = await client.put(
+            "/settings/git-repos/999999",
+            headers=headers,
+            json={"name": "x", "repo_url": "https://github.com/o/x", "default_branch": "main", "repo_type": "other", "credential_id": None},
+        )
+        assert resp.status_code == 404
+
+        resp = await client.delete(f"/settings/git-repos/{rid}", headers=headers)
+        assert resp.status_code == 204
+
+
+async def test_delete_git_credential_clears_repo_fk(admin):
+    """Deleting a credential must SET NULL the FK on any bound repository."""
+    _email, _pw, _uid = admin
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    async with _client() as client:
+        headers = {"Authorization": f"Bearer {token}"}
+        cred = (await client.post(
+            "/settings/git-credentials",
+            headers=headers,
+            json={"auth_type": "ssh", "username": "deploy", "secret_ref": "env://GH_DEPLOY", "readonly": True, "note": ""},
+        )).json()
+        repo = (await client.post(
+            "/settings/git-repos",
+            headers=headers,
+            json={"name": "svc", "repo_url": "https://github.com/o/svc", "default_branch": "main", "repo_type": "github", "credential_id": cred["id"]},
+        )).json()
+        assert repo["credential_id"] == cred["id"]
+
+        # delete the credential; the repo's credential_id should drop to NULL.
+        resp = await client.delete(f"/settings/git-credentials/{cred['id']}", headers=headers)
+        assert resp.status_code == 204
+
+        async with AsyncSessionLocal() as session:
+            row = await session.get(GitRepo, repo["id"])
+            assert row.credential_id is None
+
+        # cleanup
+        await client.delete(f"/settings/git-repos/{repo['id']}", headers=headers)
 
 
 # --- User management (admin) --------------------------------------------
