@@ -424,6 +424,34 @@ export async function deleteDbSource(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Read-only query console
+// ---------------------------------------------------------------------------
+
+export interface QueryResult {
+  source_id?: number;
+  source_name?: string;
+  columns: string[];
+  rows: Record<string, unknown>[];
+  row_count: number;
+  truncated: boolean;
+  desensitized: boolean;
+  allowed_tables: string[];
+}
+
+export interface RunQueryInput {
+  sql: string;
+  source_id?: number;
+  desensitize?: boolean;
+}
+
+export async function executeQuery(
+  applicationId: string | number,
+  input: RunQueryInput
+): Promise<QueryResult> {
+  return postJson<QueryResult>(`/applications/${applicationId}/query`, input);
+}
+
 export interface CreatePresetPromptInput {
   type: 'deploy' | 'other';
   content: string;

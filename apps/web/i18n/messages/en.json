@@ -12,7 +12,8 @@
     "dataSources": "Data Sources",
     "model": "Model",
     "members": "Members",
-    "allApplications": "All applications"
+    "allApplications": "All applications",
+    "explore": "Query Console"
   },
   "common": {
     "appName": "Lode",
@@ -171,5 +172,23 @@
     "removeDesc": "This user will lose access to this application.",
     "noUsers": "No users available to add.",
     "lastAdmin": "Cannot remove the last admin of this application."
+  },
+  "query": {
+    "title": "Read-only Query Console",
+    "subtitle": "Run a validated, read-only SQL query against the application's whitelisted replica. Writes and non-allow-listed tables are rejected; sensitive columns are masked.",
+    "selectApp": "Application",
+    "dataSource": "Data source",
+    "sql": "SQL",
+    "run": "Run query",
+    "running": "Running…",
+    "allowedTables": "Allowed tables",
+    "rows": "rows",
+    "truncated": "truncated at limit",
+    "desensitized": "sensitive columns masked",
+    "selectAppHint": "Select an application to begin.",
+    "noSources": "This application has no data sources configured.",
+    "failed": "Query failed",
+    "empty": "No rows returned.",
+    "sqlPlaceholder": "SELECT * FROM <allowed_table> LIMIT 50;"
   }
 }

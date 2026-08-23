@@ -24,6 +24,7 @@ from lode.db.models.application import (
 )
 from lode.db.models.git import GitRepo
 from lode.db.models.memory import Memory
+from lode.engine.db_proxy import DbProxyError, DbConnector, execute_query
 
 
 async def search_code(session, application_id: int) -> dict[str, Any]:
@@ -64,8 +65,22 @@ async def get_deploy_context(session, application_id: int) -> dict[str, Any]:
     }
 
 
-async def run_readonly_query(session, application_id: int) -> dict[str, Any]:
-    """Return the tables the agent is whitelisted to query (read-only proxy)."""
+async def run_readonly_query(
+    session,
+    application_id: int,
+    *,
+    sql: str | None = None,
+    source_id: int | None = None,
+    connector: DbConnector | None = None,
+    desensitize: bool = True,
+) -> dict[str, Any]:
+    """Read-only proxy for an application's whitelisted data sources.
+
+    With no ``sql`` this returns the allow-list (used to brief the analysis
+    agent about what it may read). When ``sql`` is provided the statement is
+    validated against the chosen source's ``allowed_tables`` and executed
+    read-only against the resolved replica, with sensitive columns masked.
+    """
     result = await session.execute(
         select(DbSource).where(DbSource.application_id == application_id)
     )
@@ -75,12 +90,41 @@ async def run_readonly_query(session, application_id: int) -> dict[str, Any]:
         tables = src.allowed_tables or []
         if isinstance(tables, list):
             allowed.extend(str(t) for t in tables)
-    return {
-        "allowed_tables": allowed,
-        "source_count": len(sources),
-        "note": "Read-only proxy: returns the whitelist; no live query is executed "
-        "until a replica is bound.",
-    }
+
+    if sql is None:
+        return {
+            "allowed_tables": allowed,
+            "source_count": len(sources),
+            "note": "Read-only proxy: allow-list only; pass `sql` to execute a "
+            "validated query.",
+        }
+
+    # Resolve which source to run against.
+    if source_id is not None:
+        chosen = next((s for s in sources if s.id == source_id), None)
+        if chosen is None:
+            raise DbProxyError(
+                f"data source {source_id} not found for this application"
+            )
+    elif len(sources) == 1:
+        chosen = sources[0]
+    elif len(sources) == 0:
+        raise DbProxyError("no data sources configured for this application")
+    else:
+        raise DbProxyError(
+            "multiple data sources configured; pass source_id to disambiguate"
+        )
+
+    res = await execute_query(
+        chosen.conn_secret_ref,
+        chosen.allowed_tables or [],
+        sql,
+        connector=connector,
+        mask=desensitize,
+    )
+    res["source_id"] = chosen.id
+    res["source_name"] = chosen.name
+    return res
 
 
 async def get_memory(session, application_id: int, trigger_signature: str) -> dict[str, Any]:

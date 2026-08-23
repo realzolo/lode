@@ -32,6 +32,7 @@ from lode.api.routes.applications import router as applications_router
 from lode.api.routes.auth import router as auth_router
 from lode.api.routes.health import router as health_router
 from lode.api.routes.invites import router as invites_router
+from lode.api.routes.queries import router as queries_router
 from lode.api.routes.memories import router as memories_router
 from lode.api.routes.settings import router as settings_router
 from lode.api.routes.users import router as users_router
@@ -140,6 +141,7 @@ app.include_router(memories_router, dependencies=_protected)
 app.include_router(alerts_router, dependencies=_protected)
 app.include_router(settings_router, dependencies=_protected)
 app.include_router(users_router, dependencies=_protected)
+app.include_router(queries_router, dependencies=_protected)
 
 # Invites: admin endpoints carry require_admin (which itself requires auth);
 # the accept endpoint is intentionally left open so new users can onboard.

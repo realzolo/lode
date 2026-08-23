@@ -153,6 +153,12 @@ class DbSourceOut(BaseModel):
     allowed_tables: list[str]
 
 
+class RunQueryIn(BaseModel):
+    sql: str = Field(min_length=1, max_length=20000)
+    source_id: int | None = None
+    desensitize: bool = True
+
+
 class CreatePresetPromptIn(BaseModel):
     type: str = Field(default="deploy", pattern="^(deploy|other)$")
     content: str = Field(min_length=1, max_length=10000)

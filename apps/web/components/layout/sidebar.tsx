@@ -15,6 +15,7 @@ import {
   IconSettings,
   IconUsers,
   IconChevronLeft,
+  IconTerminal,
 } from '@/components/icons';
 
 // Each portal exposes a distinct navigation surface so admin management and the
@@ -32,6 +33,7 @@ const ADMIN_NAV = [
 const WORKBENCH_NAV = [
   { key: 'analyses', href: '/workbench', Icon: IconBarChart },
   { key: 'memories', href: '/workbench/memories', Icon: IconDatabase },
+  { key: 'explore', href: '/workbench/explore', Icon: IconTerminal },
 ] as const;
 
 // Second-level menu shown when inside an application (`/admin/applications/:id`).

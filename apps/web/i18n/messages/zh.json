@@ -12,7 +12,8 @@
     "dataSources": "数据源",
     "model": "模型",
     "members": "成员",
-    "allApplications": "所有应用"
+    "allApplications": "所有应用",
+    "explore": "查询台"
   },
   "common": {
     "appName": "Lode",
@@ -171,5 +172,23 @@
     "removeDesc": "该用户将失去对本应用的访问权限。",
     "noUsers": "没有可添加的用户。",
     "lastAdmin": "无法移除本应用的最后一名管理员。"
+  },
+  "query": {
+    "title": "只读查询台",
+    "subtitle": "对应用白名单内的只读副本执行经过校验的只读 SQL。写操作与非白名单表会被拒绝，敏感列将被脱敏。",
+    "selectApp": "应用",
+    "dataSource": "数据源",
+    "sql": "SQL",
+    "run": "执行查询",
+    "running": "执行中…",
+    "allowedTables": "允许访问的表",
+    "rows": "行",
+    "truncated": "已达上限截断",
+    "desensitized": "敏感列已脱敏",
+    "selectAppHint": "请先选择一个应用。",
+    "noSources": "该应用尚未配置数据源。",
+    "failed": "查询失败",
+    "empty": "无返回结果。",
+    "sqlPlaceholder": "SELECT * FROM <白名单表> LIMIT 50;"
   }
 }
