@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lode.config import settings
 from lode.api.deps import assert_app_perm, permitted_app_ids, require_user
 from lode.api.schemas import (
     AddHintIn,
@@ -22,6 +24,7 @@ from lode.api.schemas import (
 from lode.db.models.alert import Alert
 from lode.db.models.analysis import Analysis, AnalysisHint, AnalysisStep
 from lode.db.models.application import Application
+from lode.db.models.intake import AnalysisJob, Incident
 from lode.db.models.memory import Memory
 from lode.db.models.permission import UserApplicationPerm
 from lode.db.models.user import User
@@ -248,19 +251,69 @@ async def reanalyze(
     # Re-running the pipeline is an action that consumes compute, so it
     # requires at least the "analyze" tier (not read-only viewers).
     await assert_app_perm(session, user, analysis.application_id, "analyze")
-    if analysis.status == "running":
-        raise HTTPException(status_code=409, detail="analysis is already running")
-    analysis.status = "running"
-    analysis.started_at = None
-    analysis.finished_at = None
-    analysis.conclusion = None
-    analysis.confidence = None
-    analysis.evidence = None
-    await session.commit()
 
-    asyncio.create_task(_run_in_background(analysis.id))
+    # An active analysis for this incident already exists — refuse to stack
+    # another one (the dedupe contract also applies to manual re-runs).
+    active = (
+        await session.execute(
+            select(Analysis)
+            .where(Analysis.application_id == analysis.application_id)
+            .where(Analysis.dedupe_key == dedupe_key)
+            .where(Analysis.status.in_(["pending", "running"]))
+            .limit(1)
+        )
+    ).scalars().first()
+    if active is not None:
+        raise HTTPException(
+            status_code=409, detail="an analysis for this incident is already in progress"
+        )
+
+    # Create a fresh analysis run + queued job; the worker executes it.
+    incident = (
+        await session.execute(
+            select(Incident)
+            .where(Incident.application_id == analysis.application_id)
+            .where(Incident.dedupe_key == dedupe_key)
+            .limit(1)
+        )
+    ).scalars().first()
+    if incident is None:
+        incident = Incident(
+            public_id=uuid.uuid4().hex,
+            application_id=analysis.application_id,
+            dedupe_key=dedupe_key,
+            state="open",
+            first_alert_id=analysis.alert_id,
+            latest_alert_id=analysis.alert_id,
+            alert_count=1,
+        )
+        session.add(incident)
+        await session.flush()
+
+    new_analysis = Analysis(
+        dedupe_key=dedupe_key,
+        application_id=analysis.application_id,
+        alert_id=analysis.alert_id,
+        incident_id=incident.id,
+        status="pending",
+        engine_version=None,
+    )
+    session.add(new_analysis)
+    await session.flush()
+    job = AnalysisJob(
+        public_id=uuid.uuid4().hex,
+        incident_id=incident.id,
+        analysis_id=new_analysis.id,
+        trigger="manual_reanalyze",
+        status="queued",
+        requested_by=user_id,
+        max_attempts=settings.job_max_attempts,
+    )
+    session.add(job)
+    await session.commit()
     return ReanalyzeOut(
-        dedupe_key=analysis.dedupe_key,
-        status="running",
-        message="Re-analysis started. Poll GET /analyses/{dedupe_key} for progress.",
+        dedupe_key=dedupe_key,
+        job_id=job.public_id,
+        status="queued",
+        message="Re-analysis queued. Poll GET /analyses/{dedupe_key} for progress.",
     )

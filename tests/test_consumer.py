@@ -1,10 +1,10 @@
-"""Broker-less tests for the Kafka consumer's validate/route/persist logic.
+"""Broker-less tests for the Kafka consumer's validate/route/dedupe/persist logic.
 
 These exercise ``process_message`` without a live Kafka broker or database by
-injecting a fake producer, an in-memory fake session, and a no-op scheduler.
-The three routing branches (invalid JSON -> DLQ, schema failure -> DLQ, unknown
-topic -> unassigned) and the happy path (Alert + Analysis persisted, analysis
-scheduled) are covered.
+injecting a fake producer, an in-memory fake session, and a fake application
+resolver. Covered branches: invalid JSON -> DLQ, schema failure -> DLQ, unknown
+topic -> unassigned, happy path (event + incident + alert + analysis + queued
+job persisted), and dedupe (an active analysis suppresses a second alert).
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import json
 import pytest
 
 from lode.consumer import main as consumer_main
+from lode.db.models.intake import AnalysisJob, Incident, IngestionEvent
 
 
 class FakeProducer:
@@ -41,17 +42,13 @@ class FakeSession:
                 setattr(obj, "id", self._next_id)
 
     async def commit(self) -> None:
-        # Real SQLAlchemy flushes pending changes on commit; mimic that so the
-        # generated primary key is available to callers afterwards.
         for obj in self.added:
             if getattr(obj, "id", None) is None:
                 self._next_id += 1
                 setattr(obj, "id", self._next_id)
 
     async def execute(self, stmt):
-        # Minimal stub for the idempotency lookup (select in-flight Analysis by
-        # dedupe_key). Defaults to "no in-flight analysis"; tests that need a
-        # match monkeypatch this method on the instance.
+        # Default: no existing incident and no active analysis (fast path).
         class _Scalars:
             def first(self):
                 return None
@@ -82,96 +79,92 @@ VALID_MSG = {
 
 async def test_invalid_json_routed_to_dlq() -> None:
     producer = FakeProducer()
-    await consumer_main.process_message("alert.prod.x", b"not-json", producer)
+    status = await consumer_main.process_message(
+        "alert.prod.x", b"not-json", producer, session=FakeSession()
+    )
+    assert status == "dlq"
     assert "lode.dlq" in producer.sent
     assert "lode.unassigned" not in producer.sent
 
 
 async def test_schema_validation_failure_routed_to_dlq() -> None:
     producer = FakeProducer()
-    # Missing required fields -> ValidationError.
     bad = json.dumps({"title": "incomplete"}).encode()
-    await consumer_main.process_message("alert.prod.x", bad, producer)
+    status = await consumer_main.process_message(
+        "alert.prod.x", bad, producer, session=FakeSession()
+    )
+    assert status == "dlq"
     assert "lode.dlq" in producer.sent
 
 
 async def test_unassigned_topic_routed() -> None:
     producer = FakeProducer()
-    captured = {}
 
-    def fake_schedule(analysis_id: int) -> None:
-        captured["ran"] = True
-
-    async def fake_resolve(db, topic):
+    async def fake_resolve(session, topic):
         return None
 
     saved = consumer_main.resolve_application_id
     consumer_main.resolve_application_id = fake_resolve
     try:
-        await consumer_main.process_message(
-            "alert.unknown",
-            json.dumps(VALID_MSG).encode(),
-            producer,
-            schedule=fake_schedule,
+        status = await consumer_main.process_message(
+            "alert.unknown", json.dumps(VALID_MSG).encode(), producer, session=FakeSession()
         )
     finally:
         consumer_main.resolve_application_id = saved
 
+    assert status == "unassigned"
     assert "lode.unassigned" in producer.sent
     assert "lode.dlq" not in producer.sent
-    # No analysis should have been scheduled for an unmapped topic.
-    assert "ran" not in captured
 
 
-async def test_valid_message_persists_and_schedules() -> None:
+async def test_valid_message_persists_and_queues_job() -> None:
     producer = FakeProducer()
     session = FakeSession()
-    scheduled: dict[str, int] = {}
 
-    def fake_schedule(analysis_id: int) -> None:
-        scheduled["analysis_id"] = analysis_id
-
-    async def fake_resolve(db, topic):
+    async def fake_resolve(session, topic):
         return 7
 
     saved = consumer_main.resolve_application_id
     consumer_main.resolve_application_id = fake_resolve
     try:
-        await consumer_main.process_message(
+        status = await consumer_main.process_message(
             "alert.prod.x",
             json.dumps(VALID_MSG).encode(),
             producer,
+            partition=0,
+            offset=1,
             session=session,
-            schedule=fake_schedule,
         )
     finally:
         consumer_main.resolve_application_id = saved
 
-    # Nothing should be produced for a well-formed, mapped message.
+    # Nothing is produced for a well-formed, mapped message.
+    assert status == "persisted"
     assert producer.sent == {}
-    # One Alert and one Analysis should be persisted.
-    assert len(session.added) == 2
-    alert, analysis = session.added
-    assert alert.application_id == 7
-    assert analysis.status == "pending"
-    assert analysis.alert_id == alert.id
-    # The analysis engine should have been scheduled with the new analysis id.
-    assert scheduled["analysis_id"] == analysis.id
+
+    types = {type(o) for o in session.added}
+    assert IngestionEvent in types
+    assert Incident in types
+    assert AnalysisJob in types
+    # Exactly one Alert and one Analysis were persisted (plus incident/job/ie).
+    alerts = [o for o in session.added if type(o).__name__ == "Alert"]
+    analyses = [o for o in session.added if type(o).__name__ == "Analysis"]
+    assert len(alerts) == 1 and len(analyses) == 1
+    assert alerts[0].application_id == 7
+    assert analyses[0].status == "pending"
+    assert analyses[0].alert_id == alerts[0].id
+    assert analyses[0].incident_id is not None
+    job = next(o for o in session.added if isinstance(o, AnalysisJob))
+    assert job.status == "queued"
+    assert job.incident_id == analyses[0].incident_id
 
 
-async def test_duplicate_in_flight_is_reused() -> None:
+async def test_duplicate_active_analysis_is_suppressed() -> None:
     producer = FakeProducer()
     session = FakeSession()
-    scheduled: dict[str, int] = {}
-
-    def fake_schedule(analysis_id: int) -> None:
-        scheduled["analysis_id"] = analysis_id
-
-    async def fake_resolve(db, topic):
-        return 7
 
     async def fake_execute(stmt):
-        # Simulate an existing in-flight (pending/running) analysis for the key.
+        # Simulate an existing active (pending/running) analysis for the key.
         class _Scalars:
             def first(self):
                 return 99
@@ -186,20 +179,25 @@ async def test_duplicate_in_flight_is_reused() -> None:
         return _Result()
 
     session.execute = fake_execute  # type: ignore[assignment]
+
+    async def fake_resolve(session, topic):
+        return 7
+
     saved = consumer_main.resolve_application_id
     consumer_main.resolve_application_id = fake_resolve
     try:
-        await consumer_main.process_message(
+        status = await consumer_main.process_message(
             "alert.prod.x",
             json.dumps(VALID_MSG).encode(),
             producer,
+            partition=0,
+            offset=2,
             session=session,
-            schedule=fake_schedule,
         )
     finally:
         consumer_main.resolve_application_id = saved
 
-    # No Alert/Analysis should be created and the engine must not be scheduled.
+    # No Alert/Analysis/Job should be created and no Kafka message produced.
+    assert status == "duplicate"
     assert producer.sent == {}
     assert session.added == []
-    assert "analysis_id" not in scheduled

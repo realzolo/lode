@@ -42,9 +42,22 @@ class Settings(BaseSettings):
     kafka_topic_pattern: str = r"alert\..*"
     kafka_dlq_topic: str = "lode.dlq"
     kafka_unassigned_topic: str = "lode.unassigned"
-    # Max analyses allowed to run concurrently inside one consumer process.
+    # Max analyses allowed to run concurrently inside one worker process.
     # Caps DB-connection and LLM-provider pressure during redelivery bursts.
     engine_concurrency: int = 5
+
+    # Worker lease: how long a claimed job is reserved before another worker may
+    # reclaim it after a crash. Heartbeats extend it while a job is running.
+    worker_lease_ttl_seconds: int = 300
+    # Worker poll loop idle wait between empty claim attempts.
+    worker_poll_interval_seconds: float = 1.0
+    # Max attempts before a job is declared dead (no further automatic retry).
+    job_max_attempts: int = 5
+    # Base delay (seconds) for exponential backoff between retries.
+    job_base_retry_delay: float = 5.0
+    # Semantic version of the analysis engine; stamped on each analysis run so
+    # conclusions can be reproduced/attributed to a specific engine behaviour.
+    engine_version: str = "1.0"
 
     # Security / auth
     # Required (no default): a missing signing key must fail fast rather than

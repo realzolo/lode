@@ -42,7 +42,6 @@ from lode.api.routes.settings import router as settings_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
 from lode.db.models.ai_model import reencrypt_plaintext_keys
-from lode.db.models.analysis import Analysis
 from lode.db.models.memory import Memory
 from lode.db.session import AsyncSessionLocal
 from lode.migrations import run_migrations
@@ -82,25 +81,10 @@ async def lifespan(app: FastAPI) -> None:
         except Exception:
             logger.exception("failed to re-encrypt legacy AI-model keys")
 
-    # Recover zombie analyses left "running" by a crashed/restarted worker. A
-    # status that sticks at "running" would hide a missing conclusion from the
-    # UI forever; mark them failed so operators can re-analyze. Best-effort so
-    # a broken recovery never blocks startup.
-    async with AsyncSessionLocal() as session:
-        try:
-            zombies = (
-                await session.execute(
-                    select(Analysis).where(Analysis.status == "running")
-                )
-            ).scalars().all()
-            for z in zombies:
-                z.status = "failed"
-                z.evidence = {**(z.evidence or {}), "recovered_on_startup": True}
-            if zombies:
-                await session.commit()
-                logger.warning("recovered %d zombie running analysis(es)", len(zombies))
-        except Exception:
-            logger.exception("failed to recover zombie analyses")
+    # Job recovery (expired leases, stranded queued work) is owned by the
+    # worker process, which reclaims them on startup. The API must NOT mutate
+    # ``running`` analyses here: a job legitimately in flight under the worker
+    # would otherwise be wrongly marked failed.
 
     # Reap shared memories that have aged past their TTL (T8). Renewed memories
     # get a fresh ``expires_at`` on write, so only truly stale conclusions are

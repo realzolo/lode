@@ -35,6 +35,15 @@ class Analysis(Base):
     alert_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("alerts.id", ondelete="SET NULL")
     )
+    incident_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("incidents.id", ondelete="SET NULL"), nullable=True
+    )
+    job_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("analysis_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    engine_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     conclusion: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[float | None] = mapped_column(Numeric(3, 2))
@@ -59,6 +68,7 @@ class Analysis(Base):
         ),
         Index("ix_analyses_dedupe_key", "dedupe_key"),
         Index("ix_analyses_application_id", "application_id"),
+        Index("ix_analyses_incident_id", "incident_id"),
     )
 
 
@@ -127,9 +137,16 @@ class DeadLetter(Base):
     )
     kind: Mapped[str] = mapped_column(Text, nullable=False)  # "dlq" | "unassigned"
     topic: Mapped[str] = mapped_column(Text, nullable=False)
+    application_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("applications.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     dedupe_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload: Mapped[dict | None] = mapped_column(JSONB)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    partition: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    offset: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     replayed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )

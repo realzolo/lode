@@ -468,6 +468,7 @@ class InviteAcceptIn(BaseModel):
 
 class ReanalyzeOut(BaseModel):
     dedupe_key: str
+    job_id: str | None = None
     status: str
     message: str
 

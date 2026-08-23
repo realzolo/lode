@@ -24,6 +24,10 @@ serve:
 consume:
 	python -m lode.consumer.main
 
+# Run the durable analysis worker (claims + executes queued jobs).
+work:
+	python -m lode.worker.main
+
 # Start Postgres + Kafka via docker-compose.
 dev-up:
 	docker compose up -d
