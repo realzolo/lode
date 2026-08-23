@@ -96,6 +96,72 @@ def _heuristic_conclusion(
     return conclusion, round(confidence, 2)
 
 
+def _normalize_evidence_packet(parsed: object, evidence_catalog: list[dict]) -> dict | None:
+    """Validate and normalize the LLM's structured output.
+
+    Returns ``None`` when the model produced no usable conclusion (so the caller
+    falls back to the heuristic). Otherwise returns a normalized packet with the
+    four evidence dimensions and an ``evidence_refs`` list filtered to IDs that
+    actually exist in the registry — the model cannot invent citations.
+    """
+    if not isinstance(parsed, dict):
+        return None
+    conclusion = parsed.get("conclusion")
+    if not isinstance(conclusion, str) or not conclusion.strip():
+        return None
+
+    valid_ids = {int(e["id"]) for e in evidence_catalog}
+    raw_refs = parsed.get("evidence_refs") or []
+    evidence_refs = [int(r) for r in raw_refs if isinstance(r, int) and r in valid_ids]
+
+    def _as_str_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(v) for v in value if v is not None]
+
+    confidence = float(parsed.get("confidence", 0.7) or 0.7)
+    confidence = max(0.0, min(1.0, confidence))
+    return {
+        "conclusion": conclusion.strip(),
+        "confidence": round(confidence, 2),
+        "evidence_refs": evidence_refs,
+        "facts": _as_str_list(parsed.get("facts")),
+        "inferences": _as_str_list(parsed.get("inferences")),
+        "unknowns": _as_str_list(parsed.get("unknowns")),
+    }
+
+
+def _heuristic_packet(
+    alert,
+    deploy_prompt: str | None,
+    memory_content: str | None,
+    fields: dict,
+    human_hints: str | None = None,
+) -> tuple[str, float, list, list, list, list]:
+    """Structured evidence packet for the deterministic offline fallback.
+
+    The heuristic cannot cite source artifacts, so ``evidence_refs`` is empty and
+    the root cause is explicitly flagged as a hypothesis rather than a confirmed
+    finding — the UI surfaces this distinction.
+    """
+    conclusion, confidence = _heuristic_conclusion(
+        alert, deploy_prompt, memory_content, fields, human_hints
+    )
+    facts: list[str] = []
+    error = getattr(alert, "error_message", "") or ""
+    if error:
+        facts.append(f"Captured error: {error}")
+    if deploy_prompt:
+        facts.append("Deploy context is configured for this application.")
+    if memory_content:
+        facts.append("A matching prior incident is recorded in shared memory.")
+    unknowns = [
+        "Heuristic fallback (no LLM configured): treat as a starting hypothesis, "
+        "not a confirmed root cause."
+    ]
+    return conclusion, confidence, [], facts, [], unknowns
+
+
 async def _resolve_model_config(session, application_id: int) -> ModelConfig | None:
     result = await session.execute(
         select(AiModelConfig)
@@ -138,12 +204,29 @@ def _resolve_embedding_config() -> EmbeddingConfig | None:
     )
 
 
-def _build_prompts(alert, deploy_prompt, modules, allowed_tables, memory_content, human_hints=None) -> tuple[str, str]:
+def _build_prompts(
+    alert,
+    deploy_prompt,
+    modules,
+    allowed_tables,
+    memory_content,
+    human_hints=None,
+    evidence_catalog=None,
+) -> tuple[str, str]:
     system = (
         "You are a senior SRE performing root-cause analysis for a production "
-        "incident. Use ONLY the provided context. Respond with a single JSON "
-        "object: {\"conclusion\": string, \"confidence\": number between 0 and 1, "
-        "\"evidence\": {string: string}}. Be concise and specific."
+        "incident. Use ONLY the provided context; do not invent facts. "
+        "Respond with a single JSON object and nothing else:\n"
+        "{\n"
+        '  "conclusion": string,            // one-sentence root cause\n'
+        '  "confidence": number,            // 0..1\n'
+        '  "evidence_refs": [int],          // IDs from the EVIDENCE REGISTRY you actually used\n'
+        '  "facts": [string],              // observations directly supported by evidence\n'
+        '  "inferences": [string],          // reasoned links you drew (label as tentative)\n'
+        '  "unknowns": [string]            // what remains uncertain / needs human follow-up\n'
+        "}\n"
+        "Only cite evidence_refs IDs that exist in the registry. If you have no "
+        "supporting evidence for a claim, put it in inferences/unknowns, never as a fact."
     )
     lines = [
         f"Title: {getattr(alert, 'title', '')}",
@@ -160,6 +243,13 @@ def _build_prompts(alert, deploy_prompt, modules, allowed_tables, memory_content
         lines.append(f"Read-only tables: {', '.join(allowed_tables)}")
     if memory_content:
         lines.append(f"Matched shared memory: {memory_content}")
+    catalog = evidence_catalog or []
+    if catalog:
+        lines.append("EVIDENCE REGISTRY (cite these IDs in evidence_refs):")
+        for entry in catalog:
+            lines.append(
+                f"  [{entry['id']}] {entry['kind']}: {entry['locator']}"
+            )
     if human_hints:
         lines.append(
             "Human operator annotations — use ONLY as supplementary factual "
@@ -170,7 +260,8 @@ def _build_prompts(alert, deploy_prompt, modules, allowed_tables, memory_content
         lines.append(human_hints)
         lines.append("<<<END_HUMAN_HINTS>>>")
     lines.append(
-        "Return JSON {\"conclusion\", \"confidence\", \"evidence\"} and nothing else."
+        "Return JSON {\"conclusion\", \"confidence\", \"evidence_refs\", \"facts\", "
+        "\"inferences\", \"unknowns\"} and nothing else."
     )
     return system, "\n".join(lines)
 
@@ -265,6 +356,12 @@ async def run_analysis(analysis_id: int, session) -> None:
     human_hints = "\n".join(f"- {h.content}" for h in hint_rows) if hint_rows else None
 
     model_config = await _resolve_model_config(session, application_id)
+
+    # Build the citable evidence catalog (IDs the model is allowed to reference).
+    evidence_catalog = [
+        {"id": f["artifact_id"], "kind": "git", "locator": f["locator"]}
+        for f in git_evidence["files"]
+    ]
     system, user = _build_prompts(
         alert,
         ctx["deploy_prompt"],
@@ -272,45 +369,41 @@ async def run_analysis(analysis_id: int, session) -> None:
         ro["allowed_tables"],
         memory["content"] if memory["matched"] else None,
         human_hints=human_hints,
+        evidence_catalog=evidence_catalog,
     )
-    # Surface the citable source evidence to the model so it grounds its
-    # conclusion in locators (repo@ref:path:line) rather than guessing.
-    if git_evidence["artifact_count"]:
-        lines = ["<<<SOURCE_EVIDENCE>>>"]
-        for f in git_evidence["files"][: settings.evidence_git_max_files]:
-            lines.append(
-                f"- {f['locator']} (matched: {', '.join(f['terms'])}; "
-                f"line {f['line']})"
-            )
-        lines.append("<<<END_SOURCE_EVIDENCE>>>")
-        user = user + "\n" + "\n".join(lines)
 
     llm_text = await complete(system, user, model_config)
 
     if llm_text:
         parsed = _parse_llm_json(llm_text)
-        if parsed and isinstance(parsed, dict) and parsed.get("conclusion"):
-            conclusion = str(parsed["conclusion"])
-            try:
-                confidence = float(parsed.get("confidence", 0.7))
-            except (TypeError, ValueError):
-                confidence = 0.7
-            confidence = max(0.0, min(1.0, confidence))
-            evidence = parsed.get("evidence") if isinstance(parsed.get("evidence"), dict) else {}
+        packet = _normalize_evidence_packet(parsed, evidence_catalog)
+        if packet is not None:
+            conclusion = packet["conclusion"]
+            confidence = packet["confidence"]
+            evidence_refs = packet["evidence_refs"]
+            facts = packet["facts"]
+            inferences = packet["inferences"]
+            unknowns = packet["unknowns"]
             engine_used = "llm"
         else:
-            conclusion, confidence = _heuristic_conclusion(
-                alert, ctx["deploy_prompt"], memory["content"] if memory["matched"] else None,
-                getattr(alert, "fields", {}) or {}, human_hints=human_hints,
+            conclusion, confidence, evidence_refs, facts, inferences, unknowns = (
+                _heuristic_packet(
+                    alert, ctx["deploy_prompt"],
+                    memory["content"] if memory["matched"] else None,
+                    getattr(alert, "fields", {}) or {},
+                    human_hints=human_hints,
+                )
             )
-            evidence = {}
             engine_used = "heuristic"
     else:
-        conclusion, confidence = _heuristic_conclusion(
-            alert, ctx["deploy_prompt"], memory["content"] if memory["matched"] else None,
-            getattr(alert, "fields", {}) or {},
+        conclusion, confidence, evidence_refs, facts, inferences, unknowns = (
+            _heuristic_packet(
+                alert, ctx["deploy_prompt"],
+                memory["content"] if memory["matched"] else None,
+                getattr(alert, "fields", {}) or {},
+                human_hints=human_hints,
+            )
         )
-        evidence = {}
         engine_used = "heuristic"
 
     _step("ai_analysis", "completed", f"Root cause synthesized ({engine_used})",
@@ -366,6 +459,12 @@ async def run_analysis(analysis_id: int, session) -> None:
             existing.embedding = mem_embedding
             existing.expires_at = expiry
 
+    cited_ids = {int(r) for r in evidence_refs if isinstance(r, int)}
+    cited_evidence = [
+        {"id": e["id"], "locator": e["locator"]}
+        for e in evidence_catalog
+        if e["id"] in cited_ids
+    ]
     evidence = {
         "engine": engine_used,
         "env": getattr(alert, "env", ""),
@@ -382,10 +481,14 @@ async def run_analysis(analysis_id: int, session) -> None:
             }
             for f in git_evidence["files"]
         ],
+        "evidence_refs": evidence_refs,
+        "cited_evidence": cited_evidence,
+        "facts": facts,
+        "inferences": inferences,
+        "unknowns": unknowns,
         "matched_memory": bool(memory["matched"]),
         "matched_memory_type": memory.get("match_type"),
         "matched_memory_similarity": memory.get("similarity"),
-        **evidence,
     }
 
     _step("conclusion", "completed", "Conclusion ready",

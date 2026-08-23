@@ -291,6 +291,7 @@ async def collect_git_evidence(
             session.add(artifact)
             artifacts.append(
                 {
+                    "artifact_id": artifact.id,
                     "locator": artifact.locator,
                     "line": hit["line"],
                     "terms": hit["terms"],
