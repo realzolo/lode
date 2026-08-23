@@ -402,7 +402,12 @@ async def test_admin_create_db_source_with_structured_fields(
             row = await session.get(DbSource, body["id"])
             assert row is not None
             assert row.host == "10.0.0.5"
-            assert row.password == "super-secret"
+            # At rest the password is encrypted — the stored value is NOT the
+            # plaintext, but it round-trips back to the original on decrypt.
+            from lode.crypto import decrypt_secret
+
+            assert row.password != "super-secret"
+            assert decrypt_secret(row.password) == "super-secret"
 
 
 async def test_admin_create_db_source_requires_connection(

@@ -54,6 +54,7 @@ from lode.db.models.application import (
 )
 from lode.db.models.git import GitRepo
 from lode.db.models.permission import UserApplicationPerm
+from lode.crypto import encrypt_secret
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
 
@@ -377,7 +378,7 @@ async def create_db_source(
         port=payload.port,
         database=payload.database,
         username=payload.username,
-        password=payload.password,
+        password=encrypt_secret(payload.password),
         allowed_tables=payload.allowed_tables,
     )
     session.add(row)

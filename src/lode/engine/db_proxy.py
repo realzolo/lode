@@ -347,8 +347,10 @@ def _build_dsn(
 
     Userinfo is only included when a username is present, matching libpq
     semantics (an empty password is omitted rather than sent as an empty auth).
+    When ``port`` is omitted the standard PostgreSQL port (5432) is assumed.
     """
-    port_part = f":{port}" if port else ""
+    resolved_port = port or 5432
+    port_part = f":{resolved_port}"
     if username:
         # Avoid leaking the password into logs via the DSN string returned to
         # callers; we still need it in the connect call, so build it here.

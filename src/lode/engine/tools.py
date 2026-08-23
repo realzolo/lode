@@ -23,6 +23,7 @@ from lode.db.models.application import (
     PresetPrompt,
 )
 from lode.db.models.git import GitRepo
+from lode.crypto import decrypt_secret
 from lode.db.models.memory import Memory
 from lode.engine.db_proxy import DbProxyError, DbConnector, execute_query
 
@@ -115,6 +116,14 @@ async def run_readonly_query(
             "multiple data sources configured; pass source_id to disambiguate"
         )
 
+    # The stored password is encrypted at rest; decrypt it for the connect call.
+    # A decrypt failure (e.g. after a secret_key rotation) is surfaced as a
+    # resolvable-source error rather than a 500.
+    try:
+        source_password = decrypt_secret(chosen.password)
+    except Exception as exc:
+        raise DbProxyError(f"data source credentials are unreadable: {exc}") from exc
+
     res = await execute_query(
         chosen.conn_secret_ref,
         chosen.allowed_tables or [],
@@ -123,7 +132,7 @@ async def run_readonly_query(
         port=chosen.port,
         database=chosen.database,
         username=chosen.username,
-        password=chosen.password,
+        password=source_password,
         connector=connector,
         mask=desensitize,
     )

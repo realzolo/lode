@@ -163,7 +163,8 @@ def test_resolve_dsn_structured_builds_dsn():
 
 def test_resolve_dsn_structured_without_credentials():
     dsn = resolve_dsn(host="db.local", database="app")
-    assert dsn == "postgresql://db.local/app"
+    # Omitted port falls back to the standard PostgreSQL port 5432.
+    assert dsn == "postgresql://db.local:5432/app"
 
 
 def test_resolve_dsn_neither_raises():
@@ -176,7 +177,37 @@ def test_resolve_dsn_structured_takes_precedence():
     dsn = resolve_dsn(
         conn_secret_ref="env://IGNORED", host="h", database="d"
     )
-    assert dsn == "postgresql://h/d"
+    assert dsn == "postgresql://h:5432/d"
+
+
+# ---------------------------------------------------------------------------
+# At-rest encryption for data-source passwords
+# ---------------------------------------------------------------------------
+
+
+def test_crypto_roundtrip():
+    from lode.crypto import decrypt_secret, encrypt_secret
+
+    ct = encrypt_secret("super-secret")
+    assert ct != "super-secret"
+    assert decrypt_secret(ct) == "super-secret"
+
+
+def test_crypto_none_passthrough():
+    from lode.crypto import decrypt_secret, encrypt_secret
+
+    assert encrypt_secret(None) is None
+    assert encrypt_secret("") is None
+    assert decrypt_secret(None) is None
+    assert decrypt_secret("") is None
+
+
+def test_crypto_garbage_raises():
+    from lode.crypto import CryptoError, decrypt_secret
+
+    with pytest.raises(CryptoError):
+        # Not valid Fernet ciphertext / wrong key.
+        decrypt_secret("not-a-real-ciphertext")
 
 
 # ---------------------------------------------------------------------------
