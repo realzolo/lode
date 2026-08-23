@@ -17,6 +17,7 @@ import {
   IconChevronLeft,
   IconTerminal,
   IconShield,
+  IconAlertTriangle,
 } from '@/components/icons';
 
 // Each portal exposes a distinct navigation surface so admin management and the
@@ -30,6 +31,7 @@ const ADMIN_NAV = [
   { key: 'users', href: '/admin/users', Icon: IconUsers },
   { key: 'memories', href: '/admin/memories', Icon: IconDatabase },
   { key: 'audit', href: '/admin/audit', Icon: IconShield },
+  { key: 'deadLetters', href: '/admin/dead-letters', Icon: IconAlertTriangle },
 ] as const;
 
 const WORKBENCH_NAV = [

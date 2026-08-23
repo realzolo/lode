@@ -14,6 +14,8 @@ import type {
   AuditEvent,
   AuditEventList,
   CurrentUser,
+  DeadLetter,
+  ReplayOut,
   Invite,
   Level,
   Memory,
@@ -892,6 +894,38 @@ export async function fetchAuditEvents(query: AuditQuery = {}): Promise<AuditEve
   });
   const qs = params.toString();
   return getJson<AuditEventList>(`/audit${qs ? `?${qs}` : ''}`);
+}
+
+// ---------------------------------------------------------------------------
+// Dead-letter queue (admin read + replay)
+// ---------------------------------------------------------------------------
+//
+// These back the admin Dead Letters console. `list` reads rejected messages
+// (parse failures / schema errors / unmapped topics); `replay` re-injects a
+// message onto its source Kafka topic so the consumer re-processes it. Both are
+// admin-only on the backend (`require_admin`).
+
+export async function fetchDeadLetters(
+  kind?: 'dlq' | 'unassigned'
+): Promise<DeadLetter[]> {
+  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  return getJson<DeadLetter[]>(`/dead-letters${qs}`);
+}
+
+export async function replayDeadLetter(id: number): Promise<ReplayOut> {
+  const res = await fetch(`${API_BASE}/dead-letters/${id}/replay`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const b = await res.json().catch(() => null);
+    throw new Error(b?.error?.message ?? `replay failed: ${res.status}`);
+  }
+  return (await res.json()) as ReplayOut;
 }
 
 // ---------------------------------------------------------------------------

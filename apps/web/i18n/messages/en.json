@@ -7,6 +7,7 @@
     "settings": "Global Settings",
     "users": "Users",
     "audit": "Audit Log",
+    "deadLetters": "Dead Letters",
     "overview": "Overview",
     "repositories": "Repositories",
     "prompts": "Prompts",
@@ -250,5 +251,23 @@
     "loadMore": "Load more",
     "total": "{count} event(s)",
     "showing": "Showing {shown} of {total}"
+  },
+  "deadLetters": {
+    "title": "Dead Letters",
+    "subtitle": "Messages the consumer rejected — parse failures, schema errors, or topics with no mapped application. Replay them onto their source topic to re-process.",
+    "kind": "Kind",
+    "all": "All",
+    "dlq": "DLQ",
+    "unassigned": "Unassigned",
+    "time": "Time",
+    "topic": "Topic",
+    "dedupeKey": "Dedupe key",
+    "reason": "Reason",
+    "payload": "Payload",
+    "status": "Status",
+    "actions": "Actions",
+    "replayed": "Replayed",
+    "pending": "Pending",
+    "replay": "Replay"
   }
 }

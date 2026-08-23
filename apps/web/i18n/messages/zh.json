@@ -7,6 +7,7 @@
     "settings": "全局设置",
     "users": "用户",
     "audit": "审计日志",
+    "deadLetters": "死信队列",
     "overview": "概览",
     "repositories": "仓库",
     "prompts": "提示词",
@@ -250,5 +251,23 @@
     "loadMore": "加载更多",
     "total": "共 {count} 条",
     "showing": "显示 {shown} / {total} 条"
+  },
+  "deadLetters": {
+    "title": "死信队列",
+    "subtitle": "消费端拒绝的消息——解析失败、schema 错误或 topic 无对应应用。可将它们重新投递到源 topic 以重新处理。",
+    "kind": "类型",
+    "all": "全部",
+    "dlq": "死信",
+    "unassigned": "未分配",
+    "time": "时间",
+    "topic": "Topic",
+    "dedupeKey": "去重键",
+    "reason": "原因",
+    "payload": "载荷",
+    "status": "状态",
+    "actions": "操作",
+    "replayed": "已重投",
+    "pending": "待处理",
+    "replay": "重投"
   }
 }

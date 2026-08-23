@@ -103,3 +103,20 @@ export interface AuditEventList {
   offset: number;
   items: AuditEvent[];
 }
+
+export interface DeadLetter {
+  id: number;
+  kind: string;
+  topic: string;
+  dedupe_key: string | null;
+  payload: Record<string, unknown> | null;
+  reason: string | null;
+  replayed: boolean;
+  created_at: string;
+}
+
+export interface ReplayOut {
+  id: number;
+  topic: string;
+  status: string;
+}
