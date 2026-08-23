@@ -82,6 +82,13 @@ const config: Config = {
         pill: '100px',
         full: '9999px',
       },
+      transitionTimingFunction: {
+        // emil-design-eng strong easing curves — the default `ease`/`ease-out`
+        // lack punch and make UI feel sluggish. Used by interactive primitives.
+        'out-strong': 'cubic-bezier(0.23, 1, 0.32, 1)',
+        'in-out-strong': 'cubic-bezier(0.77, 0, 0.175, 1)',
+        drawer: 'cubic-bezier(0.32, 0.72, 0, 1)',
+      },
       boxShadow: {
         // Geist focus ring: 2px background-colored gap + 4px blue ring.
         // Blue lightens to blue-900 in dark mode for accessible contrast.

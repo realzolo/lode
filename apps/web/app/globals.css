@@ -53,6 +53,17 @@
   --sidebar-width: 256px;
   --topbar-height: 64px;
 
+  /* ---- Motion tokens (emil-design-eng) ----
+     Strong custom easing curves — the built-in `ease` lacks punch and makes
+     UI feel sluggish. A small duration scale keeps interactions under 300ms
+     (button press 100-160ms, popovers 150-250ms, modals 200-500ms). */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-fast: 140ms;
+  --dur-base: 180ms;
+  --dur-slow: 240ms;
+
   /* ---- DESIGN.md brand tokens (raw colors) ---- */
   --ink: #171717;
   --body: #4d4d4d;
@@ -1120,4 +1131,71 @@ button {
 .showcase-band-dark {
   background: var(--ink);
   color: #ffffff;
+}
+
+/* ============================================================
+   Motion & interaction polish (emil-design-eng)
+   ------------------------------------------------------------
+   - Pressable chrome scales to 0.97 on :active for instant tactile
+     feedback (the interface must feel like it heard the user).
+   - Custom easing curves replace the weak default `ease`.
+   - Route-level fade-up for page transitions (see template.tsx).
+   - All transform-based motion is neutralised under prefers-reduced-motion;
+     opacity/color transitions that aid comprehension are kept.
+   ============================================================ */
+
+.icon-btn,
+.cmdk,
+.cmdk-item,
+.wf-ctrl,
+.nav-item {
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.icon-btn:active,
+.cmdk:active,
+.cmdk-item:active,
+.wf-ctrl:active,
+.nav-item:active {
+  transform: scale(0.97);
+}
+
+/* Route-level fade-up applied by admin/workbench template.tsx on navigation. */
+.route-enter {
+  animation: routeEnter var(--dur-slow) var(--ease-out);
+}
+
+@keyframes routeEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn,
+  .cmdk,
+  .cmdk-item,
+  .wf-ctrl,
+  .nav-item,
+  .route-enter {
+    animation: none;
+    transition: none;
+  }
+
+  .icon-btn:active,
+  .cmdk:active,
+  .cmdk-item:active,
+  .wf-ctrl:active,
+  .nav-item:active {
+    transform: none;
+  }
 }
