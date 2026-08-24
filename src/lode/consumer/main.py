@@ -48,6 +48,7 @@ from lode.db.models.intake import AnalysisJob, Incident, IngestionEvent
 from lode.db.session import AsyncSessionLocal
 from lode.metrics import (
     ANALYSES,
+    CONSUMER_LAG,
     DEAD_LETTERS,
     ENGINE_IN_FLIGHT,
     MESSAGES_RECEIVED,
@@ -68,15 +69,82 @@ def _extract_error_message(msg: AlertMessage) -> str:
     return ""
 
 
+async def _await_assignment(consumer: AIOKafkaConsumer, timeout: float = 10.0) -> set:
+    """Block until the group coordinator assigns at least one partition.
+
+    Raises ``RuntimeError`` if the subscription matched nothing after ``timeout``:
+    a misconfigured ``kafka_topic_pattern`` must fail loud, not idle silently and
+    consume zero messages (the exact footgun that previously hid a broken setup).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        assigned = consumer.assignment()
+        if assigned:
+            return assigned
+        await asyncio.sleep(0.25)
+    raise RuntimeError(
+        f"subscribed pattern {settings.kafka_topic_pattern!r} matched 0 partitions; "
+        "nothing to consume — fix kafka_topic_pattern"
+    )
+
+
+async def _warn_unmapped_topics(assigned_topics: set[str]) -> None:
+    """Warn when a subscribed topic has no ``application_kafka`` mapping.
+
+    A topic with no mapping is silently routed to ``unassigned`` forever, which is
+    almost always a configuration mistake worth surfacing loudly.
+    """
+    if not assigned_topics:
+        return
+    async with AsyncSessionLocal() as session:
+        mapped = (await session.execute(select(ApplicationKafka.topic))).scalars().all()
+    unmapped = sorted(assigned_topics - set(mapped))
+    if unmapped:
+        logger.warning(
+            "subscribed topics with no application mapping (will route to "
+            "unassigned): %s", unmapped
+        )
+
+
+async def _report_lag(consumer: AIOKafkaConsumer) -> None:
+    """Best-effort update of the consumer-lag gauge for assigned partitions."""
+    tps = consumer.assignment()
+    if not tps:
+        return
+    try:
+        end = await consumer.end_offsets(list(tps))
+        committed = await consumer.committed(list(tps))
+    except Exception:  # noqa: BLE001 - lag is telemetry; never block intake on it
+        return
+    for tp in tps:
+        hw = end.get(tp)
+        pos = committed.get(tp)
+        if hw is None or pos is None:
+            continue
+        CONSUMER_LAG.labels(topic=tp.topic, partition=tp.partition).set(hw - pos)
+
+
 # Raised for transient failures where the Kafka offset must NOT be committed
 # (the record will be redelivered after the consumer reconnects).
 class IngestionTransientError(Exception):
     pass
 
 
-async def _produce(producer: AIOKafkaProducer, topic: str, value: dict[str, Any]) -> None:
+async def _produce(
+    producer: AIOKafkaProducer,
+    topic: str,
+    value: dict[str, Any],
+    key: bytes | None = None,
+) -> None:
+    # ``key`` makes the DLQ write idempotent: a redelivered source record always
+    # maps to the same DLQ partition, complementing the unique constraint on
+    # ``dead_letters`` so a crash between produce and offset-commit cannot create
+    # duplicate dead letters.
     await producer.send_and_wait(
-        topic, json.dumps(value, ensure_ascii=False).encode("utf-8")
+        topic,
+        json.dumps(value, ensure_ascii=False).encode("utf-8"),
+        key=key,
     )
 
 
@@ -246,11 +314,19 @@ async def _route_failure(
     offset: int | None = None,
 ) -> None:
     """Send to the DLQ topic and persist a dead letter, or raise on failure."""
+    # Key the DLQ message by its source coordinates so a redelivered source
+    # record collapses onto the same DLQ message (idempotent routing).
+    source_key = (
+        f"{topic}:{partition}:{offset}".encode("utf-8")
+        if partition is not None and offset is not None
+        else None
+    )
     await _produce(
         producer,
         settings.kafka_dlq_topic if kind == "dlq" else settings.kafka_unassigned_topic,
         {"topic": topic, "dedupe_key": dedupe_key, "raw": payload} if kind == "unassigned"
         else {"topic": topic, "error": reason, "raw": payload},
+        key=source_key,
     )
     await _record_dead_letter(
         db, kind, topic, reason, payload,
@@ -415,21 +491,55 @@ async def main() -> None:
             )
             await consumer.start()
             await producer.start()
-            logger.info("consumer started on %s", settings.kafka_bootstrap_servers)
+
+            # Fail loud if the pattern matched no partitions (A): a misconfigured
+            # subscription must not idle silently and consume nothing.
+            assigned = await _await_assignment(consumer)
+            assigned_topics = {tp.topic for tp in assigned}
+            logger.info(
+                "consumer started on %s — assigned %d partition(s): %s",
+                settings.kafka_bootstrap_servers,
+                len(assigned),
+                sorted(f"{tp.topic}[{tp.partition}]" for tp in assigned),
+            )
+            # Surface subscribed topics that map to no application (B).
+            await _warn_unmapped_topics(assigned_topics)
+            # Snapshot the initial backlog so operators see the starting lag (G).
             try:
-                async for record in consumer:
-                    try:
-                        await process_message(
-                            record.topic, record.value, producer,
-                            record.partition, record.offset,
-                        )
-                    except IngestionTransientError:
-                        logger.exception(
-                            "transient intake failure on topic %s; pausing redelivery",
-                            record.topic,
-                        )
-                        raise
-                    await consumer.commit()
+                ends = await consumer.end_offsets(list(assigned))
+                logger.info("initial backlog (high-water-mark sum): %d", sum(ends.values()))
+            except Exception:  # noqa: BLE001 - telemetry only
+                pass
+
+            processed_since_lag = 0
+            try:
+                while True:
+                    # Batch fetch (E) keeps throughput up; we still commit
+                    # per-message so the at-least-once + idempotent contract is
+                    # identical to single-record mode and a crash loses nothing.
+                    batch = await consumer.getmany(
+                        timeout_ms=1000, max_records=settings.kafka_batch_max_records
+                    )
+                    if not batch:
+                        continue
+                    for _tp, records in batch.items():
+                        for record in records:
+                            try:
+                                await process_message(
+                                    record.topic, record.value, producer,
+                                    record.partition, record.offset,
+                                )
+                            except IngestionTransientError:
+                                logger.exception(
+                                    "transient intake failure on topic %s; "
+                                    "pausing redelivery", record.topic,
+                                )
+                                raise
+                            await consumer.commit()
+                            processed_since_lag += 1
+                            if processed_since_lag >= 100:
+                                await _report_lag(consumer)
+                                processed_since_lag = 0
             finally:
                 await consumer.stop()
                 await producer.stop()

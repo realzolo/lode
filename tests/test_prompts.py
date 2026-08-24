@@ -12,7 +12,6 @@ from lode.engine.runner import (
 class _FakeAlert:
     title = "Payment latency"
     level = "CRITICAL"
-    env = "prod"
     error_message = "p99>2s"
     fields = {"orderId": "1"}
 

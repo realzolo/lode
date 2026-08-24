@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     kafka_sasl_mechanism: str = "PLAIN"
     kafka_sasl_username: str = ""
     kafka_sasl_password: str = ""
+    # Max records fetched per `getmany` poll. Bounds memory and redelivery blast
+    # radius; messages are still committed one-at-a-time so the at-least-once +
+    # idempotent contract is unchanged.
+    kafka_batch_max_records: int = 100
     # Max analyses allowed to run concurrently inside one worker process.
     # Caps DB-connection and LLM-provider pressure during redelivery bursts.
     engine_concurrency: int = 5

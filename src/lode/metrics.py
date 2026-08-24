@@ -21,6 +21,15 @@ MESSAGES_RECEIVED = Counter(
     ["outcome"],
 )
 
+# Highest offset lag observed per assigned partition. A suddenly rising value
+# means the consumer is falling behind (or a rebalance/stall). Gauge, not
+# counter, because it tracks a position.
+CONSUMER_LAG = Gauge(
+    "lode_consumer_lag",
+    "Kafka consumer lag (high-water-mark minus committed offset) per partition",
+    ["topic", "partition"],
+)
+
 # --- Dead letters -----------------------------------------------------------
 # kind: dlq | unassigned
 DEAD_LETTERS = Counter(

@@ -69,12 +69,11 @@ def _heuristic_conclusion(
     alert, deploy_prompt: str | None, memory_content: str | None, fields: dict, human_hints: str | None = None
 ) -> tuple[str, float]:
     """Deterministic offline fallback used when no LLM is configured."""
-    env = getattr(alert, "env", "") or "production"
     error = getattr(alert, "error_message", "") or "no error message captured"
     title = getattr(alert, "title", "") or "incident"
 
     parts = [
-        f"Incident \"{title}\" in {env}.",
+        f"Incident \"{title}\".",
         f"Captured error: {error}.",
     ]
     if deploy_prompt:
@@ -231,7 +230,6 @@ def _build_prompts(
     lines = [
         f"Title: {getattr(alert, 'title', '')}",
         f"Level: {getattr(alert, 'level', '')}",
-        f"Environment: {getattr(alert, 'env', '')}",
         f"Error: {getattr(alert, 'error_message', '')}",
         f"Fields: {json.dumps(getattr(alert, 'fields', {}), ensure_ascii=False)}",
     ]
@@ -469,7 +467,6 @@ async def run_analysis(analysis_id: int, session) -> None:
     ]
     evidence = {
         "engine": engine_used,
-        "env": getattr(alert, "env", ""),
         "error_message": getattr(alert, "error_message", ""),
         "modules": code["modules_searched"],
         "allowed_tables": ro["allowed_tables"],

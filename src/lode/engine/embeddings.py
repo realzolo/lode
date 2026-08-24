@@ -115,14 +115,12 @@ def build_query_text(alert) -> str:
 
     title = getattr(alert, "title", "") or ""
     level = getattr(alert, "level", "") or ""
-    env = getattr(alert, "env", "") or ""
     error = getattr(alert, "error_message", "") or ""
     fields = getattr(alert, "fields", {}) or {}
 
     lines = [
         f"Incident: {title}".strip(),
         f"Level: {level}",
-        f"Environment: {env}",
         f"Error: {error}",
     ]
     if isinstance(fields, dict) and fields:

@@ -95,14 +95,12 @@ def test_build_query_text_includes_salient_fields():
     a = _Alert(
         title="Checkout 500s",
         level="critical",
-        env="prod",
         error_message="upstream timeout",
         fields={"service": "payments", "region": "us-east-1"},
     )
     text = build_query_text(a)
     assert "Incident: Checkout 500s" in text
     assert "Level: critical" in text
-    assert "Environment: prod" in text
     assert "Error: upstream timeout" in text
     assert "service=payments" in text
     assert "region=us-east-1" in text

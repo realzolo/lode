@@ -21,7 +21,9 @@ class FakeProducer:
     def __init__(self) -> None:
         self.sent: dict[str, list[bytes]] = {}
 
-    async def send_and_wait(self, topic: str, value: bytes) -> None:
+    async def send_and_wait(
+        self, topic: str, value: bytes, key: bytes | None = None
+    ) -> None:
         self.sent.setdefault(topic, []).append(value)
 
 
