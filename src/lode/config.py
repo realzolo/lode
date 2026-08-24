@@ -39,7 +39,10 @@ class Settings(BaseSettings):
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_group_id: str = "lode-consumer"
-    kafka_topic_pattern: str = r"alert\..*"
+    # Topic subscription regex (matched via aiokafka subscribe(pattern=...)).
+    # Defaults to "<tenant>.alert-events.created" topics, excluding ".dlt"
+    # tombstones and unrelated event topics. Override per environment.
+    kafka_topic_pattern: str = r".*\.alert-events\.created$"
     kafka_dlq_topic: str = "lode.dlq"
     kafka_unassigned_topic: str = "lode.unassigned"
     # SASL/PLAIN authentication. Defaults are the unauthenticated local-dev

@@ -397,13 +397,18 @@ async def main() -> None:
         try:
             security_kwargs = kafka_security_kwargs()
             consumer = AIOKafkaConsumer(
-                settings.kafka_topic_pattern,
                 bootstrap_servers=settings.kafka_bootstrap_servers,
                 group_id=settings.kafka_group_id,
                 enable_auto_commit=False,
                 auto_offset_reset="earliest",
                 **security_kwargs,
             )
+            # Subscribe by *regex pattern*. aiokafka only honours a regex when it
+            # is passed to ``subscribe(pattern=...)``; passing it as a positional
+            # topic subscribes to a literal topic named after the pattern string
+            # (e.g. a topic literally called "alert\..*"), which matches nothing
+            # and silently consumes zero messages.
+            consumer.subscribe(pattern=settings.kafka_topic_pattern)
             producer = AIOKafkaProducer(
                 bootstrap_servers=settings.kafka_bootstrap_servers,
                 **security_kwargs,
