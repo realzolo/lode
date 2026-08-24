@@ -33,6 +33,21 @@ class Application(Base):
     model_config_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("ai_model_configs.id", ondelete="SET NULL")
     )
+    # Desired control-plane state. Runtime health is recorded separately because
+    # an active application is not necessarily assigned to a live consumer yet.
+    ingestion_state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="draft"
+    )
+    ingestion_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    ingestion_start_position: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ingestion_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ingestion_paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
     )
@@ -55,6 +70,79 @@ class ApplicationKafka(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+
+class ApplicationIngestionRuntime(Base):
+    """Consumer-observed state for an application's current ingestion version."""
+
+    __tablename__ = "application_ingestion_runtime"
+
+    application_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    observed_state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="idle"
+    )
+    observed_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    consumer_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assigned_partitions: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    backlog: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "observed_state IN ('idle', 'starting', 'listening', 'paused', 'error')",
+            name="observed_state",
+        ),
+    )
+
+
+class ApplicationIngestionOffset(Base):
+    """Durable first-start cursor for one assigned Kafka partition.
+
+    Persisting the selected offset before committing it to Kafka makes first
+    activation retryable without changing a "latest" starting point.
+    """
+
+    __tablename__ = "application_ingestion_offsets"
+
+    application_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ingestion_version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    topic: Mapped[str] = mapped_column(Text, primary_key=True)
+    partition: Mapped[int] = mapped_column(Integer, primary_key=True)
+    start_position: Mapped[str] = mapped_column(Text, nullable=False)
+    target_offset: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    initialized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "start_position IN ('earliest', 'latest')", name="start_position"
+        ),
     )
 
 

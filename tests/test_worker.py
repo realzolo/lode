@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from lode.db.models.analysis import Analysis
 from lode.db.models.intake import AnalysisJob
@@ -129,3 +130,12 @@ async def test_reclaim_expired_leases_resets_running_jobs():
     reclaimed = await worker_main.reclaim_expired_leases(session)
     assert reclaimed == 3
     assert session.committed == 1
+
+
+def test_claim_query_only_selects_active_application_jobs():
+    sql = str(
+        worker_main._claimable_jobs_query().compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "applications.ingestion_state = 'active'" in sql

@@ -16,6 +16,10 @@ themselves stay owned by ``/settings/ai-models``.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
+
+from aiokafka import AIOKafkaProducer
 from fastapi import APIRouter, Depends, HTTPException, Security
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -34,6 +38,7 @@ from lode.api.schemas import (
     AppMemberUpdateIn,
     ApplicationDetailOut,
     ApplicationDescriptionOut,
+    ApplicationIngestionStatusOut,
     ApplicationModelOut,
     ApplicationOut,
     ApplicationRepoOut,
@@ -47,6 +52,7 @@ from lode.api.schemas import (
     DbSourceOut,
     SetApplicationModelIn,
     SetApplicationTopicIn,
+    StartApplicationIngestionIn,
     UpdateDbSourceIn,
 )
 from lode.db.models.alert import Alert
@@ -54,10 +60,12 @@ from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.application import (
     Application,
     ApplicationDescription,
+    ApplicationIngestionRuntime,
     ApplicationKafka,
     ApplicationRepo,
     DbSource,
 )
+from lode.config import kafka_security_kwargs, settings
 from lode.db.models.git import GitCredential, GitRepo
 from lode.db.models.permission import UserApplicationPerm
 from lode.crypto import encrypt_secret
@@ -71,6 +79,82 @@ router = APIRouter(prefix="/applications", tags=["applications"])
 async def get_session() -> AsyncSession:
     async with AsyncSessionLocal() as session:
         yield session
+
+
+def _runtime_status(
+    app: Application, runtime: ApplicationIngestionRuntime | None
+) -> str:
+    if app.ingestion_state == "draft":
+        return "draft"
+    if app.ingestion_state == "paused":
+        return "paused"
+    if runtime is None or runtime.observed_version != app.ingestion_version:
+        return "starting"
+    if runtime.observed_state == "error" or runtime.last_heartbeat_at is None:
+        return "error" if runtime is not None and runtime.last_error else "starting"
+    age = (datetime.now(UTC) - runtime.last_heartbeat_at).total_seconds()
+    if age > settings.kafka_runtime_stale_seconds:
+        return "error"
+    return "listening" if runtime.observed_state == "listening" else "starting"
+
+
+def _ingestion_status_out(
+    app: Application,
+    topic: str | None,
+    runtime: ApplicationIngestionRuntime | None,
+) -> ApplicationIngestionStatusOut:
+    return ApplicationIngestionStatusOut(
+        application_id=app.id,
+        topic=topic,
+        desired_state=app.ingestion_state,
+        observed_state=_runtime_status(app, runtime),
+        ingestion_version=app.ingestion_version,
+        start_position=app.ingestion_start_position,
+        assigned_partitions=runtime.assigned_partitions if runtime is not None else 0,
+        backlog=runtime.backlog if runtime is not None else None,
+        last_heartbeat_at=runtime.last_heartbeat_at if runtime is not None else None,
+        last_error=runtime.last_error if runtime is not None else None,
+    )
+
+
+async def _runtime_for(
+    session: AsyncSession, application_id: int
+) -> ApplicationIngestionRuntime | None:
+    return await session.get(ApplicationIngestionRuntime, application_id)
+
+
+async def _ensure_runtime(
+    session: AsyncSession, app: Application
+) -> ApplicationIngestionRuntime:
+    runtime = await _runtime_for(session, app.id)
+    if runtime is None:
+        runtime = ApplicationIngestionRuntime(application_id=app.id)
+        session.add(runtime)
+    return runtime
+
+
+async def _validate_kafka_topic(topic: str) -> None:
+    """Ensure the broker currently exposes at least one partition for ``topic``."""
+    producer = AIOKafkaProducer(
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        **kafka_security_kwargs(),
+    )
+    try:
+        await producer.start()
+        partitions = await asyncio.wait_for(
+            producer.partitions_for(topic),
+            timeout=settings.kafka_topic_validation_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=503, detail="Kafka topic validation timed out") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - return an actionable control-plane error
+        raise HTTPException(status_code=503, detail=f"Kafka topic validation failed: {exc}") from exc
+    finally:
+        await producer.stop()
+    if not partitions:
+        raise HTTPException(status_code=422, detail=f"Kafka topic '{topic}' has no partitions")
 
 
 @router.get("", response_model=list[ApplicationOut])
@@ -95,6 +179,30 @@ async def list_applications(
         stmt = stmt.where(Application.id.in_(app_ids))
     rows = (await session.execute(stmt)).all()
 
+    perms: dict[int, str] = {}
+    if user.role != "admin":
+        perms = dict(
+            (
+                await session.execute(
+                    select(
+                        UserApplicationPerm.application_id,
+                        UserApplicationPerm.perm,
+                    ).where(UserApplicationPerm.user_id == user_id)
+                )
+            ).all()
+        )
+
+    runtimes = {
+        runtime.application_id: runtime
+        for runtime in (
+            await session.execute(
+                select(ApplicationIngestionRuntime).where(
+                    ApplicationIngestionRuntime.application_id.in_([app.id for app, _, _ in rows])
+                )
+            )
+        ).scalars()
+    } if rows else {}
+
     out: list[ApplicationOut] = []
     for app, topic, repo_count in rows:
         latest_level = await session.execute(
@@ -111,6 +219,10 @@ async def list_applications(
                 topic=topic,
                 latest_level=level,
                 repo_count=repo_count or 0,
+                ingestion_state=app.ingestion_state,
+                ingestion_observed_state=_runtime_status(app, runtimes.get(app.id)),
+                ingestion_start_position=app.ingestion_start_position,
+                my_perm="admin" if user.role == "admin" else perms.get(app.id),
                 created_at=app.created_at,
             )
         )
@@ -152,12 +264,19 @@ async def get_application(
     sources = (
         await session.execute(select(DbSource).where(DbSource.application_id == application_id))
     ).scalars().all()
+    current_user = await session.get(User, _auth)
+    if current_user is not None and current_user.role == "admin":
+        my_perm = "admin"
+    else:
+        perm = await session.get(UserApplicationPerm, (_auth, application_id))
+        my_perm = perm.perm if perm is not None else None
 
     return ApplicationDetailOut(
         id=app.id,
         name=app.name,
         topic=topic,
         model_config_id=app.model_config_id,
+        ingestion_state=app.ingestion_state,
         created_at=app.created_at,
         repos=[
             {
@@ -198,6 +317,7 @@ async def get_application(
             )
             for s in sources
         ],
+        my_perm=my_perm,
     )
 
 
@@ -239,12 +359,16 @@ async def create_application(
         topic=None,
         latest_level="WARNING",
         repo_count=0,
+        ingestion_state=app.ingestion_state,
+        ingestion_observed_state="draft",
+        ingestion_start_position=None,
+        my_perm="admin",
         created_at=app.created_at,
     )
 
 
 # ---------------------------------------------------------------------------
-# Application configuration writes (admin only)
+# Application configuration writes
 # ---------------------------------------------------------------------------
 #
 # The Settings tabs render these as <Card> + form UIs. Every endpoint in this
@@ -259,7 +383,7 @@ async def create_application(
 async def set_application_topic(
     application_id: int,
     payload: SetApplicationTopicIn,
-    _admin: int = Depends(require_admin),
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> ApplicationTopicOut:
     """Bind / unbind / replace the Kafka topic for an application.
@@ -271,14 +395,22 @@ async def set_application_topic(
     app = await session.get(Application, application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
+    if app.ingestion_state == "active":
+        raise HTTPException(
+            status_code=409,
+            detail="pause ingestion before changing its Kafka topic",
+        )
 
     if payload.topic is None:
-        # Detach: any existing binding is removed. The Kafka consumer reads
-        # ``application_kafka`` on every alert, so a delete here is immediately
-        # visible to ingest.
         existing = await session.get(ApplicationKafka, application_id)
         if existing is not None:
             await session.delete(existing)
+        runtime = await _runtime_for(session, application_id)
+        if runtime is not None:
+            await session.delete(runtime)
+        app.ingestion_state = "draft"
+        app.ingestion_start_position = None
+        app.ingestion_paused_at = None
         await session.commit()
         await audit_action(
             action="application.set_topic",
@@ -286,17 +418,24 @@ async def set_application_topic(
             target_type="application",
             target_id=str(application_id),
             application_id=application_id,
-            detail={"topic": None},
+            detail={"topic": None, "ingestion_state": "draft"},
         )
         return ApplicationTopicOut(application_id=application_id, topic=None)
 
-    # Upsert: if no row exists for this app, insert; otherwise update in place.
+    # Topic changes invalidate the prior activation. The administrator must
+    # explicitly start it again and choose a new initial offset policy.
     existing = await session.get(ApplicationKafka, application_id)
     if existing is None:
         existing = ApplicationKafka(application_id=application_id, topic=payload.topic)
         session.add(existing)
     else:
         existing.topic = payload.topic
+    runtime = await _runtime_for(session, application_id)
+    if runtime is not None:
+        await session.delete(runtime)
+    app.ingestion_state = "draft"
+    app.ingestion_start_position = None
+    app.ingestion_paused_at = None
     try:
         await session.commit()
     except IntegrityError:
@@ -312,9 +451,148 @@ async def set_application_topic(
         target_type="application",
         target_id=str(application_id),
         application_id=application_id,
-        detail={"topic": existing.topic},
+        detail={"topic": existing.topic, "ingestion_state": "draft"},
     )
     return ApplicationTopicOut(application_id=application_id, topic=existing.topic)
+
+
+@router.get("/{application_id}/ingestion", response_model=ApplicationIngestionStatusOut)
+async def get_application_ingestion(
+    application_id: int,
+    _auth: int = Security(require_app_perm, scopes=["read"]),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationIngestionStatusOut:
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    topic = await session.scalar(
+        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == application_id)
+    )
+    return _ingestion_status_out(app, topic, await _runtime_for(session, application_id))
+
+
+@router.post(
+    "/{application_id}/ingestion/start",
+    response_model=ApplicationIngestionStatusOut,
+    status_code=202,
+)
+async def start_application_ingestion(
+    application_id: int,
+    payload: StartApplicationIngestionIn,
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationIngestionStatusOut:
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    topic = await session.scalar(
+        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == application_id)
+    )
+    if topic is None:
+        raise HTTPException(status_code=409, detail="bind a Kafka topic before starting ingestion")
+    if app.ingestion_state not in {"draft", "paused"} or app.ingestion_start_position is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="only a draft or migrated paused application can be started",
+        )
+
+    await _validate_kafka_topic(topic)
+
+    app.ingestion_state = "active"
+    app.ingestion_version += 1
+    app.ingestion_start_position = payload.start_position
+    app.ingestion_started_at = datetime.now(UTC)
+    app.ingestion_paused_at = None
+    runtime = await _ensure_runtime(session, app)
+    runtime.observed_state = "starting"
+    runtime.observed_version = app.ingestion_version
+    runtime.consumer_id = None
+    runtime.assigned_partitions = 0
+    runtime.backlog = None
+    runtime.last_heartbeat_at = None
+    runtime.last_error = None
+    await session.commit()
+    await audit_action(
+        action="application.ingestion_start",
+        actor_id=_admin,
+        target_type="application",
+        target_id=str(application_id),
+        application_id=application_id,
+        detail={
+            "topic": topic,
+            "ingestion_version": app.ingestion_version,
+            "start_position": payload.start_position,
+        },
+    )
+    return _ingestion_status_out(app, topic, runtime)
+
+
+@router.post("/{application_id}/ingestion/pause", response_model=ApplicationIngestionStatusOut)
+async def pause_application_ingestion(
+    application_id: int,
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationIngestionStatusOut:
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    if app.ingestion_state != "active":
+        raise HTTPException(status_code=409, detail="only an active application can be paused")
+    topic = await session.scalar(
+        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == application_id)
+    )
+    app.ingestion_state = "paused"
+    app.ingestion_paused_at = datetime.now(UTC)
+    runtime = await _ensure_runtime(session, app)
+    runtime.observed_state = "paused"
+    runtime.assigned_partitions = 0
+    runtime.backlog = runtime.backlog
+    runtime.last_error = None
+    await session.commit()
+    await audit_action(
+        action="application.ingestion_pause",
+        actor_id=_admin,
+        target_type="application",
+        target_id=str(application_id),
+        application_id=application_id,
+        detail={"topic": topic, "ingestion_version": app.ingestion_version},
+    )
+    return _ingestion_status_out(app, topic, runtime)
+
+
+@router.post("/{application_id}/ingestion/resume", response_model=ApplicationIngestionStatusOut)
+async def resume_application_ingestion(
+    application_id: int,
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationIngestionStatusOut:
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    topic = await session.scalar(
+        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == application_id)
+    )
+    if topic is None:
+        raise HTTPException(status_code=409, detail="bind a Kafka topic before resuming ingestion")
+    if app.ingestion_state != "paused":
+        raise HTTPException(status_code=409, detail="only a paused application can be resumed")
+    app.ingestion_state = "active"
+    app.ingestion_paused_at = None
+    runtime = await _ensure_runtime(session, app)
+    runtime.observed_state = "starting"
+    runtime.observed_version = app.ingestion_version
+    runtime.assigned_partitions = 0
+    runtime.last_error = None
+    await session.commit()
+    await audit_action(
+        action="application.ingestion_resume",
+        actor_id=_admin,
+        target_type="application",
+        target_id=str(application_id),
+        application_id=application_id,
+        detail={"topic": topic, "ingestion_version": app.ingestion_version},
+    )
+    return _ingestion_status_out(app, topic, runtime)
 
 
 @router.put(

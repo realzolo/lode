@@ -224,6 +224,10 @@ interface ApiApplication {
   topic: string | null;
   latest_level: string;
   repo_count: number;
+  ingestion_state: 'draft' | 'active' | 'paused';
+  ingestion_observed_state: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
+  ingestion_start_position: 'earliest' | 'latest' | null;
+  my_perm: string | null;
   created_at: string;
 }
 
@@ -323,6 +327,10 @@ export async function fetchApplications(): Promise<Application[]> {
     topic: r.topic ?? '',
     level: (r.latest_level as Level) ?? 'WARNING',
     repoCount: r.repo_count,
+    ingestionState: r.ingestion_state,
+    ingestionObservedState: r.ingestion_observed_state,
+    ingestionStartPosition: r.ingestion_start_position,
+    myPerm: r.my_perm,
     createdAt: r.created_at,
   }));
 }
@@ -332,6 +340,8 @@ export async function fetchApplication(id: string): Promise<{
   name: string;
   topic: string | null;
   model_config_id: number | null;
+  ingestion_state: 'draft' | 'active' | 'paused';
+  my_perm: string | null;
   repos: {
     id: number;
     repo_id: number;
@@ -346,6 +356,38 @@ export async function fetchApplication(id: string): Promise<{
   db_sources: DbSourceRow[];
 }> {
   return getJson(`/applications/${id}`);
+}
+
+export interface IngestionStatus {
+  application_id: number;
+  topic: string | null;
+  desired_state: 'draft' | 'active' | 'paused';
+  observed_state: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
+  ingestion_version: number;
+  start_position: 'earliest' | 'latest' | null;
+  assigned_partitions: number;
+  backlog: number | null;
+  last_heartbeat_at: string | null;
+  last_error: string | null;
+}
+
+export async function fetchApplicationIngestion(id: string | number): Promise<IngestionStatus> {
+  return getJson(`/applications/${id}/ingestion`);
+}
+
+export async function startApplicationIngestion(
+  id: string | number,
+  startPosition: 'earliest' | 'latest'
+): Promise<IngestionStatus> {
+  return postJson(`/applications/${id}/ingestion/start`, { start_position: startPosition });
+}
+
+export async function pauseApplicationIngestion(id: string | number): Promise<IngestionStatus> {
+  return postJson(`/applications/${id}/ingestion/pause`, {});
+}
+
+export async function resumeApplicationIngestion(id: string | number): Promise<IngestionStatus> {
+  return postJson(`/applications/${id}/ingestion/resume`, {});
 }
 
 // ---------------------------------------------------------------------------
@@ -600,6 +642,10 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     topic: row.topic ?? '',
     level: (row.latest_level as Level) ?? 'WARNING',
     repoCount: row.repo_count,
+    ingestionState: row.ingestion_state,
+    ingestionObservedState: row.ingestion_observed_state,
+    ingestionStartPosition: row.ingestion_start_position,
+    myPerm: row.my_perm,
     createdAt: row.created_at,
   };
 }

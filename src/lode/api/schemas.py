@@ -88,6 +88,10 @@ class ApplicationOut(BaseModel):
     topic: str | None
     latest_level: str
     repo_count: int
+    ingestion_state: Literal["draft", "active", "paused"]
+    ingestion_observed_state: Literal["draft", "starting", "listening", "paused", "error"]
+    ingestion_start_position: Literal["earliest", "latest"] | None = None
+    my_perm: str | None = None
     created_at: datetime
 
 
@@ -96,10 +100,12 @@ class ApplicationDetailOut(BaseModel):
     name: str
     topic: str | None
     model_config_id: int | None
+    ingestion_state: Literal["draft", "active", "paused"]
     created_at: datetime
     repos: list[dict]
     descriptions: list[dict]
     db_sources: list[DbSourceListItem]
+    my_perm: str | None = None
 
 
 class CreateApplicationIn(BaseModel):
@@ -126,6 +132,23 @@ class SetApplicationTopicIn(BaseModel):
 class ApplicationTopicOut(BaseModel):
     application_id: int
     topic: str | None
+
+
+class StartApplicationIngestionIn(BaseModel):
+    start_position: Literal["earliest", "latest"]
+
+
+class ApplicationIngestionStatusOut(BaseModel):
+    application_id: int
+    topic: str | None
+    desired_state: Literal["draft", "active", "paused"]
+    observed_state: Literal["draft", "starting", "listening", "paused", "error"]
+    ingestion_version: int
+    start_position: Literal["earliest", "latest"] | None
+    assigned_partitions: int = 0
+    backlog: int | None = None
+    last_heartbeat_at: datetime | None = None
+    last_error: str | None = None
 
 
 class BindRepoIn(BaseModel):

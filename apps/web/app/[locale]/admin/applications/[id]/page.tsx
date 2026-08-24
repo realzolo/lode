@@ -6,7 +6,6 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Link } from '@/lib/navigation';
-import { useUser } from '@/lib/user-context';
 import { IconCheck } from '@/components/icons';
 import { setApplicationTopic } from '@/lib/api';
 import { ApplicationLoader, makeRefreshDispatcher } from './sections';
@@ -15,7 +14,6 @@ export default function ApplicationOverviewPage({ params }: { params: { id: stri
   const t = useTranslations('application');
   const tn = useTranslations('nav');
   const tAdmin = useTranslations('admin');
-  const isAdmin = useUser().isAdmin;
   const [refreshNonce, setRefreshNonce] = useState(0);
   const onRefresh = makeRefreshDispatcher(setRefreshNonce);
 
@@ -27,7 +25,7 @@ export default function ApplicationOverviewPage({ params }: { params: { id: stri
           <>
             <Card className="stack" style={{ marginTop: 16 }}>
               <label className="field-label">{t('topic')}</label>
-              {isAdmin ? (
+              {data.my_perm === 'admin' ? (
                 <TopicEditor
                   appId={params.id}
                   initial={data.topic ?? ''}

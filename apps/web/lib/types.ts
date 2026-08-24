@@ -19,6 +19,10 @@ export interface Application {
   topic: string;
   level: Level;
   repoCount: number;
+  ingestionState: 'draft' | 'active' | 'paused';
+  ingestionObservedState: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
+  ingestionStartPosition: 'earliest' | 'latest' | null;
+  myPerm: string | null;
   createdAt: string;
 }
 

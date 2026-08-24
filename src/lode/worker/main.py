@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.config import settings
 from lode.db.models.analysis import Analysis
+from lode.db.models.application import Application
 from lode.db.models.intake import AnalysisJob, Incident
 from lode.db.session import AsyncSessionLocal
 from lode.engine import run_analysis
@@ -83,14 +84,7 @@ async def reclaim_expired_leases(session: AsyncSession) -> int:
 
 async def claim_job(session: AsyncSession) -> AnalysisJob | None:
     """Atomically claim one due job using a row lock that skips locked rows."""
-    result = await session.execute(
-        select(AnalysisJob)
-        .where(AnalysisJob.status.in_(["queued", "retry_wait"]))
-        .where(AnalysisJob.available_at <= _now())
-        .order_by(AnalysisJob.priority.desc(), AnalysisJob.created_at)
-        .limit(1)
-        .with_for_update(skip_locked=True)
-    )
+    result = await session.execute(_claimable_jobs_query())
     job = result.scalars().first()
     if job is None:
         return None
@@ -103,6 +97,21 @@ async def claim_job(session: AsyncSession) -> AnalysisJob | None:
         job.started_at = _now()
     await session.commit()
     return job
+
+
+def _claimable_jobs_query():
+    """Build the shared claim query; kept separate for structural tests."""
+    return (
+        select(AnalysisJob)
+        .join(Incident, Incident.id == AnalysisJob.incident_id)
+        .join(Application, Application.id == Incident.application_id)
+        .where(AnalysisJob.status.in_(["queued", "retry_wait"]))
+        .where(AnalysisJob.available_at <= _now())
+        .where(Application.ingestion_state == "active")
+        .order_by(AnalysisJob.priority.desc(), AnalysisJob.created_at)
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
 
 
 def _lease_timedelta():

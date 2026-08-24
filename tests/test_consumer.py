@@ -212,3 +212,28 @@ async def test_duplicate_active_analysis_is_suppressed() -> None:
     assert status == "duplicate"
     assert producer.sent == {}
     assert session.added == []
+
+
+async def test_paused_binding_does_not_commit_or_route_as_unassigned() -> None:
+    """A fetched record must be retried after a pause, not sent to unassigned."""
+    producer = FakeProducer()
+
+    async def fake_resolve(session, topic, *, active_only=False):
+        assert active_only is True
+        return None
+
+    saved = consumer_main.resolve_application_id
+    consumer_main.resolve_application_id = fake_resolve
+    try:
+        with pytest.raises(consumer_main.IngestionPausedError):
+            await consumer_main.process_message(
+                "alert.paused",
+                json.dumps(VALID_MSG).encode(),
+                producer,
+                session=FakeSession(),
+                require_active_binding=True,
+            )
+    finally:
+        consumer_main.resolve_application_id = saved
+
+    assert producer.sent == {}

@@ -161,11 +161,31 @@ curl -X POST http://localhost:8000/settings/ai-models \
 
 ## Ingestion → analysis chain
 
-The Kafka consumer (`make consume`) validates each v1.1 alert, persists the
-`Alert` + a pending `Analysis`, then triggers `run_analysis` in a background
-task so the full `receive → git_sync → context → ai_analysis → experience →
-conclusion` workflow runs without blocking ingestion. A failed run is marked
-`failed` rather than crashing the consumer.
+Applications have an explicit ingestion lifecycle: `draft → active ↔ paused`.
+Creating or binding a topic leaves an application in `draft`; an application
+administrator must start it and choose either **new messages only** (`latest`)
+or **replay retained Kafka messages** (`earliest`). Starting validates that the
+configured topic has Kafka partitions and returns `202` while the consumer
+obtains a real assignment. The application list card is the operational control
+surface: it shows the observed state (`starting`, `listening`, or `error`) and
+offers Start, Pause, or Resume to application administrators. Application
+settings remain the place to configure the topic.
+
+Only active application topics are subscribed. The consumer refreshes that exact
+database-backed topic list without a restart, validates each alert, persists the
+`Alert` + pending `Analysis` + durable `AnalysisJob`; the separate worker
+(`make work`) executes the analysis. Pausing stops new subscriptions and worker
+claims while allowing an already-running analysis to finish. Kafka offsets and
+queued jobs remain untouched until resume.
+
+The lifecycle API is application-admin scoped:
+
+```text
+GET  /applications/{id}/ingestion
+POST /applications/{id}/ingestion/start  {"start_position":"latest"|"earliest"}
+POST /applications/{id}/ingestion/pause
+POST /applications/{id}/ingestion/resume
+```
 
 ## Read-only database proxy (M4)
 
@@ -264,10 +284,11 @@ The message body may contain **only** what the business `lark-alert.ts` tool can
 produce. Required: `schema_version` ("1.1"), `level`, `title`, `env`, `timestamp`.
 Optional: `eventType`, `project`, `fields`.
 
-Routing is **purely topic-based**: the topic `alert.{product}` maps to an
-`application` via `application_kafka`. The platform recomputes `dedupeKey` with the
+Routing is **purely topic-based**: an active `application_kafka` mapping is the
+consumer's exact subscription source. The platform recomputes `dedupeKey` with the
 exact `lark-alert.ts` algorithm so `/analysis/{dedupeKey}` matches the `Key` shown
-in the Lark card. Invalid messages go to the dead-letter topic; unmapped topics go
-to the unassigned topic.
+in the Lark card. Invalid messages go to the dead-letter topic. A topic is required
+when an application is started, and the broker validates it before the application
+can become active.
 
 See `Kafka告警消息格式规范.md` (design repo) for the full contract.

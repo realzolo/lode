@@ -39,10 +39,13 @@ class Settings(BaseSettings):
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_group_id: str = "lode-consumer"
-    # Topic subscription regex (matched via aiokafka subscribe(pattern=...)).
-    # Defaults to "<tenant>.alert-events.created" topics, excluding ".dlt"
-    # tombstones and unrelated event topics. Override per environment.
-    kafka_topic_pattern: str = r".*\.alert-events\.created$"
+    # Active application bindings are the consumer subscription source of truth.
+    # The consumer polls this interval so control-plane state changes do not
+    # require a process restart.
+    kafka_subscription_refresh_seconds: float = 5.0
+    # A runtime heartbeat older than this is reported as an error to operators.
+    kafka_runtime_stale_seconds: float = 20.0
+    kafka_topic_validation_timeout_seconds: float = 10.0
     kafka_dlq_topic: str = "lode.dlq"
     kafka_unassigned_topic: str = "lode.unassigned"
     # SASL/PLAIN authentication. Defaults are the unauthenticated local-dev

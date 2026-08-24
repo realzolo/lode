@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { ChevronRight } from 'lucide-react';
 import { Card } from '@/components/ui/card';
@@ -18,7 +18,13 @@ import {
 } from '@/components/ui/dialog';
 import { Link, useRouter } from '@/lib/navigation';
 import type { Application } from '@/lib/types';
-import { fetchApplications, createApplication } from '@/lib/api';
+import {
+  fetchApplications,
+  createApplication,
+  pauseApplicationIngestion,
+  resumeApplicationIngestion,
+  startApplicationIngestion,
+} from '@/lib/api';
 import { relativeTime } from '@/lib/utils';
 import { IconPlus } from '@/components/icons';
 
@@ -44,22 +50,37 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    fetchApplications()
-      .then((data) => active && setApps(data))
-      .catch((e) => active && setError(String(e)))
-      .finally(() => active && setLoading(false));
-    return () => {
-      active = false;
-    };
-  }, []);
-
   const router = useRouter();
   const [newOpen, setNewOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [startTarget, setStartTarget] = useState<Application | null>(null);
+  const [startPosition, setStartPosition] = useState<'latest' | 'earliest'>('latest');
+  const [actionAppId, setActionAppId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const loadApplications = useCallback(async () => {
+    try {
+      setApps(await fetchApplications());
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadApplications();
+  }, [loadApplications]);
+
+  const shouldPollIngestion = apps.some((app) => app.ingestionState === 'active');
+  useEffect(() => {
+    if (!shouldPollIngestion) return;
+    const timer = window.setInterval(() => void loadApplications(), 5000);
+    return () => window.clearInterval(timer);
+  }, [loadApplications, shouldPollIngestion]);
 
   async function handleCreate() {
     const name = newName.trim();
@@ -76,6 +97,59 @@ export default function DashboardPage() {
       setFormError(String(e));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  function updateIngestion(
+    appId: string,
+    ingestionState: Application['ingestionState'],
+    ingestionObservedState: Application['ingestionObservedState'],
+    ingestionStartPosition: Application['ingestionStartPosition'],
+  ) {
+    setApps((previous) => previous.map((app) => (
+      app.id === appId
+        ? { ...app, ingestionState, ingestionObservedState, ingestionStartPosition }
+        : app
+    )));
+  }
+
+  async function handleStart() {
+    if (!startTarget) return;
+    setActionAppId(startTarget.id);
+    setActionError(null);
+    try {
+      const status = await startApplicationIngestion(startTarget.id, startPosition);
+      updateIngestion(
+        startTarget.id,
+        status.desired_state,
+        status.observed_state,
+        status.start_position,
+      );
+      setStartTarget(null);
+    } catch (e) {
+      setActionError(String(e));
+    } finally {
+      setActionAppId(null);
+    }
+  }
+
+  async function handleLifecycle(app: Application, action: 'pause' | 'resume') {
+    setActionAppId(app.id);
+    setActionError(null);
+    try {
+      const status = action === 'pause'
+        ? await pauseApplicationIngestion(app.id)
+        : await resumeApplicationIngestion(app.id);
+      updateIngestion(
+        app.id,
+        status.desired_state,
+        status.observed_state,
+        status.start_position,
+      );
+    } catch (e) {
+      setActionError(String(e));
+    } finally {
+      setActionAppId(null);
     }
   }
 
@@ -124,18 +198,32 @@ export default function DashboardPage() {
       {error && (
         <p className="text-sm text-destructive">{error}</p>
       )}
+      {actionError && (
+        <p className="text-sm text-destructive">{actionError}</p>
+      )}
       {!loading && !error && apps.length === 0 && (
         <p className="text-sm text-muted-foreground">{tc('empty')}</p>
       )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {apps.map((app) => (
-          <Link
-            key={app.id}
-            href={`/admin/applications/${app.id}`}
-            className="group block rounded-md outline-none transition focus-visible:shadow-geist-focus"
-          >
-            <Card className="flex h-full flex-col gap-3.5 p-6 shadow-none transition group-hover:border-foreground/25 group-hover:bg-accent/40">
+        {apps.map((app) => {
+          const needsFirstStart = app.ingestionState === 'draft'
+            || (app.ingestionState === 'paused' && !app.ingestionStartPosition);
+          const canManage = app.myPerm === 'admin';
+          const stateVariant = app.ingestionObservedState === 'listening'
+            ? 'success'
+            : app.ingestionObservedState === 'paused'
+              ? 'warning'
+              : app.ingestionObservedState === 'error'
+                ? 'danger'
+              : 'default';
+
+          return (
+            <Card key={app.id} className="flex h-full flex-col gap-3.5 p-6 shadow-none">
+              <Link
+                href={`/admin/applications/${app.id}`}
+                className="group block rounded-md outline-none transition focus-visible:shadow-geist-focus"
+              >
               <div className="flex items-start gap-3.5">
                 <AppAvatar name={app.name} />
                 <div className="min-w-0 flex-1">
@@ -155,7 +243,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
               </div>
-              <div className="mt-auto flex items-center gap-1.5 border-t border-[var(--color-4)] pt-3.5 text-[13px] text-muted-foreground">
+              <div className="mt-3.5 flex items-center gap-1.5 text-[13px] text-muted-foreground">
                 <span>
                   {app.repoCount} {app.repoCount === 1 ? 'repo' : 'repos'}
                 </span>
@@ -165,10 +253,92 @@ export default function DashboardPage() {
                 <span>Created {relativeTime(app.createdAt, locale)}</span>
                 <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
               </div>
+              </Link>
+              <div className="mt-auto flex items-center justify-between gap-3 border-t border-[var(--color-4)] pt-3.5">
+                <Badge variant={stateVariant}>
+                  {t(`ingestionObserved.${app.ingestionObservedState}`)}
+                </Badge>
+                {canManage && needsFirstStart && (
+                  app.topic ? (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => {
+                        setActionError(null);
+                        setStartPosition('latest');
+                        setStartTarget(app);
+                      }}
+                      disabled={actionAppId === app.id}
+                    >
+                      {t('startIngestion')}
+                    </Button>
+                  ) : (
+                    <Button asChild variant="secondary" size="sm">
+                      <Link href={`/admin/applications/${app.id}`}>{t('configureTopic')}</Link>
+                    </Button>
+                  )
+                )}
+                {canManage && app.ingestionState === 'active' && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void handleLifecycle(app, 'pause')}
+                    disabled={actionAppId === app.id}
+                  >
+                    {t('pauseIngestion')}
+                  </Button>
+                )}
+                {canManage && app.ingestionState === 'paused' && !needsFirstStart && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => void handleLifecycle(app, 'resume')}
+                    disabled={actionAppId === app.id}
+                  >
+                    {t('resumeIngestion')}
+                  </Button>
+                )}
+              </div>
             </Card>
-          </Link>
-        ))}
+          );
+        })}
       </div>
+
+      <Dialog
+        open={startTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !actionAppId) setStartTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('startIngestion')}</DialogTitle>
+            <DialogDescription>
+              {t('startIngestionDesc', { name: startTarget?.name ?? '' })}
+            </DialogDescription>
+          </DialogHeader>
+          <label className="stack gap-2 text-sm font-medium text-foreground">
+            {t('startPosition')}
+            <select
+              value={startPosition}
+              onChange={(event) => setStartPosition(event.target.value as 'latest' | 'earliest')}
+              disabled={actionAppId !== null}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm font-normal"
+            >
+              <option value="latest">{t('startLatest')}</option>
+              <option value="earliest">{t('startEarliest')}</option>
+            </select>
+          </label>
+          <DialogFooter>
+            <Button variant="default" onClick={() => setStartTarget(null)} disabled={actionAppId !== null}>
+              {tc('cancel')}
+            </Button>
+            <Button variant="primary" onClick={() => void handleStart()} disabled={actionAppId !== null}>
+              {t('startIngestion')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={newOpen}

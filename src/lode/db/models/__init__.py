@@ -15,6 +15,8 @@ from lode.db.models.ai_model import AiModelConfig  # noqa: F401
 from lode.db.models.application import (  # noqa: F401
     Application,
     ApplicationDescription,
+    ApplicationIngestionOffset,
+    ApplicationIngestionRuntime,
     ApplicationKafka,
     ApplicationRepo,
     DbSource,
@@ -33,6 +35,8 @@ __all__ = [
     "AiModelConfig",
     "Application",
     "ApplicationDescription",
+    "ApplicationIngestionOffset",
+    "ApplicationIngestionRuntime",
     "ApplicationKafka",
     "ApplicationRepo",
     "DbSource",

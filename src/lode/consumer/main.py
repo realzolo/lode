@@ -28,12 +28,13 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime, timezone
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.errors import KafkaConnectionError
+from aiokafka.structs import OffsetAndMetadata, TopicPartition
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -43,20 +44,32 @@ from lode.config import kafka_security_kwargs, settings
 from lode.consumer.alert_schema import AlertMessage
 from lode.db.models.alert import Alert
 from lode.db.models.analysis import Analysis, DeadLetter
-from lode.db.models.application import ApplicationKafka
+from lode.db.models.application import (
+    Application,
+    ApplicationIngestionOffset,
+    ApplicationIngestionRuntime,
+    ApplicationKafka,
+)
 from lode.db.models.intake import AnalysisJob, Incident, IngestionEvent
 from lode.db.session import AsyncSessionLocal
 from lode.metrics import (
     ANALYSES,
     CONSUMER_LAG,
     DEAD_LETTERS,
-    ENGINE_IN_FLIGHT,
     MESSAGES_RECEIVED,
 )
 
 logger = logging.getLogger("lode.consumer")
 
 ERROR_MAX_LENGTH = 500
+
+
+@dataclass(frozen=True)
+class ActiveBinding:
+    application_id: int
+    topic: str
+    ingestion_version: int
+    start_position: str
 
 
 def _extract_error_message(msg: AlertMessage) -> str:
@@ -72,9 +85,9 @@ def _extract_error_message(msg: AlertMessage) -> str:
 async def _await_assignment(consumer: AIOKafkaConsumer, timeout: float = 10.0) -> set:
     """Block until the group coordinator assigns at least one partition.
 
-    Raises ``RuntimeError`` if the subscription matched nothing after ``timeout``:
-    a misconfigured ``kafka_topic_pattern`` must fail loud, not idle silently and
-    consume zero messages (the exact footgun that previously hid a broken setup).
+    Raises ``RuntimeError`` if an explicitly active topic has no partition after
+    ``timeout``. Applications with no active bindings never start a consumer,
+    so an idle control plane remains healthy.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -84,27 +97,77 @@ async def _await_assignment(consumer: AIOKafkaConsumer, timeout: float = 10.0) -
             return assigned
         await asyncio.sleep(0.25)
     raise RuntimeError(
-        f"subscribed pattern {settings.kafka_topic_pattern!r} matched 0 partitions; "
-        "nothing to consume — fix kafka_topic_pattern"
+        "active application topics matched 0 partitions; verify topic existence and Kafka ACLs"
     )
 
 
-async def _warn_unmapped_topics(assigned_topics: set[str]) -> None:
-    """Warn when a subscribed topic has no ``application_kafka`` mapping.
-
-    A topic with no mapping is silently routed to ``unassigned`` forever, which is
-    almost always a configuration mistake worth surfacing loudly.
-    """
-    if not assigned_topics:
-        return
+async def load_active_bindings() -> dict[str, ActiveBinding]:
+    """Return the exact topic set currently enabled by the control plane."""
     async with AsyncSessionLocal() as session:
-        mapped = (await session.execute(select(ApplicationKafka.topic))).scalars().all()
-    unmapped = sorted(assigned_topics - set(mapped))
-    if unmapped:
-        logger.warning(
-            "subscribed topics with no application mapping (will route to "
-            "unassigned): %s", unmapped
+        rows = (
+            await session.execute(
+                select(
+                    ApplicationKafka.application_id,
+                    ApplicationKafka.topic,
+                    Application.ingestion_version,
+                    Application.ingestion_start_position,
+                )
+                .join(Application, Application.id == ApplicationKafka.application_id)
+                .where(Application.ingestion_state == "active")
+            )
+        ).all()
+    return {
+        topic: ActiveBinding(
+            application_id=application_id,
+            topic=topic,
+            ingestion_version=ingestion_version,
+            start_position=start_position or "earliest",
         )
+        for application_id, topic, ingestion_version, start_position in rows
+    }
+
+
+async def _set_runtime(
+    bindings: dict[str, ActiveBinding],
+    assignments: set[TopicPartition],
+    *,
+    state: str,
+    consumer_id: str | None = None,
+    backlog: dict[str, int] | None = None,
+    error: str | None = None,
+) -> None:
+    """Upsert consumer-observed state for active applications only."""
+    counts: dict[str, int] = {}
+    for tp in assignments:
+        counts[tp.topic] = counts.get(tp.topic, 0) + 1
+
+    now = datetime.now(UTC)
+    async with AsyncSessionLocal() as session:
+        for topic, binding in bindings.items():
+            runtime = await session.get(ApplicationIngestionRuntime, binding.application_id)
+            if runtime is None:
+                runtime = ApplicationIngestionRuntime(application_id=binding.application_id)
+                session.add(runtime)
+            assigned = counts.get(topic, 0)
+            runtime.observed_state = "listening" if state == "listening" and assigned else state
+            runtime.observed_version = binding.ingestion_version
+            runtime.consumer_id = consumer_id
+            runtime.assigned_partitions = assigned
+            runtime.backlog = backlog.get(topic) if backlog is not None else runtime.backlog
+            runtime.last_heartbeat_at = now
+            runtime.last_error = error
+        await session.commit()
+
+
+async def _mark_bindings_error(bindings: dict[str, ActiveBinding], error: Exception) -> None:
+    if not bindings:
+        return
+    await _set_runtime(
+        bindings,
+        set(),
+        state="error",
+        error=str(error)[:500],
+    )
 
 
 async def _report_lag(consumer: AIOKafkaConsumer) -> None:
@@ -128,6 +191,16 @@ async def _report_lag(consumer: AIOKafkaConsumer) -> None:
 # Raised for transient failures where the Kafka offset must NOT be committed
 # (the record will be redelivered after the consumer reconnects).
 class IngestionTransientError(Exception):
+    pass
+
+
+class IngestionPausedError(IngestionTransientError):
+    """A control-plane change raced an already fetched Kafka record.
+
+    The caller must not commit the source offset. Recreating the subscription
+    drops the inactive topic, leaving the record available for a future resume.
+    """
+
     pass
 
 
@@ -185,9 +258,17 @@ async def _record_dead_letter(
         await s.commit()
 
 
-async def resolve_application_id(session: AsyncSession, topic: str) -> int | None:
+async def resolve_application_id(
+    session: AsyncSession, topic: str, *, active_only: bool = False
+) -> int | None:
+    stmt = select(ApplicationKafka.application_id).where(ApplicationKafka.topic == topic)
+    if active_only:
+        stmt = (
+            stmt.join(Application, Application.id == ApplicationKafka.application_id)
+            .where(Application.ingestion_state == "active")
+        )
     result = await session.execute(
-        select(ApplicationKafka.application_id).where(ApplicationKafka.topic == topic)
+        stmt
     )
     return result.scalar_one_or_none()
 
@@ -343,6 +424,7 @@ async def process_message(
     offset: int | None = None,
     session: AsyncSession | None = None,
     trace_id: str | None = None,
+    require_active_binding: bool = False,
 ) -> str:
     """Validate, route, dedupe, persist a queued job, and return a status.
 
@@ -383,12 +465,14 @@ async def process_message(
 
     if session is not None:
         return await _process_with_session(
-            session, producer, topic, dedupe_key, msg, data, partition, offset, trace_id
+            session, producer, topic, dedupe_key, msg, data, partition, offset, trace_id,
+            require_active_binding,
         )
 
     async with AsyncSessionLocal() as db:
         return await _process_with_session(
-            db, producer, topic, dedupe_key, msg, data, partition, offset, trace_id
+            db, producer, topic, dedupe_key, msg, data, partition, offset, trace_id,
+            require_active_binding,
         )
 
 
@@ -402,9 +486,18 @@ async def _process_with_session(
     partition: int | None,
     offset: int | None,
     trace_id: str | None,
+    require_active_binding: bool,
 ) -> str:
-    app_id = await resolve_application_id(session, topic)
+    app_id = (
+        await resolve_application_id(session, topic, active_only=True)
+        if require_active_binding
+        else await resolve_application_id(session, topic)
+    )
     if app_id is None:
+        if require_active_binding:
+            raise IngestionPausedError(
+                f"topic {topic!r} is no longer active; refreshing subscription"
+            )
         MESSAGES_RECEIVED.labels(outcome="unassigned").inc()
         await _route_failure(
             producer, session, topic=topic, kind="unassigned",
@@ -461,16 +554,90 @@ async def _process_with_session(
     return "persisted"
 
 
-async def main() -> None:
-    """Run the consumer, reconnecting transparently if Kafka is unavailable.
+async def _initialize_assigned_offsets(
+    consumer: AIOKafkaConsumer,
+    bindings: dict[str, ActiveBinding],
+    assignments: set[TopicPartition],
+) -> None:
+    """Apply a first-start policy once per activation version and partition."""
+    pending = [tp for tp in assignments if tp.topic in bindings]
+    if not pending:
+        return
+    beginnings = await consumer.beginning_offsets(pending)
+    ends = await consumer.end_offsets(pending)
+    rows: dict[TopicPartition, ApplicationIngestionOffset] = {}
+    async with AsyncSessionLocal() as session:
+        for tp in pending:
+            binding = bindings[tp.topic]
+            key = (binding.application_id, binding.ingestion_version, tp.topic, tp.partition)
+            row = await session.get(ApplicationIngestionOffset, key)
+            if row is None:
+                target = (
+                    beginnings[tp]
+                    if binding.start_position == "earliest"
+                    else ends[tp]
+                )
+                row = ApplicationIngestionOffset(
+                    application_id=binding.application_id,
+                    ingestion_version=binding.ingestion_version,
+                    topic=tp.topic,
+                    partition=tp.partition,
+                    start_position=binding.start_position,
+                    target_offset=target,
+                )
+                session.add(row)
+            rows[tp] = row
+        await session.commit()
 
-    The loop tolerates a broker that is slow to come up (common in
-    docker-compose). A transient per-message failure breaks the inner loop so
-    the offset is NOT committed; the outer loop recreates the consumer and
-    redelivers the failed record from the last committed offset.
-    """
+    to_initialize = {tp: row for tp, row in rows.items() if row.initialized_at is None}
+    if not to_initialize:
+        return
+    for tp, row in to_initialize.items():
+        consumer.seek(tp, row.target_offset)
+    await consumer.commit(
+        {tp: OffsetAndMetadata(row.target_offset, "") for tp, row in to_initialize.items()}
+    )
+    async with AsyncSessionLocal() as session:
+        for tp in to_initialize:
+            binding = bindings[tp.topic]
+            key = (binding.application_id, binding.ingestion_version, tp.topic, tp.partition)
+            row = await session.get(ApplicationIngestionOffset, key)
+            if row is not None:
+                row.initialized_at = datetime.now(UTC)
+        await session.commit()
+
+
+async def _report_runtime(
+    consumer: AIOKafkaConsumer,
+    bindings: dict[str, ActiveBinding],
+) -> None:
+    assignments = consumer.assignment()
+    backlog: dict[str, int] = {}
+    if assignments:
+        ends = await consumer.end_offsets(list(assignments))
+        for tp in assignments:
+            position = await consumer.position(tp)
+            lag = max(0, ends[tp] - position)
+            backlog[tp.topic] = backlog.get(tp.topic, 0) + lag
+            CONSUMER_LAG.labels(topic=tp.topic, partition=tp.partition).set(lag)
+    await _set_runtime(
+        bindings,
+        assignments,
+        state="listening",
+        consumer_id=f"{settings.kafka_group_id}:{id(consumer)}",
+        backlog=backlog,
+    )
+
+
+async def main() -> None:
+    """Consume exactly the topics enabled by the application control plane."""
+    bindings: dict[str, ActiveBinding] = {}
     while True:
         try:
+            bindings = await load_active_bindings()
+            if not bindings:
+                await asyncio.sleep(settings.kafka_subscription_refresh_seconds)
+                continue
             security_kwargs = kafka_security_kwargs()
             consumer = AIOKafkaConsumer(
                 bootstrap_servers=settings.kafka_bootstrap_servers,
@@ -479,12 +646,7 @@ async def main() -> None:
                 auto_offset_reset="earliest",
                 **security_kwargs,
             )
-            # Subscribe by *regex pattern*. aiokafka only honours a regex when it
-            # is passed to ``subscribe(pattern=...)``; passing it as a positional
-            # topic subscribes to a literal topic named after the pattern string
-            # (e.g. a topic literally called "alert\..*"), which matches nothing
-            # and silently consumes zero messages.
-            consumer.subscribe(pattern=settings.kafka_topic_pattern)
+            consumer.subscribe(topics=sorted(bindings))
             producer = AIOKafkaProducer(
                 bootstrap_servers=settings.kafka_bootstrap_servers,
                 **security_kwargs,
@@ -492,31 +654,36 @@ async def main() -> None:
             await consumer.start()
             await producer.start()
 
-            # Fail loud if the pattern matched no partitions (A): a misconfigured
-            # subscription must not idle silently and consume nothing.
             assigned = await _await_assignment(consumer)
-            assigned_topics = {tp.topic for tp in assigned}
+            await _initialize_assigned_offsets(consumer, bindings, assigned)
+            await _report_runtime(consumer, bindings)
             logger.info(
-                "consumer started on %s — assigned %d partition(s): %s",
+                "consumer started on %s for %d application topic(s), assigned %d partition(s): %s",
                 settings.kafka_bootstrap_servers,
+                len(bindings),
                 len(assigned),
                 sorted(f"{tp.topic}[{tp.partition}]" for tp in assigned),
             )
-            # Surface subscribed topics that map to no application (B).
-            await _warn_unmapped_topics(assigned_topics)
-            # Snapshot the initial backlog so operators see the starting lag (G).
-            try:
-                ends = await consumer.end_offsets(list(assigned))
-                logger.info("initial backlog (high-water-mark sum): %d", sum(ends.values()))
-            except Exception:  # noqa: BLE001 - telemetry only
-                pass
 
             processed_since_lag = 0
+            loop = asyncio.get_running_loop()
+            next_refresh = loop.time() + settings.kafka_subscription_refresh_seconds
             try:
                 while True:
-                    # Batch fetch (E) keeps throughput up; we still commit
-                    # per-message so the at-least-once + idempotent contract is
-                    # identical to single-record mode and a crash loses nothing.
+                    if loop.time() >= next_refresh:
+                        refreshed = await load_active_bindings()
+                        if not refreshed:
+                            raise IngestionPausedError("all application ingestion is paused")
+                        if set(refreshed) != set(bindings):
+                            bindings = refreshed
+                            consumer.subscribe(topics=sorted(bindings))
+                            assigned = await _await_assignment(consumer)
+                            await _initialize_assigned_offsets(consumer, bindings, assigned)
+                        else:
+                            bindings = refreshed
+                        await _report_runtime(consumer, bindings)
+                        next_refresh = loop.time() + settings.kafka_subscription_refresh_seconds
+
                     batch = await consumer.getmany(
                         timeout_ms=1000, max_records=settings.kafka_batch_max_records
                     )
@@ -528,6 +695,7 @@ async def main() -> None:
                                 await process_message(
                                     record.topic, record.value, producer,
                                     record.partition, record.offset,
+                                    require_active_binding=True,
                                 )
                             except IngestionTransientError:
                                 logger.exception(
@@ -538,21 +706,26 @@ async def main() -> None:
                             await consumer.commit()
                             processed_since_lag += 1
                             if processed_since_lag >= 100:
-                                await _report_lag(consumer)
+                                await _report_runtime(consumer, bindings)
                                 processed_since_lag = 0
             finally:
                 await consumer.stop()
                 await producer.stop()
             return
         except KafkaConnectionError as exc:
+            await _mark_bindings_error(bindings, exc)
             logger.warning("kafka unavailable, retrying in 5s: %s", exc)
             await asyncio.sleep(5)
         except asyncio.CancelledError:
             raise
+        except IngestionPausedError:
+            logger.info("application ingestion changed; rebuilding subscription")
+            await asyncio.sleep(0.1)
         except IngestionTransientError:
             logger.warning("transient intake error, reconnecting to redeliver")
             await asyncio.sleep(2)
         except Exception as exc:
+            await _mark_bindings_error(bindings, exc)
             logger.exception("consumer error, retrying in 5s: %s", exc)
             await asyncio.sleep(5)
 
