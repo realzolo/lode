@@ -6,20 +6,24 @@ import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, THead, TBody, Tr, Th, Td } from '@/components/ui/table';
-import type { Memory } from '@/lib/types';
-import { fetchMemories } from '@/lib/api';
+import type { Experience } from '@/lib/types';
+import { fetchExperiences } from '@/lib/api';
 
-export default function MemoriesPage() {
-  const t = useTranslations('memories');
+// Admin-facing view of the shared experience bank. The data is the same global
+// store developers see under /workbench/experiences, but it lives in the Admin
+// Console so administrators can audit triggered experiences in one place. (Admin
+// mutation actions on experiences are a later milestone.)
+export default function AdminExperiencesPage() {
+  const t = useTranslations('experiences');
   const tc = useTranslations('common');
-  const [memories, setMemories] = useState<Memory[]>([]);
+  const [experiences, setExperiences] = useState<Experience[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    fetchMemories()
-      .then((data) => active && setMemories(data))
+    fetchExperiences()
+      .then((data) => active && setExperiences(data))
       .catch((e) => active && setError(String(e)))
       .finally(() => active && setLoading(false));
     return () => {
@@ -44,7 +48,7 @@ export default function MemoriesPage() {
         </Card>
       )}
       {error && <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>}
-      {!loading && !error && memories.length === 0 && (
+      {!loading && !error && experiences.length === 0 && (
         <p className="muted">{tc('empty')}</p>
       )}
       <Card style={{ padding: 0, marginTop: 16, overflow: 'hidden' }}>
@@ -57,7 +61,7 @@ export default function MemoriesPage() {
             </Tr>
           </THead>
           <TBody>
-            {memories.map((m) => (
+            {experiences.map((m) => (
               <Tr key={m.id}>
                 <Td className="mono muted">{m.triggerSignature}</Td>
                 <Td>{m.content}</Td>

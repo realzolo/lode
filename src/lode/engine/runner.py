@@ -2,7 +2,7 @@
 
 Drives the agentic workflow for a single analysis:
 
-    receive -> git_sync -> context -> ai_analysis -> memory -> conclusion
+    receive -> git_sync -> context -> ai_analysis -> experience -> conclusion
 
 Each node is persisted as an ``analysis_steps`` row so the UI can render the
 exact path the agent took. The agent may call four controlled, read-only
@@ -24,18 +24,19 @@ from sqlalchemy import select
 from lode.config import settings
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.analysis import Analysis, AnalysisHint, AnalysisStep
-from lode.db.models.memory import Memory
+from lode.db.models.application import Application
+from lode.db.models.experience import Experience
 from lode.engine.embeddings import (
     EmbeddingConfig,
     build_query_text,
     embed,
 )
 from lode.engine.llm import ModelConfig, complete
-from lode.engine.memory_search import semantic_search
+from lode.engine.experience_search import semantic_search
 from lode.engine.evidence import collect_git_evidence
 from lode.engine.tools import (
     get_deploy_context,
-    get_memory,
+    get_experience,
     load_alert,
     run_readonly_query,
     search_code,
@@ -44,7 +45,7 @@ from lode.metrics import ANALYSES
 
 logger = logging.getLogger("lode.engine.runner")
 
-_NODE_ORDER = ["receive", "git_sync", "context", "ai_analysis", "memory", "conclusion"]
+_NODE_ORDER = ["receive", "git_sync", "context", "ai_analysis", "experience", "conclusion"]
 
 
 def _now() -> datetime:
@@ -66,7 +67,11 @@ def _parse_llm_json(text: str) -> dict[str, Any] | None:
 
 
 def _heuristic_conclusion(
-    alert, deploy_prompt: str | None, memory_content: str | None, fields: dict, human_hints: str | None = None
+    alert,
+    deploy_description: str | None,
+    experience_content: str | None,
+    fields: dict,
+    human_hints: str | None = None,
 ) -> tuple[str, float]:
     """Deterministic offline fallback used when no LLM is configured."""
     error = getattr(alert, "error_message", "") or "no error message captured"
@@ -76,18 +81,18 @@ def _heuristic_conclusion(
         f"Incident \"{title}\".",
         f"Captured error: {error}.",
     ]
-    if deploy_prompt:
-        parts.append(f"Deploy context: {deploy_prompt}")
-    if memory_content:
-        parts.append(f"A matching prior incident is recorded in shared memory: {memory_content}")
+    if deploy_description:
+        parts.append(f"Deploy context: {deploy_description}")
+    if experience_content:
+        parts.append(f"A matching prior incident is recorded in the experience library: {experience_content}")
     if human_hints:
         parts.append(f"Operator annotations: {human_hints}")
 
     conclusion = " ".join(parts)
     confidence = 0.55
-    if deploy_prompt:
+    if deploy_description:
         confidence += 0.15
-    if memory_content:
+    if experience_content:
         confidence += 0.15
     if error and error != "no error message captured":
         confidence += 0.10
@@ -132,8 +137,8 @@ def _normalize_evidence_packet(parsed: object, evidence_catalog: list[dict]) -> 
 
 def _heuristic_packet(
     alert,
-    deploy_prompt: str | None,
-    memory_content: str | None,
+    deploy_description: str | None,
+    experience_content: str | None,
     fields: dict,
     human_hints: str | None = None,
 ) -> tuple[str, float, list, list, list, list]:
@@ -144,16 +149,16 @@ def _heuristic_packet(
     finding — the UI surfaces this distinction.
     """
     conclusion, confidence = _heuristic_conclusion(
-        alert, deploy_prompt, memory_content, fields, human_hints
+        alert, deploy_description, experience_content, fields, human_hints
     )
     facts: list[str] = []
     error = getattr(alert, "error_message", "") or ""
     if error:
         facts.append(f"Captured error: {error}")
-    if deploy_prompt:
+    if deploy_description:
         facts.append("Deploy context is configured for this application.")
-    if memory_content:
-        facts.append("A matching prior incident is recorded in shared memory.")
+    if experience_content:
+        facts.append("A matching prior incident is recorded in the experience library.")
     unknowns = [
         "Heuristic fallback (no LLM configured): treat as a starting hypothesis, "
         "not a confirmed root cause."
@@ -162,17 +167,13 @@ def _heuristic_packet(
 
 
 async def _resolve_model_config(session, application_id: int) -> ModelConfig | None:
-    result = await session.execute(
-        select(AiModelConfig)
-        .where(AiModelConfig.scope == "application")
-        .where(AiModelConfig.application_id == application_id)
-        .where(AiModelConfig.is_default.is_(True))
-    )
-    cfg = result.scalars().first()
+    app = await session.get(Application, application_id)
+    cfg = None
+    if app is not None and app.model_config_id is not None:
+        cfg = await session.get(AiModelConfig, app.model_config_id)
     if cfg is None:
         result = await session.execute(
             select(AiModelConfig)
-            .where(AiModelConfig.scope == "global")
             .where(AiModelConfig.is_default.is_(True))
         )
         cfg = result.scalars().first()
@@ -189,7 +190,7 @@ async def _resolve_model_config(session, application_id: int) -> ModelConfig | N
 def _resolve_embedding_config() -> EmbeddingConfig | None:
     """Build an embedding config from settings, or ``None`` when disabled.
 
-    Semantic memory is opt-in: when ``embedding_api_key_ref`` is empty the
+    Semantic experience is opt-in: when ``embedding_api_key_ref`` is empty the
     feature is turned off and the runner degrades to exact trigger_signature
     matching. Embeddings are read through ``resolve_api_key`` just like the
     chat client, so real credentials live in the environment, never the DB.
@@ -205,10 +206,11 @@ def _resolve_embedding_config() -> EmbeddingConfig | None:
 
 def _build_prompts(
     alert,
-    deploy_prompt,
+    deploy_description,
     modules,
     allowed_tables,
-    memory_content,
+    data_sources,
+    experience_content,
     human_hints=None,
     evidence_catalog=None,
 ) -> tuple[str, str]:
@@ -233,14 +235,22 @@ def _build_prompts(
         f"Error: {getattr(alert, 'error_message', '')}",
         f"Fields: {json.dumps(getattr(alert, 'fields', {}), ensure_ascii=False)}",
     ]
-    if deploy_prompt:
-        lines.append(f"Deploy context: {deploy_prompt}")
+    if deploy_description:
+        lines.append(f"Deploy context: {deploy_description}")
     if modules:
         lines.append(f"Modules available: {', '.join(modules)}")
+    if data_sources:
+        lines.append("Read-only data sources:")
+        for src in data_sources:
+            tables = ", ".join(src.get("allowed_tables") or []) or "no tables allow-listed"
+            desc = src.get("description") or "no description"
+            lines.append(
+                f"  [{src.get('id')}] {src.get('name')}: {desc}; tables: {tables}"
+            )
     if allowed_tables:
         lines.append(f"Read-only tables: {', '.join(allowed_tables)}")
-    if memory_content:
-        lines.append(f"Matched shared memory: {memory_content}")
+    if experience_content:
+        lines.append(f"Matched experience: {experience_content}")
     catalog = evidence_catalog or []
     if catalog:
         lines.append("EVIDENCE REGISTRY (cite these IDs in evidence_refs):")
@@ -306,7 +316,7 @@ async def run_analysis(analysis_id: int, session) -> None:
 
     ctx = await get_deploy_context(session, application_id)
     _step("context", "completed", "Deploy context gathered",
-          (ctx["deploy_prompt"] or "no deploy description configured")[:280])
+          (ctx["deploy_description"] or "no deploy description configured")[:280])
 
     # Real evidence: clone each registered repo at a pinned ref, search for the
     # incident's symbols, and persist citable EvidenceArtifact rows. The runner
@@ -322,8 +332,8 @@ async def run_analysis(analysis_id: int, session) -> None:
         session, application_id, analysis_id=analysis.id
     )
 
-    # Semantic memory: embed the incident signature once and reuse the vector
-    # both for retrieval (get_memory) and for storage on the new memory row.
+    # Semantic experience: embed the incident signature once and reuse the vector
+    # both for retrieval (get_experience) and for storage on the new experience row.
     embedding_cfg = _resolve_embedding_config()
     query_text = build_query_text(alert)
     _query_vec: dict[str, list[float] | None] = {"v": None}
@@ -333,7 +343,7 @@ async def run_analysis(analysis_id: int, session) -> None:
             _query_vec["v"] = await embed(text, embedding_cfg)
         return _query_vec["v"]
 
-    memory = await get_memory(
+    experience = await get_experience(
         session,
         application_id,
         query_text=query_text,
@@ -364,10 +374,11 @@ async def run_analysis(analysis_id: int, session) -> None:
     ]
     system, user = _build_prompts(
         alert,
-        ctx["deploy_prompt"],
+        ctx["deploy_description"],
         code["modules_searched"],
         ro["allowed_tables"],
-        memory["content"] if memory["matched"] else None,
+        ro["data_sources"],
+        experience["content"] if experience["matched"] else None,
         human_hints=human_hints,
         evidence_catalog=evidence_catalog,
     )
@@ -388,8 +399,8 @@ async def run_analysis(analysis_id: int, session) -> None:
         else:
             conclusion, confidence, evidence_refs, facts, inferences, unknowns = (
                 _heuristic_packet(
-                    alert, ctx["deploy_prompt"],
-                    memory["content"] if memory["matched"] else None,
+                    alert, ctx["deploy_description"],
+                    experience["content"] if experience["matched"] else None,
                     getattr(alert, "fields", {}) or {},
                     human_hints=human_hints,
                 )
@@ -398,8 +409,8 @@ async def run_analysis(analysis_id: int, session) -> None:
     else:
         conclusion, confidence, evidence_refs, facts, inferences, unknowns = (
             _heuristic_packet(
-                alert, ctx["deploy_prompt"],
-                memory["content"] if memory["matched"] else None,
+                alert, ctx["deploy_description"],
+                experience["content"] if experience["matched"] else None,
                 getattr(alert, "fields", {}) or {},
                 human_hints=human_hints,
             )
@@ -409,46 +420,46 @@ async def run_analysis(analysis_id: int, session) -> None:
     _step("ai_analysis", "completed", f"Root cause synthesized ({engine_used})",
           conclusion[:280])
 
-    if memory["matched"]:
+    if experience["matched"]:
         suffix = ""
-        mtype = memory.get("match_type")
-        sim = memory.get("similarity")
+        mtype = experience.get("match_type")
+        sim = experience.get("similarity")
         if mtype == "semantic" and sim is not None:
             suffix = f" (semantic, similarity {sim:.2f})"
         elif mtype == "exact":
             suffix = " (exact)"
-        _step("memory", "completed", f"Matched shared memory{suffix}",
-              memory["content"][:280])
+        _step("experience", "completed", f"Matched shared experience{suffix}",
+              experience["content"][:280])
     else:
-        _step("memory", "completed", "No prior memory",
-              "No matching shared memory; a new entry will be recorded.")
+        _step("experience", "completed", "No prior experience",
+              "No matching shared experience; a new entry will be recorded.")
 
-    # Grow shared memory when we are confident and had no prior match.
+    # Grow shared experience when we are confident and had no prior match.
     # Upsert by trigger_signature so repeated re-analyses never create
-    # duplicate memory rows. When embeddings are enabled the triggering
+    # duplicate experience rows. When embeddings are enabled the triggering
     # incident signature is embedded and stored so future *similar* incidents
     # can find this conclusion via cosine search.
-    if not memory["matched"] and confidence >= 0.7 and conclusion:
+    if not experience["matched"] and confidence >= 0.7 and conclusion:
         prior = await session.execute(
-            select(Memory)
-            .where(Memory.application_id == application_id)
-            .where(Memory.trigger_signature == analysis.dedupe_key)
+            select(Experience)
+            .where(Experience.application_id == application_id)
+            .where(Experience.trigger_signature == analysis.dedupe_key)
         )
         existing = prior.scalars().first()
-        mem_embedding = _query_vec["v"]
+        experience_embedding = _query_vec["v"]
         # Stamped at write time so the conclusion ages out even if a future
         # analysis never re-touches it (see T8). Re-validating an existing row
         # renews its lease.
-        expiry = Memory.ttl_expiry(settings.memory_ttl_days)
+        expiry = Experience.ttl_expiry(settings.experience_ttl_days)
         if existing is None:
             session.add(
-                Memory(
+                Experience(
                     application_id=application_id,
                     trigger_signature=analysis.dedupe_key,
                     content=conclusion,
                     source_analysis_id=analysis_id,
                     is_valid=True,
-                    embedding=mem_embedding,
+                    embedding=experience_embedding,
                     expires_at=expiry,
                 )
             )
@@ -456,7 +467,7 @@ async def run_analysis(analysis_id: int, session) -> None:
             existing.content = conclusion
             existing.is_valid = True
             existing.source_analysis_id = analysis_id
-            existing.embedding = mem_embedding
+            existing.embedding = experience_embedding
             existing.expires_at = expiry
 
     cited_ids = {int(r) for r in evidence_refs if isinstance(r, int)}
@@ -485,9 +496,9 @@ async def run_analysis(analysis_id: int, session) -> None:
         "facts": facts,
         "inferences": inferences,
         "unknowns": unknowns,
-        "matched_memory": bool(memory["matched"]),
-        "matched_memory_type": memory.get("match_type"),
-        "matched_memory_similarity": memory.get("similarity"),
+        "matched_experience": bool(experience["matched"]),
+        "matched_experience_type": experience.get("match_type"),
+        "matched_experience_similarity": experience.get("similarity"),
     }
 
     _step("conclusion", "completed", "Conclusion ready",

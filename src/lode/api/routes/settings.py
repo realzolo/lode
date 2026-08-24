@@ -30,7 +30,6 @@ from lode.api.schemas import (
 )
 from lode.crypto import encrypt_secret
 from lode.db.models.ai_model import AiModelConfig
-from lode.db.models.application import Application
 from lode.db.models.git import GitCredential, GitRepo
 from lode.db.session import AsyncSessionLocal
 from sqlalchemy import select
@@ -53,7 +52,11 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 async def get_settings() -> dict:
     async with AsyncSessionLocal() as session:
         creds = (await session.execute(select(GitCredential))).scalars().all()
-        repos = (await session.execute(select(GitRepo))).scalars().all()
+        repos = (
+            await session.execute(
+                select(GitRepo).where(GitRepo.scope == "global")
+            )
+        ).scalars().all()
         models = (await session.execute(select(AiModelConfig))).scalars().all()
 
     return {
@@ -74,6 +77,8 @@ async def get_settings() -> dict:
                 "name": r.name,
                 "repo_url": r.repo_url,
                 "default_branch": r.default_branch,
+                "scope": r.scope,
+                "application_id": r.application_id,
                 "repo_type": r.repo_type,
                 "credential_id": r.credential_id,
             }
@@ -82,8 +87,6 @@ async def get_settings() -> dict:
         "ai_model_configs": [
             {
                 "id": m.id,
-                "scope": m.scope,
-                "application_id": m.application_id,
                 "provider": m.provider,
                 "base_url": m.base_url,
                 "model": m.model,
@@ -98,8 +101,6 @@ async def get_settings() -> dict:
 def _row_to_out(m: AiModelConfig) -> AiModelConfigOut:
     return AiModelConfigOut(
         id=m.id,
-        scope=m.scope,
-        application_id=m.application_id,
         provider=m.provider,
         base_url=m.base_url,
         model=m.model,
@@ -108,43 +109,30 @@ def _row_to_out(m: AiModelConfig) -> AiModelConfigOut:
     )
 
 
-async def _enforce_single_default(
-    session, scope: str, application_id: int | None, keep_id: int | None
-) -> None:
-    """Clear ``is_default`` on every other config sharing the same scope.
+async def _enforce_single_default(session, keep_id: int | None) -> None:
+    """Clear ``is_default`` on every other model config.
 
     When ``keep_id`` is ``None`` (used before inserting a brand-new default),
-    all existing rows in the scope are demoted. This MUST happen *before* the
+    all existing rows are demoted. This MUST happen *before* the
     new/updated row is set to ``is_default=True`` so the partial unique index
-    (at most one default per scope) is never violated mid-transaction.
+    (at most one default globally) is never violated mid-transaction.
     """
-    stmt = select(AiModelConfig).where(AiModelConfig.scope == scope)
+    stmt = select(AiModelConfig)
     if keep_id is not None:
         stmt = stmt.where(AiModelConfig.id != keep_id)
-    if scope == "application":
-        stmt = stmt.where(AiModelConfig.application_id == application_id)
     others = (await session.execute(stmt)).scalars().all()
     for other in others:
         other.is_default = False
 
 
-async def _promote_if_no_default(
-    session, scope: str, application_id: int | None
-) -> None:
-    """If a scope has configs but no default, promote the newest one.
+async def _promote_if_no_default(session) -> None:
+    """If configs exist but no default is set, promote the newest one.
 
     Keeps the engine's ``_resolve_model_config`` functional instead of silently
     falling back to the heuristic when an operator forgets to tick "default".
-
-    For ``scope='application'`` the search is limited to the same
-    ``application_id`` so a replacement default is promoted *within the correct
-    application* and never accidentally borrowed from a sibling application.
     """
-    stmt = select(AiModelConfig).where(AiModelConfig.scope == scope)
-    if scope == "application":
-        stmt = stmt.where(AiModelConfig.application_id == application_id)
     existing = (
-        await session.execute(stmt.order_by(AiModelConfig.id.desc()))
+        await session.execute(select(AiModelConfig).order_by(AiModelConfig.id.desc()))
     ).scalars().all()
     if not existing:
         return
@@ -165,28 +153,17 @@ async def create_ai_model(
     payload: AiModelConfigIn, _admin: int = Depends(require_admin)
 ) -> AiModelConfigOut:
     async with AsyncSessionLocal() as session:
-        if payload.scope == "application":
-            if payload.application_id is None:
-                raise HTTPException(status_code=422, detail="application_id is required for scope=application")
-            app = await session.get(Application, payload.application_id)
-            if app is None:
-                raise HTTPException(status_code=404, detail="application not found")
-        else:
-            payload.application_id = None
-
         if not payload.api_key_ref:
             raise HTTPException(status_code=422, detail="api_key_ref is required")
 
-        # If this becomes the default, demote any existing default in the scope
-        # *before* the insert, so the one-default-per-scope partial index is
-        # never violated mid-transaction.
+        # If this becomes the default, demote any existing default before the
+        # insert so the one-default partial index is never violated
+        # mid-transaction.
         if payload.is_default:
-            await _enforce_single_default(session, payload.scope, payload.application_id, None)
+            await _enforce_single_default(session, None)
             await session.flush()
 
         model = AiModelConfig(
-            scope=payload.scope,
-            application_id=payload.application_id,
             provider=payload.provider,
             base_url=payload.base_url,
             api_key_ref=_store_key_ref(payload.api_key_ref),
@@ -196,8 +173,8 @@ async def create_ai_model(
         session.add(model)
         await session.flush()
         if not payload.is_default:
-            # Auto-promote to default if the scope has no default yet.
-            await _promote_if_no_default(session, payload.scope, payload.application_id)
+            # Auto-promote to default if no default exists yet.
+            await _promote_if_no_default(session)
         await session.commit()
         await session.refresh(model)
         await audit_action(
@@ -218,17 +195,6 @@ async def update_ai_model(
         if model is None:
             raise HTTPException(status_code=404, detail="model config not found")
 
-        if payload.scope == "application":
-            if payload.application_id is None:
-                raise HTTPException(status_code=422, detail="application_id is required for scope=application")
-            app = await session.get(Application, payload.application_id)
-            if app is None:
-                raise HTTPException(status_code=404, detail="application not found")
-        else:
-            payload.application_id = None
-
-        model.scope = payload.scope
-        model.application_id = payload.application_id
         model.provider = payload.provider
         model.base_url = payload.base_url
         # Only overwrite the secret when a non-empty value is supplied, so
@@ -239,15 +205,14 @@ async def update_ai_model(
         model.model = payload.model
 
         if payload.is_default:
-            # Demote other defaults in the scope first (flush), then promote
-            # this row — keeps the one-default-per-scope index satisfied.
-            await _enforce_single_default(session, payload.scope, payload.application_id, model.id)
+            # Demote other defaults first (flush), then promote this row.
+            await _enforce_single_default(session, model.id)
             await session.flush()
             model.is_default = True
         elif model.is_default:
-            # Demoting the current default: promote another in the same scope.
+            # Demoting the current default: promote another global model.
             model.is_default = False
-            await _promote_if_no_default(session, payload.scope, payload.application_id)
+            await _promote_if_no_default(session)
         else:
             model.is_default = False
 
@@ -268,15 +233,13 @@ async def delete_ai_model(model_id: int, _admin: int = Depends(require_admin)) -
         model = await session.get(AiModelConfig, model_id)
         if model is None:
             raise HTTPException(status_code=404, detail="model config not found")
-        scope = model.scope
-        application_id = model.application_id
         was_default = model.is_default
         await session.delete(model)
         await session.flush()
         # If we removed the only default, promote a replacement so the engine
         # keeps working.
         if was_default:
-            await _promote_if_no_default(session, scope, application_id)
+            await _promote_if_no_default(session)
         await session.commit()
         await audit_action(
             action="ai_model.delete",
@@ -387,6 +350,8 @@ def _repo_to_out(r: GitRepo) -> GitRepoOut:
         name=r.name,
         repo_url=r.repo_url,
         default_branch=r.default_branch,
+        scope=r.scope,
+        application_id=r.application_id,
         repo_type=r.repo_type,
         credential_id=r.credential_id,
     )
@@ -412,7 +377,9 @@ async def create_git_repo(
     async with AsyncSessionLocal() as session:
         existing = (
             await session.execute(
-                select(GitRepo).where(GitRepo.repo_url == payload.repo_url)
+                select(GitRepo)
+                .where(GitRepo.scope == "global")
+                .where(GitRepo.repo_url == payload.repo_url)
             )
         ).scalars().first()
         if existing is not None:
@@ -424,6 +391,8 @@ async def create_git_repo(
             default_branch=payload.default_branch,
             repo_type=payload.repo_type,
             credential_id=payload.credential_id,
+            scope="global",
+            application_id=None,
         )
         session.add(repo)
         await session.commit()
@@ -445,10 +414,14 @@ async def update_git_repo(
         repo = await session.get(GitRepo, repo_id)
         if repo is None:
             raise HTTPException(status_code=404, detail="git repo not found")
+        if repo.scope != "global":
+            raise HTTPException(status_code=404, detail="git repo not found")
         if payload.repo_url is not None and payload.repo_url != repo.repo_url:
             colliding = (
                 await session.execute(
-                    select(GitRepo).where(GitRepo.repo_url == payload.repo_url)
+                    select(GitRepo)
+                    .where(GitRepo.scope == "global")
+                    .where(GitRepo.repo_url == payload.repo_url)
                 )
             ).scalars().first()
             if colliding is not None and colliding.id != repo.id:
@@ -482,6 +455,8 @@ async def delete_git_repo(repo_id: int, _admin: int = Depends(require_admin)) ->
     async with AsyncSessionLocal() as session:
         repo = await session.get(GitRepo, repo_id)
         if repo is None:
+            raise HTTPException(status_code=404, detail="git repo not found")
+        if repo.scope != "global":
             raise HTTPException(status_code=404, detail="git repo not found")
         await session.delete(repo)
         await session.commit()

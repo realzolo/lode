@@ -1,4 +1,4 @@
-"""AI model configuration (global default or per-application override)."""
+"""Global AI model configuration."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    ForeignKey,
     Identity,
     Index,
     Text,
@@ -56,10 +55,6 @@ class AiModelConfig(Base):
     id: Mapped[int] = mapped_column(
         BigInteger, Identity(always=True), primary_key=True
     )
-    scope: Mapped[str] = mapped_column(Text, nullable=False, server_default="global")
-    application_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("applications.id", ondelete="CASCADE")
-    )
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
     api_key_ref: Mapped[str] = mapped_column(Text, nullable=False)
@@ -75,25 +70,14 @@ class AiModelConfig(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("scope IN ('global', 'application')", name="scope"),
         CheckConstraint(
             "provider IN ('openai', 'anthropic')", name="provider"
         ),
-        CheckConstraint(
-            "scope = 'application' OR application_id IS NULL",
-            name="scope_application",
-        ),
-        # Exactly one default per scope (global, or per application).
+        # Exactly one global default.
         Index(
-            "ux_ai_model_configs_global_default",
-            "scope",
+            "ux_ai_model_configs_default",
+            "is_default",
             unique=True,
-            postgresql_where="scope = 'global' AND is_default",
-        ),
-        Index(
-            "ux_ai_model_configs_app_default",
-            "application_id",
-            unique=True,
-            postgresql_where="scope = 'application' AND is_default",
+            postgresql_where="is_default",
         ),
     )

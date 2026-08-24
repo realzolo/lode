@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from sqlalchemy.dialects import postgresql
 
-from lode.engine import memory_search
+from lode.engine import experience_search
 
 
 def test_pgvector_query_uses_cosine_operator():
-    stmt = memory_search._build_pgvector_stmt(7, [0.1, 0.2, 0.3], top_k=3)
+    stmt = experience_search._build_pgvector_stmt(7, [0.1, 0.2, 0.3], top_k=3)
     sql = str(stmt.compile(dialect=postgresql.dialect()))
     assert "<=>" in sql, "pgvector backend must use the <=> cosine operator"
     assert "vector" in sql.lower(), "real[] column must be cast to vector"
@@ -30,9 +30,9 @@ async def test_pgvector_falls_back_to_python_on_error(monkeypatch):
     async def _python(*a, **k):
         return [("mem", 0.12)]
 
-    monkeypatch.setattr(memory_search, "_semantic_search_pgvector", _raise)
-    monkeypatch.setattr(memory_search, "_semantic_search_python", _python)
-    result = await memory_search.semantic_search(object(), 1, [0.1], backend="pgvector")
+    monkeypatch.setattr(experience_search, "_semantic_search_pgvector", _raise)
+    monkeypatch.setattr(experience_search, "_semantic_search_python", _python)
+    result = await experience_search.semantic_search(object(), 1, [0.1], backend="pgvector")
     assert result == [("mem", 0.12)]
 
 
@@ -46,8 +46,8 @@ async def test_python_backend_is_default_and_skips_pgvector(monkeypatch):
     async def _python(*a, **k):
         return [("m", 0.0)]
 
-    monkeypatch.setattr(memory_search, "_semantic_search_pgvector", _pg)
-    monkeypatch.setattr(memory_search, "_semantic_search_python", _python)
-    result = await memory_search.semantic_search(object(), 1, [0.1])
+    monkeypatch.setattr(experience_search, "_semantic_search_pgvector", _pg)
+    monkeypatch.setattr(experience_search, "_semantic_search_python", _python)
+    result = await experience_search.semantic_search(object(), 1, [0.1])
     assert result == [("m", 0.0)]
     assert "pg" not in called

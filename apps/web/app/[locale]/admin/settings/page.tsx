@@ -26,7 +26,6 @@ import {
   deleteAiModel,
   deleteGitCredential,
   deleteGitRepo,
-  fetchApplications,
   fetchSettings,
   updateAiModel,
   updateGitCredential,
@@ -40,7 +39,6 @@ import {
 } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
 import { IconCheck, IconPlus, IconEdit2, IconTrash2 } from '@/components/icons';
-import type { Application } from '@/lib/types';
 
 export default function SettingsPage() {
   const t = useTranslations('settings');
@@ -48,7 +46,6 @@ export default function SettingsPage() {
   const tu = useTranslations('users');
   const ta = useTranslations('account');
   const [settings, setSettings] = useState<GlobalSettings | null>(null);
-  const [apps, setApps] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,11 +53,10 @@ export default function SettingsPage() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([fetchSettings(), fetchApplications().catch(() => [] as Application[])])
-      .then(([d, a]) => {
+    fetchSettings()
+      .then((d) => {
         if (!active) return;
         setSettings(d);
-        setApps(a);
       })
       .catch((e) => active && setError(String(e)))
       .finally(() => active && setLoading(false));
@@ -155,7 +151,6 @@ export default function SettingsPage() {
               <div key={m.id} className="row-between" style={{ marginTop: 8 }}>
                 <span className="mono">
                   {m.provider} · {m.model}
-                  {m.scope === 'application' ? ` (app ${m.application_id})` : ' (global)'}
                 </span>
                 {m.is_default && <Badge variant="accent">default</Badge>}
               </div>
@@ -163,7 +158,6 @@ export default function SettingsPage() {
             {isAdmin && (
               <AiModelManager
                 settings={settings}
-                apps={apps}
                 onChanged={reload}
                 onError={setError}
               />
@@ -183,12 +177,10 @@ export default function SettingsPage() {
 
 function AiModelManager({
   settings,
-  apps,
   onChanged,
   onError,
 }: {
   settings: GlobalSettings;
-  apps: Application[];
   onChanged: () => Promise<void> | void;
   onError: (msg: string | null) => void;
 }) {
@@ -197,8 +189,6 @@ function AiModelManager({
   const tc = useTranslations('common');
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [scope, setScope] = useState('global');
-  const [applicationId, setApplicationId] = useState<string>('');
   const [provider, setProvider] = useState('openai');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKeyRef, setApiKeyRef] = useState('');
@@ -209,8 +199,6 @@ function AiModelManager({
 
   function resetForm() {
     setEditingId(null);
-    setScope('global');
-    setApplicationId('');
     setProvider('openai');
     setBaseUrl('');
     setApiKeyRef('');
@@ -220,8 +208,6 @@ function AiModelManager({
 
   function startEdit(m: GlobalSettings['ai_model_configs'][number]) {
     setEditingId(m.id);
-    setScope(m.scope);
-    setApplicationId(m.application_id != null ? String(m.application_id) : '');
     setProvider(m.provider);
     setBaseUrl(m.base_url);
     setApiKeyRef('');
@@ -234,8 +220,6 @@ function AiModelManager({
     setBusy(true);
     onError(null);
     const payload: AiModelInput = {
-      scope,
-      application_id: scope === 'application' && applicationId ? Number(applicationId) : null,
       provider,
       base_url: baseUrl,
       api_key_ref: apiKeyRef,
@@ -281,18 +265,6 @@ function AiModelManager({
             <DialogDescription>{t('aiModelDesc')}</DialogDescription>
           </DialogHeader>
           <div className="stack">
-            <Select value={scope} onChange={(e) => setScope(e.target.value)}>
-              <option value="global">{t('aiModel')} · global</option>
-              <option value="application">application</option>
-            </Select>
-            {scope === 'application' && (
-              <Select value={applicationId} onChange={(e) => setApplicationId(e.target.value)}>
-                <option value="">— select app —</option>
-                {apps.map((a) => (
-                  <option key={a.id} value={a.id}>{a.name}</option>
-                ))}
-              </Select>
-            )}
             <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
               <option value="openai">openai</option>
               <option value="anthropic">anthropic</option>
@@ -319,7 +291,7 @@ function AiModelManager({
                 onCheckedChange={setIsDefault}
               />
               <label htmlFor="ai-model-is-default" style={{ cursor: 'pointer' }}>
-                default for this scope
+                default
               </label>
             </div>
           </div>
@@ -329,7 +301,7 @@ function AiModelManager({
               size="sm"
               variant="primary"
               onClick={handleSubmit}
-              disabled={busy || !baseUrl || !model || (scope === 'application' && !applicationId)}
+              disabled={busy || !baseUrl || !model}
             >
               {editingId != null ? tc('save') : t('createModel')}
             </Button>
@@ -341,8 +313,7 @@ function AiModelManager({
         {settings.ai_model_configs.map((m) => (
           <div key={m.id} className="row-between" style={{ borderTop: '1px solid var(--color-4)', paddingTop: 8 }}>
             <span className="mono" style={{ fontSize: 12 }}>
-              #{m.id} {m.provider} · {m.model} · {m.scope}
-              {m.scope === 'application' ? ` (${m.application_id})` : ''}
+              #{m.id} {m.provider} · {m.model}
               {m.is_default ? ' · default' : ''}
             </span>
             <div className="row" style={{ gap: 6 }}>

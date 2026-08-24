@@ -22,6 +22,7 @@ def test_human_hints_injected_as_data_not_commands() -> None:
         None,
         [],
         [],
+        [],
         None,
         human_hints="- check the payment gateway timeout",
     )
@@ -32,7 +33,7 @@ def test_human_hints_injected_as_data_not_commands() -> None:
 
 
 def test_no_human_hints_section_when_none() -> None:
-    _system, user = _build_prompts(_FakeAlert(), None, [], [], None)
+    _system, user = _build_prompts(_FakeAlert(), None, [], [], [], None)
     assert "HUMAN_HINTS" not in user
 
 
@@ -42,7 +43,7 @@ def test_evidence_registry_rendered_in_prompt() -> None:
         {"id": 12, "kind": "git", "locator": "https://x/svc@abc:svc.py:9"},
     ]
     _system, user = _build_prompts(
-        _FakeAlert(), None, [], [], None, evidence_catalog=catalog
+        _FakeAlert(), None, [], [], [], None, evidence_catalog=catalog
     )
     assert "EVIDENCE REGISTRY" in user
     assert "[11]" in user and "[12]" in user
@@ -51,7 +52,7 @@ def test_evidence_registry_rendered_in_prompt() -> None:
 
 
 def test_system_prompt_requires_structured_output() -> None:
-    system, _user = _build_prompts(_FakeAlert(), None, [], [], None)
+    system, _user = _build_prompts(_FakeAlert(), None, [], [], [], None)
     assert "evidence_refs" in system
     assert "facts" in system
     assert "inferences" in system
@@ -110,4 +111,3 @@ def test_heuristic_packet_is_flagged_as_fallback() -> None:
     assert any("Heuristic" in u for u in unknowns)
     # The deploy context belongs in the facts list, not asserted into the claim.
     assert any("deploy context" in f.lower() for f in facts)
-

@@ -18,7 +18,7 @@ import type {
   ReplayOut,
   Invite,
   Level,
-  Memory,
+  Experience,
   StepStatus,
 } from '@/lib/types';
 
@@ -206,7 +206,7 @@ export interface AnalysisDetail {
   alert: ApiAlert | null;
   steps: ApiStep[];
   hints: ApiHint[];
-  matched_memory: string | null;
+  matched_experience: string | null;
   started_at: string | null;
   finished_at: string | null;
   updated_at: string;
@@ -222,7 +222,7 @@ interface ApiApplication {
   created_at: string;
 }
 
-interface ApiMemory {
+interface ApiExperience {
   id: number;
   application_id: number;
   application_name: string;
@@ -326,8 +326,18 @@ export async function fetchApplication(id: string): Promise<{
   id: number;
   name: string;
   topic: string | null;
-  repos: { id: number; repo_id: number; name: string; url: string; description: string }[];
-  preset_prompts: { id: number; type: string; content: string }[];
+  model_config_id: number | null;
+  repos: {
+    id: number;
+    repo_id: number;
+    name: string;
+    url: string;
+    scope: string;
+    repo_type: string;
+    default_branch: string;
+    description: string;
+  }[];
+  descriptions: { id: number; description_type: string; content: string }[];
   db_sources: DbSourceRow[];
 }> {
   return getJson(`/applications/${id}`);
@@ -337,7 +347,7 @@ export async function fetchApplication(id: string): Promise<{
 // Per-application admin writes
 // ---------------------------------------------------------------------------
 //
-// These back the per-application Settings tabs (Kafka topic, repos, prompts,
+// These back the per-application Settings tabs (Kafka topic, repos, descriptions,
 // data sources). Every call requires the caller to be an admin; the backend
 // enforces this with ``Depends(require_admin)`` and the 403 surfaces here as a
 // thrown ``Error``.
@@ -362,6 +372,9 @@ export interface ApplicationRepoRow {
   repo_id: number;
   repo_name: string;
   repo_url: string;
+  repo_scope: string;
+  repo_type: string;
+  default_branch: string;
   description: string;
 }
 
@@ -370,6 +383,22 @@ export async function bindRepo(
   input: BindRepoInput
 ): Promise<ApplicationRepoRow> {
   return postJson(`/applications/${applicationId}/repos`, input);
+}
+
+export interface CreateLocalRepoInput {
+  name: string;
+  repo_url: string;
+  default_branch: string;
+  repo_type: string;
+  credential_id: number | null;
+  description: string;
+}
+
+export async function createLocalRepo(
+  applicationId: string | number,
+  input: CreateLocalRepoInput
+): Promise<ApplicationRepoRow> {
+  return postJson(`/applications/${applicationId}/repos/local`, input);
 }
 
 export async function unbindRepo(
@@ -395,6 +424,7 @@ export async function unbindRepo(
 
 export interface CreateDbSourceInput {
   name: string;
+  description: string;
   // Mode 1: structured connection fields (built into a DSN at query time).
   host?: string;
   port?: number;
@@ -411,6 +441,7 @@ export interface CreateDbSourceInput {
 
 export interface UpdateDbSourceInput {
   name?: string;
+  description?: string;
   host?: string;
   port?: number;
   database?: string;
@@ -426,6 +457,7 @@ export interface DbSourceRow {
   id: number;
   application_id: number;
   name: string;
+  description: string;
   conn_secret_ref: string | null;
   host: string | null;
   port: number | null;
@@ -505,31 +537,40 @@ export async function executeQuery(
   return postJson<QueryResult>(`/applications/${applicationId}/query`, input);
 }
 
-export interface CreatePresetPromptInput {
-  type: 'deploy' | 'other';
+export async function setApplicationModel(
+  applicationId: string | number,
+  modelConfigId: number | null
+): Promise<{ application_id: number; model_config_id: number | null }> {
+  return putJson(`/applications/${applicationId}/model`, {
+    model_config_id: modelConfigId,
+  });
+}
+
+export interface CreateApplicationDescriptionInput {
+  description_type: 'deploy' | 'other';
   content: string;
 }
 
-export interface PresetPromptRow {
+export interface ApplicationDescriptionRow {
   id: number;
   application_id: number;
-  type: string;
+  description_type: string;
   content: string;
 }
 
-export async function createPresetPrompt(
+export async function createApplicationDescription(
   applicationId: string | number,
-  input: CreatePresetPromptInput
-): Promise<PresetPromptRow> {
-  return postJson(`/applications/${applicationId}/prompts`, input);
+  input: CreateApplicationDescriptionInput
+): Promise<ApplicationDescriptionRow> {
+  return postJson(`/applications/${applicationId}/descriptions`, input);
 }
 
-export async function deletePresetPrompt(
+export async function deleteApplicationDescription(
   applicationId: string | number,
-  promptId: number
+  descriptionId: number
 ): Promise<void> {
   const res = await fetch(
-    `${API_BASE}/applications/${applicationId}/prompts/${promptId}`,
+    `${API_BASE}/applications/${applicationId}/descriptions/${descriptionId}`,
     { method: 'DELETE', headers: authHeaders() }
   );
   if (res.status === 401) {
@@ -538,7 +579,7 @@ export async function deletePresetPrompt(
   }
   if (!res.ok) {
     const b = await res.json().catch(() => null);
-    throw new Error(b?.error?.message ?? `delete prompt failed: ${res.status}`);
+    throw new Error(b?.error?.message ?? `delete description failed: ${res.status}`);
   }
 }
 
@@ -614,9 +655,9 @@ export async function removeAppMember(
   }
 }
 
-export async function fetchMemories(applicationId?: number): Promise<Memory[]> {
+export async function fetchExperiences(applicationId?: number): Promise<Experience[]> {
   const qs = applicationId != null ? `?application_id=${applicationId}` : '';
-  const rows = await getJson<ApiMemory[]>(`/memories${qs}`);
+  const rows = await getJson<ApiExperience[]>(`/experiences${qs}`);
   return rows.map((r) => ({
     id: String(r.id),
     applicationName: r.application_name,
@@ -637,11 +678,9 @@ export function toUiSteps(steps: ApiStep[]): AnalysisStep[] {
 
 export interface GlobalSettings {
   git_credentials: { id: number; auth_type: string; username: string; readonly: boolean; note: string; has_secret: boolean }[];
-  git_repos: { id: number; name: string; repo_url: string; default_branch: string; repo_type: string; credential_id: number | null }[];
+  git_repos: { id: number; name: string; repo_url: string; default_branch: string; scope: string; application_id: number | null; repo_type: string; credential_id: number | null }[];
   ai_model_configs: {
     id: number;
-    scope: string;
-    application_id: number | null;
     provider: string;
     base_url: string;
     model: string;
@@ -655,8 +694,6 @@ export async function fetchSettings(): Promise<GlobalSettings> {
 }
 
 export interface AiModelInput {
-  scope: string;
-  application_id: number | null;
   provider: string;
   base_url: string;
   api_key_ref: string;
@@ -746,6 +783,8 @@ export interface GitRepoRow {
   name: string;
   repo_url: string;
   default_branch: string;
+  scope: string;
+  application_id: number | null;
   repo_type: string;
   credential_id: number | null;
 }

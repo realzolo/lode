@@ -13,9 +13,9 @@ export default function ModelPage({ params }: { params: { id: string } }) {
     <>
       <h1 className="page-title">{t('model')}</h1>
       <ApplicationLoader id={params.id} refreshNonce={refreshNonce}>
-        {() => (
+        {(data) => (
           <div style={{ marginTop: 20 }}>
-            <ModelSection appId={params.id} onRefresh={onRefresh} />
+            <ModelSection data={data} appId={params.id} onRefresh={onRefresh} />
           </div>
         )}
       </ApplicationLoader>

@@ -1,5 +1,5 @@
 // Shared view-layer types. These mirror the backend SQLAlchemy models
-// (alerts / analyses / application_* / memories) so the UI can be wired to
+// (alerts / analyses / application_* / experiences) so the UI can be wired to
 // real API responses later without changing component contracts.
 
 export type Level = 'CRITICAL' | 'WARNING';
@@ -40,15 +40,16 @@ export interface AnalysisStep {
     | 'git_sync'
     | 'context'
     | 'ai_analysis'
-    | 'memory'
+    | 'experience'
     | 'conclusion';
   title: string;
   status: StepStatus;
   detail?: string;
 }
 
-export interface Memory {
+export interface Experience {
   id: string;
+  applicationName?: string;
   triggerSignature: string;
   content: string;
   valid: boolean;
@@ -65,8 +66,6 @@ export interface CurrentUser {
 
 export interface AiModelConfig {
   id: number;
-  scope: string;
-  application_id: number | null;
   provider: string;
   base_url: string;
   model: string;

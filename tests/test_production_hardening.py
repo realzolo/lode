@@ -4,7 +4,7 @@ Covers the bits that don't need a live database:
 
   * T6  deep health routes (``/health/live`` is dependency-free).
   * T7  Prometheus ``/metrics`` exposition.
-  * T8  shared-memory TTL helper (``Memory.ttl_expiry``).
+  * T8  shared-experience TTL helper (``Experience.ttl_expiry``).
   * T9  LLM retry classification + graceful fallback to the heuristic.
   * T10 alert schema-version compatibility (accept 1.x, reject 2.x).
 """
@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from lode.api.routes.metrics import router as metrics_router
 from lode.consumer.alert_schema import AlertMessage
-from lode.db.models.memory import Memory
+from lode.db.models.experience import Experience
 from lode.engine.llm import _is_retryable, complete
 
 
@@ -50,17 +50,17 @@ def test_metrics_endpoint_exposes_lode_metrics():
     assert resp.headers["content-type"].startswith("text/plain")
 
 
-# --- T8 memory TTL ----------------------------------------------------------
+# --- T8 experience TTL ----------------------------------------------------------
 
 def test_ttl_expiry_future_and_timezone_aware():
-    exp = Memory.ttl_expiry(90)
+    exp = Experience.ttl_expiry(90)
     assert exp is not None
     assert exp.tzinfo is not None
     assert exp > datetime.now(timezone.utc)
 
 
 def test_ttl_zero_means_never_expires():
-    assert Memory.ttl_expiry(0) is None
+    assert Experience.ttl_expiry(0) is None
 
 
 # --- T9 LLM retry classification -------------------------------------------

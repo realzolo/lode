@@ -191,9 +191,9 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
             </span>
           </div>
           <p style={{ marginTop: 8 }}>{detail.conclusion ?? tc('loading')}</p>
-          {detail.matched_memory && (
+          {detail.matched_experience && (
             <p className="muted" style={{ marginTop: 8, fontSize: 13 }}>
-              ⊹ matched shared memory: {detail.matched_memory}
+              ⊹ matched shared experience: {detail.matched_experience}
             </p>
           )}
         </Card>

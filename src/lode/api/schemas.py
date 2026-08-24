@@ -67,7 +67,7 @@ class AnalysisDetailOut(BaseModel):
     alert: AlertSummary | None
     steps: list[AnalysisStepOut]
     hints: list[AnalysisHintOut]
-    matched_memory: str | None = None
+    matched_experience: str | None = None
     started_at: datetime | None
     finished_at: datetime | None
     updated_at: datetime
@@ -89,9 +89,10 @@ class ApplicationDetailOut(BaseModel):
     id: int
     name: str
     topic: str | None
+    model_config_id: int | None
     created_at: datetime
     repos: list[dict]
-    preset_prompts: list[dict]
+    descriptions: list[dict]
     db_sources: list[DbSourceListItem]
 
 
@@ -102,7 +103,7 @@ class CreateApplicationIn(BaseModel):
 # --- Application configuration (admin only) ----------------------------
 #
 # These power the per-application edit forms: Kafka topic binding, repository
-# binding, read-only data sources, preset prompts. The on-the-wire shapes are
+# binding, read-only data sources, descriptions. The on-the-wire shapes are
 # intentionally minimal — only what the Settings tabs need to read back into
 # their forms. Server-side this is enforced via ``require_admin``.
 
@@ -126,17 +127,39 @@ class BindRepoIn(BaseModel):
     description: str = Field(default="", max_length=2000)
 
 
+class CreateApplicationRepoIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    repo_url: str = Field(min_length=1, max_length=2000)
+    default_branch: str = Field(default="main", max_length=200)
+    repo_type: str = Field(default="other", max_length=32)
+    credential_id: int | None = Field(default=None, gt=0)
+    description: str = Field(default="", max_length=2000)
+
+
 class ApplicationRepoOut(BaseModel):
     id: int
     application_id: int
     repo_id: int
     repo_name: str
     repo_url: str
+    repo_scope: str
+    repo_type: str
+    default_branch: str
     description: str
+
+
+class SetApplicationModelIn(BaseModel):
+    model_config_id: int | None = Field(default=None, gt=0)
+
+
+class ApplicationModelOut(BaseModel):
+    application_id: int
+    model_config_id: int | None
 
 
 class CreateDbSourceIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
     # Mode 1 (structured): enter connection fields directly. The DSN is built
     # at query time and the password lives in this DB row (acceptable for a
     # self-hosted admin console; prefer env:// for stricter deployments).
@@ -183,6 +206,7 @@ class DbSourceListItem(BaseModel):
     id: int
     application_id: int
     name: str
+    description: str
     conn_secret_ref: str | None
     host: str | None
     port: int | None
@@ -198,6 +222,7 @@ class DbSourceOut(BaseModel):
     id: int
     application_id: int
     name: str
+    description: str
     conn_secret_ref: str | None
     host: str | None
     port: int | None
@@ -221,6 +246,7 @@ class UpdateDbSourceIn(BaseModel):
     """
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
     host: str | None = Field(default=None, max_length=500)
     port: int | None = Field(default=None, ge=1, le=65535)
     database: str | None = Field(default=None, max_length=200)
@@ -237,19 +263,19 @@ class RunQueryIn(BaseModel):
     source_id: int | None = None
 
 
-class CreatePresetPromptIn(BaseModel):
-    type: str = Field(default="deploy", pattern="^(deploy|other)$")
+class CreateApplicationDescriptionIn(BaseModel):
+    description_type: str = Field(default="deploy", pattern="^(deploy|other)$")
     content: str = Field(min_length=1, max_length=10000)
 
 
-class PresetPromptOut(BaseModel):
+class ApplicationDescriptionOut(BaseModel):
     id: int
     application_id: int
-    type: str
+    description_type: str
     content: str
 
 
-class MemoryOut(BaseModel):
+class ExperienceOut(BaseModel):
     id: int
     application_id: int
     application_name: str
@@ -423,13 +449,13 @@ class GitRepoOut(BaseModel):
     name: str
     repo_url: str
     default_branch: str
+    scope: str
+    application_id: int | None
     repo_type: str
     credential_id: int | None
 
 
 class AiModelConfigIn(BaseModel):
-    scope: str = Field(pattern="^(global|application)$")
-    application_id: int | None = None
     provider: str = Field(pattern="^(openai|anthropic)$")
     base_url: str = Field(min_length=1, max_length=1000)
     # Supports `env://NAME` (preferred, secret stays in env) or a literal key.
@@ -442,8 +468,6 @@ class AiModelConfigIn(BaseModel):
 
 class AiModelConfigOut(BaseModel):
     id: int
-    scope: str
-    application_id: int | None
     provider: str
     base_url: str
     model: str

@@ -24,10 +24,10 @@ from sqlalchemy import select
 from lode.api.main import app
 from lode.db.models.application import (
     Application,
+    ApplicationDescription,
     ApplicationKafka,
     ApplicationRepo,
     DbSource,
-    PresetPrompt,
 )
 from lode.db.models.git import GitRepo
 from lode.db.models.user import User
@@ -506,45 +506,45 @@ async def test_admin_test_db_source_unreachable_returns_error(
 
 
 # ---------------------------------------------------------------------------
-# Preset prompts (admin)
+# Descriptions (admin)
 # ---------------------------------------------------------------------------
 
 
-async def test_admin_create_and_delete_prompt(fresh_app: int, admin: int) -> None:
+async def test_admin_create_and_delete_description(fresh_app: int, admin: int) -> None:
     token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
     headers = {"Authorization": f"Bearer {token}"}
     async with _client() as client:
         resp = await client.post(
-            f"/applications/{fresh_app}/prompts",
+            f"/applications/{fresh_app}/descriptions",
             headers=headers,
-            json={"type": "deploy", "content": "Deployed at noon UTC"},
+            json={"description_type": "deploy", "content": "Deployed at noon UTC"},
         )
         assert resp.status_code == 201, resp.text
-        prompt_id = resp.json()["id"]
-        assert resp.json()["type"] == "deploy"
+        description_id = resp.json()["id"]
+        assert resp.json()["description_type"] == "deploy"
         assert resp.json()["content"] == "Deployed at noon UTC"
 
         # delete
         resp = await client.delete(
-            f"/applications/{fresh_app}/prompts/{prompt_id}",
+            f"/applications/{fresh_app}/descriptions/{description_id}",
             headers=headers,
         )
         assert resp.status_code == 204
 
         async with AsyncSessionLocal() as session:
-            row = await session.get(PresetPrompt, prompt_id)
+            row = await session.get(ApplicationDescription, description_id)
             assert row is None
 
 
-async def test_admin_create_prompt_rejects_bad_type(fresh_app: int, admin: int) -> None:
-    """``type`` is constrained to ``deploy|other`` by the DB CheckConstraint
+async def test_admin_create_description_rejects_bad_type(fresh_app: int, admin: int) -> None:
+    """``description_type`` is constrained to ``deploy|other`` by the DB CheckConstraint
     *and* the pydantic schema's regex; here we rely on the schema (422).
     """
     token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
     async with _client() as client:
         resp = await client.post(
-            f"/applications/{fresh_app}/prompts",
+            f"/applications/{fresh_app}/descriptions",
             headers={"Authorization": f"Bearer {token}"},
-            json={"type": "evil", "content": "x"},
+            json={"description_type": "evil", "content": "x"},
         )
         assert resp.status_code == 422

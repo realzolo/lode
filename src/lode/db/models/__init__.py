@@ -9,13 +9,13 @@ from lode.db.models.analysis import Analysis, AnalysisHint, AnalysisStep  # noqa
 from lode.db.models.ai_model import AiModelConfig  # noqa: F401
 from lode.db.models.application import (  # noqa: F401
     Application,
+    ApplicationDescription,
     ApplicationKafka,
     ApplicationRepo,
-    PresetPrompt,
     DbSource,
 )
 from lode.db.models.git import GitCredential, GitRepo  # noqa: F401
-from lode.db.models.memory import Memory  # noqa: F401
+from lode.db.models.experience import Experience  # noqa: F401
 from lode.db.models.permission import UserApplicationPerm  # noqa: F401
 from lode.db.models.user import Invite, User  # noqa: F401
 
@@ -26,13 +26,13 @@ __all__ = [
     "AnalysisStep",
     "AiModelConfig",
     "Application",
+    "ApplicationDescription",
     "ApplicationKafka",
     "ApplicationRepo",
-    "PresetPrompt",
     "DbSource",
     "GitCredential",
     "GitRepo",
-    "Memory",
+    "Experience",
     "UserApplicationPerm",
     "Invite",
     "User",

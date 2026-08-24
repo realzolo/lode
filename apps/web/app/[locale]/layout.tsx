@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   description: 'AI-powered root-cause analysis for production errors.',
 };
 
-// The app is backend-backed (analyses, applications, memories are fetched at
+// The app is backend-backed (analyses, applications, experiences are fetched at
 // request time), so render dynamically rather than prerendering per locale.
 export const dynamic = 'force-dynamic';
 

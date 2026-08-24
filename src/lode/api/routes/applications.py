@@ -4,15 +4,14 @@
 
 - *Read* endpoints (list/get) require any authenticated user.
 - *Write* endpoints that mutate application configuration (Kafka topic,
-  bound repositories, preset prompts, data sources) are **admin only**.
+  bound repositories, descriptions, data sources, model selection) are
+  **admin only**.
   All write endpoints delegate to ``require_admin``; the rest of the
   request shape is validated by the pydantic ``*In`` schemas in
   ``lode.api.schemas``.
 
-The per-application AI model config is *not* owned by this router — it
-lives under ``/settings/ai-models`` with ``scope=application`` (see
-``routes/settings.py``) and a partial unique index that guarantees at
-most one default model per (scope, application_id).
+Applications can select one globally registered AI model config. Model configs
+themselves stay owned by ``/settings/ai-models``.
 """
 
 from __future__ import annotations
@@ -34,28 +33,32 @@ from lode.api.schemas import (
     AppMemberOut,
     AppMemberUpdateIn,
     ApplicationDetailOut,
+    ApplicationDescriptionOut,
+    ApplicationModelOut,
     ApplicationOut,
     ApplicationRepoOut,
     ApplicationTopicOut,
     BindRepoIn,
     CreateApplicationIn,
+    CreateApplicationDescriptionIn,
+    CreateApplicationRepoIn,
     CreateDbSourceIn,
-    CreatePresetPromptIn,
     DbSourceListItem,
     DbSourceOut,
-    PresetPromptOut,
+    SetApplicationModelIn,
     SetApplicationTopicIn,
     UpdateDbSourceIn,
 )
 from lode.db.models.alert import Alert
+from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.application import (
     Application,
+    ApplicationDescription,
     ApplicationKafka,
     ApplicationRepo,
     DbSource,
-    PresetPrompt,
 )
-from lode.db.models.git import GitRepo
+from lode.db.models.git import GitCredential, GitRepo
 from lode.db.models.permission import UserApplicationPerm
 from lode.crypto import encrypt_secret
 from lode.db.models.user import User
@@ -139,9 +142,11 @@ async def get_application(
             .where(ApplicationRepo.application_id == application_id)
         )
     ).all()
-    prompts = (
+    descriptions = (
         await session.execute(
-            select(PresetPrompt).where(PresetPrompt.application_id == application_id)
+            select(ApplicationDescription).where(
+                ApplicationDescription.application_id == application_id
+            )
         )
     ).scalars().all()
     sources = (
@@ -152,6 +157,7 @@ async def get_application(
         id=app.id,
         name=app.name,
         topic=topic,
+        model_config_id=app.model_config_id,
         created_at=app.created_at,
         repos=[
             {
@@ -159,18 +165,27 @@ async def get_application(
                 "repo_id": app_repo.repo_id,
                 "name": repo.name,
                 "url": repo.repo_url,
+                "scope": repo.scope,
+                "repo_type": repo.repo_type,
+                "default_branch": repo.default_branch,
                 "description": app_repo.description,
             }
             for app_repo, repo in repos
         ],
-        preset_prompts=[
-            {"id": p.id, "type": p.type, "content": p.content} for p in prompts
+        descriptions=[
+            {
+                "id": d.id,
+                "description_type": d.description_type,
+                "content": d.content,
+            }
+            for d in descriptions
         ],
         db_sources=[
             DbSourceListItem(
                 id=s.id,
                 application_id=s.application_id,
                 name=s.name,
+                description=s.description,
                 conn_secret_ref=s.conn_secret_ref,
                 host=s.host,
                 port=s.port,
@@ -194,8 +209,8 @@ async def create_application(
 ) -> ApplicationOut:
     """Create a new application (isolation unit).
 
-    Only the name is required up-front; the Kafka topic, repos, preset prompts,
-    data sources, and model override are configured later via the per-app
+    Only the name is required up-front; the Kafka topic, repos, descriptions,
+    data sources, and model selection are configured later via the per-app
     settings tabs. ``created_by`` is stamped from the authenticated caller.
     """
     app = Application(name=payload.name, created_by=user_id)
@@ -302,6 +317,42 @@ async def set_application_topic(
     return ApplicationTopicOut(application_id=application_id, topic=existing.topic)
 
 
+@router.put(
+    "/{application_id}/model",
+    response_model=ApplicationModelOut,
+)
+async def set_application_model(
+    application_id: int,
+    payload: SetApplicationModelIn,
+    _admin: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationModelOut:
+    """Select a globally supported model for this application, or clear it."""
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+
+    if payload.model_config_id is not None:
+        model = await session.get(AiModelConfig, payload.model_config_id)
+        if model is None:
+            raise HTTPException(status_code=404, detail="model config not found")
+
+    app.model_config_id = payload.model_config_id
+    await session.commit()
+    await audit_action(
+        action="application.set_model",
+        actor_id=_admin,
+        target_type="application",
+        target_id=str(application_id),
+        application_id=application_id,
+        detail={"model_config_id": payload.model_config_id},
+    )
+    return ApplicationModelOut(
+        application_id=application_id,
+        model_config_id=app.model_config_id,
+    )
+
+
 @router.post(
     "/{application_id}/repos",
     response_model=ApplicationRepoOut,
@@ -313,12 +364,7 @@ async def bind_repo(
     _admin: int = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ApplicationRepoOut:
-    """Bind a globally registered ``GitRepo`` to the application.
-
-    Admin may also select any *global* repo — there is no app-local repo
-    registry. Duplicate bindings (unique on ``(application_id, repo_id)``)
-    surface as 409; binding a non-existent repo as 404.
-    """
+    """Bind a globally registered ``GitRepo`` to the application."""
     app = await session.get(Application, application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
@@ -326,6 +372,8 @@ async def bind_repo(
     repo = await session.get(GitRepo, payload.repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail=f"repo {payload.repo_id} not found in registry")
+    if repo.scope != "global":
+        raise HTTPException(status_code=404, detail=f"repo {payload.repo_id} not found in global registry")
 
     row = ApplicationRepo(
         application_id=application_id,
@@ -355,6 +403,73 @@ async def bind_repo(
         repo_id=row.repo_id,
         repo_name=repo.name,
         repo_url=repo.repo_url,
+        repo_scope=repo.scope,
+        repo_type=repo.repo_type,
+        default_branch=repo.default_branch,
+        description=row.description,
+    )
+
+
+@router.post(
+    "/{application_id}/repos/local",
+    response_model=ApplicationRepoOut,
+    status_code=201,
+)
+async def create_local_repo(
+    application_id: int,
+    payload: CreateApplicationRepoIn,
+    _admin: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationRepoOut:
+    """Register a repository that is visible only inside this application."""
+    app = await session.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    await _assert_git_credential(session, payload.credential_id)
+
+    repo = GitRepo(
+        name=payload.name,
+        repo_url=payload.repo_url,
+        default_branch=payload.default_branch,
+        repo_type=payload.repo_type,
+        credential_id=payload.credential_id,
+        scope="application",
+        application_id=application_id,
+    )
+    session.add(repo)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="repo_url already registered for this application",
+        )
+
+    row = ApplicationRepo(
+        application_id=application_id,
+        repo_id=repo.id,
+        description=payload.description,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    await audit_action(
+        action="application.create_local_repo",
+        actor_id=_admin,
+        target_type="git_repo",
+        target_id=str(repo.id),
+        application_id=application_id,
+    )
+    return ApplicationRepoOut(
+        id=row.id,
+        application_id=row.application_id,
+        repo_id=row.repo_id,
+        repo_name=repo.name,
+        repo_url=repo.repo_url,
+        repo_scope=repo.scope,
+        repo_type=repo.repo_type,
+        default_branch=repo.default_branch,
         description=row.description,
     )
 
@@ -370,17 +485,23 @@ async def unbind_repo(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Remove an application repo binding. 404 if not bound."""
-    row = (
+    row_repo = (
         await session.execute(
-            select(ApplicationRepo).where(
+            select(ApplicationRepo, GitRepo)
+            .join(GitRepo, GitRepo.id == ApplicationRepo.repo_id)
+            .where(
                 ApplicationRepo.application_id == application_id,
                 ApplicationRepo.repo_id == repo_id,
             )
         )
-    ).scalars().first()
-    if row is None:
+    ).first()
+    if row_repo is None:
         raise HTTPException(status_code=404, detail="repo binding not found")
+    row, repo = row_repo
     await session.delete(row)
+    if repo.scope == "application" and repo.application_id == application_id:
+        await session.flush()
+        await session.delete(repo)
     await session.commit()
     await audit_action(
         action="application.unbind_repo",
@@ -389,6 +510,16 @@ async def unbind_repo(
         target_id=str(repo_id),
         application_id=application_id,
     )
+
+
+async def _assert_git_credential(
+    session: AsyncSession, credential_id: int | None
+) -> None:
+    if credential_id is None:
+        return
+    cred = await session.get(GitCredential, credential_id)
+    if cred is None:
+        raise HTTPException(status_code=404, detail="git credential not found")
 
 
 @router.post(
@@ -424,6 +555,7 @@ async def create_db_source(
     row = DbSource(
         application_id=application_id,
         name=payload.name,
+        description=payload.description,
         conn_secret_ref=payload.conn_secret_ref,
         host=payload.host,
         port=payload.port,
@@ -449,6 +581,7 @@ async def create_db_source(
         id=row.id,
         application_id=row.application_id,
         name=row.name,
+        description=row.description,
         conn_secret_ref=row.conn_secret_ref,
         host=row.host,
         port=row.port,
@@ -509,6 +642,8 @@ async def update_db_source(
 
     if payload.name is not None:
         row.name = payload.name
+    if payload.description is not None:
+        row.description = payload.description
     if payload.host is not None:
         row.host = payload.host
     if payload.port is not None:
@@ -542,6 +677,7 @@ async def update_db_source(
         id=row.id,
         application_id=row.application_id,
         name=row.name,
+        description=row.description,
         conn_secret_ref=row.conn_secret_ref,
         host=row.host,
         port=row.port,
@@ -614,65 +750,65 @@ def _resolve_create_dsn(payload: CreateDbSourceIn) -> str:
 
 
 @router.post(
-    "/{application_id}/prompts",
-    response_model=PresetPromptOut,
+    "/{application_id}/descriptions",
+    response_model=ApplicationDescriptionOut,
     status_code=201,
 )
-async def create_preset_prompt(
+async def create_application_description(
     application_id: int,
-    payload: CreatePresetPromptIn,
+    payload: CreateApplicationDescriptionIn,
     _admin: int = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
-) -> PresetPromptOut:
-    """Add a preset prompt (deploy / other) the analysis engine consults first."""
+) -> ApplicationDescriptionOut:
+    """Add an application description (deploy / other) for the analysis engine."""
     app = await session.get(Application, application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
 
-    row = PresetPrompt(
+    row = ApplicationDescription(
         application_id=application_id,
-        type=payload.type,
+        description_type=payload.description_type,
         content=payload.content,
     )
     session.add(row)
     await session.commit()
     await session.refresh(row)
     await audit_action(
-        action="preset_prompt.create",
+        action="application_description.create",
         actor_id=_admin,
-        target_type="preset_prompt",
+        target_type="application_description",
         target_id=str(row.id),
         application_id=application_id,
-        detail={"type": row.type},
+        detail={"description_type": row.description_type},
     )
-    return PresetPromptOut(
+    return ApplicationDescriptionOut(
         id=row.id,
         application_id=row.application_id,
-        type=row.type,
+        description_type=row.description_type,
         content=row.content,
     )
 
 
 @router.delete(
-    "/{application_id}/prompts/{prompt_id}",
+    "/{application_id}/descriptions/{description_id}",
     status_code=204,
 )
-async def delete_preset_prompt(
+async def delete_application_description(
     application_id: int,
-    prompt_id: int,
+    description_id: int,
     _admin: int = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    row = await session.get(PresetPrompt, prompt_id)
+    row = await session.get(ApplicationDescription, description_id)
     if row is None or row.application_id != application_id:
-        raise HTTPException(status_code=404, detail="prompt not found")
+        raise HTTPException(status_code=404, detail="description not found")
     await session.delete(row)
     await session.commit()
     await audit_action(
-        action="preset_prompt.delete",
+        action="application_description.delete",
         actor_id=_admin,
-        target_type="preset_prompt",
-        target_id=str(prompt_id),
+        target_type="application_description",
+        target_id=str(description_id),
         application_id=application_id,
     )
 

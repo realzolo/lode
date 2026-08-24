@@ -3,7 +3,7 @@
 AI-powered production incident root-cause analysis platform. Business services
 publish a simplified error to a per-application Kafka topic; the platform consumes
 it, recomputes a stable dedupe key, and (in later phases) runs an agentic analysis
-that correlates code, read-only databases, deployment context, and shared memory.
+that correlates code, read-only databases, deployment context, and shared experience.
 
 This repository implements **Phase 1**: the production-grade data layer, the
 Kafka ingestion contract, the agentic analysis engine, the authenticated REST API,
@@ -22,12 +22,12 @@ committed and covered by tests.
   failure isolation, DLQ / unassigned-topic routing, and offset commit even after a
   failed message.
 - **M3 — Interactive workflow graph:** a pannable/zoomable canvas of the six pipeline
-  steps (`receive → git_sync → context → ai_analysis → memory → conclusion`) on the
+  steps (`receive → git_sync → context → ai_analysis → experience → conclusion`) on the
   analysis detail page, built dependency-free.
 - **M4 — Read-only DB proxy & query console:** a per-source table allow-list with
   write/DDL rejection, column desensitization, and `POST /applications/{id}/query`
   (gated by the `analyze` scope).
-- **M5 — Semantic shared memory:** an exact `trigger_signature` match plus embedding
+- **M5 — Semantic shared experience:** an exact `trigger_signature` match plus embedding
   cosine similarity (OpenAI-compatible `/embeddings`); an optional `pgvector` backend
   offloads distance to the `<=>` operator. Details below.
 - **M6 — Rate limiting & security hardening:** an in-memory fixed-window limiter
@@ -62,7 +62,7 @@ lode/
 │   ├── engine/              # agentic runner, LLM client, read-only tools
 │   ├── api/                 # FastAPI app (auto-migrates + auth + error envelope)
 │   │   ├── deps.py          # require_user bearer-token dependency
-│   │   └── routes/          # analyses, applications, memories, alerts, auth, settings
+│   │   └── routes/          # analyses, applications, experiences, alerts, auth, settings
 │   ├── migrations.py        # run `alembic upgrade head` from the server
 │   └── consumer/            # Kafka consumer: v1.1 validation + dedupe key
 ├── apps/web/                # Next.js frontend (Dockerfile + standalone output)
@@ -163,7 +163,7 @@ curl -X POST http://localhost:8000/settings/ai-models \
 
 The Kafka consumer (`make consume`) validates each v1.1 alert, persists the
 `Alert` + a pending `Analysis`, then triggers `run_analysis` in a background
-task so the full `receive → git_sync → context → ai_analysis → memory →
+task so the full `receive → git_sync → context → ai_analysis → experience →
 conclusion` workflow runs without blocking ingestion. A failed run is marked
 `failed` rather than crashing the consumer.
 
@@ -180,12 +180,12 @@ read-only SQL statement against a configured source:
 - A bare `sql` body returns the source's allowed-table whitelist — the safe default
   used by the runner agent when no statement is supplied.
 
-## Semantic shared memory (M5)
+## Semantic shared experience (M5)
 
 When an embedding provider is configured via `LODE_EMBEDDING_API_KEY_REF` (an
 `env://NAME` reference or literal, resolved by the same path as model keys), the
-engine embeds each incident's signature and stores the vector on the memory row. On a
-new incident, `get_memory` first tries an exact `trigger_signature` match, then falls
+engine embeds each incident's signature and stores the vector on the experience row. On a
+new incident, `get_experience` first tries an exact `trigger_signature` match, then falls
 back to a semantic top-k within a cosine-distance threshold
 (`LODE_EMBEDDING_THRESHOLD`, default `0.25` ≙ similarity ≥ `0.75`).
 
@@ -200,8 +200,8 @@ backend. For large tables, add an HNSW index manually:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
-CREATE INDEX IF NOT EXISTS ix_memories_embedding_hnsw
-    ON memories USING hnsw ((embedding::vector) vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS ix_experiences_embedding_hnsw
+    ON experiences USING hnsw ((embedding::vector) vector_cosine_ops);
 ```
 
 Install the optional dependency with `pip install "lode[pgvector]"`. The default
@@ -254,7 +254,7 @@ make test        # or: pytest -q
 ```
 
 Covers password/token security, the auth boundary (401 without token, login+token
-flow), and the analysis engine (completion + shared-memory upsert with no duplicate
+flow), and the analysis engine (completion + shared-experience upsert with no duplicate
 on re-analysis). The engine test runs against the configured database and cleans up
 after itself.
 

@@ -26,7 +26,7 @@ from lode.db.models.alert import Alert
 from lode.db.models.analysis import Analysis, AnalysisHint, AnalysisStep
 from lode.db.models.application import Application
 from lode.db.models.intake import AnalysisJob, Incident
-from lode.db.models.memory import Memory
+from lode.db.models.experience import Experience
 from lode.db.models.permission import UserApplicationPerm
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
@@ -154,11 +154,11 @@ async def get_analysis(
 
     matched = (
         await session.execute(
-            select(Memory)
-            .where(Memory.application_id == analysis.application_id)
-            .where(Memory.trigger_signature == analysis.dedupe_key)
-            .where(Memory.is_valid.is_(True))
-            .order_by(Memory.updated_at.desc())
+            select(Experience)
+            .where(Experience.application_id == analysis.application_id)
+            .where(Experience.trigger_signature == analysis.dedupe_key)
+            .where(Experience.is_valid.is_(True))
+            .order_by(Experience.updated_at.desc())
         )
     ).scalars().first()
 
@@ -203,7 +203,7 @@ async def get_analysis(
             AnalysisHintOut(id=h.id, author=h.author, content=h.content, created_at=h.created_at)
             for h in hints
         ],
-        matched_memory=matched.content if matched is not None else None,
+        matched_experience=matched.content if matched is not None else None,
         started_at=analysis.started_at,
         finished_at=analysis.finished_at,
         updated_at=analysis.updated_at,

@@ -22,12 +22,12 @@ const ADMIN_NAV: { id: string; key: string; href: string }[] = [
   { id: 'applications', key: 'nav.applications', href: '/admin' },
   { id: 'settings', key: 'nav.settings', href: '/admin/settings' },
   { id: 'users', key: 'nav.users', href: '/admin/users' },
-  { id: 'memories', key: 'nav.memories', href: '/admin/memories' },
+  { id: 'experiences', key: 'nav.experiences', href: '/admin/experiences' },
 ];
 
 const WORKBENCH_NAV: { id: string; key: string; href: string }[] = [
   { id: 'analyses', key: 'nav.analyses', href: '/workbench' },
-  { id: 'memories', key: 'nav.memories', href: '/workbench/memories' },
+  { id: 'experiences', key: 'nav.experiences', href: '/workbench/experiences' },
 ];
 
 export function CommandPalette() {

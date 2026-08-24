@@ -6,35 +6,35 @@ import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, THead, TBody, Tr, Th, Td } from '@/components/ui/table';
-import type { Memory } from '@/lib/types';
-import { fetchMemories } from '@/lib/api';
+import type { Experience } from '@/lib/types';
+import { fetchExperiences } from '@/lib/api';
 import { ApplicationLoader } from '../sections';
 
-export default function AppMemoriesPage({ params }: { params: { id: string } }) {
-  const t = useTranslations('memories');
+export default function AppExperiencesPage({ params }: { params: { id: string } }) {
+  const t = useTranslations('experiences');
   return (
     <>
       <h1 className="page-title">{t('title')}</h1>
       <ApplicationLoader id={params.id} refreshNonce={0}>
-        {() => <AppMemoriesView appId={Number(params.id)} />}
+        {() => <AppExperiencesView appId={Number(params.id)} />}
       </ApplicationLoader>
     </>
   );
 }
 
-// App-scoped view of Shared Memory. Reuses the same rendering as the global
-// /memories page but filters by the current application via `application_id`.
-function AppMemoriesView({ appId }: { appId: number }) {
-  const t = useTranslations('memories');
+// App-scoped view of Shared Experience. Reuses the same rendering as the global
+// /experiences page but filters by the current application via `application_id`.
+function AppExperiencesView({ appId }: { appId: number }) {
+  const t = useTranslations('experiences');
   const tc = useTranslations('common');
-  const [memories, setMemories] = useState<Memory[]>([]);
+  const [experiences, setExperiences] = useState<Experience[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    fetchMemories(appId)
-      .then((d) => active && setMemories(d))
+    fetchExperiences(appId)
+      .then((d) => active && setExperiences(d))
       .catch((e) => active && setError(String(e)))
       .finally(() => active && setLoading(false));
     return () => {
@@ -62,10 +62,10 @@ function AppMemoriesView({ appId }: { appId: number }) {
           {error}
         </p>
       )}
-      {!loading && !error && memories.length === 0 && (
+      {!loading && !error && experiences.length === 0 && (
         <p className="muted">{tc('empty')}</p>
       )}
-      {!loading && !error && memories.length > 0 && (
+      {!loading && !error && experiences.length > 0 && (
         <Card style={{ padding: 0, overflow: 'hidden' }}>
           <Table>
             <THead>
@@ -76,7 +76,7 @@ function AppMemoriesView({ appId }: { appId: number }) {
               </Tr>
             </THead>
             <TBody>
-              {memories.map((m) => (
+              {experiences.map((m) => (
                 <Tr key={m.id}>
                   <Td className="mono muted">{m.triggerSignature}</Td>
                   <Td>{m.content}</Td>

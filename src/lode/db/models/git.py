@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    Index,
     Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -48,9 +49,13 @@ class GitRepo(Base):
         BigInteger, Identity(always=True), primary_key=True
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    repo_url: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    repo_url: Mapped[str] = mapped_column(Text, nullable=False)
     default_branch: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="main"
+    )
+    scope: Mapped[str] = mapped_column(Text, nullable=False, server_default="global")
+    application_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("applications.id", ondelete="CASCADE")
     )
     # Provider family (github / gitlab / gitee / bitbucket / other). Kept as a
     # free-text tag so new hosts can be onboarded without a schema change; the
@@ -66,4 +71,26 @@ class GitRepo(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        CheckConstraint("scope IN ('global', 'application')", name="scope"),
+        CheckConstraint(
+            "(scope = 'global' AND application_id IS NULL) OR "
+            "(scope = 'application' AND application_id IS NOT NULL)",
+            name="scope_application",
+        ),
+        Index(
+            "ux_git_repos_global_repo_url",
+            "repo_url",
+            unique=True,
+            postgresql_where="scope = 'global'",
+        ),
+        Index(
+            "ux_git_repos_app_repo_url",
+            "application_id",
+            "repo_url",
+            unique=True,
+            postgresql_where="scope = 'application'",
+        ),
     )

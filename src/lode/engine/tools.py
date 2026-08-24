@@ -1,8 +1,8 @@
 """Controlled tools available to the analysis agent.
 
 Every tool here is *read-only* and pulls its context from the platform's own
-database (repository registry, preset prompts, table whitelist, shared
-memory). They are the safe, auditable surface the agent is allowed to use —
+database (repository registry, application descriptions, table whitelist, the
+experience library). They are the safe, auditable surface the agent is allowed to use —
 no arbitrary shell, no write access to production data.
 
 ``run_readonly_query`` proxies validated, read-only SQL to an application's
@@ -22,13 +22,13 @@ from lode.config import settings
 from lode.crypto import decrypt_secret
 from lode.db.models.alert import Alert
 from lode.db.models.application import (
+    ApplicationDescription,
     ApplicationRepo,
     DbSource,
-    PresetPrompt,
 )
 from lode.db.models.git import GitRepo
 from lode.db.models.intake import EvidenceArtifact
-from lode.db.models.memory import Memory
+from lode.db.models.experience import Experience
 from lode.engine.db_proxy import DbConnector, DbProxyError, execute_query
 
 
@@ -58,15 +58,15 @@ async def search_code(session, application_id: int) -> dict[str, Any]:
 async def get_deploy_context(session, application_id: int) -> dict[str, Any]:
     """Return the deployment description the team pre-configured for this app."""
     result = await session.execute(
-        select(PresetPrompt)
-        .where(PresetPrompt.application_id == application_id)
-        .where(PresetPrompt.type == "deploy")
-        .order_by(PresetPrompt.updated_at.desc())
+        select(ApplicationDescription)
+        .where(ApplicationDescription.application_id == application_id)
+        .where(ApplicationDescription.description_type == "deploy")
+        .order_by(ApplicationDescription.updated_at.desc())
     )
-    prompt = result.scalars().first()
+    description = result.scalars().first()
     return {
-        "deploy_prompt": prompt.content if prompt else None,
-        "note": "Deployment context sourced from preset prompts (type=deploy).",
+        "deploy_description": description.content if description else None,
+        "note": "Deployment context sourced from application descriptions.",
     }
 
 
@@ -96,14 +96,27 @@ async def run_readonly_query(
     )
     sources = result.scalars().all()
     allowed: list[str] = []
+    source_summaries: list[dict[str, Any]] = []
     for src in sources:
         tables = src.allowed_tables or []
         if isinstance(tables, list):
-            allowed.extend(str(t) for t in tables)
+            table_names = [str(t) for t in tables]
+            allowed.extend(table_names)
+        else:
+            table_names = []
+        source_summaries.append(
+            {
+                "id": src.id,
+                "name": src.name,
+                "description": src.description,
+                "allowed_tables": table_names,
+            }
+        )
 
     if sql is None:
         return {
             "allowed_tables": allowed,
+            "data_sources": source_summaries,
             "source_count": len(sources),
             "note": "Read-only proxy: allow-list only; pass `sql` to execute a "
             "validated query.",
@@ -228,7 +241,7 @@ async def persist_db_query_artifact(
     return artifact.id
 
 
-async def get_memory(
+async def get_experience(
     session,
     application_id: int,
     *,
@@ -243,42 +256,42 @@ async def get_memory(
 
     Resolution order:
 
-    1. **Exact match** — if ``dedupe_key`` is supplied and a still-valid memory
+    1. **Exact match** — if ``dedupe_key`` is supplied and a still-valid experience
        shares that trigger_signature, it wins. This preserves the original
        deterministic behaviour and guarantees re-analysis of the same incident
        returns its recorded conclusion.
     2. **Semantic match** — when both ``embed_fn`` and ``search_fn`` are wired
        (an embedding provider is configured), embed ``query_text`` and ask
-       ``search_fn`` for the nearest memories by cosine distance; the closest
+       ``search_fn`` for the nearest experiences by cosine distance; the closest
        candidate within ``threshold`` distance is returned. This is what lets
        a *new* incident reuse a conclusion from a semantically similar past
        incident even when the exact signature differs.
     3. **No match** — otherwise an explicit miss is returned.
 
-    Returns a dict with ``matched``, ``content``, ``memory_id``, ``similarity``,
+    Returns a dict with ``matched``, ``content``, ``experience_id``, ``similarity``,
     ``match_type`` (``exact`` | ``semantic`` | ``none``) and ``candidates``
     (the ranked semantic neighbours, for transparency in the UI/evidence).
     """
     # 1. Exact signature override (deterministic + backward compatible).
     if dedupe_key:
-        # Skip expired conclusions (T8): a stale memory must not shadow a fresh
+        # Skip expired conclusions (T8): a stale experience must not shadow a fresh
         # analysis of the same incident.
         now_utc = datetime.now(UTC)
         exact = (
             await session.execute(
-                select(Memory)
-                .where(Memory.application_id == application_id)
-                .where(Memory.trigger_signature == dedupe_key)
-                .where(Memory.is_valid.is_(True))
-                .where(or_(Memory.expires_at.is_(None), Memory.expires_at > now_utc))
-                .order_by(Memory.updated_at.desc())
+                select(Experience)
+                .where(Experience.application_id == application_id)
+                .where(Experience.trigger_signature == dedupe_key)
+                .where(Experience.is_valid.is_(True))
+                .where(or_(Experience.expires_at.is_(None), Experience.expires_at > now_utc))
+                .order_by(Experience.updated_at.desc())
             )
         ).scalars().first()
         if exact is not None:
             return {
                 "matched": True,
                 "content": exact.content,
-                "memory_id": exact.id,
+                "experience_id": exact.id,
                 "similarity": 1.0,
                 "match_type": "exact",
                 "candidates": [],
@@ -294,11 +307,11 @@ async def get_memory(
                 (c for c in candidates if c["distance"] <= threshold), None
             )
             if best is not None:
-                mem = next(m for m, _ in ranked if m.id == best["memory_id"])
+                mem = next(m for m, _ in ranked if m.id == best["experience_id"])
                 return {
                     "matched": True,
                     "content": mem.content,
-                    "memory_id": mem.id,
+                    "experience_id": mem.id,
                     "similarity": best["similarity"],
                     "match_type": "semantic",
                     "candidates": candidates,
@@ -306,7 +319,7 @@ async def get_memory(
             return {
                 "matched": False,
                 "content": None,
-                "memory_id": None,
+                "experience_id": None,
                 "similarity": None,
                 "match_type": "semantic",
                 "candidates": candidates,
@@ -316,7 +329,7 @@ async def get_memory(
     return {
         "matched": False,
         "content": None,
-        "memory_id": None,
+        "experience_id": None,
         "similarity": None,
         "match_type": "none",
         "candidates": [],
@@ -326,7 +339,7 @@ async def get_memory(
 def _rank_to_candidates(ranked) -> list[dict]:
     return [
         {
-            "memory_id": mem.id,
+            "experience_id": mem.id,
             "distance": round(float(dist), 4),
             "similarity": round(max(0.0, 1.0 - float(dist)), 4),
         }

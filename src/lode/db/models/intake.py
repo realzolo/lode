@@ -270,7 +270,7 @@ async def reap_expired_evidence(session) -> int:
     """Hard-delete evidence artifacts past their retention window (M3).
 
     Best-effort cleanup so stale DB-query / git evidence does not accumulate
-    indefinitely. Called at startup alongside the shared-memory reaper; a
+    indefinitely. Called at startup alongside the shared-experience reaper; a
     transient DB error is the caller's responsibility to swallow so startup
     never blocks.
     """

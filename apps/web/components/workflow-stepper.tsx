@@ -21,7 +21,7 @@ import type { AnalysisStep } from '@/lib/types';
  * Horizontal pipeline stepper for a root-cause analysis run.
  *
  * Always renders the fixed 6-node pipeline (receive -> git_sync -> context ->
- * ai_analysis -> memory -> conclusion) so even a `pending` analysis shows what
+ * ai_analysis -> experience -> conclusion) so even a `pending` analysis shows what
  * *will* happen instead of an empty "No workflow steps." Live `AnalysisStep`
  * records from the API are overlaid on top of the static skeleton; any node
  * without a record is shown as `pending` (排队中).
@@ -43,7 +43,7 @@ const PIPELINE: PipelineNode[] = [
   { nodeType: 'git_sync', icon: GitBranch, title: '同步源码' },
   { nodeType: 'context', icon: Layers, title: '收集上下文' },
   { nodeType: 'ai_analysis', icon: BrainCircuit, title: 'AI 根因分析' },
-  { nodeType: 'memory', icon: MemoryStick, title: '匹配记忆' },
+  { nodeType: 'experience', icon: MemoryStick, title: '匹配经验' },
   { nodeType: 'conclusion', icon: Flag, title: '生成结论' },
 ];
 

@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     kafka_sasl_mechanism: str = "PLAIN"
     kafka_sasl_username: str = ""
     kafka_sasl_password: str = ""
-    # Max records fetched per `getmany` poll. Bounds memory and redelivery blast
+    # Max records fetched per `getmany` poll. Bounds experience and redelivery blast
     # radius; messages are still committed one-at-a-time so the at-least-once +
     # idempotent contract is unchanged.
     kafka_batch_max_records: int = 100
@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     # already encrypted under the legacy scheme — new deployments should set this.
     data_encryption_key_ref: str = ""
 
-    # Embeddings (opt-in semantic shared memory / M5)
+    # Embeddings (opt-in semantic experience library / M5)
     # Leave ``embedding_api_key_ref`` empty to disable semantic matching; the
     # runner then falls back to exact trigger_signature matching. The key is
     # resolved by ``resolve_api_key`` and MUST be an ``env://NAME`` reference or
@@ -124,10 +124,10 @@ class Settings(BaseSettings):
     embedding_base_url: str = "https://api.openai.com/v1/embeddings"
     embedding_api_key_ref: str = ""
     embedding_model: str = "text-embedding-3-small"
-    # Cosine distance at or below which a retrieved memory is considered a match
+    # Cosine distance at or below which a retrieved experience is considered a match
     # (0 = identical direction, 2 = opposite). 0.25 ≙ similarity ≥ 0.75.
     embedding_threshold: float = 0.25
-    # Semantic search backend for shared memory. ``"python"`` (default) ranks
+    # Semantic search backend for the experience library. ``"python"`` (default) ranks
     # candidates in-process with ``cosine_distance`` and works against any
     # PostgreSQL with no extension. ``"pgvector"`` offloads distance computation
     # (and ANN search with an HNSW index) to the database via the ``<=>``
@@ -139,7 +139,7 @@ class Settings(BaseSettings):
     embedding_backend: str = "python"
 
     # Rate limiting (M6 hardening)
-    # In-memory fixed-window limiter applied to every non-exempt route. The
+    # In-experience fixed-window limiter applied to every non-exempt route. The
     # limit is generous by default so normal usage (and the test suite) is never
     # throttled; lower it for production abuse protection. Set
     # ``rate_limit_enabled`` to false to disable entirely.
@@ -152,11 +152,11 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
     llm_retry_base_delay: float = 0.5
 
-    # Shared-memory aging (T8): reusable conclusions (the ``memories`` table) are
-    # given this many days of validity when written. Expired memories are no
-    # longer returned by retrieval and are reaped at startup. Set to 0 to disable
-    # expiry (keep memories forever).
-    memory_ttl_days: int = 90
+    # Experience-library aging (T8): reusable conclusions (the ``experiences``
+    # table) are given this many days of validity when written. Expired
+    # experiences are no longer returned by retrieval and are reaped at startup.
+    # Set to 0 to disable expiry (keep experiences forever).
+    experience_ttl_days: int = 90
 
 
 @lru_cache

@@ -3,7 +3,7 @@
 Uses an async ``httpx`` client pointed at the ASGI app (no lifespan, so Alembic
 does not run during tests — the schema is already current). A throwaway test
 user is created in the same event loop the requests run in, so the async engine
-never crosses loop boundaries. Both the test user and any memory it could touch
+never crosses loop boundaries. Both the test user and any experience it could touch
 are cleaned up afterwards.
 """
 

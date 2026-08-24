@@ -1,6 +1,6 @@
-"""Embeddings client for semantic shared memory.
+"""Embeddings client for semantic shared experience.
 
-Produces dense vectors for incident signatures and memory content via an
+Produces dense vectors for incident signatures and experience content via an
 OpenAI-compatible ``/embeddings`` endpoint. Like the chat client in
 ``lode.engine.llm``, the key reference is resolved through ``resolve_api_key``
 (``env://NAME`` or a literal) and any failure degrades to ``None`` so the
@@ -46,7 +46,7 @@ async def embed(text: str, config: EmbeddingConfig | None) -> list[float] | None
 
     Unavailable means either no config was supplied, the key reference resolves
     empty, or the network call fails for any reason. The caller should then
-    gracefully fall back to exact-match memory retrieval.
+    gracefully fall back to exact-match experience retrieval.
     """
     if config is None or not config.api_key_ref:
         return None
@@ -107,7 +107,7 @@ def build_query_text(alert) -> str:
     """Build a semantic query string from an alert's salient fields.
 
     This is what gets embedded for both retrieval (find similar past incidents)
-    and storage (the embedding stored on a new memory row describes *what kind*
+    and storage (the embedding stored on a new experience row describes *what kind*
     of incident this is, independent of the stored conclusion text).
     """
     if alert is None:

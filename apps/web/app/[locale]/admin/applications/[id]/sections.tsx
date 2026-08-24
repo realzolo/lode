@@ -8,7 +8,7 @@
 // mutation the Section calls `onRefresh()` to bump the parent
 // `ApplicationLoader`'s fetch nonce, which re-runs `fetchApplication` and
 // re-renders every Section in the same render pass — keeping the
-// "概览/仓库/提示词/数据源/模型" counters in the overview and the data
+// "概览/仓库/描述/数据源/模型" counters in the overview and the data
 // inside each tab in lockstep without any per-tab polling.
 //
 // Kafka topic editing lives in the overview page (it's a single field there),
@@ -34,24 +34,26 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
   bindRepo,
   createDbSource,
-  createPresetPrompt,
+  createApplicationDescription,
+  createLocalRepo,
   deleteDbSource,
-  deletePresetPrompt,
+  deleteApplicationDescription,
   fetchAiModelConfigs,
   fetchApplication,
   fetchSettings,
+  setApplicationModel,
   testDbSource,
   unbindRepo,
-  updateAiModel,
   updateDbSource,
+  type CreateApplicationDescriptionInput,
   type CreateDbSourceInput,
-  type CreatePresetPromptInput,
+  type CreateLocalRepoInput,
   type UpdateDbSourceInput,
 } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
 import { IconPlus, IconTrash2 } from '@/components/icons';
 
-// The detail endpoint's repos/prompts/db_sources dictionaries all carry `id`
+// The detail endpoint's repos/descriptions/db_sources dictionaries all carry `id`
 // (and `repo_id` for repos): see `GET /applications/{id}` in
 // `routes/applications.py`. The api client exposes them in
 // `fetchApplication`'s return type too.
@@ -62,9 +64,10 @@ import { IconPlus, IconTrash2 } from '@/components/icons';
 export type AppDetail = Awaited<ReturnType<typeof fetchApplication>>;
 
 type BoundRepo = AppDetail['repos'][number];
-type BoundPrompt = AppDetail['preset_prompts'][number];
+type BoundDescription = AppDetail['descriptions'][number];
 type BoundDbSource = AppDetail['db_sources'][number];
 type GlobalRepo = { id: number; name: string; url: string };
+type CredentialOption = { id: number; label: string };
 
 // ---------------------------------------------------------------------------
 // Application-scoped repos
@@ -87,8 +90,15 @@ export function ReposSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [repos, setRepos] = useState<GlobalRepo[]>([]);
+  const [credentials, setCredentials] = useState<CredentialOption[]>([]);
+  const [mode, setMode] = useState<'global' | 'local'>('global');
   const [selectedRepoId, setSelectedRepoId] = useState<string>('');
   const [description, setDescription] = useState('');
+  const [localName, setLocalName] = useState('');
+  const [localUrl, setLocalUrl] = useState('');
+  const [localBranch, setLocalBranch] = useState('main');
+  const [localType, setLocalType] = useState('github');
+  const [localCredentialId, setLocalCredentialId] = useState('');
   const [unbind, setUnbind] = useState<BoundRepo | null>(null);
 
   const boundRepos = data.repos;
@@ -112,6 +122,12 @@ export function ReposSection({
           url: r.repo_url,
         }));
         setRepos(gs);
+        setCredentials(
+          s.git_credentials.map((c) => ({
+            id: c.id,
+            label: `${c.username || '—'} · ${c.auth_type}`,
+          })),
+        );
         const bound = new Set(boundRepos.map((r) => r.repo_id));
         const first = gs.find((r) => !bound.has(r.id));
         setSelectedRepoId(first ? String(first.id) : (gs[0] ? String(gs[0].id) : ''));
@@ -123,16 +139,33 @@ export function ReposSection({
   }, [open, isAdmin, boundRepos]);
 
   async function handleBind() {
-    if (!selectedRepoId) return;
     setBusy(true);
     setError(null);
     try {
-      await bindRepo(appId, {
-        repo_id: Number(selectedRepoId),
-        description,
-      });
+      if (mode === 'global') {
+        if (!selectedRepoId) return;
+        await bindRepo(appId, {
+          repo_id: Number(selectedRepoId),
+          description,
+        });
+      } else {
+        const payload: CreateLocalRepoInput = {
+          name: localName.trim(),
+          repo_url: localUrl.trim(),
+          default_branch: localBranch.trim() || 'main',
+          repo_type: localType,
+          credential_id: localCredentialId ? Number(localCredentialId) : null,
+          description,
+        };
+        await createLocalRepo(appId, payload);
+      }
       setOpen(false);
       setDescription('');
+      setLocalName('');
+      setLocalUrl('');
+      setLocalBranch('main');
+      setLocalType('github');
+      setLocalCredentialId('');
       onRefresh();
     } catch (e) {
       setError(String(e));
@@ -211,24 +244,66 @@ export function ReposSection({
             <DialogDescription>{tAdmin('bindRepoDesc')}</DialogDescription>
           </DialogHeader>
           <div className="stack">
-            <Select
-              value={selectedRepoId}
-              onChange={(e) => setSelectedRepoId(e.target.value)}
-              disabled={busy || repos.length === 0}
-            >
-              {repos.length === 0 ? (
-                <option value="">— no repos in registry —</option>
-              ) : (
-                repos.map((r) => {
-                  const isBound = boundRepoIds.has(r.id);
-                  return (
-                    <option key={r.id} value={String(r.id)} disabled={isBound}>
-                      {r.name} ({r.url}){isBound ? ' — 已绑定' : ''}
-                    </option>
-                  );
-                })
-              )}
+            <Select value={mode} onChange={(e) => setMode(e.target.value as 'global' | 'local')} disabled={busy}>
+              <option value="global">{tAdmin('repoModeGlobal')}</option>
+              <option value="local">{tAdmin('repoModeLocal')}</option>
             </Select>
+            {mode === 'global' ? (
+              <Select
+                value={selectedRepoId}
+                onChange={(e) => setSelectedRepoId(e.target.value)}
+                disabled={busy || repos.length === 0}
+              >
+                {repos.length === 0 ? (
+                  <option value="">— no repos in registry —</option>
+                ) : (
+                  repos.map((r) => {
+                    const isBound = boundRepoIds.has(r.id);
+                    return (
+                      <option key={r.id} value={String(r.id)} disabled={isBound}>
+                        {r.name} ({r.url}){isBound ? ' — 已绑定' : ''}
+                      </option>
+                    );
+                  })
+                )}
+              </Select>
+            ) : (
+              <>
+                <Input
+                  placeholder={tAdmin('repoName')}
+                  value={localName}
+                  onChange={(e) => setLocalName(e.target.value)}
+                  disabled={busy}
+                />
+                <Input
+                  placeholder={tAdmin('repoUrl')}
+                  value={localUrl}
+                  onChange={(e) => setLocalUrl(e.target.value)}
+                  disabled={busy}
+                />
+                <Input
+                  placeholder={tAdmin('defaultBranch')}
+                  value={localBranch}
+                  onChange={(e) => setLocalBranch(e.target.value)}
+                  disabled={busy}
+                />
+                <Select value={localType} onChange={(e) => setLocalType(e.target.value)} disabled={busy}>
+                  {['github', 'gitlab', 'gitee', 'bitbucket', 'other'].map((rt) => (
+                    <option key={rt} value={rt}>{rt}</option>
+                  ))}
+                </Select>
+                <Select
+                  value={localCredentialId}
+                  onChange={(e) => setLocalCredentialId(e.target.value)}
+                  disabled={busy}
+                >
+                  <option value="">{tAdmin('noCredential')}</option>
+                  {credentials.map((c) => (
+                    <option key={c.id} value={String(c.id)}>{c.label}</option>
+                  ))}
+                </Select>
+              </>
+            )}
             <Textarea
               placeholder={tAdmin('repoDescription')}
               value={description}
@@ -243,8 +318,9 @@ export function ReposSection({
               onClick={handleBind}
               disabled={
                 busy ||
-                !selectedRepoId ||
-                boundRepoIds.has(Number(selectedRepoId))
+                (mode === 'global' &&
+                  (!selectedRepoId || boundRepoIds.has(Number(selectedRepoId)))) ||
+                (mode === 'local' && (!localName.trim() || !localUrl.trim()))
               }
             >
               {tc('save')}
@@ -267,10 +343,10 @@ export function ReposSection({
 }
 
 // ---------------------------------------------------------------------------
-// Application-scoped preset prompts
+// Application-scoped descriptions
 // ---------------------------------------------------------------------------
 
-export function PromptsSection({
+export function DescriptionsSection({
   data,
   appId,
   onRefresh,
@@ -286,18 +362,21 @@ export function PromptsSection({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [type, setType] = useState<'deploy' | 'other'>('deploy');
+  const [descriptionType, setDescriptionType] = useState<'deploy' | 'other'>('deploy');
   const [content, setContent] = useState('');
-  const [deletePrompt, setDeletePrompt] = useState<BoundPrompt | null>(null);
+  const [deleteDescription, setDeleteDescription] = useState<BoundDescription | null>(null);
 
-  const prompts = data.preset_prompts;
+  const descriptions = data.descriptions;
 
   async function handleCreate() {
     setBusy(true);
     setError(null);
-    const payload: CreatePresetPromptInput = { type, content };
+    const payload: CreateApplicationDescriptionInput = {
+      description_type: descriptionType,
+      content,
+    };
     try {
-      await createPresetPrompt(appId, payload);
+      await createApplicationDescription(appId, payload);
       setOpen(false);
       setContent('');
       onRefresh();
@@ -309,12 +388,12 @@ export function PromptsSection({
   }
 
   async function handleDelete() {
-    if (!deletePrompt) return;
+    if (!deleteDescription) return;
     setBusy(true);
     setError(null);
     try {
-      await deletePresetPrompt(appId, deletePrompt.id);
-      setDeletePrompt(null);
+      await deleteApplicationDescription(appId, deleteDescription.id);
+      setDeleteDescription(null);
       onRefresh();
     } catch (e) {
       setError(String(e));
@@ -338,33 +417,33 @@ export function PromptsSection({
             onClick={() => {
               setOpen(true);
               setError(null);
-              setType('deploy');
+              setDescriptionType('deploy');
               setContent('');
             }}
           >
-            <IconPlus size={14} /> {tAdmin('addPrompt')}
+            <IconPlus size={14} /> {tAdmin('addDescription')}
           </Button>
         </div>
       )}
-      {prompts.length === 0 ? (
+      {descriptions.length === 0 ? (
         <p className="muted">{tc('empty')}</p>
       ) : (
         <div className="stack">
-          {prompts.map((p) => (
-            <div key={p.id} className="stack" style={{ gap: 4 }}>
+          {descriptions.map((d) => (
+            <div key={d.id} className="stack" style={{ gap: 4 }}>
               <div className="row-between">
-                <span className="field-label">{p.type}</span>
+                <span className="field-label">{d.description_type}</span>
                 {isAdmin && (
                   <Button
                     size="sm"
                     variant="destructive"
-                    onClick={() => setDeletePrompt(p)}
+                    onClick={() => setDeleteDescription(d)}
                   >
                     <IconTrash2 size={14} /> {tc('delete')}
                   </Button>
                 )}
               </div>
-              <p style={{ whiteSpace: 'pre-wrap' }}>{p.content}</p>
+              <p style={{ whiteSpace: 'pre-wrap' }}>{d.content}</p>
             </div>
           ))}
         </div>
@@ -372,20 +451,20 @@ export function PromptsSection({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{tAdmin('addPrompt')}</DialogTitle>
-            <DialogDescription>{t('prompts')}</DialogDescription>
+            <DialogTitle>{tAdmin('addDescription')}</DialogTitle>
+            <DialogDescription>{t('descriptions')}</DialogDescription>
           </DialogHeader>
           <div className="stack">
             <Select
-              value={type}
-              onChange={(e) => setType(e.target.value as 'deploy' | 'other')}
+              value={descriptionType}
+              onChange={(e) => setDescriptionType(e.target.value as 'deploy' | 'other')}
               disabled={busy}
             >
               <option value="deploy">deploy</option>
               <option value="other">other</option>
             </Select>
             <Textarea
-              placeholder={tAdmin('promptContent')}
+              placeholder={tAdmin('descriptionContent')}
               value={content}
               onChange={(e) => setContent(e.target.value)}
               disabled={busy}
@@ -405,10 +484,10 @@ export function PromptsSection({
         </DialogContent>
       </Dialog>
       <ConfirmDialog
-        open={deletePrompt != null}
-        onOpenChange={(o) => !o && setDeletePrompt(null)}
-        title={tAdmin('deletePromptTitle')}
-        description={tAdmin('deletePromptDesc')}
+        open={deleteDescription != null}
+        onOpenChange={(o) => !o && setDeleteDescription(null)}
+        title={tAdmin('deleteDescriptionTitle')}
+        description={tAdmin('deleteDescriptionDesc')}
         confirmLabel={tc('delete')}
         cancelLabel={tc('cancel')}
         destructive
@@ -441,6 +520,7 @@ export function DbSourcesSection({
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ ok: boolean; latency_ms: number | null; error: string | null } | null>(null);
   const [name, setName] = useState('');
+  const [sourceDescription, setSourceDescription] = useState('');
   const [connSecretRef, setConnSecretRef] = useState('');
   const [host, setHost] = useState('');
   const [port, setPort] = useState('5432');
@@ -457,6 +537,7 @@ export function DbSourcesSection({
   function resetForm() {
     setEditingId(null);
     setName('');
+    setSourceDescription('');
     setConnSecretRef('');
     setHost('');
     setPort('5432');
@@ -473,6 +554,7 @@ export function DbSourcesSection({
   function startEdit(s: BoundDbSource) {
     setEditingId(s.id);
     setName(s.name);
+    setSourceDescription(s.description ?? '');
     setConnSecretRef(s.conn_secret_ref ?? '');
     setHost(s.host ?? '');
     setPort(s.port ? String(s.port) : '5432');
@@ -498,6 +580,7 @@ export function DbSourcesSection({
       .filter(Boolean);
     const input: CreateDbSourceInput = {
       name: name.trim(),
+      description: sourceDescription.trim(),
       allowed_tables,
       sensitive_columns,
     };
@@ -615,6 +698,9 @@ export function DbSourcesSection({
                   </div>
                 )}
               </div>
+              {s.description ? (
+                <p className="muted" style={{ fontSize: 13 }}>{s.description}</p>
+              ) : null}
               <p className="muted mono" style={{ fontSize: 13 }}>
                 {s.host
                   ? `${s.username ? s.username + '@' : ''}${s.host}${
@@ -653,6 +739,13 @@ export function DbSourcesSection({
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={busy}
+            />
+            <Textarea
+              placeholder={tAdmin('dbSourceDescription')}
+              value={sourceDescription}
+              onChange={(e) => setSourceDescription(e.target.value)}
+              disabled={busy}
+              rows={3}
             />
             <Input
               placeholder={tAdmin('dbHost')}
@@ -728,7 +821,11 @@ export function DbSourcesSection({
           </div>
           <DialogFooter>
             <Button onClick={() => setOpen(false)} disabled={busy}>{tc('cancel')}</Button>
-            <Button variant="ghost" onClick={handleTest} disabled={busy}>
+            <Button
+              variant="ghost"
+              onClick={handleTest}
+              disabled={busy || (!host.trim() && !connSecretRef.trim())}
+            >
               {tAdmin('dbTest')}
             </Button>
             <Button
@@ -762,18 +859,15 @@ export function DbSourcesSection({
 }
 
 // ---------------------------------------------------------------------------
-// AI model override
+// AI model selection
 // ---------------------------------------------------------------------------
-//
-// The application-scope AI model config lives under ``/admin/settings/ai-models``;
-// admins add/select it on `/admin/settings` (so there's a single form code path).
-// Here we only render the rows that *already* target this application and let
-// admins promote one to default or remove it.
 
 export function ModelSection({
+  data,
   appId,
   onRefresh,
 }: {
+  data: AppDetail;
   appId: string;
   onRefresh: () => void;
 }) {
@@ -782,10 +876,10 @@ export function ModelSection({
   const tAdmin = useTranslations('admin');
   const isAdmin = useUser().isAdmin;
   const [rows, setRows] = useState<Awaited<ReturnType<typeof fetchAiModelConfigs>>>([]);
+  const [selectedId, setSelectedId] = useState<string>(data.model_config_id ? String(data.model_config_id) : '');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
 
   async function reload() {
     setLoading(true);
@@ -808,48 +902,14 @@ export function ModelSection({
   }, [appId]);
 
   useEffect(() => {
-    const handler = () => reload();
-    window.addEventListener('app-detail-refresh', handler);
-    return () => window.removeEventListener('app-detail-refresh', handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    setSelectedId(data.model_config_id ? String(data.model_config_id) : '');
+  }, [data.model_config_id]);
 
-  const scoped = useMemo(
-    () => rows.filter((r) => r.scope === 'application' && r.application_id === Number(appId)),
-    [rows, appId]
-  );
-
-  async function handlePromoteDefault(id: number) {
+  async function handleSave() {
     setBusy(true);
     setError(null);
     try {
-      const cur = rows.find((r) => r.id === id);
-      if (!cur) return;
-      await updateAiModel(id, {
-        scope: 'application',
-        application_id: cur.application_id,
-        provider: cur.provider as 'openai' | 'anthropic',
-        base_url: cur.base_url,
-        api_key_ref: '',
-        model: cur.model,
-        is_default: true,
-      });
-      await reload();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleDelete(id: number) {
-    setBusy(true);
-    setError(null);
-    try {
-      const { deleteAiModel } = await import('@/lib/api');
-      await deleteAiModel(id);
-      setDeleteId(null);
-      await reload();
+      await setApplicationModel(appId, selectedId ? Number(selectedId) : null);
       onRefresh();
     } catch (e) {
       setError(String(e));
@@ -860,7 +920,7 @@ export function ModelSection({
 
   return (
     <Card>
-      <p className="page-subtitle">{t('modelOverride')}</p>
+      <p className="page-subtitle">{t('modelSelection')}</p>
       {error && (
         <p className="muted" style={{ color: 'var(--danger)', fontSize: 13 }}>
           {error}
@@ -868,60 +928,40 @@ export function ModelSection({
       )}
       {!isAdmin ? (
         <p className="muted" style={{ fontSize: 13 }}>
-          No per-application override configured — the global default is used.
+          {tAdmin('modelSelectionReadOnly')}
         </p>
       ) : loading ? (
         <Skeleton className="h-10 w-full" />
-      ) : scoped.length === 0 ? (
+      ) : rows.length === 0 ? (
         <p className="muted" style={{ fontSize: 13 }}>
-          {tAdmin('noAppModel')}
+          {tAdmin('noGlobalModels')}
         </p>
       ) : (
         <div className="stack">
-          {scoped.map((m) => (
-            <div
-              key={m.id}
-              className="row-between"
-              style={{
-                borderTop: '1px solid var(--color-4)',
-                paddingTop: 8,
-              }}
+          <Select
+            value={selectedId}
+            onChange={(e) => setSelectedId(e.target.value)}
+            disabled={busy}
+          >
+            <option value="">{tAdmin('useDefaultModel')}</option>
+            {rows.map((m) => (
+              <option key={m.id} value={String(m.id)}>
+                #{m.id} {m.provider} · {m.model}{m.is_default ? ' · default' : ''}
+              </option>
+            ))}
+          </Select>
+          <div>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={handleSave}
+              disabled={busy || selectedId === (data.model_config_id ? String(data.model_config_id) : '')}
             >
-              <span className="mono" style={{ fontSize: 12 }}>
-                #{m.id} {m.provider} · {m.model}
-                {m.is_default ? ' · default' : ''}
-              </span>
-              <div className="row" style={{ gap: 6 }}>
-                {!m.is_default && (
-                  <Button size="sm" onClick={() => handlePromoteDefault(m.id)} disabled={busy}>
-                    {tAdmin('setAsDefault')}
-                  </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  onClick={() => setDeleteId(m.id)}
-                  disabled={busy}
-                >
-                  <IconTrash2 size={14} /> {tc('delete')}
-                </Button>
-              </div>
-            </div>
-          ))}
+              {tc('save')}
+            </Button>
+          </div>
         </div>
       )}
-      <ConfirmDialog
-        open={deleteId != null}
-        onOpenChange={(o) => !o && setDeleteId(null)}
-        title={tAdmin('deleteAppModelTitle')}
-        description={tAdmin('deleteAppModelDesc')}
-        confirmLabel={tc('delete')}
-        cancelLabel={tc('cancel')}
-        destructive
-        onConfirm={() => {
-          if (deleteId != null) return handleDelete(deleteId);
-        }}
-      />
     </Card>
   );
 }

@@ -36,14 +36,14 @@ from lode.api.routes.auth import router as auth_router
 from lode.api.routes.dead_letters import router as dead_letters_router
 from lode.api.routes.health import router as health_router
 from lode.api.routes.invites import router as invites_router
-from lode.api.routes.memories import router as memories_router
+from lode.api.routes.experiences import router as experiences_router
 from lode.api.routes.metrics import router as metrics_router
 from lode.api.routes.queries import router as queries_router
 from lode.api.routes.settings import router as settings_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
 from lode.db.models.ai_model import reencrypt_plaintext_keys
-from lode.db.models.memory import Memory
+from lode.db.models.experience import Experience
 from lode.db.session import AsyncSessionLocal
 from lode.migrations import run_migrations
 from lode.api.audit import _request_id
@@ -87,7 +87,7 @@ async def lifespan(app: FastAPI) -> None:
     # ``running`` analyses here: a job legitimately in flight under the worker
     # would otherwise be wrongly marked failed.
 
-    # Reap shared memories that have aged past their TTL (T8). Renewed memories
+    # Reap experience-library entries that have aged past their TTL (T8). Renewed experiences
     # get a fresh ``expires_at`` on write, so only truly stale conclusions are
     # retired here. Best-effort so a transient DB error never blocks startup.
     async with AsyncSessionLocal() as session:
@@ -95,21 +95,21 @@ async def lifespan(app: FastAPI) -> None:
             now_utc = datetime.now(UTC)
             reap = (
                 await session.execute(
-                    update(Memory)
-                    .where(Memory.expires_at.isnot(None))
-                    .where(Memory.expires_at < now_utc)
-                    .where(Memory.is_valid.is_(True))
+                    update(Experience)
+                    .where(Experience.expires_at.isnot(None))
+                    .where(Experience.expires_at < now_utc)
+                    .where(Experience.is_valid.is_(True))
                     .values(is_valid=False)
                 )
             )
             reaped = reap.rowcount
             if reaped:
                 await session.commit()
-                logger.info("reaped %d expired shared memory entr(y/ies)", reaped)
+                logger.info("reaped %d expired experience entr(y/ies)", reaped)
         except Exception:
-            logger.exception("failed to reap expired shared memories")
+            logger.exception("failed to reap expired experiences")
 
-    # Reap evidence artifacts past their retention window (M3). Like the memory
+    # Reap evidence artifacts past their retention window (M3). Like the experience
     # reaper, best-effort so a transient DB error never blocks startup.
     async with AsyncSessionLocal() as session:
         try:
@@ -205,7 +205,7 @@ app.include_router(auth_router)
 _protected = [Depends(require_user)]
 app.include_router(analyses_router, dependencies=_protected)
 app.include_router(applications_router, dependencies=_protected)
-app.include_router(memories_router, dependencies=_protected)
+app.include_router(experiences_router, dependencies=_protected)
 app.include_router(alerts_router, dependencies=_protected)
 app.include_router(settings_router, dependencies=_protected)
 app.include_router(users_router, dependencies=_protected)

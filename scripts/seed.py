@@ -1,4 +1,4 @@
-"""Seed the live database with a demo application, alerts, analyses, and memory.
+"""Seed the live database with a demo application, alerts, analyses, and experience.
 
 Run from the project root:
 
@@ -22,13 +22,13 @@ from lode.db.models.alert import Alert
 from lode.db.models.analysis import Analysis
 from lode.db.models.application import (
     Application,
+    ApplicationDescription,
     ApplicationKafka,
     ApplicationRepo,
     DbSource,
-    PresetPrompt,
 )
 from lode.db.models.git import GitCredential, GitRepo
-from lode.db.models.memory import Memory
+from lode.db.models.experience import Experience
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
 from lode.engine import run_analysis
@@ -82,8 +82,8 @@ async def _seed_base(session) -> int:
                         description="Shared payment primitives: pools, retry, provider adapters"),
     ])
 
-    session.add(PresetPrompt(
-        application_id=app.id, type="deploy",
+    session.add(ApplicationDescription(
+        application_id=app.id, description_type="deploy",
         content=(
             "Deploys run Mon-Fri at 14:00 UTC. The 2026-08-21 13:55 UTC deploy bumped the "
             "DB connection pool from 20 to 40 but misconfigured replica DNS, introducing "
@@ -92,7 +92,9 @@ async def _seed_base(session) -> int:
     ))
 
     session.add(DbSource(
-        application_id=app.id, name="orders-replica",
+        application_id=app.id,
+        name="orders-replica",
+        description="Read-only orders replica for checkout/payment correlation.",
         conn_secret_ref="vault://db/orders-replica-ro",
         allowed_tables=["orders", "transactions", "payments"],
     ))
@@ -134,8 +136,8 @@ async def main() -> None:
             {"channelId": "ch_gw", "provider": "adyen", "status": "degraded"},
         )
 
-        # Seed a pre-existing shared memory so analysis 1's memory step matches.
-        mem = Memory(
+        # Seed a pre-existing shared experience so analysis 1's experience step matches.
+        mem = Experience(
             application_id=app_id, trigger_signature=key1,
             content=(
                 "Checkout connection-pool exhaustion correlates with deploys that change "

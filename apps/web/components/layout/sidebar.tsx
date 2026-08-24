@@ -29,14 +29,14 @@ const ADMIN_NAV = [
   { key: 'applications', href: '/admin', Icon: IconHome },
   { key: 'settings', href: '/admin/settings', Icon: IconSettings },
   { key: 'users', href: '/admin/users', Icon: IconUsers },
-  { key: 'memories', href: '/admin/memories', Icon: IconDatabase },
+  { key: 'experiences', href: '/admin/experiences', Icon: IconDatabase },
   { key: 'audit', href: '/admin/audit', Icon: IconShield },
   { key: 'deadLetters', href: '/admin/dead-letters', Icon: IconAlertTriangle },
 ] as const;
 
 const WORKBENCH_NAV = [
   { key: 'analyses', href: '/workbench', Icon: IconBarChart },
-  { key: 'memories', href: '/workbench/memories', Icon: IconDatabase },
+  { key: 'experiences', href: '/workbench/experiences', Icon: IconDatabase },
   { key: 'explore', href: '/workbench/explore', Icon: IconTerminal },
 ] as const;
 
@@ -45,10 +45,10 @@ const WORKBENCH_NAV = [
 const ADMIN_APP_SUBNAV = [
   { key: 'overview', suffix: '' },
   { key: 'repositories', suffix: 'repos' },
-  { key: 'prompts', suffix: 'prompts' },
+  { key: 'descriptions', suffix: 'descriptions' },
   { key: 'dataSources', suffix: 'db' },
   { key: 'model', suffix: 'model' },
-  { key: 'memories', suffix: 'memories' },
+  { key: 'experiences', suffix: 'experiences' },
   { key: 'members', suffix: 'members' },
 ] as const;
 

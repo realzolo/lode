@@ -30,6 +30,9 @@ class Application(Base):
     created_by: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="SET NULL")
     )
+    model_config_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("ai_model_configs.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
     )
@@ -80,8 +83,8 @@ class ApplicationRepo(Base):
     )
 
 
-class PresetPrompt(Base):
-    __tablename__ = "preset_prompts"
+class ApplicationDescription(Base):
+    __tablename__ = "application_descriptions"
 
     id: Mapped[int] = mapped_column(
         BigInteger, Identity(always=True), primary_key=True
@@ -89,7 +92,9 @@ class PresetPrompt(Base):
     application_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
     )
-    type: Mapped[str] = mapped_column(Text, nullable=False, server_default="deploy")
+    description_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="deploy"
+    )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
@@ -99,7 +104,10 @@ class PresetPrompt(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("type IN ('deploy', 'other')", name="type"),
+        CheckConstraint(
+            "description_type IN ('deploy', 'other')",
+            name="description_type",
+        ),
     )
 
 
@@ -113,6 +121,7 @@ class DbSource(Base):
         BigInteger, ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     # Connection can be supplied two ways (mutually exclusive in practice):
     #  * structured fields below (host/port/database/username/password) — the
     #    DSN is built at query time; OR

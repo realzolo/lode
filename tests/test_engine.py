@@ -2,7 +2,7 @@
 
 Exercises the agentic workflow end-to-end against the live database: the engine
 runs in its deterministic heuristic mode (no LLM configured) and must produce a
-completed analysis. Critically, re-running analysis must *upsert* shared memory
+completed analysis. Critically, re-running analysis must *upsert* shared experience
 by trigger signature — never create duplicate rows.
 
 All rows created here are cleaned up afterwards so the suite leaves no residue.
@@ -18,8 +18,8 @@ from sqlalchemy import delete, select
 from lode.consumer.dedupe import compute_dedupe_key
 from lode.db.models.alert import Alert
 from lode.db.models.analysis import Analysis, AnalysisStep
-from lode.db.models.application import Application, PresetPrompt
-from lode.db.models.memory import Memory
+from lode.db.models.application import Application, ApplicationDescription
+from lode.db.models.experience import Experience
 from lode.db.session import AsyncSessionLocal
 from lode.engine import run_analysis
 
@@ -39,9 +39,9 @@ async def scenario():
         application_id = application.id
 
         session.add(
-            PresetPrompt(
+            ApplicationDescription(
                 application_id=application_id,
-                type="deploy",
+                description_type="deploy",
                 content="Deploys happen nightly; the last deploy bumped pool size to 40.",
             )
         )
@@ -84,15 +84,17 @@ async def scenario():
             delete(AnalysisStep).where(AnalysisStep.analysis_id == analysis_id)
         )
         await session.execute(
-            delete(Memory).where(
-                Memory.application_id == application_id,
-                Memory.trigger_signature == dedupe_key,
+            delete(Experience).where(
+                Experience.application_id == application_id,
+                Experience.trigger_signature == dedupe_key,
             )
         )
         await session.execute(delete(Analysis).where(Analysis.id == analysis_id))
         await session.execute(delete(Alert).where(Alert.id == alert_id))
         await session.execute(
-            delete(PresetPrompt).where(PresetPrompt.application_id == application_id)
+            delete(ApplicationDescription).where(
+                ApplicationDescription.application_id == application_id
+            )
         )
         await session.execute(delete(Application).where(Application.id == application_id))
         await session.commit()
@@ -123,36 +125,36 @@ async def test_run_analysis_completes(scenario):
             "git_sync",
             "context",
             "ai_analysis",
-            "memory",
+            "experience",
             "conclusion",
         }
 
-        # A new memory row is recorded (engine was confident, no prior match).
-        memories = (
+        # A new experience row is recorded (engine was confident, no prior match).
+        experiences = (
             await session.execute(
-                select(Memory).where(
-                    Memory.application_id == scenario["application_id"],
-                    Memory.trigger_signature == scenario["dedupe_key"],
+                select(Experience).where(
+                    Experience.application_id == scenario["application_id"],
+                    Experience.trigger_signature == scenario["dedupe_key"],
                 )
             )
         ).scalars().all()
-        assert len(memories) == 1
-        assert memories[0].is_valid is True
+        assert len(experiences) == 1
+        assert experiences[0].is_valid is True
 
 
-async def test_reanalysis_upserts_memory_no_duplicate(scenario):
+async def test_reanalysis_upserts_experience_no_duplicate(scenario):
     async with AsyncSessionLocal() as session:
         await run_analysis(scenario["analysis_id"], session)
         # Re-run the same analysis.
         await run_analysis(scenario["analysis_id"], session)
 
-        memories = (
+        experiences = (
             await session.execute(
-                select(Memory).where(
-                    Memory.application_id == scenario["application_id"],
-                    Memory.trigger_signature == scenario["dedupe_key"],
+                select(Experience).where(
+                    Experience.application_id == scenario["application_id"],
+                    Experience.trigger_signature == scenario["dedupe_key"],
                 )
             )
         ).scalars().all()
-        # Exactly one memory row: re-analysis upserted, not duplicated.
-        assert len(memories) == 1
+        # Exactly one experience row: re-analysis upserted, not duplicated.
+        assert len(experiences) == 1
