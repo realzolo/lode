@@ -11,7 +11,9 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
-    "aiokafka>=0.12.0",
+    # Kafka producers may use Snappy compression; install aiokafka's official
+    # codec extra so consumers can decode those batches in every runtime.
+    "aiokafka[snappy]>=0.12.0",
     "python-dotenv>=1.0.1",
     "cryptography>=44.0.0",
     "prometheus-client>=0.21.0",

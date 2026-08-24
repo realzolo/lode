@@ -41,6 +41,10 @@
   services. Its local Kafka advertises an internal `kafka:9092` listener and a
   host `localhost:9092` listener. Consumer and worker wait for the API health
   check, which runs only after API-owned migrations complete.
+- Kafka clients depend on `aiokafka[snappy]`, which installs the supported
+  `cramjam` codec backend. This is required in every API/consumer image and
+  local environment so consumers can decode producer batches compressed with
+  Snappy (and the same backend also supports LZ4 and Zstandard).
 - The project is in its fresh-initialization phase and has one self-contained
   Alembic baseline, `0001_initial`. Delete and recreate a local database before
   applying it. After the first production deployment, schema changes must use a

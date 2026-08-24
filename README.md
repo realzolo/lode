@@ -42,7 +42,7 @@ committed and covered by tests.
 
 - Python 3.12+ (async), FastAPI, SQLAlchemy 2.0 (async), Alembic
 - PostgreSQL 16+ (jsonb, timestamptz, GENERATED ALWAYS AS IDENTITY, partial indexes)
-- aiokafka consumer
+- aiokafka consumer with Snappy codec support (`aiokafka[snappy]`)
 - Analysis engine: controlled read-only tools + LLM client with a deterministic
   heuristic fallback (runs fully offline when no model key is configured)
 - Auth: PBKDF2 password hashing + HMAC-signed tokens (stdlib only, no extra deps)
