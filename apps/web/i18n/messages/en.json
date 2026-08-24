@@ -29,7 +29,7 @@
     "edit": "Edit",
     "loading": "Loading...",
     "empty": "No data yet",
-    "addHint": "Add hint",
+    "addHint": "Add analysis guidance",
     "reanalyze": "Re-analyze",
     "actionSuccess": "Action completed",
     "actionFailed": "Action failed",
@@ -116,7 +116,7 @@
     "confidence": "Confidence",
     "evidence": "Evidence",
     "steps": "Workflow",
-    "hintPlaceholder": "Add context to help the agent..."
+    "hintPlaceholder": "Add guidance for the analysis..."
   },
   "experiences": {
     "title": "Experience Library",

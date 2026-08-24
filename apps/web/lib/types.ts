@@ -44,7 +44,10 @@ export interface AnalysisStep {
     | 'conclusion';
   title: string;
   status: StepStatus;
+  summary?: string;
   detail?: string;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface Experience {

@@ -11,17 +11,20 @@ All rows created here are cleaned up afterwards so the suite leaves no residue.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest_asyncio
 from sqlalchemy import delete, select
 
 from lode.consumer.dedupe import compute_dedupe_key
 from lode.db.models.alert import Alert
-from lode.db.models.analysis import Analysis, AnalysisStep
+from lode.db.models.analysis import Analysis, AnalysisGuidance, AnalysisGuidanceUse, AnalysisStep
 from lode.db.models.application import Application, ApplicationDescription
 from lode.db.models.experience import Experience
+from lode.db.models.intake import AnalysisJob, Incident
 from lode.db.session import AsyncSessionLocal
 from lode.engine import run_analysis
+from lode.worker.main import _enqueue_deferred_reanalysis
 
 
 @pytest_asyncio.fixture
@@ -60,26 +63,56 @@ async def scenario():
         await session.flush()
         alert_id = alert.id
 
+        incident = Incident(
+            public_id=str(uuid.uuid4()),
+            application_id=application_id,
+            dedupe_key=dedupe_key,
+            state="open",
+            first_alert_id=alert_id,
+            latest_alert_id=alert_id,
+            alert_count=1,
+        )
+        session.add(incident)
+        await session.flush()
+
         analysis = Analysis(
             dedupe_key=dedupe_key,
             application_id=application_id,
             alert_id=alert_id,
+            incident_id=incident.id,
             status="pending",
         )
         session.add(analysis)
+        await session.flush()
+        session.add(
+            AnalysisGuidance(
+                incident_id=incident.id,
+                source_analysis_id=analysis.id,
+                author="Engine Test",
+                content="Check whether the connection pool limit changed in the last deploy.",
+            )
+        )
         await session.commit()
         await session.refresh(analysis)
         analysis_id = analysis.id
+        incident_id = incident.id
 
     yield {
         "application_id": application_id,
         "alert_id": alert_id,
         "analysis_id": analysis_id,
+        "incident_id": incident_id,
         "dedupe_key": dedupe_key,
     }
 
     # Clean up everything this test created, in FK-safe order.
     async with AsyncSessionLocal() as session:
+        await session.execute(
+            delete(AnalysisGuidanceUse).where(AnalysisGuidanceUse.analysis_id == analysis_id)
+        )
+        await session.execute(
+            delete(AnalysisGuidance).where(AnalysisGuidance.incident_id == incident_id)
+        )
         await session.execute(
             delete(AnalysisStep).where(AnalysisStep.analysis_id == analysis_id)
         )
@@ -90,6 +123,7 @@ async def scenario():
             )
         )
         await session.execute(delete(Analysis).where(Analysis.id == analysis_id))
+        await session.execute(delete(Incident).where(Incident.id == incident_id))
         await session.execute(delete(Alert).where(Alert.id == alert_id))
         await session.execute(
             delete(ApplicationDescription).where(
@@ -128,6 +162,16 @@ async def test_run_analysis_completes(scenario):
             "experience",
             "conclusion",
         }
+        assert all(step.started_at is not None and step.finished_at is not None for step in steps)
+
+        guidance_uses = (
+            await session.execute(
+                select(AnalysisGuidanceUse).where(
+                    AnalysisGuidanceUse.analysis_id == scenario["analysis_id"]
+                )
+            )
+        ).scalars().all()
+        assert len(guidance_uses) == 1
 
         # A new experience row is recorded (engine was confident, no prior match).
         experiences = (
@@ -158,3 +202,23 @@ async def test_reanalysis_upserts_experience_no_duplicate(scenario):
         ).scalars().all()
         # Exactly one experience row: re-analysis upserted, not duplicated.
         assert len(experiences) == 1
+
+
+async def test_confirmed_follow_up_creates_one_successor(scenario):
+    async with AsyncSessionLocal() as session:
+        analysis = await session.get(Analysis, scenario["analysis_id"])
+        incident = await session.get(Incident, scenario["incident_id"])
+        assert analysis is not None and incident is not None
+        analysis.status = "completed"
+        incident.reanalysis_requested_at = datetime.now(UTC)
+        assert await _enqueue_deferred_reanalysis(session, analysis) is True
+        assert await _enqueue_deferred_reanalysis(session, analysis) is False
+        await session.commit()
+
+        successors = (
+            await session.execute(
+                select(AnalysisJob).where(AnalysisJob.incident_id == incident.id)
+            )
+        ).scalars().all()
+        assert len(successors) == 1
+        assert successors[0].trigger == "guidance_reanalyze"

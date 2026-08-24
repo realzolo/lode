@@ -29,7 +29,7 @@
     "edit": "编辑",
     "loading": "加载中...",
     "empty": "暂无数据",
-    "addHint": "添加提示",
+    "addHint": "添加分析引导",
     "reanalyze": "重新分析",
     "actionSuccess": "操作成功",
     "actionFailed": "操作失败",
@@ -116,7 +116,7 @@
     "confidence": "置信度",
     "evidence": "证据",
     "steps": "工作流",
-    "hintPlaceholder": "补充上下文以辅助 Agent..."
+    "hintPlaceholder": "补充分析引导..."
   },
   "experiences": {
     "title": "经验库",

@@ -2,69 +2,109 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
+import type { AnalysisStatus, AnalysisStep } from '@/lib/types';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-  DialogDescription,
-} from '@/components/ui/dialog';
-import type { AnalysisStatus } from '@/lib/types';
-import {
-  addHint,
+  addGuidance,
   fetchAnalysis,
   reanalyze,
   toUiSteps,
   type AnalysisDetail,
 } from '@/lib/api';
-import { WorkflowStepper } from '@/components/workflow-stepper';
+import { PIPELINE, WorkflowStepper } from '@/components/workflow-stepper';
 import { IconRefreshCw, IconPlus } from '@/components/icons';
 
+type NodeType = AnalysisStep['nodeType'];
+
+const STEP_TITLE: Record<NodeType, string> = {
+  receive: '接收告警', git_sync: '同步源码', context: '收集上下文',
+  ai_analysis: 'AI 根因分析', experience: '匹配经验', conclusion: '生成结论',
+};
+
+const STEP_STATUS: Record<AnalysisStep['status'], string> = {
+  done: '已完成', running: '运行中', pending: '等待中', failed: '失败', skipped: '已跳过',
+};
+
+const GUIDANCE_EFFECT = {
+  will_apply: '将纳入本次分析', applied: '已纳入本次分析', needs_reanalysis: '需重新分析后生效',
+} as const;
+
 function statusVariant(status: AnalysisStatus): 'success' | 'warning' | 'danger' | 'accent' | 'default' {
-  switch (status) {
-    case 'completed':
-      return 'success';
-    case 'failed':
-      return 'danger';
-    case 'running':
-    case 'needs_human':
-      return 'warning';
-    case 'pending':
-    default:
-      return 'accent';
+  if (status === 'completed') return 'success';
+  if (status === 'failed') return 'danger';
+  if (status === 'running' || status === 'needs_human') return 'warning';
+  return 'accent';
+}
+
+function asStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function asRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    : [];
+}
+
+function formatDuration(start?: string, finish?: string): string | null {
+  if (!start || !finish) return null;
+  const seconds = Math.max(0, Math.round((Date.parse(finish) - Date.parse(start)) / 1000));
+  return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+function DetailList({ title, items }: { title: string; items: string[] }) {
+  if (!items.length) return null;
+  return <section className="analysis-detail-group"><h3>{title}</h3><ul>{items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul></section>;
+}
+
+function StepArtifacts({ node, detail }: { node: NodeType; detail: AnalysisDetail }) {
+  const evidence = detail.evidence ?? {};
+  if (node === 'receive' && detail.alert) {
+    const fields = Object.entries(detail.alert.fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
+    return <div className="analysis-key-values"><span>级别 <b>{detail.alert.level}</b></span><span>主题 <b>{detail.alert.topic}</b></span><span className="analysis-key-values-wide">错误 <b>{detail.alert.error_message || '未提供'}</b></span>{fields.map((field) => <span className="analysis-key-values-wide" key={field}>字段 <b className="mono">{field}</b></span>)}</div>;
   }
+  if (node === 'git_sync') {
+    const files = asRecords(evidence.git_evidence).map((item) => {
+      const locator = typeof item.locator === 'string' ? item.locator : '未命名证据';
+      const line = typeof item.line === 'number' ? `:${item.line}` : '';
+      const terms = asStrings(item.terms).join(', ');
+      return terms ? `${locator}${line}  ·  ${terms}` : `${locator}${line}`;
+    });
+    return <><DetailList title="检索模块" items={asStrings(evidence.modules)} /><DetailList title="源码证据" items={files} /></>;
+  }
+  if (node === 'context') return <DetailList title="允许查询的数据表" items={asStrings(evidence.allowed_tables)} />;
+  if (node === 'ai_analysis') return <><DetailList title="已确认事实" items={asStrings(evidence.facts)} /><DetailList title="推断" items={asStrings(evidence.inferences)} /><DetailList title="仍待确认" items={asStrings(evidence.unknowns)} /></>;
+  if (node === 'experience' && detail.matched_experience) return <section className="analysis-detail-group"><h3>命中经验</h3><p>{detail.matched_experience}</p></section>;
+  if (node === 'conclusion') return <DetailList title="引用证据" items={asRecords(evidence.cited_evidence).map((item) => typeof item.locator === 'string' ? item.locator : '未命名证据')} />;
+  return null;
 }
 
 export default function AnalysisPage({ params }: { params: { dedupeKey: string } }) {
   const t = useTranslations('analysis');
   const tc = useTranslations('common');
   const dedupeKey = decodeURIComponent(params.dedupeKey);
-
   const [detail, setDetail] = useState<AnalysisDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [hint, setHint] = useState('');
+  const [guidance, setGuidance] = useState('');
+  const [guidanceOpen, setGuidanceOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [hintOpen, setHintOpen] = useState(false);
+  const [selectedNode, setSelectedNode] = useState<NodeType>('receive');
+  const selectedInitialized = useRef(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
+    if (pollRef.current) clearTimeout(pollRef.current);
     try {
       const data = await fetchAnalysis(dedupeKey);
       setDetail(data);
       setError(null);
-      if (data.status === 'running') {
-        // Poll until the engine finishes.
-        pollRef.current = setTimeout(() => void load(), 1500);
-      }
-    } catch (e) {
-      setError(String(e));
+      if (data.status === 'pending' || data.status === 'running') pollRef.current = setTimeout(() => void load(), 1500);
+    } catch (cause) {
+      setError(String(cause));
     } finally {
       setLoading(false);
     }
@@ -72,182 +112,66 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
 
   useEffect(() => {
     void load();
-    return () => {
-      if (pollRef.current) clearTimeout(pollRef.current);
-    };
+    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
   }, [load]);
+
+  useEffect(() => {
+    if (!detail || selectedInitialized.current) return;
+    const running = detail.steps.find((step) => step.status === 'running');
+    const completed = detail.status === 'completed' ? 'conclusion' : detail.steps.filter((step) => step.status === 'completed').at(-1)?.node_type;
+    setSelectedNode((running?.node_type ?? completed ?? 'receive') as NodeType);
+    selectedInitialized.current = true;
+  }, [detail]);
 
   async function handleReanalyze() {
     setBusy(true);
-    try {
-      await reanalyze(dedupeKey);
-      await load();
-    } finally {
-      setBusy(false);
-    }
+    try { await reanalyze(dedupeKey); await load(); } finally { setBusy(false); }
   }
 
-  async function handleAddHint() {
-    if (!hint.trim()) return;
+  async function handleAddGuidance() {
+    if (!guidance.trim()) return;
     setBusy(true);
     try {
-      await addHint(dedupeKey, hint.trim());
-      setHint('');
-      setHintOpen(false);
+      await addGuidance(dedupeKey, guidance.trim());
+      setGuidance('');
+      setGuidanceOpen(false);
       await load();
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
 
-  if (loading && !detail)
-    return (
-      <div aria-busy="true">
-        <div className="row-between">
-          <div className="space-y-2">
-            <Skeleton className="h-8 w-56" />
-            <Skeleton className="h-3.5 w-40" />
-          </div>
-          <div className="row gap-2">
-            <Skeleton className="h-5 w-16" />
-            <Skeleton className="h-9 w-24" />
-          </div>
-        </div>
-        <div className="stack" style={{ marginTop: 20 }}>
-          <Card className="stack">
-            <div className="row-between">
-              <Skeleton className="h-5 w-24" />
-              <Skeleton className="h-3.5 w-16" />
-            </div>
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-4/5" />
-          </Card>
-          <Card className="stack">
-            <Skeleton className="h-5 w-20" />
-            <Skeleton className="h-24 w-full" />
-          </Card>
-          <Card className="stack">
-            <Skeleton className="h-5 w-16" />
-            <div className="stack" style={{ gap: 12 }}>
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-3">
-                  <Skeleton variant="pill" className="h-3 w-3" />
-                  <Skeleton className="h-4 w-48" />
-                </div>
-              ))}
-            </div>
-          </Card>
-          <Card className="stack">
-            <Skeleton className="h-20 w-full" />
-            <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <Skeleton className="h-9 w-24" />
-            </div>
-          </Card>
-        </div>
-      </div>
-    );
+  if (loading && !detail) return <div className="analysis-loading" aria-busy="true"><Skeleton className="h-9 w-56" /><Skeleton className="h-4 w-80" /><Skeleton className="h-44 w-full" /><Skeleton className="h-72 w-full" /></div>;
   if (error) return <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>;
   if (!detail) return <p className="muted">{tc('empty')}</p>;
 
   const uiStatus = detail.status as AnalysisStatus;
   const steps = toUiSteps(detail.steps);
-  const evidenceText = detail.evidence
-    ? JSON.stringify(detail.evidence, null, 2)
-    : '';
+  const canAnalyze = detail.my_perm == null || detail.my_perm === 'analyze' || detail.my_perm === 'admin';
+  const selectedStep = steps.find((step) => step.nodeType === selectedNode) ?? { nodeType: selectedNode, title: STEP_TITLE[selectedNode], status: 'pending' as const };
+  const totalDuration = formatDuration(detail.started_at ?? undefined, detail.finished_at ?? undefined);
+  const lateGuidance = detail.guidances.some((item) => item.effect === 'needs_reanalysis');
 
-  // Re-analyze requires at least the "analyze" tier. Global admins (my_perm is
-  // null/undefined) and app admins/analysts may run it; read-only viewers cannot.
-  const canAnalyze =
-    detail.my_perm === undefined ||
-    detail.my_perm === null ||
-    detail.my_perm === 'analyze' ||
-    detail.my_perm === 'admin';
+  return <main className="analysis-workspace">
+    <header className="analysis-header">
+      <div><p className="analysis-eyebrow">调查任务</p><h1 className="page-title">{t('title')}</h1><p className="mono muted">{dedupeKey}</p></div>
+      <div className="analysis-actions"><Badge variant={statusVariant(uiStatus)}>{uiStatus}</Badge>{totalDuration && <span className="analysis-duration">耗时 {totalDuration}</span>}{canAnalyze && <Button variant="primary" onClick={handleReanalyze} disabled={busy}><IconRefreshCw size={16} /> {tc('reanalyze')}</Button>}</div>
+    </header>
 
-  return (
-    <>
-      <div className="row-between">
-        <div>
-          <h1 className="page-title">{t('title')}</h1>
-          <p className="mono muted" style={{ fontSize: 13 }}>
-            {dedupeKey}
-          </p>
-        </div>
-        <div className="row">
-          <Badge variant={statusVariant(uiStatus)}>{uiStatus}</Badge>
-          {canAnalyze && (
-            <Button variant="primary" onClick={handleReanalyze} disabled={busy}>
-              <IconRefreshCw size={16} /> {tc('reanalyze')}
-            </Button>
-          )}
-        </div>
-      </div>
+    <section className="analysis-outcome" aria-live="polite"><div className="analysis-outcome-meta"><span>当前结论</span><span>{t('confidence')} {detail.confidence != null ? detail.confidence.toFixed(2) : '—'}</span></div><p>{detail.conclusion ?? (uiStatus === 'failed' ? '分析未能完成，请查看失败步骤并补充分析引导。' : '分析正在汇集证据与上下文。')}</p></section>
 
-      <div className="stack" style={{ marginTop: 20 }}>
-        <Card>
-          <div className="row-between">
-            <h2 className="section-title">{t('conclusion')}</h2>
-            <span className="muted">
-              {t('confidence')}: {detail.confidence != null ? detail.confidence.toFixed(2) : '—'}
-            </span>
-          </div>
-          <p style={{ marginTop: 8 }}>{detail.conclusion ?? tc('loading')}</p>
-          {detail.matched_experience && (
-            <p className="muted" style={{ marginTop: 8, fontSize: 13 }}>
-              ⊹ matched shared experience: {detail.matched_experience}
-            </p>
-          )}
-        </Card>
+    <section className="analysis-flow"><div className="analysis-section-heading"><div><p className="analysis-eyebrow">调查轨迹</p><h2>{t('steps')}</h2></div><span className="muted">选择步骤查看调查细节</span></div><WorkflowStepper steps={steps} selected={selectedNode} onSelect={setSelectedNode} /></section>
 
-        <Card>
-          <h2 className="section-title">{t('evidence')}</h2>
-          <pre className="evidence">{evidenceText}</pre>
-        </Card>
+    <section className="analysis-inspector" data-state={selectedStep.status}>
+      <div className="analysis-inspector-head"><div><p className="analysis-eyebrow">阶段 {PIPELINE.findIndex((item) => item.nodeType === selectedNode) + 1} / 6</p><h2>{STEP_TITLE[selectedNode]}</h2></div><div className="analysis-inspector-status"><span>{STEP_STATUS[selectedStep.status]}</span>{formatDuration(selectedStep.startedAt, selectedStep.finishedAt) && <span>耗时 {formatDuration(selectedStep.startedAt, selectedStep.finishedAt)}</span>}</div></div>
+      <p className="analysis-step-summary">{selectedStep.summary ?? (selectedStep.status === 'pending' ? '等待前置阶段完成。' : '该阶段暂未返回摘要。')}</p>
+      {selectedStep.detail && <p className="analysis-step-detail">{selectedStep.detail}</p>}
+      <StepArtifacts node={selectedNode} detail={detail} />
+    </section>
 
-        <Card>
-          <h2 className="section-title">{t('steps')}</h2>
-          <WorkflowStepper steps={steps} />
-        </Card>
-
-        {detail.hints.length > 0 && (
-          <Card className="stack">
-            <h2 className="section-title">{tc('addHint')}</h2>
-            {detail.hints.map((h) => (
-              <div key={h.id} className="muted" style={{ fontSize: 13 }}>
-                <span className="mono">{h.author}</span>: {h.content}
-              </div>
-            ))}
-          </Card>
-        )}
-
-        <div className="row" style={{ justifyContent: 'flex-end' }}>
-          <Button variant="primary" onClick={() => setHintOpen(true)}>
-            <IconPlus size={16} /> {tc('addHint')}
-          </Button>
-        </div>
-
-        <Dialog open={hintOpen} onOpenChange={setHintOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>{tc('addHint')}</DialogTitle>
-              <DialogDescription>{t('hintPlaceholder')}</DialogDescription>
-            </DialogHeader>
-            <Textarea
-              placeholder={t('hintPlaceholder')}
-              value={hint}
-              onChange={(e) => setHint(e.target.value)}
-              autoFocus
-            />
-            <DialogFooter>
-              <Button variant="default" onClick={() => setHintOpen(false)} disabled={busy}>
-                {tc('cancel')}
-              </Button>
-              <Button variant="primary" onClick={handleAddHint} disabled={busy || !hint.trim()}>
-                <IconPlus size={16} /> {tc('addHint')}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-    </>
-  );
+    <section className="analysis-guidance" aria-labelledby="guidance-heading">
+      <div className="analysis-section-heading"><div><p className="analysis-eyebrow">人工协作</p><h2 id="guidance-heading">分析引导</h2></div><Button variant="default" size="sm" onClick={() => setGuidanceOpen((open) => !open)} disabled={busy}><IconPlus size={15} /> 添加分析引导</Button></div>
+      {guidanceOpen && <div className="analysis-guidance-composer"><Textarea value={guidance} onChange={(event) => setGuidance(event.target.value)} placeholder="补充与本次告警相关的事实、假设或排查方向..." autoFocus /><div><p className="muted">AI 推理开始前提交的引导会纳入本次分析；之后提交的内容会保留到下一次分析。</p><Button variant="primary" size="sm" onClick={handleAddGuidance} disabled={busy || !guidance.trim()}><IconPlus size={15} /> 提交引导</Button></div></div>}
+      {detail.guidances.length ? <div className="analysis-guidance-list">{detail.guidances.map((item) => <article key={item.id} className="analysis-guidance-item" data-effect={item.effect}><div><span className="mono">{item.author}</span><span>{GUIDANCE_EFFECT[item.effect]}</span></div><p>{item.content}</p></article>)}</div> : <p className="muted">暂无分析引导。</p>}
+      {lateGuidance && canAnalyze && <div className="analysis-follow-up"><span>{detail.follow_up_status === 'requested' ? '后续分析已登记，将在当前任务结束后开始。' : '存在尚未纳入当前推理的分析引导。'}</span>{detail.follow_up_status === 'none' && <Button variant="primary" size="sm" onClick={handleReanalyze} disabled={busy}><IconRefreshCw size={15} /> 使用引导重新分析</Button>}</div>}
+    </section>
+  </main>;
 }

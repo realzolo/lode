@@ -1,4 +1,4 @@
-"""Analysis run, human hints, and workflow step models."""
+"""Analysis run, operator guidance, and workflow step models."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -72,19 +73,53 @@ class Analysis(Base):
     )
 
 
-class AnalysisHint(Base):
-    __tablename__ = "analysis_hints"
+class AnalysisGuidance(Base):
+    """Operator-supplied context that guides analysis across an incident's runs."""
+
+    __tablename__ = "analysis_guidances"
 
     id: Mapped[int] = mapped_column(
         BigInteger, Identity(always=True), primary_key=True
     )
-    analysis_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False
+    incident_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    source_analysis_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("analyses.id", ondelete="SET NULL"), nullable=True
+    )
+    author_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     author: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (Index("ix_analysis_guidances_incident_created", "incident_id", "created_at"),)
+
+
+class AnalysisGuidanceUse(Base):
+    """Immutable record that a guidance item entered a particular AI prompt."""
+
+    __tablename__ = "analysis_guidance_uses"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=True), primary_key=True
+    )
+    guidance_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("analysis_guidances.id", ondelete="CASCADE"), nullable=False
+    )
+    analysis_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False
+    )
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("guidance_id", "analysis_id", name="uq_analysis_guidance_use"),
+        Index("ix_analysis_guidance_uses_analysis_id", "analysis_id"),
     )
 
 
@@ -102,6 +137,8 @@ class AnalysisStep(Base):
     input: Mapped[dict | None] = mapped_column(JSONB)
     output: Mapped[dict | None] = mapped_column(JSONB)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
     )

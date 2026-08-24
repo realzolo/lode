@@ -2,7 +2,7 @@
 
 // Developer Workbench shell. Any signed-in user (including admins) may use it;
 // the auth cookie gate is enforced by middleware. This is the R&D surface:
-// browse all analysis tasks and add investigation hints.
+// browse all analysis tasks and add investigation guidance.
 
 import type { ReactNode } from 'react';
 import { AppShell } from '@/components/layout/app-shell';

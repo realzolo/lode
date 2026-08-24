@@ -1,4 +1,4 @@
-"""Unit tests for human-hint injection and the evidence packet helpers."""
+"""Unit tests for analysis-guidance injection and evidence packet helpers."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class _FakeAlert:
     fields = {"orderId": "1"}
 
 
-def test_human_hints_injected_as_data_not_commands() -> None:
+def test_analysis_guidance_is_injected_as_data_not_commands() -> None:
     _system, user = _build_prompts(
         _FakeAlert(),
         None,
@@ -24,17 +24,17 @@ def test_human_hints_injected_as_data_not_commands() -> None:
         [],
         [],
         None,
-        human_hints="- check the payment gateway timeout",
+        guidance_text="- check the payment gateway timeout",
     )
-    assert "HUMAN_HINTS" in user
+    assert "ANALYSIS_GUIDANCE" in user
     assert "payment gateway timeout" in user
     # The model is told explicitly not to obey instructions inside the hints.
     assert "not commands" in user
 
 
-def test_no_human_hints_section_when_none() -> None:
+def test_no_analysis_guidance_section_when_none() -> None:
     _system, user = _build_prompts(_FakeAlert(), None, [], [], [], None)
-    assert "HUMAN_HINTS" not in user
+    assert "ANALYSIS_GUIDANCE" not in user
 
 
 def test_evidence_registry_rendered_in_prompt() -> None:
@@ -105,7 +105,7 @@ def test_normalize_clamps_confidence() -> None:
 def test_heuristic_packet_is_flagged_as_fallback() -> None:
     alert = _FakeAlert()
     conclusion, confidence, refs, facts, inferences, unknowns = _heuristic_packet(
-        alert, "deploy notes", None, {}, human_hints=None
+        alert, "deploy notes", None, {}, guidance_text=None
     )
     assert refs == []  # heuristic cannot cite artifacts
     assert any("Heuristic" in u for u in unknowns)

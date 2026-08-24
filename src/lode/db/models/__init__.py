@@ -5,7 +5,12 @@ Alembic autogenerate and the migration runner see the full schema.
 """
 
 from lode.db.models.alert import Alert  # noqa: F401
-from lode.db.models.analysis import Analysis, AnalysisHint, AnalysisStep  # noqa: F401
+from lode.db.models.analysis import (  # noqa: F401
+    Analysis,
+    AnalysisGuidance,
+    AnalysisGuidanceUse,
+    AnalysisStep,
+)
 from lode.db.models.ai_model import AiModelConfig  # noqa: F401
 from lode.db.models.application import (  # noqa: F401
     Application,
@@ -22,7 +27,8 @@ from lode.db.models.user import Invite, User  # noqa: F401
 __all__ = [
     "Alert",
     "Analysis",
-    "AnalysisHint",
+    "AnalysisGuidance",
+    "AnalysisGuidanceUse",
     "AnalysisStep",
     "AiModelConfig",
     "Application",

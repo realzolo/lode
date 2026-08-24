@@ -272,17 +272,6 @@ def upgrade() -> None:
         "CREATE INDEX ix_analyses_application_id ON analyses (application_id);",
         "CREATE INDEX ix_analyses_incident_id ON analyses (incident_id);",
         """
-        CREATE TABLE analysis_hints (
-            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            analysis_id bigint NOT NULL,
-            author text NOT NULL DEFAULT '',
-            content text NOT NULL,
-            created_at timestamptz NOT NULL DEFAULT now(),
-            CONSTRAINT fk_analysis_hints_analysis_id
-                FOREIGN KEY (analysis_id) REFERENCES analyses (id) ON DELETE CASCADE
-        );
-        """,
-        """
         CREATE TABLE analysis_steps (
             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             analysis_id bigint NOT NULL,
@@ -291,6 +280,8 @@ def upgrade() -> None:
             input jsonb,
             output jsonb,
             order_index integer NOT NULL DEFAULT 0,
+            started_at timestamptz,
+            finished_at timestamptz,
             created_at timestamptz NOT NULL DEFAULT now(),
             updated_at timestamptz NOT NULL DEFAULT now(),
             CONSTRAINT fk_analysis_steps_analysis_id
@@ -358,6 +349,8 @@ def upgrade() -> None:
             alert_count integer NOT NULL DEFAULT 0,
             first_seen_at timestamptz,
             last_seen_at timestamptz,
+            reanalysis_requested_at timestamptz,
+            reanalysis_requested_by bigint,
             created_at timestamptz NOT NULL DEFAULT now(),
             updated_at timestamptz NOT NULL DEFAULT now(),
             CONSTRAINT uq_incidents_public_id UNIQUE (public_id),
@@ -369,6 +362,8 @@ def upgrade() -> None:
                 FOREIGN KEY (first_alert_id) REFERENCES alerts (id) ON DELETE SET NULL,
             CONSTRAINT fk_incidents_latest_alert_id
                 FOREIGN KEY (latest_alert_id) REFERENCES alerts (id) ON DELETE SET NULL,
+            CONSTRAINT fk_incidents_reanalysis_requested_by
+                FOREIGN KEY (reanalysis_requested_by) REFERENCES users (id) ON DELETE SET NULL,
             CONSTRAINT ck_incidents_state
                 CHECK (state IN ('open', 'resolved', 'suppressed'))
         );
@@ -419,6 +414,38 @@ def upgrade() -> None:
             ON analysis_jobs (incident_id)
             WHERE status IN ('queued', 'running', 'retry_wait');
         """,
+        """
+        CREATE TABLE analysis_guidances (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            incident_id bigint NOT NULL,
+            source_analysis_id bigint,
+            author_id bigint,
+            author text NOT NULL DEFAULT '',
+            content text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT fk_analysis_guidances_incident_id
+                FOREIGN KEY (incident_id) REFERENCES incidents (id) ON DELETE CASCADE,
+            CONSTRAINT fk_analysis_guidances_source_analysis_id
+                FOREIGN KEY (source_analysis_id) REFERENCES analyses (id) ON DELETE SET NULL,
+            CONSTRAINT fk_analysis_guidances_author_id
+                FOREIGN KEY (author_id) REFERENCES users (id) ON DELETE SET NULL
+        );
+        """,
+        "CREATE INDEX ix_analysis_guidances_incident_created ON analysis_guidances (incident_id, created_at);",
+        """
+        CREATE TABLE analysis_guidance_uses (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            guidance_id bigint NOT NULL,
+            analysis_id bigint NOT NULL,
+            applied_at timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT uq_analysis_guidance_use UNIQUE (guidance_id, analysis_id),
+            CONSTRAINT fk_analysis_guidance_uses_guidance_id
+                FOREIGN KEY (guidance_id) REFERENCES analysis_guidances (id) ON DELETE CASCADE,
+            CONSTRAINT fk_analysis_guidance_uses_analysis_id
+                FOREIGN KEY (analysis_id) REFERENCES analyses (id) ON DELETE CASCADE
+        );
+        """,
+        "CREATE INDEX ix_analysis_guidance_uses_analysis_id ON analysis_guidance_uses (analysis_id);",
         """
         ALTER TABLE analyses
             ADD CONSTRAINT fk_analyses_incident_id
@@ -540,7 +567,8 @@ def downgrade() -> None:
         "ingestion_events",
         "experiences",
         "analysis_steps",
-        "analysis_hints",
+        "analysis_guidance_uses",
+        "analysis_guidances",
         "analyses",
         "alerts",
         "db_sources",

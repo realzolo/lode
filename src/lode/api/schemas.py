@@ -8,6 +8,7 @@ keep internal columns (ids, secrets, raw payloads in full) out of the wire.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -20,15 +21,19 @@ class AnalysisStepOut(BaseModel):
     order_index: int
     detail: str | None = None
     summary: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
-class AnalysisHintOut(BaseModel):
+class AnalysisGuidanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     author: str
     content: str
     created_at: datetime
+    effect: Literal["will_apply", "applied", "needs_reanalysis"]
+    applied_at: datetime | None = None
 
 
 class AlertSummary(BaseModel):
@@ -66,7 +71,8 @@ class AnalysisDetailOut(BaseModel):
     evidence: dict | None
     alert: AlertSummary | None
     steps: list[AnalysisStepOut]
-    hints: list[AnalysisHintOut]
+    guidances: list[AnalysisGuidanceOut]
+    follow_up_status: Literal["none", "requested"] = "none"
     matched_experience: str | None = None
     started_at: datetime | None
     finished_at: datetime | None
@@ -297,9 +303,8 @@ class AlertListOut(BaseModel):
     received_at: datetime
 
 
-class AddHintIn(BaseModel):
+class AddGuidanceIn(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
-    author: str = Field(default="", max_length=120)
 
 
 class DeadLetterOut(BaseModel):

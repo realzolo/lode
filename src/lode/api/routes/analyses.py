@@ -1,29 +1,30 @@
-"""Analysis routes: list, detail, human hints, and re-analysis."""
+"""Analysis routes: list, detail, operator guidance, and re-analysis."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.config import settings
 from lode.api.audit import audit_action
 from lode.api.deps import assert_app_perm, permitted_app_ids, require_user
 from lode.api.schemas import (
-    AddHintIn,
+    AddGuidanceIn,
     AnalysisDetailOut,
-    AnalysisHintOut,
+    AnalysisGuidanceOut,
     AnalysisListOut,
     AnalysisStepOut,
     AlertSummary,
     ReanalyzeOut,
 )
 from lode.db.models.alert import Alert
-from lode.db.models.analysis import Analysis, AnalysisHint, AnalysisStep
+from lode.db.models.analysis import Analysis, AnalysisGuidance, AnalysisGuidanceUse, AnalysisStep
 from lode.db.models.application import Application
 from lode.db.models.intake import AnalysisJob, Incident
 from lode.db.models.experience import Experience
@@ -52,6 +53,51 @@ async def _latest_analysis(session: AsyncSession, dedupe_key: str) -> Analysis:
     if analysis is None:
         raise HTTPException(status_code=404, detail="analysis not found")
     return analysis
+
+
+async def _incident_for_analysis(session: AsyncSession, analysis: Analysis) -> Incident:
+    """Return the incident backing an analysis, creating it for legacy callers."""
+    if analysis.incident_id is not None:
+        incident = await session.get(Incident, analysis.incident_id)
+        if incident is not None:
+            return incident
+
+    incident = (
+        await session.execute(
+            select(Incident)
+            .where(Incident.application_id == analysis.application_id)
+            .where(Incident.dedupe_key == analysis.dedupe_key)
+            .limit(1)
+        )
+    ).scalars().first()
+    if incident is None:
+        incident = Incident(
+            public_id=uuid.uuid4().hex,
+            application_id=analysis.application_id,
+            dedupe_key=analysis.dedupe_key,
+            state="open",
+            first_alert_id=analysis.alert_id,
+            latest_alert_id=analysis.alert_id,
+            alert_count=1,
+        )
+        session.add(incident)
+        await session.flush()
+    analysis.incident_id = incident.id
+    return incident
+
+
+def _guidance_effect(
+    analysis: Analysis,
+    ai_step: AnalysisStep | None,
+    usage: AnalysisGuidanceUse | None,
+) -> str:
+    if usage is not None:
+        return "applied"
+    if analysis.status in {"completed", "failed", "canceled"}:
+        return "needs_reanalysis"
+    if ai_step is not None and ai_step.status in {"running", "completed", "failed", "skipped"}:
+        return "needs_reanalysis"
+    return "will_apply"
 
 
 @router.get("", response_model=list[AnalysisListOut])
@@ -144,13 +190,22 @@ async def get_analysis(
         )
     ).scalars().all()
 
-    hints = (
+    incident = await _incident_for_analysis(session, analysis)
+    ai_step = next((step for step in steps if step.node_type == "ai_analysis"), None)
+    guidance_rows = (
         await session.execute(
-            select(AnalysisHint)
-            .where(AnalysisHint.analysis_id == analysis.id)
-            .order_by(AnalysisHint.created_at)
+            select(AnalysisGuidance, AnalysisGuidanceUse)
+            .outerjoin(
+                AnalysisGuidanceUse,
+                and_(
+                    AnalysisGuidanceUse.guidance_id == AnalysisGuidance.id,
+                    AnalysisGuidanceUse.analysis_id == analysis.id,
+                ),
+            )
+            .where(AnalysisGuidance.incident_id == incident.id)
+            .order_by(AnalysisGuidance.created_at)
         )
-    ).scalars().all()
+    ).all()
 
     matched = (
         await session.execute(
@@ -196,13 +251,23 @@ async def get_analysis(
                 order_index=s.order_index,
                 detail=(s.output or {}).get("detail") if s.output else None,
                 summary=(s.output or {}).get("summary") if s.output else None,
+                started_at=s.started_at,
+                finished_at=s.finished_at,
             )
             for s in steps
         ],
-        hints=[
-            AnalysisHintOut(id=h.id, author=h.author, content=h.content, created_at=h.created_at)
-            for h in hints
+        guidances=[
+            AnalysisGuidanceOut(
+                id=guidance.id,
+                author=guidance.author,
+                content=guidance.content,
+                created_at=guidance.created_at,
+                effect=_guidance_effect(analysis, ai_step, usage),
+                applied_at=usage.applied_at if usage is not None else None,
+            )
+            for guidance, usage in guidance_rows
         ],
+        follow_up_status="requested" if incident.reanalysis_requested_at is not None else "none",
         matched_experience=matched.content if matched is not None else None,
         started_at=analysis.started_at,
         finished_at=analysis.finished_at,
@@ -211,27 +276,43 @@ async def get_analysis(
     )
 
 
-@router.post("/{dedupe_key}/hints", response_model=AnalysisHintOut)
-async def add_hint(
+@router.post("/{dedupe_key}/guidances", response_model=AnalysisGuidanceOut)
+async def add_guidance(
     dedupe_key: str,
-    payload: AddHintIn,
+    payload: AddGuidanceIn,
     user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
-) -> AnalysisHintOut:
+) -> AnalysisGuidanceOut:
     analysis = await _latest_analysis(session, dedupe_key)
     user = await session.get(User, user_id)
-    # Adding a human hint is annotation-level access — read or above suffices.
+    # Guidance is collaborative context. It does not itself consume compute, so
+    # read access is enough; the separate re-analysis action requires analyze.
     await assert_app_perm(session, user, analysis.application_id, "read")
-    hint = AnalysisHint(
-        analysis_id=analysis.id,
-        author=payload.author or "anonymous",
+    incident = await _incident_for_analysis(session, analysis)
+    guidance = AnalysisGuidance(
+        incident_id=incident.id,
+        source_analysis_id=analysis.id,
+        author_id=user.id,
+        author=user.name or user.email,
         content=payload.content,
     )
-    session.add(hint)
+    session.add(guidance)
     await session.commit()
-    await session.refresh(hint)
-    return AnalysisHintOut(
-        id=hint.id, author=hint.author, content=hint.content, created_at=hint.created_at
+    await session.refresh(guidance)
+    ai_step = (
+        await session.execute(
+            select(AnalysisStep)
+            .where(AnalysisStep.analysis_id == analysis.id)
+            .where(AnalysisStep.node_type == "ai_analysis")
+            .limit(1)
+        )
+    ).scalars().first()
+    return AnalysisGuidanceOut(
+        id=guidance.id,
+        author=guidance.author,
+        content=guidance.content,
+        created_at=guidance.created_at,
+        effect=_guidance_effect(analysis, ai_step, None),
     )
 
 
@@ -252,8 +333,10 @@ async def reanalyze(
     # requires at least the "analyze" tier (not read-only viewers).
     await assert_app_perm(session, user, analysis.application_id, "analyze")
 
-    # An active analysis for this incident already exists — refuse to stack
-    # another one (the dedupe contract also applies to manual re-runs).
+    incident = await _incident_for_analysis(session, analysis)
+
+    # A confirmed late guidance must never start parallel work. Record a single
+    # successor request and let the worker create it after the active job ends.
     active = (
         await session.execute(
             select(Analysis)
@@ -264,32 +347,25 @@ async def reanalyze(
         )
     ).scalars().first()
     if active is not None:
-        raise HTTPException(
-            status_code=409, detail="an analysis for this incident is already in progress"
+        incident.reanalysis_requested_at = datetime.now(UTC)
+        incident.reanalysis_requested_by = user_id
+        await session.commit()
+        await audit_action(
+            action="analysis.reanalysis_requested",
+            actor_id=user_id,
+            target_type="application",
+            target_id=str(analysis.application_id),
+            application_id=analysis.application_id,
+            result="ok",
+            detail={"dedupe_key": dedupe_key, "after_analysis_id": active.id},
+        )
+        return ReanalyzeOut(
+            dedupe_key=dedupe_key,
+            status="scheduled_after_active",
+            message="Re-analysis will start after the active analysis finishes.",
         )
 
     # Create a fresh analysis run + queued job; the worker executes it.
-    incident = (
-        await session.execute(
-            select(Incident)
-            .where(Incident.application_id == analysis.application_id)
-            .where(Incident.dedupe_key == dedupe_key)
-            .limit(1)
-        )
-    ).scalars().first()
-    if incident is None:
-        incident = Incident(
-            public_id=uuid.uuid4().hex,
-            application_id=analysis.application_id,
-            dedupe_key=dedupe_key,
-            state="open",
-            first_alert_id=analysis.alert_id,
-            latest_alert_id=analysis.alert_id,
-            alert_count=1,
-        )
-        session.add(incident)
-        await session.flush()
-
     new_analysis = Analysis(
         dedupe_key=dedupe_key,
         application_id=analysis.application_id,

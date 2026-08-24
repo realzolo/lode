@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.config import settings
 from lode.db.models.analysis import Analysis
-from lode.db.models.intake import AnalysisJob
+from lode.db.models.intake import AnalysisJob, Incident
 from lode.db.session import AsyncSessionLocal
 from lode.engine import run_analysis
 from lode.metrics import ANALYSES, ENGINE_IN_FLIGHT
@@ -150,10 +150,17 @@ async def run_job(job_id: int) -> None:
                 if analysis is not None:
                     analysis.job_id = job.id
                 ANALYSES.labels(result="completed").inc()
+                # Flush the terminal status before adding a successor so the
+                # partial active-job uniqueness index remains satisfied.
+                await session.flush()
+                await _enqueue_deferred_reanalysis(session, analysis)
                 await session.commit()
             except Exception as exc:  # noqa: BLE001 - classify then persist
                 logger.exception("analysis %s failed: %s", job.analysis_id, exc)
-                await _fail_or_retry(session, job, analysis, exc)
+                terminal = await _fail_or_retry(session, job, analysis, exc)
+                if terminal:
+                    await _enqueue_deferred_reanalysis(session, analysis)
+                    await session.commit()
             finally:
                 heartbeat.cancel()
                 try:
@@ -164,9 +171,53 @@ async def run_job(job_id: int) -> None:
             ENGINE_IN_FLIGHT.dec()
 
 
+async def _enqueue_deferred_reanalysis(
+    session: AsyncSession, analysis: Analysis | None
+) -> bool:
+    """Create exactly one user-confirmed successor after a terminal run."""
+    if analysis is None or analysis.incident_id is None:
+        return False
+    incident = (
+        await session.execute(
+            select(Incident)
+            .where(Incident.id == analysis.incident_id)
+            .with_for_update()
+        )
+    ).scalars().first()
+    if incident is None or incident.reanalysis_requested_at is None:
+        return False
+
+    requested_by = incident.reanalysis_requested_by
+    incident.reanalysis_requested_at = None
+    incident.reanalysis_requested_by = None
+    successor = Analysis(
+        dedupe_key=analysis.dedupe_key,
+        application_id=analysis.application_id,
+        alert_id=analysis.alert_id,
+        incident_id=incident.id,
+        status="pending",
+        engine_version=None,
+    )
+    session.add(successor)
+    await session.flush()
+    session.add(
+        AnalysisJob(
+            public_id=uuid.uuid4().hex,
+            incident_id=incident.id,
+            analysis_id=successor.id,
+            trigger="guidance_reanalyze",
+            status="queued",
+            requested_by=requested_by,
+            max_attempts=settings.job_max_attempts,
+        )
+    )
+    logger.info("queued deferred re-analysis for incident %s", incident.id)
+    return True
+
+
 async def _fail_or_retry(
     session: AsyncSession, job: AnalysisJob, analysis: Analysis | None, exc: Exception
-) -> None:
+) -> bool:
     job.last_error_code = type(exc).__name__
     job.last_error_detail = str(exc)[:500]
     retryable = _is_retryable(exc)
@@ -195,6 +246,7 @@ async def _fail_or_retry(
         ANALYSES.labels(result="failed").inc()
         logger.error("job %s dead after %d attempt(s)", job.id, job.attempt)
     await session.commit()
+    return not retryable or (job.attempt or 0) >= (job.max_attempts or settings.job_max_attempts)
 
 
 async def _heartbeat(job_id: int) -> None:

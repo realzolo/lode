@@ -178,13 +178,17 @@ interface ApiStep {
   order_index: number;
   detail: string | null;
   summary: string | null;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
-interface ApiHint {
+export interface AnalysisGuidance {
   id: number;
   author: string;
   content: string;
   created_at: string;
+  effect: 'will_apply' | 'applied' | 'needs_reanalysis';
+  applied_at: string | null;
 }
 
 interface ApiAlert {
@@ -205,7 +209,8 @@ export interface AnalysisDetail {
   evidence: Record<string, unknown> | null;
   alert: ApiAlert | null;
   steps: ApiStep[];
-  hints: ApiHint[];
+  guidances: AnalysisGuidance[];
+  follow_up_status: 'none' | 'requested';
   matched_experience: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -273,11 +278,11 @@ export async function reanalyze(dedupeKey: string): Promise<void> {
   }
 }
 
-export async function addHint(
+export async function addGuidance(
   dedupeKey: string,
   content: string
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(dedupeKey)}/hints`, {
+  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(dedupeKey)}/guidances`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ content, author: 'web' }),
@@ -288,7 +293,7 @@ export async function addHint(
   }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `add hint failed: ${res.status}`);
+    throw new Error(body?.error?.message ?? `add guidance failed: ${res.status}`);
   }
 }
 
@@ -670,9 +675,12 @@ export async function fetchExperiences(applicationId?: number): Promise<Experien
 export function toUiSteps(steps: ApiStep[]): AnalysisStep[] {
   return steps.map((s) => ({
     nodeType: s.node_type as AnalysisStep['nodeType'],
-    title: s.summary ?? s.node_type,
+    title: s.node_type,
     status: mapStepStatus(s.status),
+    summary: s.summary ?? undefined,
     detail: s.detail ?? undefined,
+    startedAt: s.started_at ?? undefined,
+    finishedAt: s.finished_at ?? undefined,
   }));
 }
 

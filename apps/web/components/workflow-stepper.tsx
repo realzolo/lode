@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useState } from 'react';
+import { Fragment } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   Inbox,
@@ -38,7 +38,7 @@ interface PipelineNode {
   title: string;
 }
 
-const PIPELINE: PipelineNode[] = [
+export const PIPELINE: PipelineNode[] = [
   { nodeType: 'receive', icon: Inbox, title: '接收告警' },
   { nodeType: 'git_sync', icon: GitBranch, title: '同步源码' },
   { nodeType: 'context', icon: Layers, title: '收集上下文' },
@@ -81,8 +81,15 @@ function connectorState(left: StepState, right: StepState): ConnectorState {
   return 'idle';
 }
 
-export function WorkflowStepper({ steps }: { steps: AnalysisStep[] }) {
-  const [selected, setSelected] = useState<AnalysisStep['nodeType'] | null>(null);
+export function WorkflowStepper({
+  steps,
+  selected,
+  onSelect,
+}: {
+  steps: AnalysisStep[];
+  selected: AnalysisStep['nodeType'];
+  onSelect: (nodeType: AnalysisStep['nodeType']) => void;
+}) {
 
   // Overlay live records onto the fixed pipeline. Any node missing a record
   // (e.g. a not-yet-run step, or a whole pending analysis) defaults to pending.
@@ -92,8 +99,6 @@ export function WorkflowStepper({ steps }: { steps: AnalysisStep[] }) {
     if (found) return found;
     return { nodeType: node.nodeType, title: node.title, status: 'pending' as StepState };
   });
-
-  const selectedStep = selected ? byType.get(selected) ?? null : null;
 
   return (
     <div>
@@ -111,7 +116,7 @@ export function WorkflowStepper({ steps }: { steps: AnalysisStep[] }) {
                 className="wf-step"
                 data-state={step.status}
                 aria-pressed={isSel}
-                onClick={() => setSelected(isSel ? null : step.nodeType)}
+                onClick={() => onSelect(step.nodeType)}
               >
                 <span className="wf-step-icon">
                   <StepGlyph state={step.status} />
@@ -142,26 +147,6 @@ export function WorkflowStepper({ steps }: { steps: AnalysisStep[] }) {
         })}
       </div>
 
-      {selectedStep && (
-        <div className="wf-step-detail">
-          <div className="wf-step-detail-head">
-            <span className="wf-step-icon wf-step-icon--sm" data-state={selectedStep.status}>
-              <StepGlyph state={selectedStep.status} size={14} />
-            </span>
-            <span className="wf-step-title">{selectedStep.title}</span>
-            <span className="wf-step-status">{STATUS_TEXT[selectedStep.status]}</span>
-          </div>
-          {selectedStep.detail ? (
-            <p className="muted" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>
-              {selectedStep.detail}
-            </p>
-          ) : (
-            <p className="muted" style={{ marginTop: 8 }}>
-              该步骤暂无详细记录。
-            </p>
-          )}
-        </div>
-      )}
     </div>
   );
 }
