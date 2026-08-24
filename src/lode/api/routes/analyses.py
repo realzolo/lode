@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -18,6 +17,7 @@ from lode.api.schemas import (
     AddGuidanceIn,
     AnalysisDetailOut,
     AnalysisGuidanceOut,
+    AnalysisJobOut,
     AnalysisListOut,
     AnalysisStepOut,
     AlertSummary,
@@ -31,7 +31,6 @@ from lode.db.models.experience import Experience
 from lode.db.models.permission import UserApplicationPerm
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
-from lode.engine import run_analysis
 
 logger = logging.getLogger("lode.api.analyses")
 
@@ -43,11 +42,10 @@ async def get_session() -> AsyncSession:
         yield session
 
 
-async def _latest_analysis(session: AsyncSession, dedupe_key: str) -> Analysis:
+async def _analysis_by_public_id(session: AsyncSession, analysis_id: str) -> Analysis:
     result = await session.execute(
         select(Analysis)
-        .where(Analysis.dedupe_key == dedupe_key)
-        .order_by(Analysis.id.desc())
+        .where(Analysis.public_id == analysis_id)
     )
     analysis = result.scalars().first()
     if analysis is None:
@@ -144,6 +142,7 @@ async def list_analyses(
 
     return [
         AnalysisListOut(
+            id=a.public_id,
             dedupe_key=a.dedupe_key,
             application_id=a.application_id,
             application_name=app_name,
@@ -160,13 +159,13 @@ async def list_analyses(
     ]
 
 
-@router.get("/{dedupe_key}", response_model=AnalysisDetailOut)
+@router.get("/{analysis_id}", response_model=AnalysisDetailOut)
 async def get_analysis(
-    dedupe_key: str,
+    analysis_id: str,
     user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> AnalysisDetailOut:
-    analysis = await _latest_analysis(session, dedupe_key)
+    analysis = await _analysis_by_public_id(session, analysis_id)
 
     user = await session.get(User, user_id)
     await assert_app_perm(session, user, analysis.application_id, "read")
@@ -189,6 +188,16 @@ async def get_analysis(
             .order_by(AnalysisStep.order_index)
         )
     ).scalars().all()
+    job = (
+        await session.execute(
+            select(AnalysisJob)
+            .where(AnalysisJob.analysis_id == analysis.id)
+            .order_by(AnalysisJob.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if job is None:
+        raise HTTPException(status_code=409, detail="analysis has no execution job")
 
     incident = await _incident_for_analysis(session, analysis)
     ai_step = next((step for step in steps if step.node_type == "ai_analysis"), None)
@@ -226,6 +235,7 @@ async def get_analysis(
         my_perm = perm_row.perm if perm_row is not None else None
 
     return AnalysisDetailOut(
+        id=analysis.public_id,
         dedupe_key=analysis.dedupe_key,
         application_id=analysis.application_id,
         application_name=app_name,
@@ -256,6 +266,15 @@ async def get_analysis(
             )
             for s in steps
         ],
+        job=AnalysisJobOut(
+            id=str(job.public_id),
+            status=job.status,
+            attempt=job.attempt,
+            max_attempts=job.max_attempts,
+            available_at=job.available_at,
+            last_error_code=job.last_error_code,
+            last_error_detail=job.last_error_detail,
+        ),
         guidances=[
             AnalysisGuidanceOut(
                 id=guidance.id,
@@ -276,14 +295,14 @@ async def get_analysis(
     )
 
 
-@router.post("/{dedupe_key}/guidances", response_model=AnalysisGuidanceOut)
+@router.post("/{analysis_id}/guidances", response_model=AnalysisGuidanceOut)
 async def add_guidance(
-    dedupe_key: str,
+    analysis_id: str,
     payload: AddGuidanceIn,
     user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> AnalysisGuidanceOut:
-    analysis = await _latest_analysis(session, dedupe_key)
+    analysis = await _analysis_by_public_id(session, analysis_id)
     user = await session.get(User, user_id)
     # Guidance is collaborative context. It does not itself consume compute, so
     # read access is enough; the separate re-analysis action requires analyze.
@@ -316,18 +335,13 @@ async def add_guidance(
     )
 
 
-async def _run_in_background(analysis_id: int) -> None:
-    async with AsyncSessionLocal() as session:
-        await run_analysis(analysis_id, session)
-
-
-@router.post("/{dedupe_key}/reanalyze", response_model=ReanalyzeOut)
+@router.post("/{analysis_id}/reanalyze", response_model=ReanalyzeOut)
 async def reanalyze(
-    dedupe_key: str,
+    analysis_id: str,
     user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> ReanalyzeOut:
-    analysis = await _latest_analysis(session, dedupe_key)
+    analysis = await _analysis_by_public_id(session, analysis_id)
     user = await session.get(User, user_id)
     # Re-running the pipeline is an action that consumes compute, so it
     # requires at least the "analyze" tier (not read-only viewers).
@@ -341,7 +355,7 @@ async def reanalyze(
         await session.execute(
             select(Analysis)
             .where(Analysis.application_id == analysis.application_id)
-            .where(Analysis.dedupe_key == dedupe_key)
+            .where(Analysis.dedupe_key == analysis.dedupe_key)
             .where(Analysis.status.in_(["pending", "running"]))
             .limit(1)
         )
@@ -357,17 +371,18 @@ async def reanalyze(
             target_id=str(analysis.application_id),
             application_id=analysis.application_id,
             result="ok",
-            detail={"dedupe_key": dedupe_key, "after_analysis_id": active.id},
+            detail={"dedupe_key": analysis.dedupe_key, "after_analysis_id": active.public_id},
         )
         return ReanalyzeOut(
-            dedupe_key=dedupe_key,
+            analysis_id=active.public_id,
             status="scheduled_after_active",
             message="Re-analysis will start after the active analysis finishes.",
         )
 
     # Create a fresh analysis run + queued job; the worker executes it.
     new_analysis = Analysis(
-        dedupe_key=dedupe_key,
+        public_id=uuid.uuid4().hex,
+        dedupe_key=analysis.dedupe_key,
         application_id=analysis.application_id,
         alert_id=analysis.alert_id,
         incident_id=incident.id,
@@ -376,6 +391,22 @@ async def reanalyze(
     )
     session.add(new_analysis)
     await session.flush()
+    received_at = datetime.now(UTC)
+    session.add(
+        AnalysisStep(
+            analysis_id=new_analysis.id,
+            node_type="receive",
+            status="completed",
+            order_index=0,
+            input={"source_analysis_id": analysis.id},
+            output={
+                "summary": "Alert selected for re-analysis",
+                "detail": "Re-analysis uses the alert received by the prior run.",
+            },
+            started_at=received_at,
+            finished_at=received_at,
+        )
+    )
     job = AnalysisJob(
         public_id=uuid.uuid4().hex,
         incident_id=incident.id,
@@ -394,11 +425,11 @@ async def reanalyze(
         target_id=str(analysis.application_id),
         application_id=analysis.application_id,
         result="ok",
-        detail={"dedupe_key": dedupe_key, "job_id": job.public_id},
+        detail={"dedupe_key": analysis.dedupe_key, "analysis_id": new_analysis.public_id, "job_id": str(job.public_id)},
     )
     return ReanalyzeOut(
-        dedupe_key=dedupe_key,
-        job_id=job.public_id,
+        analysis_id=new_analysis.public_id,
+        job_id=str(job.public_id),
         status="queued",
-        message="Re-analysis queued. Poll GET /analyses/{dedupe_key} for progress.",
+        message="Re-analysis queued. Poll GET /analyses/{analysis_id} for progress.",
     )

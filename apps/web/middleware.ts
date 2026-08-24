@@ -77,6 +77,8 @@ export default function middleware(request: NextRequest): NextResponse {
 }
 
 export const config = {
-  // Skip API, static assets, and files with an extension.
+  // Analysis routes carry opaque hexadecimal IDs, never producer-controlled
+  // dedupe keys. Keeping the standard static-file exclusion therefore cannot
+  // bypass a business route while assets stay outside locale/auth middleware.
   matcher: ['/((?!api|_next|_vercel|.*\\..*).*)'],
 };

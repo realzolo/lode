@@ -96,8 +96,11 @@ export function WorkflowStepper({
   const byType = new Map(steps.map((s) => [s.nodeType, s]));
   const merged: AnalysisStep[] = PIPELINE.map((node) => {
     const found = byType.get(node.nodeType);
+    // `node_type` is a stable backend identifier, not UI copy. Keep all
+    // display labels in the pipeline definition so API values can never leak
+    // into the operator-facing workflow.
     if (found) return found;
-    return { nodeType: node.nodeType, title: node.title, status: 'pending' as StepState };
+    return { nodeType: node.nodeType, status: 'pending' as StepState };
   });
 
   return (
@@ -122,7 +125,7 @@ export function WorkflowStepper({
                   <StepGlyph state={step.status} />
                 </span>
                 <span className="wf-step-body">
-                  <span className="wf-step-title">{step.title}</span>
+                  <span className="wf-step-title">{node.title}</span>
                   <span className="wf-step-status">{STATUS_TEXT[step.status]}</span>
                 </span>
                 {/* Tiny type glyph kept faint so each step is still identifiable */}

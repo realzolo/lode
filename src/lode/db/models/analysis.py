@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -28,6 +29,11 @@ class Analysis(Base):
 
     id: Mapped[int] = mapped_column(
         BigInteger, Identity(always=True), primary_key=True
+    )
+    # Public API and UI identity. The dedupe key remains an internal incident
+    # correlation attribute and is never used as a route identifier.
+    public_id: Mapped[str] = mapped_column(
+        Text, nullable=False, unique=True, default=lambda: uuid.uuid4().hex
     )
     dedupe_key: Mapped[str] = mapped_column(Text, nullable=False)
     application_id: Mapped[int] = mapped_column(
@@ -156,6 +162,7 @@ class AnalysisStep(Base):
             name="status",
         ),
         Index("ix_analysis_steps_analysis_id", "analysis_id"),
+        UniqueConstraint("analysis_id", "node_type", name="uq_analysis_steps_analysis_node"),
     )
 
 

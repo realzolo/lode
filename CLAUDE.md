@@ -24,6 +24,19 @@
 
 - Run the API, consumer and worker independently in local development:
   `make serve`, `make consume`, and `make work`.
+- Analysis intake and execution are deliberately separate. The consumer commits
+  the alert and a completed `receive` workflow step together with a durable
+  `queued` job. The worker claims that job and begins at `git_sync`; if no
+  worker is running, the detail API reports the real job queue state rather
+  than showing alert receipt as pending.
+- Alert summaries use the strict producer `error_log.message` when present,
+  then the controlled `fields.error`, `fields.reason`, `fields.message`, or
+  `fields.detail` fallback order. Internal workflow node identifiers are never
+  presentation copy; the web pipeline owns their localized labels.
+- `analyses.public_id` is the opaque public identity of one analysis run and
+  is the only identifier accepted by `/analyses/{analysis_id}` and the web
+  route. `dedupe_key` remains an internal incident-correlation value and must
+  not be placed in URLs or used to select the “latest” analysis.
 - Docker Compose passes one `LODE_KAFKA_*` configuration set to all backend
   services. Its local Kafka advertises an internal `kafka:9092` listener and a
   host `localhost:9092` listener. Consumer and worker wait for the API health

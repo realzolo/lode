@@ -96,6 +96,7 @@ make dev-up           # docker compose up -d (postgres + kafka)
 make migrate          # alembic upgrade head
 make serve            # uvicorn (also migrates on boot)
 make consume          # kafka consumer
+make work             # durable analysis worker
 make verify           # throwaway local Postgres + migrate + schema dump
 ```
 
@@ -172,11 +173,24 @@ offers Start, Pause, or Resume to application administrators. Application
 settings remain the place to configure the topic.
 
 Only active application topics are subscribed. The consumer refreshes that exact
-database-backed topic list without a restart, validates each alert, persists the
-`Alert` + pending `Analysis` + durable `AnalysisJob`; the separate worker
-(`make work`) executes the analysis. Pausing stops new subscriptions and worker
-claims while allowing an already-running analysis to finish. Kafka offsets and
-queued jobs remain untouched until resume.
+database-backed topic list without a restart, validates each alert, and commits
+the `Alert`, a completed `receive` workflow step, a pending `Analysis`, and a
+durable `AnalysisJob` in one transaction. The separate worker (`make work`)
+claims the job and starts work at `git_sync`. If the worker is unavailable, the
+task remains explicitly `queued` rather than falsely showing alert receipt as
+pending. Pausing stops new subscriptions and worker claims while allowing an
+already-running analysis to finish. Kafka offsets and queued jobs remain
+untouched until resume.
+
+For reliable analysis prompts and evidence search, producers should populate
+`error_log.message`. When it is unavailable, intake derives the alert summary
+from the controlled `fields.error`, `fields.reason`, `fields.message`, then
+`fields.detail` fallback order.
+
+Each analysis run has an opaque `public_id`; this is the sole identifier for
+`GET /analyses/{analysis_id}`, guidance, re-analysis, and the web detail URL.
+The alert `dedupe_key` is retained only for incident correlation and is never
+used in a route or to select an arbitrary “latest” run.
 
 The lifecycle API is application-admin scoped:
 
@@ -264,6 +278,7 @@ make install    # pip install -e ".[dev]"
 make dev-up     # postgres + kafka
 make serve      # uvicorn (also migrates on boot)
 make consume    # kafka consumer
+make work       # durable analysis worker
 python scripts/seed.py
 ```
 
@@ -286,9 +301,9 @@ Optional: `eventType`, `project`, `fields`.
 
 Routing is **purely topic-based**: an active `application_kafka` mapping is the
 consumer's exact subscription source. The platform recomputes `dedupeKey` with the
-exact `lark-alert.ts` algorithm so `/analysis/{dedupeKey}` matches the `Key` shown
-in the Lark card. Invalid messages go to the dead-letter topic. A topic is required
-when an application is started, and the broker validates it before the application
-can become active.
+exact `lark-alert.ts` algorithm for incident correlation, while each analysis run
+receives a separate opaque public ID for its detail URL. Invalid messages go to the
+dead-letter topic. A topic is required when an application is started, and the
+broker validates it before the application can become active.
 
 See `Kafka告警消息格式规范.md` (design repo) for the full contract.

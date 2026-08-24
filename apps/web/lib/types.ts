@@ -27,6 +27,7 @@ export interface Application {
 }
 
 export interface Analysis {
+  id: string;
   dedupeKey: string;
   applicationId: string;
   title: string;
@@ -46,7 +47,6 @@ export interface AnalysisStep {
     | 'ai_analysis'
     | 'experience'
     | 'conclusion';
-  title: string;
   status: StepStatus;
   summary?: string;
   detail?: string;

@@ -43,7 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lode.config import kafka_security_kwargs, settings
 from lode.consumer.alert_schema import AlertMessage
 from lode.db.models.alert import Alert
-from lode.db.models.analysis import Analysis, DeadLetter
+from lode.db.models.analysis import Analysis, AnalysisStep, DeadLetter
 from lode.db.models.application import (
     Application,
     ApplicationIngestionOffset,
@@ -73,12 +73,18 @@ class ActiveBinding:
 
 
 def _extract_error_message(msg: AlertMessage) -> str:
-    """Pull a human-readable error summary, preferring the structured error_log."""
-    if msg.error_log is not None and msg.error_log.message:
-        return msg.error_log.message[:ERROR_MAX_LENGTH]
-    error_value = msg.fields.get("error")
-    if error_value not in (None, ""):
-        return str(error_value)[:ERROR_MAX_LENGTH]
+    """Extract a concise error summary from the strict alert envelope.
+
+    Producers should prefer ``error_log.message``. Some sources only expose a
+    stable reason in free-form fields, so we accept a small, ordered allow-list
+    rather than serialising arbitrary alert payload values into the summary.
+    """
+    if msg.error_log is not None and msg.error_log.message.strip():
+        return msg.error_log.message.strip()[:ERROR_MAX_LENGTH]
+    for key in ("error", "reason", "message", "detail"):
+        value = msg.fields.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:ERROR_MAX_LENGTH]
     return ""
 
 
@@ -351,6 +357,7 @@ async def _persist(
     await db.flush()
 
     analysis = Analysis(
+        public_id=uuid.uuid4().hex,
         dedupe_key=dedupe_key,
         application_id=application_id,
         alert_id=alert.id,
@@ -360,6 +367,21 @@ async def _persist(
     )
     db.add(analysis)
     await db.flush()
+    db.add(
+        AnalysisStep(
+            analysis_id=analysis.id,
+            node_type="receive",
+            status="completed",
+            order_index=0,
+            input={"topic": topic, "partition": partition, "offset": offset},
+            output={
+                "summary": "Alert received",
+                "detail": f"Routed via topic {topic}",
+            },
+            started_at=now,
+            finished_at=now,
+        )
+    )
 
     job = AnalysisJob(
         public_id=str(uuid.uuid4()),

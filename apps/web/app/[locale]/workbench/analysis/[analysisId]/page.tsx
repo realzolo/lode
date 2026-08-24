@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { useRouter } from '@/lib/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -82,10 +83,11 @@ function StepArtifacts({ node, detail }: { node: NodeType; detail: AnalysisDetai
   return null;
 }
 
-export default function AnalysisPage({ params }: { params: { dedupeKey: string } }) {
+export default function AnalysisPage({ params }: { params: { analysisId: string } }) {
   const t = useTranslations('analysis');
   const tc = useTranslations('common');
-  const dedupeKey = decodeURIComponent(params.dedupeKey);
+  const router = useRouter();
+  const analysisId = params.analysisId;
   const [detail, setDetail] = useState<AnalysisDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -99,16 +101,18 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
   const load = useCallback(async () => {
     if (pollRef.current) clearTimeout(pollRef.current);
     try {
-      const data = await fetchAnalysis(dedupeKey);
+      const data = await fetchAnalysis(analysisId);
       setDetail(data);
       setError(null);
-      if (data.status === 'pending' || data.status === 'running') pollRef.current = setTimeout(() => void load(), 1500);
+      if (data.job.status === 'queued' || data.job.status === 'running' || data.job.status === 'retry_wait') {
+        pollRef.current = setTimeout(() => void load(), 1500);
+      }
     } catch (cause) {
       setError(String(cause));
     } finally {
       setLoading(false);
     }
-  }, [dedupeKey]);
+  }, [analysisId]);
 
   useEffect(() => {
     void load();
@@ -125,14 +129,21 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
 
   async function handleReanalyze() {
     setBusy(true);
-    try { await reanalyze(dedupeKey); await load(); } finally { setBusy(false); }
+    try {
+      const next = await reanalyze(analysisId);
+      if (next.analysis_id === analysisId) {
+        await load();
+      } else {
+        router.push(`/workbench/analysis/${next.analysis_id}`);
+      }
+    } finally { setBusy(false); }
   }
 
   async function handleAddGuidance() {
     if (!guidance.trim()) return;
     setBusy(true);
     try {
-      await addGuidance(dedupeKey, guidance.trim());
+      await addGuidance(analysisId, guidance.trim());
       setGuidance('');
       setGuidanceOpen(false);
       await load();
@@ -146,17 +157,34 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
   const uiStatus = detail.status as AnalysisStatus;
   const steps = toUiSteps(detail.steps);
   const canAnalyze = detail.my_perm == null || detail.my_perm === 'analyze' || detail.my_perm === 'admin';
-  const selectedStep = steps.find((step) => step.nodeType === selectedNode) ?? { nodeType: selectedNode, title: STEP_TITLE[selectedNode], status: 'pending' as const };
+  const selectedStep = steps.find((step) => step.nodeType === selectedNode) ?? { nodeType: selectedNode, status: 'pending' as const };
   const totalDuration = formatDuration(detail.started_at ?? undefined, detail.finished_at ?? undefined);
   const lateGuidance = detail.guidances.some((item) => item.effect === 'needs_reanalysis');
+  const jobStatus = detail.job.status;
+  const queueMessage = jobStatus === 'queued'
+    ? '告警已接收，正在等待分析 worker 领取任务。'
+    : jobStatus === 'retry_wait'
+      ? '分析将按重试策略重新执行。'
+      : jobStatus === 'dead'
+        ? `分析任务失败：${detail.job.last_error_detail ?? detail.job.last_error_code ?? '请查看任务错误。'}`
+        : '分析正在汇集证据与上下文。';
+  const jobLabel = jobStatus === 'queued'
+    ? '等待 worker'
+    : jobStatus === 'running'
+      ? '执行中'
+      : jobStatus === 'retry_wait'
+        ? '等待重试'
+        : jobStatus === 'dead'
+          ? '任务失败'
+          : '已完成';
 
   return <main className="analysis-workspace">
     <header className="analysis-header">
-      <div><p className="analysis-eyebrow">调查任务</p><h1 className="page-title">{t('title')}</h1><p className="mono muted">{dedupeKey}</p></div>
-      <div className="analysis-actions"><Badge variant={statusVariant(uiStatus)}>{uiStatus}</Badge>{totalDuration && <span className="analysis-duration">耗时 {totalDuration}</span>}{canAnalyze && <Button variant="primary" onClick={handleReanalyze} disabled={busy}><IconRefreshCw size={16} /> {tc('reanalyze')}</Button>}</div>
+      <div><p className="analysis-eyebrow">调查任务</p><h1 className="page-title">{t('title')}</h1><p className="mono muted">{analysisId}</p></div>
+      <div className="analysis-actions"><Badge variant={statusVariant(uiStatus)}>{uiStatus}</Badge><Badge variant={jobStatus === 'dead' ? 'danger' : jobStatus === 'queued' || jobStatus === 'retry_wait' ? 'accent' : jobStatus === 'running' ? 'warning' : 'success'}>{jobLabel}</Badge>{totalDuration && <span className="analysis-duration">耗时 {totalDuration}</span>}{canAnalyze && <Button variant="primary" onClick={handleReanalyze} disabled={busy}><IconRefreshCw size={16} /> {tc('reanalyze')}</Button>}</div>
     </header>
 
-    <section className="analysis-outcome" aria-live="polite"><div className="analysis-outcome-meta"><span>当前结论</span><span>{t('confidence')} {detail.confidence != null ? detail.confidence.toFixed(2) : '—'}</span></div><p>{detail.conclusion ?? (uiStatus === 'failed' ? '分析未能完成，请查看失败步骤并补充分析引导。' : '分析正在汇集证据与上下文。')}</p></section>
+    <section className="analysis-outcome" aria-live="polite"><div className="analysis-outcome-meta"><span>当前结论</span><span>{t('confidence')} {detail.confidence != null ? detail.confidence.toFixed(2) : '—'}</span></div><p>{detail.conclusion ?? (uiStatus === 'failed' ? '分析未能完成，请查看失败步骤并补充分析引导。' : queueMessage)}</p></section>
 
     <section className="analysis-flow"><div className="analysis-section-heading"><div><p className="analysis-eyebrow">调查轨迹</p><h2>{t('steps')}</h2></div><span className="muted">选择步骤查看调查细节</span></div><WorkflowStepper steps={steps} selected={selectedNode} onSelect={setSelectedNode} /></section>
 

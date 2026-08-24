@@ -22,7 +22,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.config import settings
-from lode.db.models.analysis import Analysis
+from lode.db.models.analysis import Analysis, AnalysisStep
 from lode.db.models.application import Application
 from lode.db.models.intake import AnalysisJob, Incident
 from lode.db.session import AsyncSessionLocal
@@ -200,6 +200,7 @@ async def _enqueue_deferred_reanalysis(
     incident.reanalysis_requested_at = None
     incident.reanalysis_requested_by = None
     successor = Analysis(
+        public_id=uuid.uuid4().hex,
         dedupe_key=analysis.dedupe_key,
         application_id=analysis.application_id,
         alert_id=analysis.alert_id,
@@ -209,6 +210,21 @@ async def _enqueue_deferred_reanalysis(
     )
     session.add(successor)
     await session.flush()
+    session.add(
+        AnalysisStep(
+            analysis_id=successor.id,
+            node_type="receive",
+            status="completed",
+            order_index=0,
+            input={"source_analysis_id": analysis.id},
+            output={
+                "summary": "Alert selected for re-analysis",
+                "detail": "Re-analysis uses the alert received by the prior run.",
+            },
+            started_at=_now(),
+            finished_at=_now(),
+        )
+    )
     session.add(
         AnalysisJob(
             public_id=uuid.uuid4().hex,

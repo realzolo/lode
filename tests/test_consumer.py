@@ -14,6 +14,7 @@ import json
 import pytest
 
 from lode.consumer import main as consumer_main
+from lode.db.models.analysis import AnalysisStep
 from lode.db.models.intake import AnalysisJob, Incident, IngestionEvent
 
 
@@ -88,6 +89,25 @@ VALID_MSG = {
 }
 
 
+def test_error_summary_uses_reason_when_structured_error_log_is_absent() -> None:
+    msg = consumer_main.AlertMessage(**{
+        **VALID_MSG,
+        "error_log": None,
+        "fields": {"reason": "read ECONNRESET"},
+    })
+
+    assert consumer_main._extract_error_message(msg) == "read ECONNRESET"
+
+
+def test_error_summary_prefers_structured_error_log() -> None:
+    msg = consumer_main.AlertMessage(**{
+        **VALID_MSG,
+        "fields": {"reason": "fallback"},
+    })
+
+    assert consumer_main._extract_error_message(msg) == "p99 > 2s"
+
+
 async def test_invalid_json_routed_to_dlq() -> None:
     producer = FakeProducer()
     status = await consumer_main.process_message(
@@ -157,6 +177,7 @@ async def test_valid_message_persists_and_queues_job() -> None:
     assert IngestionEvent in types
     assert Incident in types
     assert AnalysisJob in types
+    assert AnalysisStep in types
     # Exactly one Alert and one Analysis were persisted (plus incident/job/ie).
     alerts = [o for o in session.added if type(o).__name__ == "Alert"]
     analyses = [o for o in session.added if type(o).__name__ == "Analysis"]
@@ -168,6 +189,9 @@ async def test_valid_message_persists_and_queues_job() -> None:
     job = next(o for o in session.added if isinstance(o, AnalysisJob))
     assert job.status == "queued"
     assert job.incident_id == analyses[0].incident_id
+    receive = next(o for o in session.added if isinstance(o, AnalysisStep))
+    assert receive.node_type == "receive"
+    assert receive.status == "completed"
 
 
 async def test_duplicate_active_analysis_is_suppressed() -> None:

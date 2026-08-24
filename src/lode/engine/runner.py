@@ -2,7 +2,7 @@
 
 Drives the agentic workflow for a single analysis:
 
-    receive -> git_sync -> context -> ai_analysis -> experience -> conclusion
+    receive (persisted by intake) -> git_sync -> context -> ai_analysis -> experience -> conclusion
 
 Each node is persisted as an ``analysis_steps`` row so the UI can render the
 exact path the agent took. The agent may call four controlled, read-only
@@ -288,8 +288,12 @@ async def run_analysis(analysis_id: int, session) -> None:
     existing = await session.execute(
         select(AnalysisStep).where(AnalysisStep.analysis_id == analysis_id)
     )
+    receive_step: AnalysisStep | None = None
     for step in existing.scalars().all():
-        await session.delete(step)
+        if step.node_type == "receive":
+            receive_step = step
+        else:
+            await session.delete(step)
     await session.flush()
     steps = {
         node: AnalysisStep(
@@ -300,7 +304,11 @@ async def run_analysis(analysis_id: int, session) -> None:
             input={},
         )
         for index, node in enumerate(_NODE_ORDER)
+        if node != "receive"
     }
+    if receive_step is None:
+        raise RuntimeError("analysis is missing its persisted receive step")
+    steps["receive"] = receive_step
     session.add_all(steps.values())
     await session.commit()
 
@@ -326,17 +334,7 @@ async def run_analysis(analysis_id: int, session) -> None:
         await session.commit()
 
     application_id = analysis.application_id
-    await start("receive")
-    try:
-        alert = await load_alert(session, analysis.alert_id)
-        await complete_step(
-            "receive",
-            "Alert received",
-            f"Routed via topic {getattr(alert, 'topic', '') or 'n/a'}",
-        )
-    except Exception as exc:
-        await fail("receive", exc)
-        raise
+    alert = await load_alert(session, analysis.alert_id)
 
     await start("git_sync")
     try:

@@ -2,7 +2,8 @@
 
 This is a faithful port of ``buildAlertKey`` / ``buildFingerprint`` from the
 business ``lark-alert.ts`` utility. The platform recomputes the same key so
-that ``/analysis/{dedupeKey}`` matches the ``Key`` rendered in the Lark card.
+for incident correlation. It is not an analysis route identifier; analysis runs
+use an opaque public ID so business alert signatures do not leak into URLs.
 
 Do NOT change hashing, separators, or normalization here without also
 changing the source tool — the two must stay byte-for-byte identical.

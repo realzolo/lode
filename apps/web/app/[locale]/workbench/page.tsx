@@ -78,7 +78,7 @@ export default function AnalysesPage() {
           </THead>
           <TBody>
             {analyses.map((a) => (
-              <Tr key={a.dedupeKey}>
+              <Tr key={a.id}>
                 <Td>{a.title}</Td>
                 <Td className="mono muted">{a.dedupeKey}</Td>
                 <Td>
@@ -90,7 +90,7 @@ export default function AnalysesPage() {
                   <Badge variant={statusVariant(a.status)}>{a.status}</Badge>
                 </Td>
                 <Td className="row" style={{ justifyContent: 'flex-end' }}>
-                  <Link href={`/workbench/analysis/${a.dedupeKey}`}>
+                  <Link href={`/workbench/analysis/${a.id}`}>
                     <Badge variant="accent">{t('view')}</Badge>
                   </Link>
                 </Td>

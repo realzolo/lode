@@ -45,6 +45,7 @@ class AlertSummary(BaseModel):
 
 
 class AnalysisListOut(BaseModel):
+    id: str
     dedupe_key: str
     application_id: int
     application_name: str
@@ -61,7 +62,18 @@ class AnalysisListOut(BaseModel):
     my_perm: str | None = None
 
 
+class AnalysisJobOut(BaseModel):
+    id: str
+    status: Literal["queued", "running", "retry_wait", "succeeded", "dead"]
+    attempt: int
+    max_attempts: int
+    available_at: datetime
+    last_error_code: str | None = None
+    last_error_detail: str | None = None
+
+
 class AnalysisDetailOut(BaseModel):
+    id: str
     dedupe_key: str
     application_id: int
     application_name: str
@@ -71,14 +83,13 @@ class AnalysisDetailOut(BaseModel):
     evidence: dict | None
     alert: AlertSummary | None
     steps: list[AnalysisStepOut]
+    job: AnalysisJobOut
     guidances: list[AnalysisGuidanceOut]
     follow_up_status: Literal["none", "requested"] = "none"
     matched_experience: str | None = None
     started_at: datetime | None
     finished_at: datetime | None
     updated_at: datetime
-    # The caller's permission on this application, or ``None`` for a global
-    # admin (unrestricted).
     my_perm: str | None = None
 
 
@@ -548,7 +559,7 @@ class InviteAcceptIn(BaseModel):
 
 
 class ReanalyzeOut(BaseModel):
-    dedupe_key: str
+    analysis_id: str
     job_id: str | None = None
     status: str
     message: str

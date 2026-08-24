@@ -85,6 +85,18 @@ async def scenario():
         session.add(analysis)
         await session.flush()
         session.add(
+            AnalysisStep(
+                analysis_id=analysis.id,
+                node_type="receive",
+                status="completed",
+                order_index=0,
+                input={"topic": topic},
+                output={"summary": "Alert received", "detail": f"Routed via topic {topic}"},
+                started_at=alert.received_at,
+                finished_at=alert.received_at,
+            )
+        )
+        session.add(
             AnalysisGuidance(
                 incident_id=incident.id,
                 source_analysis_id=analysis.id,
@@ -222,3 +234,9 @@ async def test_confirmed_follow_up_creates_one_successor(scenario):
         ).scalars().all()
         assert len(successors) == 1
         assert successors[0].trigger == "guidance_reanalyze"
+        steps = (
+            await session.execute(
+                select(AnalysisStep).where(AnalysisStep.analysis_id == successors[0].analysis_id)
+            )
+        ).scalars().all()
+        assert [(step.node_type, step.status) for step in steps] == [("receive", "completed")]

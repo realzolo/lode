@@ -159,6 +159,7 @@ async function getJson<T>(path: string): Promise<T> {
 // ---------------------------------------------------------------------------
 
 interface ApiAnalysis {
+  id: string;
   dedupe_key: string;
   application_id: number;
   application_name: string;
@@ -200,6 +201,7 @@ interface ApiAlert {
 }
 
 export interface AnalysisDetail {
+  id: string;
   dedupe_key: string;
   application_id: number;
   application_name: string;
@@ -209,6 +211,15 @@ export interface AnalysisDetail {
   evidence: Record<string, unknown> | null;
   alert: ApiAlert | null;
   steps: ApiStep[];
+  job: {
+    id: string;
+    status: 'queued' | 'running' | 'retry_wait' | 'succeeded' | 'dead';
+    attempt: number;
+    max_attempts: number;
+    available_at: string;
+    last_error_code: string | null;
+    last_error_detail: string | null;
+  };
   guidances: AnalysisGuidance[];
   follow_up_status: 'none' | 'requested';
   matched_experience: string | null;
@@ -248,6 +259,7 @@ interface ApiExperience {
 export async function fetchAnalyses(): Promise<Analysis[]> {
   const rows = await getJson<ApiAnalysis[]>('/analyses');
   return rows.map((r) => ({
+    id: r.id,
     dedupeKey: r.dedupe_key,
     applicationId: String(r.application_id),
     applicationName: r.application_name,
@@ -260,14 +272,21 @@ export async function fetchAnalyses(): Promise<Analysis[]> {
   }));
 }
 
-export async function fetchAnalysis(dedupeKey: string): Promise<AnalysisDetail> {
+export async function fetchAnalysis(analysisId: string): Promise<AnalysisDetail> {
   return getJson<AnalysisDetail>(
-    `/analyses/${encodeURIComponent(dedupeKey)}`
+    `/analyses/${encodeURIComponent(analysisId)}`
   );
 }
 
-export async function reanalyze(dedupeKey: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(dedupeKey)}/reanalyze`, {
+export interface ReanalyzeResult {
+  analysis_id: string;
+  job_id: string | null;
+  status: 'queued' | 'scheduled_after_active';
+  message: string;
+}
+
+export async function reanalyze(analysisId: string): Promise<ReanalyzeResult> {
+  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(analysisId)}/reanalyze`, {
     method: 'POST',
     cache: 'no-store',
     headers: authHeaders(),
@@ -280,13 +299,14 @@ export async function reanalyze(dedupeKey: string): Promise<void> {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error?.message ?? `reanalyze failed: ${res.status}`);
   }
+  return (await res.json()) as ReanalyzeResult;
 }
 
 export async function addGuidance(
-  dedupeKey: string,
+  analysisId: string,
   content: string
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(dedupeKey)}/guidances`, {
+  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(analysisId)}/guidances`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ content, author: 'web' }),
@@ -721,7 +741,6 @@ export async function fetchExperiences(applicationId?: number): Promise<Experien
 export function toUiSteps(steps: ApiStep[]): AnalysisStep[] {
   return steps.map((s) => ({
     nodeType: s.node_type as AnalysisStep['nodeType'],
-    title: s.node_type,
     status: mapStepStatus(s.status),
     summary: s.summary ?? undefined,
     detail: s.detail ?? undefined,
