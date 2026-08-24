@@ -27,6 +27,7 @@ import {
   deleteGitCredential,
   deleteGitRepo,
   fetchSettings,
+  updateAiOutputLanguage,
   updateAiModel,
   updateGitCredential,
   updateGitRepo,
@@ -144,6 +145,22 @@ export default function SettingsPage() {
           </Card>
 
           <Card>
+            <h2 className="section-title">{t('aiOutputLanguage')}</h2>
+            <p className="page-subtitle">{t('aiOutputLanguageDesc')}</p>
+            {isAdmin ? (
+              <AiOutputLanguageManager
+                settings={settings}
+                onChanged={reload}
+                onError={setError}
+              />
+            ) : (
+              <p className="mono" style={{ marginTop: 12 }}>
+                {formatOutputLanguage(settings.ai_output_language, t)}
+              </p>
+            )}
+          </Card>
+
+          <Card>
             <h2 className="section-title">{t('aiModel')}</h2>
             <p className="page-subtitle">{t('aiModelDesc')}</p>
             {settings.ai_model_configs.length === 0 && <p className="muted">{tc('empty')}</p>}
@@ -168,6 +185,79 @@ export default function SettingsPage() {
         </div>
       )}
     </>
+  );
+}
+
+function formatOutputLanguage(
+  language: GlobalSettings['ai_output_language'],
+  t: ReturnType<typeof useTranslations>
+): string {
+  return language === 'zh' ? t('simplifiedChinese') : t('english');
+}
+
+function AiOutputLanguageManager({
+  settings,
+  onChanged,
+  onError,
+}: {
+  settings: GlobalSettings;
+  onChanged: () => Promise<void> | void;
+  onError: (msg: string | null) => void;
+}) {
+  const t = useTranslations('settings');
+  const tc = useTranslations('common');
+  const [language, setLanguage] = useState<GlobalSettings['ai_output_language']>(
+    settings.ai_output_language
+  );
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setLanguage(settings.ai_output_language);
+  }, [settings.ai_output_language]);
+
+  async function save() {
+    setBusy(true);
+    onError(null);
+    try {
+      await updateAiOutputLanguage(language);
+      await onChanged();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="row" style={{ marginTop: 12, gap: 8, alignItems: 'center' }}>
+      <label htmlFor="ai-output-language" style={{ fontSize: 13 }}>
+        {t('outputLanguage')}
+      </label>
+      <div style={{ width: 200 }}>
+        <Select
+          id="ai-output-language"
+          value={language}
+          onChange={(event) =>
+            setLanguage(event.target.value as GlobalSettings['ai_output_language'])
+          }
+          disabled={busy}
+        >
+          {settings.supported_ai_output_languages.map((option) => (
+            <option key={option} value={option}>
+              {formatOutputLanguage(option, t)}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <Button
+        size="sm"
+        variant="primary"
+        onClick={save}
+        disabled={busy || language === settings.ai_output_language}
+      >
+        <IconCheck size={14} /> {tc('save')}
+      </Button>
+    </div>
   );
 }
 

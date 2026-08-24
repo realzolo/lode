@@ -24,6 +24,7 @@ from lode.db.models.application import (  # noqa: F401
 from lode.db.models.git import GitCredential, GitRepo  # noqa: F401
 from lode.db.models.experience import Experience  # noqa: F401
 from lode.db.models.permission import UserApplicationPerm  # noqa: F401
+from lode.db.models.platform_setting import PlatformSetting  # noqa: F401
 from lode.db.models.user import Invite, User  # noqa: F401
 
 __all__ = [
@@ -44,6 +45,7 @@ __all__ = [
     "GitRepo",
     "Experience",
     "UserApplicationPerm",
+    "PlatformSetting",
     "Invite",
     "User",
 ]

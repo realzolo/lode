@@ -21,11 +21,17 @@ from typing import Any
 
 from sqlalchemy import select
 
+from lode.ai_output import (
+    AI_OUTPUT_LANGUAGE_SETTING_KEY,
+    ai_output_language_name,
+    normalize_ai_output_language,
+)
 from lode.config import settings
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.analysis import Analysis, AnalysisGuidance, AnalysisGuidanceUse, AnalysisStep
 from lode.db.models.application import Application
 from lode.db.models.experience import Experience
+from lode.db.models.platform_setting import PlatformSetting
 from lode.engine.embeddings import (
     EmbeddingConfig,
     build_query_text,
@@ -72,21 +78,34 @@ def _heuristic_conclusion(
     experience_content: str | None,
     fields: dict,
     guidance_text: str | None = None,
+    output_language: str = "en",
 ) -> tuple[str, float]:
     """Deterministic offline fallback used when no LLM is configured."""
     error = getattr(alert, "error_message", "") or "no error message captured"
     title = getattr(alert, "title", "") or "incident"
 
-    parts = [
-        f"Incident \"{title}\".",
-        f"Captured error: {error}.",
-    ]
-    if deploy_description:
-        parts.append(f"Deploy context: {deploy_description}")
-    if experience_content:
-        parts.append(f"A matching prior incident is recorded in the experience library: {experience_content}")
-    if guidance_text:
-        parts.append(f"Operator guidance: {guidance_text}")
+    if normalize_ai_output_language(output_language) == "zh":
+        parts = [
+            f'事件"{title}"。',
+            f"已捕获错误：{error}。",
+        ]
+        if deploy_description:
+            parts.append(f"部署上下文：{deploy_description}")
+        if experience_content:
+            parts.append(f"经验库中的匹配历史事件：{experience_content}")
+        if guidance_text:
+            parts.append(f"操作员补充信息：{guidance_text}")
+    else:
+        parts = [
+            f"Incident \"{title}\".",
+            f"Captured error: {error}.",
+        ]
+        if deploy_description:
+            parts.append(f"Deploy context: {deploy_description}")
+        if experience_content:
+            parts.append(f"A matching prior incident is recorded in the experience library: {experience_content}")
+        if guidance_text:
+            parts.append(f"Operator guidance: {guidance_text}")
 
     conclusion = " ".join(parts)
     confidence = 0.55
@@ -141,6 +160,7 @@ def _heuristic_packet(
     experience_content: str | None,
     fields: dict,
     guidance_text: str | None = None,
+    output_language: str = "en",
 ) -> tuple[str, float, list, list, list, list]:
     """Structured evidence packet for the deterministic offline fallback.
 
@@ -149,20 +169,36 @@ def _heuristic_packet(
     finding — the UI surfaces this distinction.
     """
     conclusion, confidence = _heuristic_conclusion(
-        alert, deploy_description, experience_content, fields, guidance_text
+        alert,
+        deploy_description,
+        experience_content,
+        fields,
+        guidance_text,
+        output_language,
     )
     facts: list[str] = []
     error = getattr(alert, "error_message", "") or ""
-    if error:
-        facts.append(f"Captured error: {error}")
-    if deploy_description:
-        facts.append("Deploy context is configured for this application.")
-    if experience_content:
-        facts.append("A matching prior incident is recorded in the experience library.")
-    unknowns = [
-        "Heuristic fallback (no LLM configured): treat as a starting hypothesis, "
-        "not a confirmed root cause."
-    ]
+    if normalize_ai_output_language(output_language) == "zh":
+        if error:
+            facts.append(f"已捕获错误：{error}")
+        if deploy_description:
+            facts.append("此应用已配置部署上下文。")
+        if experience_content:
+            facts.append("经验库中存在匹配的历史事件。")
+        unknowns = [
+            "正在使用启发式兜底（未配置 LLM）；此结论仅为初步假设，尚非确认的根因。"
+        ]
+    else:
+        if error:
+            facts.append(f"Captured error: {error}")
+        if deploy_description:
+            facts.append("Deploy context is configured for this application.")
+        if experience_content:
+            facts.append("A matching prior incident is recorded in the experience library.")
+        unknowns = [
+            "Heuristic fallback (no LLM configured): treat as a starting hypothesis, "
+            "not a confirmed root cause."
+        ]
     return conclusion, confidence, [], facts, [], unknowns
 
 
@@ -185,6 +221,11 @@ async def _resolve_model_config(session, application_id: int) -> ModelConfig | N
         api_key_ref=cfg.api_key_ref,
         model=cfg.model,
     )
+
+
+async def _resolve_ai_output_language(session) -> str:
+    setting = await session.get(PlatformSetting, AI_OUTPUT_LANGUAGE_SETTING_KEY)
+    return normalize_ai_output_language(setting.value if setting is not None else None)
 
 
 def _resolve_embedding_config() -> EmbeddingConfig | None:
@@ -213,7 +254,9 @@ def _build_prompts(
     experience_content,
     guidance_text=None,
     evidence_catalog=None,
+    output_language: str = "en",
 ) -> tuple[str, str]:
+    language_name = ai_output_language_name(output_language)
     system = (
         "You are a senior SRE performing root-cause analysis for a production "
         "incident. Use ONLY the provided context; do not invent facts. "
@@ -227,7 +270,9 @@ def _build_prompts(
         '  "unknowns": [string]            // what remains uncertain / needs human follow-up\n'
         "}\n"
         "Only cite evidence_refs IDs that exist in the registry. If you have no "
-        "supporting evidence for a claim, put it in inferences/unknowns, never as a fact."
+        "supporting evidence for a claim, put it in inferences/unknowns, never as a fact. "
+        f"Write every human-readable JSON string value in {language_name}. Keep the JSON "
+        "property names exactly as specified."
     )
     lines = [
         f"Title: {getattr(alert, 'title', '')}",
@@ -417,6 +462,7 @@ async def run_analysis(analysis_id: int, session) -> None:
             {"id": item["artifact_id"], "kind": "git", "locator": item["locator"]}
             for item in git_evidence["files"]
         ]
+        output_language = await _resolve_ai_output_language(session)
         model_config = await _resolve_model_config(session, application_id)
         system, user = _build_prompts(
             alert,
@@ -427,6 +473,7 @@ async def run_analysis(analysis_id: int, session) -> None:
             experience["content"] if experience["matched"] else None,
             guidance_text=guidance_text,
             evidence_catalog=evidence_catalog,
+            output_language=output_language,
         )
         llm_text = await complete(system, user, model_config)
         if llm_text:
@@ -440,6 +487,7 @@ async def run_analysis(analysis_id: int, session) -> None:
                 experience["content"] if experience["matched"] else None,
                 getattr(alert, "fields", {}) or {},
                 guidance_text=guidance_text,
+                output_language=output_language,
             )
             engine_used = "heuristic"
         else:
@@ -493,6 +541,7 @@ async def run_analysis(analysis_id: int, session) -> None:
     cited_ids = {int(ref) for ref in evidence_refs if isinstance(ref, int)}
     evidence = {
         "engine": engine_used,
+        "output_language": output_language,
         "error_message": getattr(alert, "error_message", ""),
         "modules": code["modules_searched"],
         "allowed_tables": ro["allowed_tables"],

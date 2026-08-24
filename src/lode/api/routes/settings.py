@@ -16,11 +16,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from lode.ai_output import (
+    AI_OUTPUT_LANGUAGE_SETTING_KEY,
+    SUPPORTED_AI_OUTPUT_LANGUAGES,
+    normalize_ai_output_language,
+)
 from lode.api.deps import require_admin
 from lode.api.audit import audit_action
 from lode.api.schemas import (
     AiModelConfigIn,
     AiModelConfigOut,
+    AiOutputLanguageIn,
+    AiOutputLanguageOut,
     GitCredentialIn,
     GitCredentialOut,
     GitCredentialUpdateIn,
@@ -31,6 +38,7 @@ from lode.api.schemas import (
 from lode.crypto import encrypt_secret
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.git import GitCredential, GitRepo
+from lode.db.models.platform_setting import PlatformSetting
 from lode.db.session import AsyncSessionLocal
 from sqlalchemy import select
 
@@ -48,6 +56,11 @@ def _store_key_ref(api_key_ref: str) -> str:
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 
+async def _get_ai_output_language(session) -> str:
+    setting = await session.get(PlatformSetting, AI_OUTPUT_LANGUAGE_SETTING_KEY)
+    return normalize_ai_output_language(setting.value if setting is not None else None)
+
+
 @router.get("")
 async def get_settings() -> dict:
     async with AsyncSessionLocal() as session:
@@ -58,8 +71,11 @@ async def get_settings() -> dict:
             )
         ).scalars().all()
         models = (await session.execute(select(AiModelConfig))).scalars().all()
+        ai_output_language = await _get_ai_output_language(session)
 
     return {
+        "ai_output_language": ai_output_language,
+        "supported_ai_output_languages": list(SUPPORTED_AI_OUTPUT_LANGUAGES),
         "git_credentials": [
             {
                 "id": c.id,
@@ -96,6 +112,34 @@ async def get_settings() -> dict:
             for m in models
         ],
     }
+
+
+@router.put("/ai-output-language", response_model=AiOutputLanguageOut)
+async def update_ai_output_language(
+    payload: AiOutputLanguageIn, _admin: int = Depends(require_admin)
+) -> AiOutputLanguageOut:
+    """Set the language applied to all new analysis results."""
+    async with AsyncSessionLocal() as session:
+        setting = await session.get(PlatformSetting, AI_OUTPUT_LANGUAGE_SETTING_KEY)
+        if setting is None:
+            session.add(
+                PlatformSetting(
+                    key=AI_OUTPUT_LANGUAGE_SETTING_KEY,
+                    value=payload.language,
+                )
+            )
+        else:
+            setting.value = payload.language
+        await session.commit()
+
+    await audit_action(
+        action="settings.ai_output_language.update",
+        actor_id=_admin,
+        target_type="platform_setting",
+        target_id=AI_OUTPUT_LANGUAGE_SETTING_KEY,
+        detail={"language": payload.language},
+    )
+    return AiOutputLanguageOut(language=payload.language)
 
 
 def _row_to_out(m: AiModelConfig) -> AiModelConfigOut:

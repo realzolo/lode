@@ -19,6 +19,7 @@ from lode.api.main import app
 from lode.crypto import decrypt_secret
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.git import GitCredential, GitRepo
+from lode.db.models.platform_setting import PlatformSetting
 from lode.db.models.user import Invite, User
 from lode.db.session import AsyncSessionLocal
 from lode.security import hash_password
@@ -90,6 +91,60 @@ async def test_non_admin_cannot_create_ai_model(user):
             },
         )
         assert resp.status_code == 403
+        resp = await client.put(
+            "/settings/ai-output-language",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"language": "zh"},
+        )
+        assert resp.status_code == 403
+
+
+async def test_admin_updates_ai_output_language(admin):
+    _email, _pw, _uid = admin
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with AsyncSessionLocal() as session:
+        previous = await session.get(PlatformSetting, "ai_output_language")
+        previous_value = previous.value if previous is not None else None
+
+    try:
+        async with _client() as client:
+            current = await client.get("/settings", headers=headers)
+            assert current.status_code == 200, current.text
+            assert current.json()["ai_output_language"] in {"en", "zh"}
+            assert current.json()["supported_ai_output_languages"] == ["en", "zh"]
+
+            updated = await client.put(
+                "/settings/ai-output-language",
+                headers=headers,
+                json={"language": "zh"},
+            )
+            assert updated.status_code == 200, updated.text
+            assert updated.json() == {"language": "zh"}
+
+            invalid = await client.put(
+                "/settings/ai-output-language",
+                headers=headers,
+                json={"language": "ja"},
+            )
+            assert invalid.status_code == 422
+
+        async with AsyncSessionLocal() as session:
+            stored = await session.get(PlatformSetting, "ai_output_language")
+            assert stored is not None
+            assert stored.value == "zh"
+    finally:
+        async with AsyncSessionLocal() as session:
+            stored = await session.get(PlatformSetting, "ai_output_language")
+            if previous_value is None:
+                if stored is not None:
+                    await session.delete(stored)
+            elif stored is None:
+                session.add(PlatformSetting(key="ai_output_language", value=previous_value))
+            else:
+                stored.value = previous_value
+            await session.commit()
 
 
 async def test_admin_crud_ai_model(admin):

@@ -160,6 +160,11 @@ curl -X POST http://localhost:8000/settings/ai-models \
        "api_key_ref":"env://OPENAI_API_KEY","model":"gpt-4o-mini","is_default":true}'
 ```
 
+- **Output language:** Admins select the language for human-readable analysis
+  output at `PUT /settings/ai-output-language` with `{"language":"en"}` or
+  `{"language":"zh"}`. The default is English when the setting has not yet
+  been saved; it applies to new runs only.
+
 ## Ingestion → analysis chain
 
 Applications have an explicit ingestion lifecycle: `draft → active ↔ paused`.
@@ -191,6 +196,13 @@ Each analysis run has an opaque `public_id`; this is the sole identifier for
 `GET /analyses/{analysis_id}`, guidance, re-analysis, and the web detail URL.
 The alert `dedupe_key` is retained only for incident correlation and is never
 used in a route or to select an arbitrary “latest” run.
+
+Git evidence uses a fresh, temporary sandbox under
+`LODE_EVIDENCE_GIT_CACHE_DIR` for every analysis run. Clones are never shared
+between tasks, so a checkout for one alert cannot affect another; the sandbox is
+removed once masked excerpts have been persisted. The worker needs write access
+to that directory (default: `/tmp/lode/git`). If it is unavailable, analysis
+continues without Git evidence.
 
 The lifecycle API is application-admin scoped:
 

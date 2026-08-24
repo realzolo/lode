@@ -79,10 +79,11 @@ class Settings(BaseSettings):
     engine_version: str = "1.0"
 
     # Evidence gateway (M2): bounds on the read-only Git source inspection.
-    # The clone is read-only and pinned to a fixed ref (alert commit or the
-    # repo's default branch); these caps guarantee a single incident can never
-    # exhaust disk or blow up the prompt with an entire monorepo.
-    evidence_git_cache_dir: str = "/var/cache/lode/git"
+    # Each analysis receives a fresh temporary sandbox beneath this directory;
+    # its read-only, ref-pinned clones are removed after excerpts are persisted.
+    # The caps guarantee a single incident can never exhaust disk or blow up the
+    # prompt with an entire monorepo.
+    evidence_git_cache_dir: str = "/tmp/lode/git"
     evidence_git_max_files: int = 20
     evidence_git_max_bytes: int = 200_000
     evidence_git_snippet_lines: int = 12

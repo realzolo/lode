@@ -514,6 +514,16 @@ class AiModelConfigOut(BaseModel):
     has_key: bool
 
 
+class AiOutputLanguageIn(BaseModel):
+    """The language used for every human-readable AI analysis result."""
+
+    language: Literal["en", "zh"]
+
+
+class AiOutputLanguageOut(BaseModel):
+    language: Literal["en", "zh"]
+
+
 # --- User management (admin) --------------------------------------------
 
 class UserCreateIn(BaseModel):

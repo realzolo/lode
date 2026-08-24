@@ -44,3 +44,17 @@
 - Any lifecycle/schema change requires a new incremental Alembic revision, never
   edits to the existing baseline migration. Update this file and README whenever
   architecture, dependencies, or the development workflow changes.
+
+## Analysis Configuration And Isolation
+
+- `platform_settings.ai_output_language` is the global, persisted language for
+  human-readable AI analysis output. It supports the same locales as the web UI
+  (`en` and `zh`), defaults to `en` when unset, and is changed only through the
+  admin `PUT /settings/ai-output-language` endpoint. The runner resolves it for
+  each new analysis; completed analyses remain immutable.
+- Git evidence collection creates a unique temporary sandbox for every analysis
+  below `LODE_EVIDENCE_GIT_CACHE_DIR`. Repository clones are never shared across
+  analysis tasks and are deleted after masked evidence excerpts are persisted.
+  The default is `/tmp/lode/git`; ensure an overridden directory is writable by
+  the worker. If it is unavailable, analysis degrades without Git evidence
+  rather than failing the whole task.

@@ -147,6 +147,11 @@ async def test_collect_git_evidence_persists_masked_artifact(monkeypatch):
     with tempfile.TemporaryDirectory() as td:
         repo_dir = Path(td) / "clone"
         _write_tree(repo_dir)
+        monkeypatch.setattr(
+            evidence_git.settings,
+            "evidence_git_cache_dir",
+            str(Path(td) / "sandboxes"),
+        )
 
         async def fake_clone(repo, ref, cache_root, timeout):
             return repo_dir
@@ -178,3 +183,37 @@ async def test_collect_git_evidence_persists_masked_artifact(monkeypatch):
         assert "postgresql://" not in art.redacted_excerpt
         assert "<REDACTED:" in art.redacted_excerpt
         assert art.metadata["secret_categories"]
+        assert result["files"][0]["artifact_id"] == art.id
+
+
+async def test_collect_git_evidence_uses_and_removes_task_sandbox(monkeypatch):
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        sandbox_root = Path(td) / "sandboxes"
+        source_root = _write_tree(Path(td) / "source")
+        clone_roots: list[Path] = []
+
+        async def fake_clone(repo, ref, cache_root, timeout):
+            clone_roots.append(cache_root)
+            return source_root
+
+        monkeypatch.setattr(evidence_git, "ensure_repo_clone", fake_clone)
+        monkeypatch.setattr(evidence_git.settings, "evidence_git_cache_dir", str(sandbox_root))
+
+        repo = GitRepo(
+            id=1, name="svc", repo_url="https://example.com/svc", default_branch="main"
+        )
+        alert = types.SimpleNamespace(
+            error_message="PaymentService TimeoutException",
+            title="Checkout failed",
+            fields={},
+        )
+
+        await collect_git_evidence(FakeSession(repos=[repo]), 5, alert, analysis_id=9)
+        await collect_git_evidence(FakeSession(repos=[repo]), 5, alert, analysis_id=10)
+
+        assert len(clone_roots) == 2
+        assert clone_roots[0] != clone_roots[1]
+        assert all(path.parent == sandbox_root for path in clone_roots)
+        assert all(not path.exists() for path in clone_roots)

@@ -17,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -182,13 +184,12 @@ def _resolve_ref(alert: Alert, repo: GitRepo) -> str:
 
 
 async def ensure_repo_clone(repo: GitRepo, ref: str, cache_root: Path, timeout: int) -> Path:
-    """Read-only clone (or update) ``repo`` at ``ref`` into ``cache_root``.
+    """Read-only clone of ``repo`` at ``ref`` into an analysis sandbox.
 
-    The checkout directory is deterministic (repo id + sanitized URL) so
-    repeated analysis of the same app reuses the cache. Only ``clone`` /
-    ``fetch`` / ``checkout`` (no push, no write remotes) are used; a fixed ref
-    keeps the evidence reproducible. Raises ``RuntimeError`` on clone failure so
-    the caller can degrade gracefully rather than attributing a missing repo to
+    ``cache_root`` is a unique temporary directory owned by one analysis task.
+    Only ``clone`` / ``checkout`` (no push, no write remotes) are used; a fixed
+    ref keeps the evidence reproducible. Raises ``RuntimeError`` on clone failure
+    so the caller can degrade gracefully rather than attributing a missing repo to
     a root cause.
     """
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", repo.repo_url)
@@ -204,12 +205,6 @@ async def ensure_repo_clone(repo: GitRepo, ref: str, cache_root: Path, timeout: 
             text=True,
             timeout=timeout,
         )
-
-    if checkout.exists():
-        # Already cloned: refresh and pin to the ref.
-        _git(["fetch", "--depth", "1", "origin", ref], cwd=checkout)
-        _git(["checkout", "--force", ref], cwd=checkout)
-        return checkout
 
     try:
         _git(
@@ -243,68 +238,88 @@ async def collect_git_evidence(
         .where(ApplicationRepo.application_id == application_id)
     )
     repos = result.scalars().all()
-    if not repos:
-        return {"artifact_count": 0, "files": [], "repos_searched": 0}
-
     terms = derive_query_terms(alert)
-    if not terms:
-        return {"artifact_count": 0, "files": [], "repos_searched": len(repos)}
-
-    cache_root = Path(settings.evidence_git_cache_dir)
+    sandbox_base = Path(settings.evidence_git_cache_dir)
+    try:
+        sandbox_base.mkdir(parents=True, exist_ok=True)
+        sandbox_path = Path(
+            tempfile.mkdtemp(prefix=f"analysis-{analysis_id}-", dir=sandbox_base)
+        )
+    except OSError as exc:
+        logger.warning("git evidence sandbox unavailable for analysis %s: %s", analysis_id, exc)
+        return {
+            "artifact_count": 0,
+            "files": [],
+            "repos_searched": len(repos),
+            "terms": terms,
+        }
     artifacts: list[dict[str, Any]] = []
 
-    for repo in repos:
-        ref = _resolve_ref(alert, repo)
-        try:
-            checkout = await ensure_repo_clone(
-                repo, ref, cache_root, settings.evidence_git_clone_timeout_seconds
-            )
-        except Exception as exc:  # noqa: BLE001 - degrade, don't fail the analysis
-            logger.warning("git evidence clone failed for %s: %s", repo.repo_url, exc)
-            continue
+    try:
+        if not repos:
+            return {"artifact_count": 0, "files": [], "repos_searched": 0}
 
-        hits = search_tree(
-            checkout,
-            terms,
-            max_files=settings.evidence_git_max_files,
-            max_bytes=settings.evidence_git_max_bytes,
-            snippet_lines=settings.evidence_git_snippet_lines,
-        )
-        for hit in hits:
-            masked, categories = mask_secrets(hit["snippet"])
-            retention = None
-            days = settings.evidence_retention_days
-            if days and days > 0:
-                retention = datetime.now(timezone.utc) + timedelta(days=days)
-            artifact = EvidenceArtifact(
-                analysis_id=analysis_id,
-                artifact_type="git_file",
-                source_kind="git",
-                source_id=repo.id,
-                locator=f"{repo.repo_url}@{ref}:{hit['path']}:{hit['line']}",
-                content_hash=_hash(hit["snippet"]),
-                redacted_excerpt=masked,
-                metadata={
-                    "terms": hit["terms"],
-                    "matched_line": hit["line"],
-                    "repo_name": repo.name,
-                    "ref": ref,
-                    "secret_categories": categories,
-                },
-                retention_until=retention,
-            )
-            session.add(artifact)
-            artifacts.append(
-                {
-                    "artifact_id": artifact.id,
-                    "locator": artifact.locator,
-                    "line": hit["line"],
-                    "terms": hit["terms"],
-                    "secret_categories": categories,
-                }
-            )
+        if not terms:
+            return {"artifact_count": 0, "files": [], "repos_searched": len(repos)}
 
-    await session.flush()  # assign IDs without committing the analysis txn
+        for repo in repos:
+            ref = _resolve_ref(alert, repo)
+            try:
+                checkout = await ensure_repo_clone(
+                    repo, ref, sandbox_path, settings.evidence_git_clone_timeout_seconds
+                )
+            except Exception as exc:  # noqa: BLE001 - degrade, don't fail the analysis
+                logger.warning("git evidence clone failed for %s: %s", repo.repo_url, exc)
+                continue
+
+            hits = search_tree(
+                checkout,
+                terms,
+                max_files=settings.evidence_git_max_files,
+                max_bytes=settings.evidence_git_max_bytes,
+                snippet_lines=settings.evidence_git_snippet_lines,
+            )
+            for hit in hits:
+                masked, categories = mask_secrets(hit["snippet"])
+                retention = None
+                days = settings.evidence_retention_days
+                if days and days > 0:
+                    retention = datetime.now(timezone.utc) + timedelta(days=days)
+                artifact = EvidenceArtifact(
+                    analysis_id=analysis_id,
+                    artifact_type="git_file",
+                    source_kind="git",
+                    source_id=repo.id,
+                    locator=f"{repo.repo_url}@{ref}:{hit['path']}:{hit['line']}",
+                    content_hash=_hash(hit["snippet"]),
+                    redacted_excerpt=masked,
+                    metadata={
+                        "terms": hit["terms"],
+                        "matched_line": hit["line"],
+                        "repo_name": repo.name,
+                        "ref": ref,
+                        "secret_categories": categories,
+                    },
+                    retention_until=retention,
+                )
+                session.add(artifact)
+                artifacts.append(
+                    {
+                        "_artifact": artifact,
+                        "locator": artifact.locator,
+                        "line": hit["line"],
+                        "terms": hit["terms"],
+                        "secret_categories": categories,
+                    }
+                )
+
+        await session.flush()  # assign IDs without committing the analysis txn
+        for item in artifacts:
+            artifact = item.pop("_artifact")
+            item["artifact_id"] = artifact.id
+    finally:
+        shutil.rmtree(sandbox_path, ignore_errors=True)
+
     return {
         "artifact_count": len(artifacts),
         "files": artifacts,

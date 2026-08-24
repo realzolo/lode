@@ -59,6 +59,14 @@ def test_system_prompt_requires_structured_output() -> None:
     assert "unknowns" in system
 
 
+def test_system_prompt_requires_configured_output_language() -> None:
+    system, _user = _build_prompts(
+        _FakeAlert(), None, [], [], [], None, output_language="zh"
+    )
+    assert "Simplified Chinese" in system
+    assert "property names exactly" in system
+
+
 # --- evidence packet normalization ---------------------------------------
 def test_normalize_accepts_well_formed_packet() -> None:
     catalog = [{"id": 1, "kind": "git", "locator": "r@a:p:1"}]
@@ -111,3 +119,12 @@ def test_heuristic_packet_is_flagged_as_fallback() -> None:
     assert any("Heuristic" in u for u in unknowns)
     # The deploy context belongs in the facts list, not asserted into the claim.
     assert any("deploy context" in f.lower() for f in facts)
+
+
+def test_heuristic_packet_honors_chinese_output_language() -> None:
+    conclusion, _confidence, _refs, facts, _inferences, unknowns = _heuristic_packet(
+        _FakeAlert(), None, None, {}, output_language="zh"
+    )
+    assert "事件" in conclusion
+    assert facts[0].startswith("已捕获错误")
+    assert "启发式兜底" in unknowns[0]

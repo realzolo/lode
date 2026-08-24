@@ -750,6 +750,8 @@ export function toUiSteps(steps: ApiStep[]): AnalysisStep[] {
 }
 
 export interface GlobalSettings {
+  ai_output_language: 'en' | 'zh';
+  supported_ai_output_languages: ('en' | 'zh')[];
   git_credentials: { id: number; auth_type: string; username: string; readonly: boolean; note: string; has_secret: boolean }[];
   git_repos: { id: number; name: string; repo_url: string; default_branch: string; scope: string; application_id: number | null; repo_type: string; credential_id: number | null }[];
   ai_model_configs: {
@@ -764,6 +766,12 @@ export interface GlobalSettings {
 
 export async function fetchSettings(): Promise<GlobalSettings> {
   return getJson<GlobalSettings>('/settings');
+}
+
+export async function updateAiOutputLanguage(
+  language: GlobalSettings['ai_output_language']
+): Promise<{ language: GlobalSettings['ai_output_language'] }> {
+  return putJson('/settings/ai-output-language', { language });
 }
 
 export interface AiModelInput {
