@@ -182,7 +182,7 @@ async def test_collect_git_evidence_persists_masked_artifact(monkeypatch):
         # secret in the snippet is masked before persisting
         assert "postgresql://" not in art.redacted_excerpt
         assert "<REDACTED:" in art.redacted_excerpt
-        assert art.metadata["secret_categories"]
+        assert art.metadata_["secret_categories"]
         assert result["files"][0]["artifact_id"] == art.id
 
 

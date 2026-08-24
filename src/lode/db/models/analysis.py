@@ -154,7 +154,8 @@ class AnalysisStep(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "node_type IN ('receive', 'git_sync', 'context', 'ai_analysis', 'experience', 'conclusion')",
+            "node_type IN ('receive', 'git_sync', 'context', 'service_snapshot', "
+            "'ai_analysis', 'experience', 'conclusion')",
             name="node_type",
         ),
         CheckConstraint(

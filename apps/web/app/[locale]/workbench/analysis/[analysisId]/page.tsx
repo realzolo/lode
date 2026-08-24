@@ -22,6 +22,7 @@ type NodeType = AnalysisStep['nodeType'];
 
 const STEP_TITLE: Record<NodeType, string> = {
   receive: '接收告警', git_sync: '同步源码', context: '收集上下文',
+  service_snapshot: '服务快照',
   ai_analysis: 'AI 根因分析', experience: '匹配经验', conclusion: '生成结论',
 };
 
@@ -61,6 +62,15 @@ function DetailList({ title, items }: { title: string; items: string[] }) {
   return <section className="analysis-detail-group"><h3>{title}</h3><ul>{items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul></section>;
 }
 
+function EvidenceList({ detail, ids }: { detail: AnalysisDetail; ids?: number[] }) {
+  const artifacts = detail.evidence_artifacts.filter((artifact) => !ids || ids.includes(artifact.id));
+  if (!artifacts.length) return null;
+  return <section className="analysis-detail-group"><h3>证据产物</h3><ul>{artifacts.map((artifact) => {
+    const metadata = artifact.metadata ?? {};
+    return <li key={artifact.id} id={`evidence-${artifact.id}`}><b>[{artifact.id}]</b> {artifact.artifact_type} · {artifact.locator ?? '未命名定位符'} · {String(metadata.time_scope ?? '时间范围未知')} · {artifact.collected_at}<br /><span className="mono">{artifact.redacted_excerpt ?? ''}</span></li>;
+  })}</ul></section>;
+}
+
 function StepArtifacts({ node, detail }: { node: NodeType; detail: AnalysisDetail }) {
   const evidence = detail.evidence ?? {};
   if (node === 'receive' && detail.alert) {
@@ -77,9 +87,22 @@ function StepArtifacts({ node, detail }: { node: NodeType; detail: AnalysisDetai
     return <><DetailList title="检索模块" items={asStrings(evidence.modules)} /><DetailList title="源码证据" items={files} /></>;
   }
   if (node === 'context') return <DetailList title="允许查询的数据表" items={asStrings(evidence.allowed_tables)} />;
-  if (node === 'ai_analysis') return <><DetailList title="已确认事实" items={asStrings(evidence.facts)} /><DetailList title="推断" items={asStrings(evidence.inferences)} /><DetailList title="仍待确认" items={asStrings(evidence.unknowns)} /></>;
+  if (node === 'service_snapshot') {
+    const artifacts = detail.evidence_artifacts.filter((artifact) => artifact.artifact_type === 'service_snapshot');
+    return <DetailList title="只读服务证据" items={artifacts.map((artifact) => {
+      const metadata = artifact.metadata ?? {};
+      return `${artifact.source_kind ?? 'service'} · ${String(metadata.summary ?? artifact.locator ?? '')} · 观测完成 ${String(metadata.observed_finished_at ?? artifact.collected_at)} · ${artifact.redacted_excerpt ?? ''}`;
+    })} />;
+  }
+  if (node === 'ai_analysis') {
+    const claims = (value: unknown) => asRecords(value).map((claim) => `${typeof claim.text === 'string' ? claim.text : ''} [证据 ${asStrings(claim.evidence_refs).join(', ') || (Array.isArray(claim.evidence_refs) ? (claim.evidence_refs as unknown[]).join(', ') : '无')}]`);
+    return <><DetailList title="已确认事实" items={claims(evidence.facts)} /><DetailList title="推断" items={claims(evidence.inferences)} /><DetailList title="仍待确认" items={asStrings(evidence.unknowns)} /></>;
+  }
   if (node === 'experience' && detail.matched_experience) return <section className="analysis-detail-group"><h3>命中经验</h3><p>{detail.matched_experience}</p></section>;
-  if (node === 'conclusion') return <DetailList title="引用证据" items={asRecords(evidence.cited_evidence).map((item) => typeof item.locator === 'string' ? item.locator : '未命名证据')} />;
+  if (node === 'conclusion') {
+    const cited = asRecords(evidence.cited_evidence).map((item) => typeof item.id === 'number' ? item.id : null).filter((id): id is number => id !== null);
+    return <EvidenceList detail={detail} ids={cited} />;
+  }
   return null;
 }
 

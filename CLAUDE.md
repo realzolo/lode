@@ -58,3 +58,37 @@
   The default is `/tmp/lode/git`; ensure an overridden directory is writable by
   the worker. If it is unavailable, analysis degrades without Git evidence
   rather than failing the whole task.
+
+## Read-Only External Integrations And Evidence Time Scope
+
+- Applications can bind Redis, Kafka, and ClickHouse integrations. Configuration
+  is a strict, service-specific non-secret selector; credentials are encrypted at
+  rest and never returned by the API. Application readers receive only status;
+  global admins use the dedicated configuration endpoint. Collectors require TLS,
+  DNS endpoints, and a non-empty `LODE_INTEGRATION_EGRESS_ALLOWLIST`; deployment
+  egress policy must enforce the same destinations.
+- The worker owns all external calls. The LLM never receives a DSN, credential,
+  connector, shell, executable SQL interface, alert payload, or deployment text.
+  It receives only bounded, redacted, immutable evidence excerpts. Conclusions,
+  facts, and inferences require valid artifact references; otherwise the result is
+  an explicit low-confidence evidence-insufficient hypothesis.
+- PostgreSQL data sources and ClickHouse bindings must prove that their effective
+  account has no write or temporary-object capability before they are saved and
+  before every catalog query. PostgreSQL accepts only schema-qualified base tables
+  and exposes the server-owned `sample`/`count` query catalog, never SQL text.
+  PostgreSQL bindings are either encrypted structured credentials with
+  `sslmode=verify-full`, or an `env://NAME` reference whose resolved DSN also has
+  `sslmode=verify-full`; plaintext DSNs and TLS downgrade modes are rejected by
+  both API validation and the database constraint, with no runtime bypass.
+  Redis and Kafka may use operational credentials with write grants: their typed
+  collectors expose fixed status reads only and no arbitrary-command/write API.
+  ClickHouse grants are an allowlist of SELECT access to configured and fixed
+  system relations. Policy failures disable the binding and audit it; availability
+  failures yield partial evidence only.
+- `service_snapshot` runs after `context` and before `ai_analysis`, using fixed
+  read-only status templates only. Alert, deploy, Git, database, service, and
+  operator-guidance artifacts are content-hashed and immutable. Snapshots record observation start/
+  end, temporal scope, config hash, collector version, source position, redacted
+  excerpt, and verification metadata. They are observations at analysis time, not
+  proof of state at the earlier alert time.
+- `redis` and `clickhouse-connect` are runtime dependencies.

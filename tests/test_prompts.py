@@ -1,130 +1,90 @@
-"""Unit tests for analysis-guidance injection and evidence packet helpers."""
+"""Evidence-only prompt and structured-claim contract tests."""
 
 from __future__ import annotations
 
-from lode.engine.runner import (
-    _build_prompts,
-    _heuristic_packet,
-    _normalize_evidence_packet,
-)
+import pytest
+from lode.engine.runner import _build_prompts, _heuristic_packet, _normalize_evidence_packet
+from lode.engine.tools import persist_context_evidence
+from lode.db.models.intake import EvidenceArtifact
 
 
-class _FakeAlert:
+class _Alert:
+    id = 7
     title = "Payment latency"
     level = "CRITICAL"
+    topic = "alerts.payment"
     error_message = "p99>2s"
     fields = {"orderId": "1"}
+    received_at = None
 
 
-def test_analysis_guidance_is_injected_as_data_not_commands() -> None:
-    _system, user = _build_prompts(
-        _FakeAlert(),
-        None,
-        [],
-        [],
-        [],
-        None,
-        guidance_text="- check the payment gateway timeout",
-    )
-    assert "ANALYSIS_GUIDANCE" in user
-    assert "payment gateway timeout" in user
-    # The model is told explicitly not to obey instructions inside the hints.
-    assert "not commands" in user
+CATALOG = [{"id": 11, "kind": "alert", "locator": "alert://7", "excerpt": "redacted alert", "time_scope": "incident_event"}]
 
 
-def test_no_analysis_guidance_section_when_none() -> None:
-    _system, user = _build_prompts(_FakeAlert(), None, [], [], [], None)
-    assert "ANALYSIS_GUIDANCE" not in user
-
-
-def test_evidence_registry_rendered_in_prompt() -> None:
-    catalog = [
-        {"id": 11, "kind": "git", "locator": "https://x/svc@abc:pay.py:3"},
-        {"id": 12, "kind": "git", "locator": "https://x/svc@abc:svc.py:9"},
-    ]
-    _system, user = _build_prompts(
-        _FakeAlert(), None, [], [], [], None, evidence_catalog=catalog
-    )
-    assert "EVIDENCE REGISTRY" in user
-    assert "[11]" in user and "[12]" in user
-    # The model is told to cite IDs that exist.
-    assert "evidence_refs" in user
-
-
-def test_system_prompt_requires_structured_output() -> None:
-    system, _user = _build_prompts(_FakeAlert(), None, [], [], [], None)
-    assert "evidence_refs" in system
-    assert "facts" in system
-    assert "inferences" in system
-    assert "unknowns" in system
-
-
-def test_system_prompt_requires_configured_output_language() -> None:
-    system, _user = _build_prompts(
-        _FakeAlert(), None, [], [], [], None, output_language="zh"
-    )
+def test_prompt_contains_only_registry_evidence_and_requires_claim_citations() -> None:
+    system, user = _build_prompts(CATALOG, output_language="zh")
+    assert "redacted alert" in user
+    assert "Payment latency" not in user
+    assert "Every conclusion, fact, and inference" in system
     assert "Simplified Chinese" in system
-    assert "property names exactly" in system
 
 
-# --- evidence packet normalization ---------------------------------------
-def test_normalize_accepts_well_formed_packet() -> None:
-    catalog = [{"id": 1, "kind": "git", "locator": "r@a:p:1"}]
-    parsed = {
-        "conclusion": "DB connection pool exhausted",
-        "confidence": 0.85,
-        "evidence_refs": [1],
-        "facts": ["pool size=5"],
-        "inferences": ["upstream slowdown"],
-        "unknowns": ["why now"],
-    }
-    pkt = _normalize_evidence_packet(parsed, catalog)
-    assert pkt is not None
-    assert pkt["conclusion"] == "DB connection pool exhausted"
-    assert pkt["evidence_refs"] == [1]
-    assert pkt["facts"] == ["pool size=5"]
+def test_normalizer_drops_uncited_claims_and_rejects_uncited_conclusion() -> None:
+    packet = _normalize_evidence_packet({
+        "conclusion": {"text": "Pool exhaustion", "evidence_refs": [11]},
+        "confidence": 0.9,
+        "facts": [
+            {"text": "Observed timeout", "evidence_refs": [11]},
+            {"text": "Unsupported assertion", "evidence_refs": [999]},
+        ],
+        "inferences": [{"text": "Likely saturation", "evidence_refs": [11]}],
+        "unknowns": ["Need historical metrics"],
+    }, CATALOG)
+    assert packet is not None
+    assert packet["conclusion_claim"]["evidence_refs"] == [11]
+    assert len(packet["facts"]) == 1
+    assert _normalize_evidence_packet({"conclusion": {"text": "x", "evidence_refs": []}}, CATALOG) is None
 
 
-def test_normalize_filters_unknown_evidence_ids() -> None:
-    catalog = [{"id": 1, "kind": "git", "locator": "r@a:p:1"}]
-    parsed = {
-        "conclusion": "x",
-        "confidence": 0.5,
-        "evidence_refs": [1, 999],  # 999 does not exist in the registry
-    }
-    pkt = _normalize_evidence_packet(parsed, catalog)
-    assert pkt["evidence_refs"] == [1]
-
-
-def test_normalize_rejects_missing_conclusion() -> None:
-    catalog = []
-    assert _normalize_evidence_packet({"confidence": 0.5}, catalog) is None
-    assert _normalize_evidence_packet("not a dict", catalog) is None
-
-
-def test_normalize_clamps_confidence() -> None:
-    catalog = []
-    pkt = _normalize_evidence_packet(
-        {"conclusion": "x", "confidence": 5.0}, catalog
+def test_heuristic_is_low_confidence_and_cites_the_alert_artifact() -> None:
+    conclusion, confidence, refs, claim, facts, inferences, unknowns = _heuristic_packet(
+        _Alert(), evidence_catalog=CATALOG, output_language="en"
     )
-    assert pkt["confidence"] == 1.0
+    assert confidence <= 0.2
+    assert refs == [11] and claim["evidence_refs"] == [11]
+    assert facts[0]["evidence_refs"] == [11]
+    assert not inferences
+    assert unknowns
 
 
-def test_heuristic_packet_is_flagged_as_fallback() -> None:
-    alert = _FakeAlert()
-    conclusion, confidence, refs, facts, inferences, unknowns = _heuristic_packet(
-        alert, "deploy notes", None, {}, guidance_text=None
+def test_heuristic_without_artifact_refuses_root_cause() -> None:
+    conclusion, confidence, refs, _claim, _facts, _inferences, _unknowns = _heuristic_packet(
+        _Alert(), evidence_catalog=[]
     )
-    assert refs == []  # heuristic cannot cite artifacts
-    assert any("Heuristic" in u for u in unknowns)
-    # The deploy context belongs in the facts list, not asserted into the claim.
-    assert any("deploy context" in f.lower() for f in facts)
+    assert "insufficient" in conclusion.lower()
+    assert confidence == 0.1 and refs == []
 
 
-def test_heuristic_packet_honors_chinese_output_language() -> None:
-    conclusion, _confidence, _refs, facts, _inferences, unknowns = _heuristic_packet(
-        _FakeAlert(), None, None, {}, output_language="zh"
+class _EvidenceSession:
+    def __init__(self):
+        self.added = []
+
+    def add_all(self, items):
+        self.added.extend(items)
+
+    async def flush(self):
+        for index, artifact in enumerate(self.added, start=1):
+            artifact.id = index
+
+
+@pytest.mark.asyncio
+async def test_context_inputs_become_redacted_citable_artifacts() -> None:
+    session = _EvidenceSession()
+    entries = await persist_context_evidence(
+        session, analysis_id=3, alert=_Alert(), deploy_description="token=very-secret"
     )
-    assert "事件" in conclusion
-    assert facts[0].startswith("已捕获错误")
-    assert "启发式兜底" in unknowns[0]
+    assert {entry["kind"] for entry in entries} == {"alert", "deploy"}
+    assert all(entry["id"] for entry in entries)
+    artifacts = [item for item in session.added if isinstance(item, EvidenceArtifact)]
+    assert all(artifact.content_hash for artifact in artifacts)
+    assert "very-secret" not in (artifacts[1].redacted_excerpt or "")

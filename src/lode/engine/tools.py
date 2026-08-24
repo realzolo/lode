@@ -5,14 +5,15 @@ database (repository registry, application descriptions, table whitelist, the
 experience library). They are the safe, auditable surface the agent is allowed to use —
 no arbitrary shell, no write access to production data.
 
-``run_readonly_query`` proxies validated, read-only SQL to an application's
-configured replica (see :mod:`lode.engine.db_proxy`): it enforces the
-allow-list, rejects writes, resolves the connection (structured fields or a
-secret ref), and masks sensitive columns before returning rows.
+``run_approved_query`` executes only server-owned templates against an
+application's approved base tables. There is no pathway for agent- or
+operator-authored SQL.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -29,7 +30,8 @@ from lode.db.models.application import (
 from lode.db.models.git import GitRepo
 from lode.db.models.intake import EvidenceArtifact
 from lode.db.models.experience import Experience
-from lode.engine.db_proxy import DbConnector, DbProxyError, execute_query
+from lode.engine.db_proxy import DbConnector, DbProxyError, execute_approved_query
+from lode.engine.evidence.secret_mask import mask_secrets
 
 
 async def search_code(session, application_id: int) -> dict[str, Any]:
@@ -70,27 +72,91 @@ async def get_deploy_context(session, application_id: int) -> dict[str, Any]:
     }
 
 
-async def run_readonly_query(
+async def persist_context_evidence(
+    session,
+    *,
+    analysis_id: int,
+    alert: Alert | None,
+    deploy_description: str | None,
+) -> list[dict[str, Any]]:
+    """Freeze alert and deployment inputs as redacted, citable artifacts."""
+    now = datetime.now(UTC)
+    retention = (
+        now + timedelta(days=settings.evidence_retention_days)
+        if settings.evidence_retention_days > 0
+        else None
+    )
+    artifacts: list[tuple[EvidenceArtifact, str]] = []
+    if alert is not None:
+        payload = {
+            "title": alert.title,
+            "level": alert.level,
+            "topic": alert.topic,
+            "error_message": alert.error_message,
+            "fields": alert.fields or {},
+            "received_at": alert.received_at.isoformat() if alert.received_at else None,
+        }
+        text, _ = mask_secrets(json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True))
+        artifacts.append((EvidenceArtifact(
+            analysis_id=analysis_id, artifact_type="alert_payload", source_kind="alert", source_id=alert.id,
+            locator=f"alert://{alert.id}", content_hash=hashlib.sha256(text.encode()).hexdigest(),
+            redacted_excerpt=text[:20_000], metadata_={
+                "time_scope": "incident_event", "event_at": payload["received_at"], "collector_version": "2",
+            }, retention_until=retention,
+        ), "alert"))
+    if deploy_description:
+        text, _ = mask_secrets(deploy_description)
+        artifacts.append((EvidenceArtifact(
+            analysis_id=analysis_id, artifact_type="deploy", source_kind="application_description", source_id=None,
+            locator="application://deploy-context", content_hash=hashlib.sha256(text.encode()).hexdigest(),
+            redacted_excerpt=text[:20_000], metadata_={
+                "time_scope": "configuration_snapshot", "observed_at": now.isoformat(), "collector_version": "2",
+            }, retention_until=retention,
+        ), "deploy"))
+    session.add_all(item[0] for item in artifacts)
+    await session.flush()
+    return [
+        {
+            "id": artifact.id, "kind": kind, "locator": artifact.locator,
+            "excerpt": artifact.redacted_excerpt or "", "collected_at": now.isoformat(),
+            "time_scope": (artifact.metadata_ or {}).get("time_scope"),
+            "event_at": (artifact.metadata_ or {}).get("event_at") or (artifact.metadata_ or {}).get("observed_at"),
+        }
+        for artifact, kind in artifacts
+    ]
+
+
+async def persist_guidance_evidence(session, *, analysis_id: int, guidances: list[Any]) -> list[dict[str, Any]]:
+    """Make operator annotations citable data, never privileged instructions."""
+    now = datetime.now(UTC)
+    retention = now + timedelta(days=settings.evidence_retention_days) if settings.evidence_retention_days > 0 else None
+    artifacts: list[EvidenceArtifact] = []
+    for guidance in guidances:
+        text, _ = mask_secrets(str(guidance.content))
+        artifacts.append(EvidenceArtifact(
+            analysis_id=analysis_id, artifact_type="operator_guidance", source_kind="operator_guidance",
+            source_id=guidance.id, locator=f"guidance://{guidance.id}",
+            content_hash=hashlib.sha256(text.encode()).hexdigest(), redacted_excerpt=text[:20_000],
+            metadata_={
+                "time_scope": "operator_annotation", "observed_at": guidance.created_at.isoformat(),
+                "author": guidance.author, "collector_version": "2", "untrusted": True,
+            }, retention_until=retention,
+        ))
+    session.add_all(artifacts)
+    await session.flush()
+    return [
+        {"id": artifact.id, "kind": "operator_guidance", "locator": artifact.locator,
+         "excerpt": artifact.redacted_excerpt or "", "time_scope": "operator_annotation",
+         "event_at": (artifact.metadata_ or {}).get("observed_at")}
+        for artifact in artifacts
+    ]
+
+
+async def list_readonly_sources(
     session,
     application_id: int,
-    *,
-    sql: str | None = None,
-    source_id: int | None = None,
-    connector: DbConnector | None = None,
-    analysis_id: int | None = None,
 ) -> dict[str, Any]:
-    """Read-only proxy for an application's whitelisted data sources.
-
-    With no ``sql`` this returns the allow-list (used to brief the analysis
-    agent about what it may read). When ``sql`` is provided the statement is
-    validated against the chosen source's ``allowed_tables`` and executed
-    read-only against the resolved replica, with sensitive columns **always**
-    masked.
-
-    When ``analysis_id`` is supplied the (already-masked) result set is persisted
-    as an ``EvidenceArtifact`` (type ``db_query``) so the query becomes citable,
-    auditable evidence for that analysis run.
-    """
+    """List the approved source/table catalog for analysis context."""
     result = await session.execute(
         select(DbSource).where(DbSource.application_id == application_id)
     )
@@ -108,48 +174,49 @@ async def run_readonly_query(
             {
                 "id": src.id,
                 "name": src.name,
-                "description": src.description,
+                "description": getattr(src, "description", ""),
                 "allowed_tables": table_names,
             }
         )
 
-    if sql is None:
-        return {
-            "allowed_tables": allowed,
-            "data_sources": source_summaries,
-            "source_count": len(sources),
-            "note": "Read-only proxy: allow-list only; pass `sql` to execute a "
-            "validated query.",
-        }
+    return {
+        "allowed_tables": allowed,
+        "data_sources": source_summaries,
+        "source_count": len(sources),
+        "operations": ["sample", "count"],
+        "note": "Only server-owned read-only query templates may execute.",
+    }
 
-    # Resolve which source to run against.
-    if source_id is not None:
-        chosen = next((s for s in sources if s.id == source_id), None)
-        if chosen is None:
-            raise DbProxyError(
-                f"data source {source_id} not found for this application"
-            )
-    elif len(sources) == 1:
-        chosen = sources[0]
-    elif len(sources) == 0:
-        raise DbProxyError("no data sources configured for this application")
-    else:
-        raise DbProxyError(
-            "multiple data sources configured; pass source_id to disambiguate"
-        )
 
-    # The stored password is encrypted at rest; decrypt it for the connect call.
-    # A decrypt failure (e.g. after a secret_key rotation) is surfaced as a
-    # resolvable-source error rather than a 500.
+async def run_approved_query(
+    session,
+    application_id: int,
+    *,
+    source_id: int,
+    table: str,
+    operation: str,
+    connector: DbConnector | None = None,
+    analysis_id: int | None = None,
+) -> dict[str, Any]:
+    """Execute a fixed query catalog entry and persist masked evidence."""
+    result = await session.execute(select(DbSource).where(DbSource.application_id == application_id))
+    sources = result.scalars().all()
+    chosen = next((source for source in sources if source.id == source_id), None)
+    if chosen is None:
+        raise DbProxyError(f"data source {source_id} not found for this application")
+    if table not in (chosen.allowed_tables or []):
+        raise DbProxyError("table is not approved for this data source")
+
     try:
         source_password = decrypt_secret(chosen.password)
     except Exception as exc:
         raise DbProxyError(f"data source credentials are unreadable: {exc}") from exc
 
-    res = await execute_query(
+    res = await execute_approved_query(
         chosen.conn_secret_ref,
         chosen.allowed_tables or [],
-        sql,
+        table=table,
+        operation=operation,
         host=chosen.host,
         port=chosen.port,
         database=chosen.database,
@@ -168,7 +235,7 @@ async def run_readonly_query(
             analysis_id=analysis_id,
             source_id=chosen.id,
             source_name=chosen.name,
-            sql=sql,
+            sql=f"catalog:{operation}:{table}",
             columns=res["columns"],
             rows=res["rows"],
             truncated=res["truncated"],

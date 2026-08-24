@@ -44,6 +44,7 @@ export interface AnalysisStep {
     | 'receive'
     | 'git_sync'
     | 'context'
+    | 'service_snapshot'
     | 'ai_analysis'
     | 'experience'
     | 'conclusion';

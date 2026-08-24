@@ -234,7 +234,7 @@ class EvidenceArtifact(Base):
     __table_args__ = (
         CheckConstraint(
             "artifact_type IN ('git_file', 'git_diff', 'db_query', "
-            "'deploy', 'alert_payload')",
+            "'deploy', 'alert_payload', 'service_snapshot', 'operator_guidance')",
             name="artifact_type",
         ),
         Index("ix_evidence_artifacts_analysis_id", "analysis_id"),

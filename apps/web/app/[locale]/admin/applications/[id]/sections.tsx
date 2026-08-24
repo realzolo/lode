@@ -35,17 +35,23 @@ import {
   bindRepo,
   createDbSource,
   createApplicationDescription,
+  createApplicationIntegration,
   createLocalRepo,
   deleteDbSource,
   deleteApplicationDescription,
+  deleteApplicationIntegration,
   fetchAiModelConfigs,
   fetchApplication,
+  getApplicationIntegration,
   fetchSettings,
   setApplicationModel,
   testDbSource,
+  testApplicationIntegration,
   unbindRepo,
   updateDbSource,
+  updateApplicationIntegration,
   type CreateApplicationDescriptionInput,
+  type ApplicationIntegrationInput,
   type CreateDbSourceInput,
   type CreateLocalRepoInput,
   type UpdateDbSourceInput,
@@ -66,8 +72,120 @@ export type AppDetail = Awaited<ReturnType<typeof fetchApplication>>;
 type BoundRepo = AppDetail['repos'][number];
 type BoundDescription = AppDetail['descriptions'][number];
 type BoundDbSource = AppDetail['db_sources'][number];
+type BoundIntegration = AppDetail['integrations'][number];
 type GlobalRepo = { id: number; name: string; url: string };
 type CredentialOption = { id: number; label: string };
+
+export function ServiceIntegrationsSection({
+  data,
+  appId,
+  onRefresh,
+}: {
+  data: AppDetail;
+  appId: string;
+  onRefresh: () => void;
+}) {
+  const isAdmin = useUser().isAdmin;
+  const tc = useTranslations('common');
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<BoundIntegration | null>(null);
+  const [name, setName] = useState('');
+  const [kind, setKind] = useState<'redis' | 'kafka' | 'clickhouse'>('redis');
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState('');
+  const [username, setUsername] = useState('');
+  const [database, setDatabase] = useState('0');
+  const [bootstrap, setBootstrap] = useState('');
+  const [topics, setTopics] = useState('');
+  const [secret, setSecret] = useState('');
+  const [remove, setRemove] = useState<BoundIntegration | null>(null);
+
+  function reset() {
+    setEditing(null); setName(''); setKind('redis'); setHost(''); setPort('');
+    setUsername(''); setDatabase('0'); setBootstrap(''); setTopics(''); setSecret('');
+  }
+
+  function payload() {
+    const config = kind === 'kafka'
+      ? { bootstrap_servers: bootstrap.split(',').map((item) => item.trim()).filter(Boolean), username: username.trim(), topics: topics.split(',').map((item) => item.trim()).filter(Boolean) }
+      : kind === 'redis'
+        ? { host: host.trim(), port: Number(port || 6380), username: username.trim() || undefined, database: Number(database || 0), tls: true }
+        : { host: host.trim(), port: Number(port || 8443), username: username.trim(), database: database.trim() || 'default', tls: true };
+    return { name: name.trim(), kind, config, secret_ref: secret.trim() };
+  }
+
+  async function edit(integration: BoundIntegration) {
+    setBusy(true); setError(null);
+    try {
+      const full = await getApplicationIntegration(appId, integration.id);
+      const config = full.config;
+      setEditing(integration); setName(full.name); setKind(full.kind);
+      setHost(typeof config.host === 'string' ? config.host : '');
+      setPort(typeof config.port === 'number' ? String(config.port) : '');
+      setUsername(typeof config.username === 'string' ? config.username : '');
+      setDatabase(typeof config.database === 'number' || typeof config.database === 'string' ? String(config.database) : '');
+      setBootstrap(Array.isArray(config.bootstrap_servers) ? config.bootstrap_servers.map(String).join(', ') : '');
+      setTopics(Array.isArray(config.topics) ? config.topics.map(String).join(', ') : '');
+      setSecret(''); setOpen(true);
+    } catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  }
+
+  async function save(testOnly = false) {
+    setBusy(true); setError(null);
+    try {
+      const input = payload();
+      if (testOnly) {
+        if (!input.secret_ref) throw new Error('测试需要提供凭据。');
+        const result = await testApplicationIntegration(appId, input);
+        if (!result.ok) throw new Error(result.error ?? '连接验证失败');
+      } else if (editing) {
+        const { kind: _kind, ...update }: Partial<ApplicationIntegrationInput> = input;
+        if (!update.secret_ref) delete update.secret_ref;
+        await updateApplicationIntegration(appId, editing.id, update);
+        setOpen(false); reset(); onRefresh();
+      } else {
+        if (!input.secret_ref) throw new Error('需要提供凭据或 env:// 引用。');
+        await createApplicationIntegration(appId, input);
+        setOpen(false); reset(); onRefresh();
+      }
+    } catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  }
+
+  async function confirmRemove() {
+    if (!remove) return;
+    setBusy(true);
+    try { await deleteApplicationIntegration(appId, remove.id); setRemove(null); onRefresh(); }
+    catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  }
+
+  return <Card>
+    <div className="row-between"><div><h2 className="section-title">只读服务集成</h2><p className="muted">状态采集仅使用固定只读操作，连接端点需在 worker 出口白名单中。</p></div>
+      {isAdmin && <Button size="sm" variant="primary" onClick={() => { reset(); setOpen(true); }}><IconPlus size={14} /> 添加集成</Button>}
+    </div>
+    {error && <p className="muted" style={{ color: 'var(--danger)', marginTop: 10 }}>{error}</p>}
+    <div className="stack" style={{ marginTop: 14 }}>
+      {data.integrations.length === 0 ? <p className="muted">{tc('empty')}</p> : data.integrations.map((integration: BoundIntegration) => <div key={integration.id} className="row-between">
+        <div><b>{integration.name}</b> <span className="muted mono">{integration.kind}</span><p className="muted" style={{ fontSize: 12 }}>{integration.last_collected_at ? `上次采集 ${integration.last_collected_at}` : '尚未采集'}</p></div>
+        <div className="row" style={{ gap: 8 }}><span className="muted" style={{ color: integration.state === 'disabled' ? 'var(--danger)' : undefined }}>{integration.state === 'disabled' ? integration.last_error || '策略停用' : '已启用'}</span>
+          {isAdmin && <><Button size="sm" variant="ghost" onClick={() => void edit(integration)}>编辑</Button><Button size="sm" variant="destructive" onClick={() => setRemove(integration)}><IconTrash2 size={14} /> {tc('delete')}</Button></>}
+        </div>
+      </div>)}
+    </div>
+    <Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogHeader><DialogTitle>{editing ? '编辑服务集成' : '添加服务集成'}</DialogTitle><DialogDescription>秘密仅在提交时使用，永不回显。</DialogDescription></DialogHeader>
+      <div className="stack"><Input placeholder="名称" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} />
+        <Select value={kind} disabled={busy || !!editing} onChange={(e) => setKind(e.target.value as typeof kind)}><option value="redis">Redis</option><option value="kafka">Kafka</option><option value="clickhouse">ClickHouse</option></Select>
+        {kind === 'kafka' ? <><Input placeholder="broker.example.com:9093" value={bootstrap} onChange={(e) => setBootstrap(e.target.value)} disabled={busy}/><Input placeholder="用户名" value={username} onChange={(e) => setUsername(e.target.value)} disabled={busy}/><Input placeholder="主题（逗号分隔，可选）" value={topics} onChange={(e) => setTopics(e.target.value)} disabled={busy}/></> : <><Input placeholder="DNS 主机名" value={host} onChange={(e) => setHost(e.target.value)} disabled={busy}/><Input placeholder="端口" value={port} onChange={(e) => setPort(e.target.value)} disabled={busy}/><Input placeholder="用户名（Redis 可选）" value={username} onChange={(e) => setUsername(e.target.value)} disabled={busy}/><Input placeholder={kind === 'redis' ? '数据库编号' : '数据库'} value={database} onChange={(e) => setDatabase(e.target.value)} disabled={busy}/></>}
+        <Input type="password" placeholder={editing ? '凭据（留空以保持不变）' : '凭据或 env:// 引用'} value={secret} onChange={(e) => setSecret(e.target.value)} disabled={busy}/>
+      </div><DialogFooter><Button variant="ghost" onClick={() => void save(true)} disabled={busy}>测试</Button><Button onClick={() => setOpen(false)} disabled={busy}>{tc('cancel')}</Button><Button variant="primary" onClick={() => void save()} disabled={busy || !name.trim()}>{tc('save')}</Button></DialogFooter>
+    </DialogContent></Dialog>
+    <ConfirmDialog open={!!remove} onOpenChange={(value) => !value && setRemove(null)} title="删除服务集成" description="将删除连接配置和凭据。" confirmLabel={tc('delete')} destructive onConfirm={() => void confirmRemove()} />
+  </Card>;
+}
 
 // ---------------------------------------------------------------------------
 // Application-scoped repos
@@ -533,6 +651,7 @@ export function DbSourcesSection({
   const [deleteSource, setDeleteSource] = useState<BoundDbSource | null>(null);
 
   const sources = data.db_sources;
+  const integrations = data.integrations ?? [];
 
   function resetForm() {
     setEditingId(null);
@@ -721,6 +840,19 @@ export function DbSourcesSection({
                   </>
                 ) : null}
               </p>
+            </div>
+          ))}
+        </div>
+      )}
+      {integrations.length > 0 && (
+        <div className="stack" style={{ marginTop: 20 }}>
+          <p className="field-label">只读服务集成</p>
+          {integrations.map((integration: BoundIntegration) => (
+            <div key={integration.id} className="row-between">
+              <span>{integration.name} <span className="muted mono">{integration.kind}</span></span>
+              <span className="muted" style={{ color: integration.state === 'disabled' ? 'var(--danger)' : undefined }}>
+                {integration.state === 'disabled' ? integration.last_error || '已因只读策略停用' : '已验证只读'}
+              </span>
             </div>
           ))}
         </div>

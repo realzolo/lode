@@ -21,12 +21,12 @@ committed and covered by tests.
 - **M2 — Kafka consumer resilience:** reconnect backoff on slow brokers, per-message
   failure isolation, DLQ / unassigned-topic routing, and offset commit even after a
   failed message.
-- **M3 — Interactive workflow graph:** a pannable/zoomable canvas of the six pipeline
-  steps (`receive → git_sync → context → ai_analysis → experience → conclusion`) on the
+- **M3 — Interactive workflow graph:** a pannable/zoomable canvas of the seven pipeline
+  steps (`receive → git_sync → context → service_snapshot → ai_analysis → experience → conclusion`) on the
   analysis detail page, built dependency-free.
-- **M4 — Read-only DB proxy & query console:** a per-source table allow-list with
-  write/DDL rejection, column desensitization, and `POST /applications/{id}/query`
-  (gated by the `analyze` scope).
+- **M4 — Fixed read-only database catalog:** a per-source, schema-qualified base-table
+  catalog, a dedicated effective-role privilege proof, column desensitization, and
+  `POST /applications/{id}/query` operations that never accept SQL text.
 - **M5 — Semantic shared experience:** an exact `trigger_signature` match plus embedding
   cosine similarity (OpenAI-compatible `/embeddings`); an optional `pgvector` backend
   offloads distance to the `<=>` operator. Details below.
@@ -213,18 +213,47 @@ POST /applications/{id}/ingestion/pause
 POST /applications/{id}/ingestion/resume
 ```
 
-## Read-only database proxy (M4)
+## Fixed read-only database catalog (M4)
 
-Analyses can pull context from read-only data sources without exposing write access.
-`POST /applications/{id}/query` (requires the `analyze` scope) runs a validated
-read-only SQL statement against a configured source:
+The product intentionally has no SQL console. `POST /applications/{id}/query`
+(requires `analyze`) accepts only `{source_id, table, operation}` where `operation`
+is `sample` or `count` and `table` is an administrator-approved,
+schema-qualified base table. SQL is generated exclusively by server-owned templates.
 
-- Only `SELECT` (and read-only CTEs) are permitted; `INSERT`/`UPDATE`/`DELETE`/`DROP`
-  and multi-statements are rejected, and a per-source table allow-list is enforced.
-- Sensitive columns (password / token / email / phone / …) are desensitized in the
-  returned rows.
-- A bare `sql` body returns the source's allowed-table whitelist — the safe default
-  used by the runner agent when no statement is supplied.
+Binding and every execution prove that the effective PostgreSQL identity has no
+database/schema/table/sequence write privilege, no temporary-object privilege, and
+`SELECT` only on each approved base table. Bindings use either encrypted structured
+credentials with `sslmode=verify-full`, or an `env://NAME` DSN reference whose DSN
+also uses `sslmode=verify-full`; plaintext DSNs and TLS downgrade modes are rejected
+without a configuration bypass. Every execution runs in an explicit read-only
+transaction. The UI always masks sensitive columns.
+
+## Read-only service integrations and evidence time scope
+
+Applications may bind Redis, Kafka, and ClickHouse integrations. These are
+fixed, capability-limited status collectors used during analysis; they do not
+accept arbitrary commands, business-key reads, or LLM-authored SQL. Credentials
+are encrypted at rest and never returned by the API. Integration selectors use
+strict service-specific schemas, require TLS, DNS hostnames, and an explicit
+worker `LODE_INTEGRATION_EGRESS_ALLOWLIST` (comma-separated hostnames or wildcard
+suffixes such as `*.example.internal`). The deployment network policy must enforce
+the same allowlist through its egress gateway.
+
+PostgreSQL data sources and ClickHouse bindings must prove least privilege before
+they are saved. Redis and Kafka can use operational credentials with write grants,
+because their collectors expose no write-capable command surface and execute only
+code-defined status reads. A policy-verification failure disables that binding and
+writes an audit event; availability failures yield partial evidence without blocking
+the incident analysis.
+
+The worker inserts a `service_snapshot` step before AI analysis. Alert, deployment,
+Git, database, service, and operator-guidance inputs are persisted as immutable, content-hashed,
+size-bounded, redacted evidence artifacts. Every artifact records its temporal scope;
+service snapshots carry collection start/end, configuration hash, collector version,
+and permission-verification result. The model receives only these excerpts. Its
+conclusion, facts, and inferences must each cite artifact IDs; operator guidance
+is explicitly untrusted data; uncited output is discarded in favor of a
+low-confidence “evidence insufficient” result.
 
 ## Semantic shared experience (M5)
 

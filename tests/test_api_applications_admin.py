@@ -22,6 +22,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from lode.api.main import app
+from lode.api.routes import applications as application_routes
 from lode.db.models.application import (
     Application,
     ApplicationDescription,
@@ -334,7 +335,14 @@ async def test_admin_bind_unknown_repo_returns_404(fresh_app: int, admin: int) -
 # ---------------------------------------------------------------------------
 
 
-async def test_admin_create_and_delete_db_source(fresh_app: int, admin: int) -> None:
+async def test_admin_create_and_delete_db_source(fresh_app: int, admin: int, monkeypatch) -> None:
+    async def verified(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(application_routes, "verify_postgres_readonly_account", verified)
+    monkeypatch.setenv(
+        "ORDERS_DSN", "postgresql://readonly@db.example.invalid/orders?sslmode=verify-full"
+    )
     token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
     headers = {"Authorization": f"Bearer {token}"}
     async with _client() as client:
@@ -344,13 +352,13 @@ async def test_admin_create_and_delete_db_source(fresh_app: int, admin: int) -> 
             json={
                 "name": "orders",
                 "conn_secret_ref": "env://ORDERS_DSN",
-                "allowed_tables": ["orders", "order_items"],
+                "allowed_tables": ["public.orders", "public.order_items"],
             },
         )
         assert resp.status_code == 201, resp.text
         source_id = resp.json()["id"]
         assert resp.json()["name"] == "orders"
-        assert resp.json()["allowed_tables"] == ["orders", "order_items"]
+        assert resp.json()["allowed_tables"] == ["public.orders", "public.order_items"]
 
         # delete
         resp = await client.delete(
@@ -365,11 +373,15 @@ async def test_admin_create_and_delete_db_source(fresh_app: int, admin: int) -> 
 
 
 async def test_admin_create_db_source_with_structured_fields(
-    fresh_app: int, admin: int
+    fresh_app: int, admin: int, monkeypatch
 ) -> None:
     """An admin can create a source by typing the connection in directly
     (structured host/port/database/username/password) instead of a secret ref.
     """
+    async def verified(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(application_routes, "verify_postgres_readonly_account", verified)
     token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
     headers = {"Authorization": f"Bearer {token}"}
     async with _client() as client:
@@ -383,7 +395,8 @@ async def test_admin_create_db_source_with_structured_fields(
                 "database": "orders",
                 "username": "readonly",
                 "password": "super-secret",
-                "allowed_tables": ["orders", "order_items"],
+                "sslmode": "verify-full",
+                "allowed_tables": ["public.orders", "public.order_items"],
             },
         )
         assert resp.status_code == 201, resp.text
@@ -396,7 +409,7 @@ async def test_admin_create_db_source_with_structured_fields(
         assert body["has_password"] is True
         # The raw password must never be echoed back to the client.
         assert "password" not in body
-        assert body["allowed_tables"] == ["orders", "order_items"]
+        assert body["allowed_tables"] == ["public.orders", "public.order_items"]
 
         async with AsyncSessionLocal() as session:
             row = await session.get(DbSource, body["id"])
@@ -482,11 +495,14 @@ async def test_admin_delete_db_source_wrong_app_returns_404(fresh_app: int, admi
 
 
 async def test_admin_test_db_source_unreachable_returns_error(
-    fresh_app: int, admin: int
+    fresh_app: int, admin: int, monkeypatch
 ) -> None:
     """The pre-save ``/db-sources/test`` endpoint must surface a connection
     failure as a structured ``{ok: false, error}`` result — never a 500."""
     token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    monkeypatch.setenv(
+        "UNREACHABLE_DSN", "postgresql://readonly@127.0.0.1:1/none?sslmode=verify-full"
+    )
     headers = {"Authorization": f"Bearer {token}"}
     async with _client() as client:
         resp = await client.post(
@@ -494,8 +510,8 @@ async def test_admin_test_db_source_unreachable_returns_error(
             headers=headers,
             json={
                 "name": "probe",
-                "conn_secret_ref": "postgresql://u:p@127.0.0.1:1/none",
-                "allowed_tables": [],
+                "conn_secret_ref": "env://UNREACHABLE_DSN",
+                "allowed_tables": ["public.probe"],
             },
         )
         assert resp.status_code == 200, resp.text

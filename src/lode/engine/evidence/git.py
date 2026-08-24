@@ -293,12 +293,14 @@ async def collect_git_evidence(
                     locator=f"{repo.repo_url}@{ref}:{hit['path']}:{hit['line']}",
                     content_hash=_hash(hit["snippet"]),
                     redacted_excerpt=masked,
-                    metadata={
+                    metadata_={
                         "terms": hit["terms"],
                         "matched_line": hit["line"],
                         "repo_name": repo.name,
                         "ref": ref,
                         "secret_categories": categories,
+                        "time_scope": "source_revision",
+                        "collector_version": "2",
                     },
                     retention_until=retention,
                 )
@@ -310,6 +312,7 @@ async def collect_git_evidence(
                         "line": hit["line"],
                         "terms": hit["terms"],
                         "secret_categories": categories,
+                        "excerpt": masked[:4000],
                     }
                 )
 

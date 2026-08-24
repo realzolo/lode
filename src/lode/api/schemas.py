@@ -7,10 +7,13 @@ keep internal columns (ids, secrets, raw payloads in full) out of the wire.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from lode.integration_policy import normalize_integration_config
 
 
 class AnalysisStepOut(BaseModel):
@@ -72,6 +75,17 @@ class AnalysisJobOut(BaseModel):
     last_error_detail: str | None = None
 
 
+class EvidenceArtifactOut(BaseModel):
+    id: int
+    artifact_type: str
+    source_kind: str | None
+    locator: str | None
+    content_hash: str | None
+    redacted_excerpt: str | None
+    metadata: dict | None
+    collected_at: datetime
+
+
 class AnalysisDetailOut(BaseModel):
     id: str
     dedupe_key: str
@@ -81,6 +95,7 @@ class AnalysisDetailOut(BaseModel):
     confidence: float | None
     conclusion: str | None
     evidence: dict | None
+    evidence_artifacts: list[EvidenceArtifactOut]
     alert: AlertSummary | None
     steps: list[AnalysisStepOut]
     job: AnalysisJobOut
@@ -116,6 +131,7 @@ class ApplicationDetailOut(BaseModel):
     repos: list[dict]
     descriptions: list[dict]
     db_sources: list[DbSourceListItem]
+    integrations: list["ApplicationIntegrationOut"] = Field(default_factory=list)
     my_perm: str | None = None
 
 
@@ -211,10 +227,9 @@ class CreateDbSourceIn(BaseModel):
     # Mode 2 (secret ref): conn_secret_ref keeps real credentials out of the
     # row. Either this OR (host + database) must be supplied.
     conn_secret_ref: str | None = Field(default=None, max_length=1000)
-    # TLS mode for structured connections (NULL/omitted = libpq default
-    # "prefer"). Use "require"/"verify-full" for cross-network links.
-    sslmode: str | None = Field(default=None, max_length=32)
-    allowed_tables: list[str] = Field(default_factory=list)
+    # All production data-source links verify the server certificate and name.
+    sslmode: Literal["verify-full"] | None = None
+    allowed_tables: list[str] = Field(min_length=1, max_length=100)
     # Operator-supplied extra column names to mask in results, on top of the
     # built-in heuristic hints.
     sensitive_columns: list[str] = Field(default_factory=list)
@@ -226,11 +241,29 @@ class CreateDbSourceIn(BaseModel):
             raise ValueError(
                 "provide either conn_secret_ref or both host and database"
             )
+        if self.conn_secret_ref and structured:
+            raise ValueError("conn_secret_ref and structured connection fields are mutually exclusive")
         if self.host and not self.database:
             raise ValueError("database is required when host is set")
         if self.database and not self.host:
             raise ValueError("host is required when database is set")
+        if structured and self.sslmode != "verify-full":
+            raise ValueError("structured data sources require sslmode=verify-full")
         return self
+
+    @field_validator("conn_secret_ref")
+    @classmethod
+    def _require_environment_secret_reference(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"env://[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError("conn_secret_ref must be an env://NAME reference")
+        return value
+
+    @field_validator("allowed_tables")
+    @classmethod
+    def _require_qualified_base_tables(cls, value: list[str]) -> list[str]:
+        if any(table.count(".") != 1 for table in value):
+            raise ValueError("approved tables must be schema-qualified base table names")
+        return value
 
 
 class DbSourceListItem(BaseModel):
@@ -275,6 +308,46 @@ class DbSourceOut(BaseModel):
     sensitive_columns: list[str]
 
 
+class ApplicationIntegrationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    kind: Literal["redis", "kafka", "clickhouse"]
+    config: dict[str, Any]
+    secret_ref: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def _validate_config(self) -> "ApplicationIntegrationIn":
+        self.config = normalize_integration_config(self.kind, self.config)
+        return self
+
+
+class ApplicationIntegrationUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    config: dict[str, Any] | None = None
+    secret_ref: str | None = Field(default=None, min_length=1, max_length=4000)
+    state: str | None = Field(default=None, pattern="^(active|disabled)$")
+
+
+class ApplicationIntegrationOut(BaseModel):
+    id: int
+    application_id: int
+    name: str
+    kind: str
+    state: str
+    readonly_verified_at: datetime | None
+    last_collected_at: datetime | None
+    last_error: str | None
+
+
+class ApplicationIntegrationConfigurationOut(ApplicationIntegrationOut):
+    """Admin-only view of non-secret connection selectors."""
+
+    config: dict[str, Any]
+
+
 class UpdateDbSourceIn(BaseModel):
     """Partial update for an existing data source.
 
@@ -293,14 +366,26 @@ class UpdateDbSourceIn(BaseModel):
     username: str | None = Field(default=None, max_length=200)
     password: str | None = Field(default=None, max_length=2000)
     conn_secret_ref: str | None = Field(default=None, max_length=1000)
-    sslmode: str | None = Field(default=None, max_length=32)
-    allowed_tables: list[str] | None = None
+    sslmode: Literal["verify-full"] | None = None
+
+    @field_validator("conn_secret_ref")
+    @classmethod
+    def _require_environment_secret_reference(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"env://[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError("conn_secret_ref must be an env://NAME reference")
+        return value
+    allowed_tables: list[str] | None = Field(default=None, min_length=1, max_length=100)
     sensitive_columns: list[str] | None = None
 
 
-class RunQueryIn(BaseModel):
-    sql: str = Field(min_length=1, max_length=20000)
-    source_id: int | None = None
+class RunApprovedQueryIn(BaseModel):
+    """A query-catalog request, never operator-authored SQL."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: int = Field(gt=0)
+    table: str = Field(min_length=1, max_length=300)
+    operation: Literal["sample", "count"]
 
 
 class CreateApplicationDescriptionIn(BaseModel):

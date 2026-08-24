@@ -209,6 +209,7 @@ export interface AnalysisDetail {
   confidence: number | null;
   conclusion: string | null;
   evidence: Record<string, unknown> | null;
+  evidence_artifacts: EvidenceArtifact[];
   alert: ApiAlert | null;
   steps: ApiStep[];
   job: {
@@ -227,6 +228,17 @@ export interface AnalysisDetail {
   finished_at: string | null;
   updated_at: string;
   my_perm: string | null;
+}
+
+export interface EvidenceArtifact {
+  id: number;
+  artifact_type: string;
+  source_kind: string | null;
+  locator: string | null;
+  content_hash: string | null;
+  redacted_excerpt: string | null;
+  metadata: Record<string, unknown> | null;
+  collected_at: string;
 }
 
 interface ApiApplication {
@@ -374,6 +386,7 @@ export async function fetchApplication(id: string): Promise<{
   }[];
   descriptions: { id: number; description_type: string; content: string }[];
   db_sources: DbSourceRow[];
+  integrations: ApplicationIntegrationRow[];
 }> {
   return getJson(`/applications/${id}`);
 }
@@ -536,6 +549,52 @@ export interface DbSourceRow {
   sensitive_columns: string[];
 }
 
+export interface ApplicationIntegrationRow {
+  id: number;
+  application_id: number;
+  name: string;
+  kind: 'redis' | 'kafka' | 'clickhouse';
+    state: 'active' | 'disabled';
+  readonly_verified_at: string | null;
+  last_collected_at: string | null;
+  last_error: string | null;
+}
+
+export interface ApplicationIntegrationInput {
+    name: string;
+    kind: 'redis' | 'kafka' | 'clickhouse';
+    config: Record<string, unknown>;
+    secret_ref: string;
+}
+
+export interface ApplicationIntegrationConfiguration extends ApplicationIntegrationRow {
+  config: Record<string, unknown>;
+}
+
+export async function testApplicationIntegration(applicationId: string | number, input: ApplicationIntegrationInput): Promise<{ ok: boolean; error: string | null }> {
+  return postJson(`/applications/${applicationId}/integrations/test`, input);
+}
+
+export async function createApplicationIntegration(applicationId: string | number, input: ApplicationIntegrationInput): Promise<ApplicationIntegrationRow> {
+  return postJson(`/applications/${applicationId}/integrations`, input);
+}
+
+export async function getApplicationIntegration(applicationId: string | number, integrationId: number): Promise<ApplicationIntegrationConfiguration> {
+  return getJson(`/applications/${applicationId}/integrations/${integrationId}`);
+}
+
+export async function updateApplicationIntegration(applicationId: string | number, integrationId: number, input: Partial<ApplicationIntegrationInput> & { state?: 'active' | 'disabled' }): Promise<ApplicationIntegrationRow> {
+  return putJson(`/applications/${applicationId}/integrations/${integrationId}`, input);
+}
+
+export async function deleteApplicationIntegration(applicationId: string | number, integrationId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/applications/${applicationId}/integrations/${integrationId}`, { method: 'DELETE', headers: authHeaders() });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error?.message ?? `delete integration failed: ${res.status}`);
+  }
+}
+
 export async function createDbSource(
   applicationId: string | number,
   input: CreateDbSourceInput
@@ -592,9 +651,9 @@ export interface QueryResult {
 }
 
 export interface RunQueryInput {
-  sql: string;
-  source_id?: number;
-  desensitize?: boolean;
+  source_id: number;
+  table: string;
+  operation: 'sample' | 'count';
 }
 
 export async function executeQuery(

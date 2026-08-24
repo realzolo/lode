@@ -92,14 +92,17 @@ class Settings(BaseSettings):
     # before the startup reaper hard-deletes it. 0 disables expiry (keep forever).
     evidence_retention_days: int = 90
 
-    # Read-only DB proxy hardening (M3)
-    # When true, any *structured* (host-based) data source without ``sslmode`` in
-    # {require, verify-full} is rejected so a cross-network link to a production
-    # replica cannot downgrade to cleartext. Leave false for local dev.
-    db_proxy_require_tls: bool = False
-    # Server-side lock timeout (seconds) applied to every proxied query so a
+    # Read-only DB proxy hardening (M3). TLS certificate and hostname
+    # verification is mandatory for every data source; it has no bypass.
+    # The server-side lock timeout (seconds) applied to every proxied query so a
     # contended table lock cannot hang the read-only connection.
     db_proxy_lock_timeout_seconds: float = 3.0
+
+    # External service collectors are disabled until each DNS endpoint is
+    # explicitly allowed. The deployment network policy must enforce the same
+    # list (for example through an egress gateway) to prevent DNS rebinding.
+    integration_egress_allowlist: str = ""
+    integration_collect_timeout_seconds: float = 12.0
 
     # Security / auth
     # Required (no default): a missing signing key must fail fast rather than

@@ -36,6 +36,10 @@ from lode.api.schemas import (
     AppMemberIn,
     AppMemberOut,
     AppMemberUpdateIn,
+    ApplicationIntegrationConfigurationOut,
+    ApplicationIntegrationIn,
+    ApplicationIntegrationOut,
+    ApplicationIntegrationUpdateIn,
     ApplicationDetailOut,
     ApplicationDescriptionOut,
     ApplicationIngestionStatusOut,
@@ -54,6 +58,7 @@ from lode.api.schemas import (
     SetApplicationTopicIn,
     StartApplicationIngestionIn,
     UpdateDbSourceIn,
+    normalize_integration_config,
 )
 from lode.db.models.alert import Alert
 from lode.db.models.ai_model import AiModelConfig
@@ -65,13 +70,19 @@ from lode.db.models.application import (
     ApplicationRepo,
     DbSource,
 )
+from lode.db.models.integration import ApplicationIntegration
 from lode.config import kafka_security_kwargs, settings
 from lode.db.models.git import GitCredential, GitRepo
 from lode.db.models.permission import UserApplicationPerm
-from lode.crypto import encrypt_secret
+from lode.crypto import decrypt_secret, encrypt_secret
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
-from lode.engine.db_proxy import test_connection
+from lode.engine.db_proxy import (
+    assert_source_readiness,
+    test_connection,
+    verify_postgres_readonly_account,
+)
+from lode.engine.integrations import IntegrationError, connector_for, resolve_integration_secret
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 
@@ -264,8 +275,16 @@ async def get_application(
     sources = (
         await session.execute(select(DbSource).where(DbSource.application_id == application_id))
     ).scalars().all()
+    integrations = (
+        await session.execute(
+            select(ApplicationIntegration).where(
+                ApplicationIntegration.application_id == application_id
+            )
+        )
+    ).scalars().all()
     current_user = await session.get(User, _auth)
-    if current_user is not None and current_user.role == "admin":
+    is_global_admin = current_user is not None and current_user.role == "admin"
+    if is_global_admin:
         my_perm = "admin"
     else:
         perm = await session.get(UserApplicationPerm, (_auth, application_id))
@@ -305,18 +324,19 @@ async def get_application(
                 application_id=s.application_id,
                 name=s.name,
                 description=s.description,
-                conn_secret_ref=s.conn_secret_ref,
-                host=s.host,
-                port=s.port,
-                database=s.database,
-                username=s.username,
-                has_password=bool(s.password),
-                sslmode=s.sslmode,
+                conn_secret_ref=s.conn_secret_ref if is_global_admin else None,
+                host=s.host if is_global_admin else None,
+                port=s.port if is_global_admin else None,
+                database=s.database if is_global_admin else None,
+                username=s.username if is_global_admin else None,
+                has_password=bool(s.password) if is_global_admin else False,
+                sslmode=s.sslmode if is_global_admin else None,
                 allowed_tables=list(s.allowed_tables or []),
-                sensitive_columns=list(s.sensitive_columns or []),
+                sensitive_columns=list(s.sensitive_columns or []) if is_global_admin else [],
             )
             for s in sources
         ],
+        integrations=[_integration_out(item, include_error=is_global_admin) for item in integrations],
         my_perm=my_perm,
     )
 
@@ -424,13 +444,16 @@ async def set_application_topic(
 
     # Topic changes invalidate the prior activation. The administrator must
     # explicitly start it again and choose a new initial offset policy.
+    # Read dependent state before staging a topic mutation. SQLAlchemy would
+    # otherwise autoflush the pending unique-topic write during _runtime_for(),
+    # causing an IntegrityError outside the conflict handling below.
     existing = await session.get(ApplicationKafka, application_id)
+    runtime = await _runtime_for(session, application_id)
     if existing is None:
         existing = ApplicationKafka(application_id=application_id, topic=payload.topic)
         session.add(existing)
     else:
         existing.topic = payload.topic
-    runtime = await _runtime_for(session, application_id)
     if runtime is not None:
         await session.delete(runtime)
     app.ingestion_state = "draft"
@@ -800,6 +823,183 @@ async def _assert_git_credential(
         raise HTTPException(status_code=404, detail="git credential not found")
 
 
+def _integration_out(
+    row: ApplicationIntegration, *, include_error: bool = True
+) -> ApplicationIntegrationOut:
+    """Safe integration projection. Credentials never leave the backend."""
+    return ApplicationIntegrationOut(
+        id=row.id,
+        application_id=row.application_id,
+        name=row.name,
+        kind=row.kind,
+        state=row.state,
+        readonly_verified_at=row.readonly_verified_at,
+        last_collected_at=row.last_collected_at,
+        last_error=row.last_error if include_error else None,
+    )
+
+
+def _integration_configuration_out(
+    row: ApplicationIntegration,
+) -> ApplicationIntegrationConfigurationOut:
+    """Return selectors only on the global-admin configuration surface."""
+    return ApplicationIntegrationConfigurationOut(
+        **_integration_out(row).model_dump(),
+        config=dict(row.config or {}),
+    )
+
+
+async def _verify_integration(kind: str, config: dict, encrypted_secret: str) -> None:
+    secret = resolve_integration_secret(encrypted_secret)
+    await connector_for(kind).verify_readonly(config, secret)
+
+
+async def _verify_db_source_payload(payload: CreateDbSourceIn) -> None:
+    """Prove the effective PostgreSQL role is read-only before it is stored."""
+    dsn = _resolve_create_dsn(payload)
+    assert_source_readiness(dsn)
+    await verify_postgres_readonly_account(dsn, payload.allowed_tables)
+
+
+@router.get(
+    "/{application_id}/integrations/{integration_id}",
+    response_model=ApplicationIntegrationConfigurationOut,
+)
+async def get_integration_configuration(
+    application_id: int,
+    integration_id: int,
+    _admin: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationIntegrationConfigurationOut:
+    row = await session.get(ApplicationIntegration, integration_id)
+    if row is None or row.application_id != application_id:
+        raise HTTPException(status_code=404, detail="integration not found")
+    return _integration_configuration_out(row)
+
+
+@router.post("/{application_id}/integrations/test", response_model=dict)
+async def test_integration(
+    application_id: int,
+    payload: ApplicationIntegrationIn,
+    _admin: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Verify a prospective integration without persisting its credential."""
+    if await session.get(Application, application_id) is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    try:
+        await _verify_integration(payload.kind, payload.config, encrypt_secret(payload.secret_ref) or "")
+    except IntegrationError as exc:
+        await audit_action(
+            action="integration.test", actor_id=_admin, target_type="application",
+            target_id=str(application_id), application_id=application_id,
+            result="error", detail={"kind": payload.kind, "error": str(exc)[:280]},
+        )
+        return {"ok": False, "error": str(exc)}
+    await audit_action(
+        action="integration.test", actor_id=_admin, target_type="application",
+        target_id=str(application_id), application_id=application_id,
+        detail={"kind": payload.kind},
+    )
+    return {"ok": True, "error": None}
+
+
+@router.post("/{application_id}/integrations", response_model=ApplicationIntegrationOut, status_code=201)
+async def create_integration(
+    application_id: int,
+    payload: ApplicationIntegrationIn,
+    _admin: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationIntegrationOut:
+    if await session.get(Application, application_id) is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    encrypted_secret = encrypt_secret(payload.secret_ref) or ""
+    try:
+        await _verify_integration(payload.kind, payload.config, encrypted_secret)
+    except IntegrationError as exc:
+        await audit_action(
+            action="integration.create", actor_id=_admin, target_type="application",
+            target_id=str(application_id), application_id=application_id,
+            result="error", detail={"kind": payload.kind, "error": str(exc)[:280]},
+        )
+        raise HTTPException(status_code=422, detail=f"read-only verification failed: {exc}")
+    row = ApplicationIntegration(
+        application_id=application_id, name=payload.name, kind=payload.kind,
+        config=payload.config, secret_ref=encrypted_secret,
+        readonly_verified_at=datetime.now(UTC),
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    await audit_action(
+        action="integration.create", actor_id=_admin, target_type="integration",
+        target_id=str(row.id), application_id=application_id, detail={"kind": row.kind},
+    )
+    return _integration_out(row)
+
+
+@router.put("/{application_id}/integrations/{integration_id}", response_model=ApplicationIntegrationOut)
+async def update_integration(
+    application_id: int,
+    integration_id: int,
+    payload: ApplicationIntegrationUpdateIn,
+    _admin: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApplicationIntegrationOut:
+    row = await session.get(ApplicationIntegration, integration_id)
+    if row is None or row.application_id != application_id:
+        raise HTTPException(status_code=404, detail="integration not found")
+    next_config = (
+        normalize_integration_config(row.kind, payload.config)
+        if payload.config is not None
+        else dict(row.config or {})
+    )
+    next_secret = encrypt_secret(payload.secret_ref) if payload.secret_ref else row.secret_ref
+    next_state = payload.state or row.state
+    if next_state == "active":
+        try:
+            await _verify_integration(row.kind, next_config, next_secret)
+        except IntegrationError as exc:
+            await audit_action(
+                action="integration.update", actor_id=_admin, target_type="integration",
+                target_id=str(row.id), application_id=application_id, result="error",
+                detail={"error": str(exc)[:280]},
+            )
+            raise HTTPException(status_code=422, detail=f"read-only verification failed: {exc}")
+        row.readonly_verified_at = datetime.now(UTC)
+        row.last_error = None
+    if payload.name is not None:
+        row.name = payload.name
+    row.config = next_config
+    row.secret_ref = next_secret
+    row.state = next_state
+    await session.commit()
+    await session.refresh(row)
+    await audit_action(
+        action="integration.update", actor_id=_admin, target_type="integration",
+        target_id=str(row.id), application_id=application_id, detail={"state": row.state},
+    )
+    return _integration_out(row)
+
+
+@router.delete("/{application_id}/integrations/{integration_id}", status_code=204)
+async def delete_integration(
+    application_id: int,
+    integration_id: int,
+    _admin: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    row = await session.get(ApplicationIntegration, integration_id)
+    if row is None or row.application_id != application_id:
+        raise HTTPException(status_code=404, detail="integration not found")
+    await session.delete(row)
+    await session.commit()
+    await audit_action(
+        action="integration.delete", actor_id=_admin, target_type="integration",
+        target_id=str(integration_id), application_id=application_id,
+    )
+
+
 @router.post(
     "/{application_id}/db-sources",
     response_model=DbSourceOut,
@@ -819,7 +1019,7 @@ async def create_db_source(
     * **Structured** — ``host`` / ``port`` / ``database`` / ``username`` /
       ``password`` are stored on the row and the DSN is built at query time.
       ``sslmode`` forces TLS when the replica is reached over a network.
-    * **Secret ref** — ``conn_secret_ref`` (``env://NAME`` / bare DSN) keeps
+    * **Secret ref** — ``conn_secret_ref`` (``env://NAME``) keeps
       the real credentials in the deployment environment rather than this row.
 
     ``allowed_tables`` is the SQL whitelist the analysis engine respects when
@@ -829,6 +1029,15 @@ async def create_db_source(
     app = await session.get(Application, application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
+    try:
+        await _verify_db_source_payload(payload)
+    except Exception as exc:
+        await audit_action(
+            action="db_source.create", actor_id=_admin, target_type="application",
+            target_id=str(application_id), application_id=application_id,
+            result="error", detail={"error": str(exc)[:280]},
+        )
+        raise HTTPException(status_code=422, detail=f"read-only verification failed: {exc}")
 
     row = DbSource(
         application_id=application_id,
@@ -885,6 +1094,7 @@ async def delete_db_source(
     row = await session.get(DbSource, source_id)
     if row is None or row.application_id != application_id:
         raise HTTPException(status_code=404, detail="data source not found")
+
     await session.delete(row)
     await session.commit()
     await audit_action(
@@ -917,6 +1127,30 @@ async def update_db_source(
     row = await session.get(DbSource, source_id)
     if row is None or row.application_id != application_id:
         raise HTTPException(status_code=404, detail="data source not found")
+
+    # Validate the complete proposed binding before mutating the persisted row.
+    proposed = CreateDbSourceIn(
+        name=payload.name if payload.name is not None else row.name,
+        description=payload.description if payload.description is not None else row.description,
+        host=payload.host if payload.host is not None else row.host,
+        port=payload.port if payload.port is not None else row.port,
+        database=payload.database if payload.database is not None else row.database,
+        username=payload.username if payload.username is not None else row.username,
+        password=payload.password if payload.password is not None else decrypt_secret(row.password),
+        conn_secret_ref=payload.conn_secret_ref if payload.conn_secret_ref is not None else row.conn_secret_ref,
+        sslmode=payload.sslmode if payload.sslmode is not None else row.sslmode,
+        allowed_tables=payload.allowed_tables if payload.allowed_tables is not None else list(row.allowed_tables or []),
+        sensitive_columns=payload.sensitive_columns if payload.sensitive_columns is not None else list(row.sensitive_columns or []),
+    )
+    try:
+        await _verify_db_source_payload(proposed)
+    except Exception as exc:
+        await audit_action(
+            action="db_source.update", actor_id=_admin, target_type="db_source",
+            target_id=str(source_id), application_id=application_id,
+            result="error", detail={"error": str(exc)[:280]},
+        )
+        raise HTTPException(status_code=422, detail=f"read-only verification failed: {exc}")
 
     if payload.name is not None:
         row.name = payload.name
@@ -981,11 +1215,12 @@ async def test_db_source_connection(
 
     Lets an admin catch a typo in host/port/credentials (or a missing TLS
     setup) *before* saving. Secret refs resolve through the same path as a real
-    query; a ``vault://`` reference is rejected closed, exactly like at query
-    time. Returns ``{ok, latency_ms, error}``.
+    query. Returns ``{ok, latency_ms, error}``.
     """
     dsn = _resolve_create_dsn(payload)
     try:
+        assert_source_readiness(dsn)
+        await verify_postgres_readonly_account(dsn, payload.allowed_tables)
         latency = await test_connection(dsn)
     except Exception as exc:  # surfaced as a structured result, not 500
         await audit_action(
@@ -1024,6 +1259,7 @@ def _resolve_create_dsn(payload: CreateDbSourceIn) -> str:
         database=payload.database,
         username=payload.username,
         password=payload.password,
+        sslmode=payload.sslmode,
     )
 
 

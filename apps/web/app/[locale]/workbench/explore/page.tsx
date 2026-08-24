@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Select } from '@/components/ui/select';
 import { Table, THead, TBody, Tr, Th, Td } from '@/components/ui/table';
-import { Textarea } from '@/components/ui/textarea';
 import { fetchApplications, fetchApplication, executeQuery, type QueryResult } from '@/lib/api';
 import type { Application } from '@/lib/types';
 
@@ -35,7 +34,8 @@ export default function ExplorePage() {
   const [appId, setAppId] = useState<string>('');
   const [sources, setSources] = useState<SourceRow[]>([]);
   const [sourceId, setSourceId] = useState<number | ''>('');
-  const [sql, setSql] = useState<string>('');
+  const [table, setTable] = useState<string>('');
+  const [operation, setOperation] = useState<'sample' | 'count'>('sample');
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +52,7 @@ export default function ExplorePage() {
     if (!appId) {
       setSources([]);
       setSourceId('');
-      setSql('');
+      setTable('');
       setResult(null);
       setError(null);
       return;
@@ -77,25 +77,26 @@ export default function ExplorePage() {
         setSources(ds);
         const first = ds[0];
         setSourceId(first ? first.id : '');
-        const tbl = first?.allowed_tables[0];
-        setSql(tbl ? `SELECT * FROM ${tbl} LIMIT 50;` : 'SELECT 1;');
+        setTable(first?.allowed_tables[0] ?? '');
         setResult(null);
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [appId]);
 
-  const canRun = !!appId && sources.length > 0 && sql.trim().length > 0 && !loading;
+  const selectedSource = sources.find((source) => source.id === sourceId);
+  const canRun = !!appId && !!selectedSource && !!table && !loading;
 
   async function run() {
-    if (!canRun) return;
+    if (!canRun || sourceId === '') return;
     setLoading(true);
     setError(null);
     setResult(null);
     try {
       const res = await executeQuery(appId, {
-        sql,
-        source_id: sourceId === '' ? undefined : sourceId,
+        source_id: sourceId,
+        table,
+        operation,
       });
       setResult(res);
     } catch (e) {
@@ -136,9 +137,12 @@ export default function ExplorePage() {
                 <span className="muted text-sm">{t('dataSource')}</span>
                 <Select
                   value={sourceId === '' ? '' : String(sourceId)}
-                  onChange={(e) =>
-                    setSourceId(e.target.value === '' ? '' : Number(e.target.value))
-                  }
+                  onChange={(e) => {
+                    const nextId = e.target.value === '' ? '' : Number(e.target.value);
+                    setSourceId(nextId);
+                    const next = sources.find((source) => source.id === nextId);
+                    setTable(next?.allowed_tables[0] ?? '');
+                  }}
                 >
                   {sources.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -158,28 +162,20 @@ export default function ExplorePage() {
 
           {sources.length > 0 && (
             <>
-              <div className="col" style={{ gap: 6 }}>
-                <span className="muted text-sm">{t('allowedTables')}</span>
-                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                  {sources
-                    .find((s) => s.id === sourceId)
-                    ?.allowed_tables.map((tbl) => (
-                      <Badge key={tbl} variant="default">
-                        {tbl}
-                      </Badge>
-                    )) ?? <span className="muted text-sm">—</span>}
-                </div>
-              </div>
-
-              <div className="col" style={{ gap: 6 }}>
-                <span className="muted text-sm">{t('sql')}</span>
-                <Textarea
-                  value={sql}
-                  onChange={(e) => setSql(e.target.value)}
-                  rows={6}
-                  placeholder={t('sqlPlaceholder')}
-                  className="mono"
-                />
+              <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
+                <label className="col" style={{ gap: 6, minWidth: 240, flex: 1 }}>
+                  <span className="muted text-sm">{t('allowedTables')}</span>
+                  <Select value={table} onChange={(e) => setTable(e.target.value)}>
+                    {(selectedSource?.allowed_tables ?? []).map((item) => <option key={item} value={item}>{item}</option>)}
+                  </Select>
+                </label>
+                <label className="col" style={{ gap: 6, minWidth: 200, flex: 1 }}>
+                  <span className="muted text-sm">查询操作</span>
+                  <Select value={operation} onChange={(e) => setOperation(e.target.value as 'sample' | 'count')}>
+                    <option value="sample">脱敏样本（最多 100 行）</option>
+                    <option value="count">行数统计</option>
+                  </Select>
+                </label>
               </div>
 
               <div className="row" style={{ justifyContent: 'flex-end' }}>

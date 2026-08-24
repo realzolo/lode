@@ -16,6 +16,7 @@ from lode.api.deps import assert_app_perm, permitted_app_ids, require_user
 from lode.api.schemas import (
     AddGuidanceIn,
     AnalysisDetailOut,
+    EvidenceArtifactOut,
     AnalysisGuidanceOut,
     AnalysisJobOut,
     AnalysisListOut,
@@ -26,7 +27,7 @@ from lode.api.schemas import (
 from lode.db.models.alert import Alert
 from lode.db.models.analysis import Analysis, AnalysisGuidance, AnalysisGuidanceUse, AnalysisStep
 from lode.db.models.application import Application
-from lode.db.models.intake import AnalysisJob, Incident
+from lode.db.models.intake import AnalysisJob, EvidenceArtifact, Incident
 from lode.db.models.experience import Experience
 from lode.db.models.permission import UserApplicationPerm
 from lode.db.models.user import User
@@ -234,6 +235,14 @@ async def get_analysis(
         )
         my_perm = perm_row.perm if perm_row is not None else None
 
+    artifacts = (
+        await session.execute(
+            select(EvidenceArtifact)
+            .where(EvidenceArtifact.analysis_id == analysis.id)
+            .order_by(EvidenceArtifact.collected_at, EvidenceArtifact.id)
+        )
+    ).scalars().all()
+
     return AnalysisDetailOut(
         id=analysis.public_id,
         dedupe_key=analysis.dedupe_key,
@@ -243,6 +252,19 @@ async def get_analysis(
         confidence=float(analysis.confidence) if analysis.confidence is not None else None,
         conclusion=analysis.conclusion,
         evidence=analysis.evidence,
+        evidence_artifacts=[
+            EvidenceArtifactOut(
+                id=artifact.id,
+                artifact_type=artifact.artifact_type,
+                source_kind=artifact.source_kind,
+                locator=artifact.locator,
+                content_hash=artifact.content_hash,
+                redacted_excerpt=artifact.redacted_excerpt,
+                metadata=artifact.metadata_,
+                collected_at=artifact.collected_at,
+            )
+            for artifact in artifacts
+        ],
         alert=(
             AlertSummary(
                 title=alert.title,

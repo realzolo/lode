@@ -157,9 +157,9 @@ async def test_run_analysis_completes(scenario):
         assert refreshed.status == "completed"
         assert refreshed.conclusion
         assert refreshed.confidence is not None
-        assert refreshed.confidence >= 0.7
+        assert refreshed.confidence <= 0.2
 
-        # The workflow emits exactly the six expected nodes.
+        # The workflow records the evidence snapshot stage before synthesis.
         steps = (
             await session.execute(
                 select(AnalysisStep).where(AnalysisStep.analysis_id == scenario["analysis_id"])
@@ -170,6 +170,7 @@ async def test_run_analysis_completes(scenario):
             "receive",
             "git_sync",
             "context",
+            "service_snapshot",
             "ai_analysis",
             "experience",
             "conclusion",
@@ -185,7 +186,8 @@ async def test_run_analysis_completes(scenario):
         ).scalars().all()
         assert len(guidance_uses) == 1
 
-        # A new experience row is recorded (engine was confident, no prior match).
+        # Uncited/heuristic output is deliberately not promoted into the
+        # reusable experience library.
         experiences = (
             await session.execute(
                 select(Experience).where(
@@ -194,8 +196,7 @@ async def test_run_analysis_completes(scenario):
                 )
             )
         ).scalars().all()
-        assert len(experiences) == 1
-        assert experiences[0].is_valid is True
+        assert experiences == []
 
 
 async def test_reanalysis_upserts_experience_no_duplicate(scenario):
@@ -212,8 +213,7 @@ async def test_reanalysis_upserts_experience_no_duplicate(scenario):
                 )
             )
         ).scalars().all()
-        # Exactly one experience row: re-analysis upserted, not duplicated.
-        assert len(experiences) == 1
+        assert experiences == []
 
 
 async def test_confirmed_follow_up_creates_one_successor(scenario):

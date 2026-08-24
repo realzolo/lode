@@ -213,8 +213,8 @@ class DbSource(Base):
     # Connection can be supplied two ways (mutually exclusive in practice):
     #  * structured fields below (host/port/database/username/password) — the
     #    DSN is built at query time; OR
-    #  * conn_secret_ref — an env:// / vault:// / bare-literal reference resolved
-    #    at query time so real credentials never have to live in this row.
+    #  * conn_secret_ref — an env:// reference resolved at query time so real
+    #    credentials never have to live in this row.
     # At least one of the two must be provided (enforced in the schema layer).
     conn_secret_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     host: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -222,10 +222,8 @@ class DbSource(Base):
     database: Mapped[str | None] = mapped_column(Text, nullable=True)
     username: Mapped[str | None] = mapped_column(Text, nullable=True)
     password: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # TLS mode for structured connections. ``None`` leaves libpq's default
-    # (prefer); ``require`` / ``verify-full`` force an encrypted link so a
-    # cross-network connection to a production replica can't downgrade to
-    # cleartext. Only meaningful for structured (host-based) sources.
+    # All resolved DSNs must use ``verify-full``. This stored value supplies it
+    # for structured sources; env-backed DSNs must carry it themselves.
     sslmode: Mapped[str | None] = mapped_column(Text, nullable=True)
     allowed_tables: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default="[]"

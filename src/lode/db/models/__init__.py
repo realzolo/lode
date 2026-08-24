@@ -21,6 +21,7 @@ from lode.db.models.application import (  # noqa: F401
     ApplicationRepo,
     DbSource,
 )
+from lode.db.models.integration import ApplicationIntegration  # noqa: F401
 from lode.db.models.git import GitCredential, GitRepo  # noqa: F401
 from lode.db.models.experience import Experience  # noqa: F401
 from lode.db.models.permission import UserApplicationPerm  # noqa: F401
@@ -41,6 +42,7 @@ __all__ = [
     "ApplicationKafka",
     "ApplicationRepo",
     "DbSource",
+    "ApplicationIntegration",
     "GitCredential",
     "GitRepo",
     "Experience",

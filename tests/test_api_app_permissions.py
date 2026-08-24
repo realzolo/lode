@@ -239,7 +239,7 @@ async def test_cannot_remove_last_admin(owned_app: int, owner: int) -> None:
 
 
 async def test_global_admin_can_manage_any_app(
-    owned_app: int, admin: int, guest: int
+    owned_app: int, admin: int, owner: int, guest: int
 ) -> None:
     token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
     headers = {"Authorization": f"Bearer {token}"}
