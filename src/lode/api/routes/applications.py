@@ -759,7 +759,7 @@ async def add_member(
         action="member.add",
         actor_id=_auth,
         target_type="member",
-        target_id=str(user_id),
+        target_id=str(payload.user_id),
         application_id=application_id,
         detail={"perm": payload.perm},
     )
