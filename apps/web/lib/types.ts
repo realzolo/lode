@@ -11,7 +11,7 @@ export type AnalysisStatus =
   | 'failed'
   | 'needs_human';
 
-export type StepStatus = 'done' | 'running' | 'pending';
+export type StepStatus = 'done' | 'running' | 'pending' | 'failed' | 'skipped';
 
 export interface Application {
   id: string;

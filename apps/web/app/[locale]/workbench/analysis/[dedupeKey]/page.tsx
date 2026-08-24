@@ -23,7 +23,7 @@ import {
   toUiSteps,
   type AnalysisDetail,
 } from '@/lib/api';
-import { WorkflowGraph } from '@/components/workflow-graph';
+import { WorkflowStepper } from '@/components/workflow-stepper';
 import { IconRefreshCw, IconPlus } from '@/components/icons';
 
 function statusVariant(status: AnalysisStatus): 'success' | 'warning' | 'danger' | 'accent' | 'default' {
@@ -205,7 +205,7 @@ export default function AnalysisPage({ params }: { params: { dedupeKey: string }
 
         <Card>
           <h2 className="section-title">{t('steps')}</h2>
-          <WorkflowGraph steps={steps} />
+          <WorkflowStepper steps={steps} />
         </Card>
 
         {detail.hints.length > 0 && (

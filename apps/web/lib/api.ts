@@ -116,8 +116,13 @@ export function mapStepStatus(status: string): StepStatus {
       return 'done';
     case 'running':
       return 'running';
+    case 'failed':
+      return 'failed';
+    case 'skipped':
+      return 'skipped';
+    case 'pending':
     default:
-      throw new Error(`Unknown step status: ${status}`);
+      return 'pending';
   }
 }
 
