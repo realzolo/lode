@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     kafka_topic_pattern: str = r"alert\..*"
     kafka_dlq_topic: str = "lode.dlq"
     kafka_unassigned_topic: str = "lode.unassigned"
+    # SASL/PLAIN authentication. Defaults are the unauthenticated local-dev
+    # profile (PLAINTEXT, no credentials). For a secured broker set
+    # ``kafka_security_protocol=SASL_PLAINTEXT`` and supply the PLAIN username
+    # and password. When ``kafka_sasl_username`` is empty, no SASL handshake is
+    # attempted even if a security protocol is set.
+    kafka_security_protocol: str = "PLAINTEXT"
+    kafka_sasl_mechanism: str = "PLAIN"
+    kafka_sasl_username: str = ""
+    kafka_sasl_password: str = ""
     # Max analyses allowed to run concurrently inside one worker process.
     # Caps DB-connection and LLM-provider pressure during redelivery bursts.
     engine_concurrency: int = 5
@@ -149,3 +158,21 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+def kafka_security_kwargs() -> dict:
+    """Build SASL/security kwargs for aiokafka clients from the current settings.
+
+    Returns an empty dict when no username is configured, so the default
+    (unauthenticated PLAINTEXT) is used for local development. When a username
+    is present the security protocol and PLAIN credentials are returned for
+    aiokafka to perform the SASL handshake.
+    """
+    if not settings.kafka_sasl_username:
+        return {}
+    return {
+        "security_protocol": settings.kafka_security_protocol,
+        "sasl_mechanism": settings.kafka_sasl_mechanism,
+        "sasl_plain_username": settings.kafka_sasl_username,
+        "sasl_plain_password": settings.kafka_sasl_password,
+    }

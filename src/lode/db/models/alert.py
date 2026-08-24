@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    Integer,
     Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -25,7 +26,8 @@ class Alert(Base):
     id: Mapped[int] = mapped_column(
         BigInteger, Identity(always=True), primary_key=True
     )
-    # Recomputed by the platform using the exact lark-alert.ts algorithm.
+    # Producer-supplied dedupe key, computed by lark-alert.ts buildAlertKey and
+    # carried verbatim on the wire (no platform recompute — fixed to the v1 format).
     dedupe_key: Mapped[str] = mapped_column(Text, nullable=False)
     application_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
@@ -33,9 +35,18 @@ class Alert(Base):
     topic: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     level: Mapped[str] = mapped_column(Text, nullable=False)
-    env: Mapped[str] = mapped_column(Text, nullable=False)
+    # Producer-assigned alert id — correlates this row with the Kafka alert event.
+    alert_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When the incident actually occurred, per the producer (ISO-8601 timestamp).
+    occurred_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Producer-side dedupe TTL in seconds (mirrors lark-alert.ts config).
+    dedupe_ttl_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     fields: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    # Structured error log from the producer (lark-alert.ts AlertErrorLog), or null.
+    error_log: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"

@@ -39,9 +39,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lode.config import settings
+from lode.config import kafka_security_kwargs, settings
 from lode.consumer.alert_schema import AlertMessage
-from lode.consumer.dedupe import compute_dedupe_key
 from lode.db.models.alert import Alert
 from lode.db.models.analysis import Analysis, DeadLetter
 from lode.db.models.application import ApplicationKafka
@@ -57,6 +56,17 @@ from lode.metrics import (
 logger = logging.getLogger("lode.consumer")
 
 ERROR_MAX_LENGTH = 500
+
+
+def _extract_error_message(msg: AlertMessage) -> str:
+    """Pull a human-readable error summary, preferring the structured error_log."""
+    if msg.error_log is not None and msg.error_log.message:
+        return msg.error_log.message[:ERROR_MAX_LENGTH]
+    error_value = msg.fields.get("error")
+    if error_value not in (None, ""):
+        return str(error_value)[:ERROR_MAX_LENGTH]
+    return ""
+
 
 # Raised for transient failures where the Kafka offset must NOT be committed
 # (the record will be redelivered after the consumer reconnects).
@@ -291,9 +301,9 @@ async def process_message(
         )
         return "dlq"
 
-    dedupe_key = compute_dedupe_key(
-        event_type=msg.event_type, title=msg.title, fields=msg.fields
-    )
+    # The producer computes the dedupe key via lark-alert.ts buildAlertKey and
+    # carries it verbatim on the wire — we trust it directly (no recompute).
+    dedupe_key = msg.dedupe_key
 
     if session is not None:
         return await _process_with_session(
@@ -328,20 +338,20 @@ async def _process_with_session(
         )
         return "unassigned"
 
-    error_value = msg.fields.get("error")
-    error_message = (
-        str(error_value)[:ERROR_MAX_LENGTH] if error_value not in (None, "") else ""
-    )
+    error_message = _extract_error_message(msg)
     alert = Alert(
         dedupe_key=dedupe_key,
         application_id=app_id,
         topic=topic,
         title=msg.title,
         level=msg.level_value,
-        env=msg.env,
+        alert_id=msg.alert_id,
+        occurred_at=msg.occurred_at,
+        dedupe_ttl_seconds=msg.dedupe_ttl_seconds,
+        error_log=msg.error_log.model_dump() if msg.error_log is not None else None,
         error_message=error_message,
         fields=msg.fields,
-        raw_payload=msg.model_dump(),
+        raw_payload=msg.model_dump(mode="json"),
     )
 
     # Suppress an additional alert for an incident with an active analysis.
@@ -385,14 +395,19 @@ async def main() -> None:
     """
     while True:
         try:
+            security_kwargs = kafka_security_kwargs()
             consumer = AIOKafkaConsumer(
                 settings.kafka_topic_pattern,
                 bootstrap_servers=settings.kafka_bootstrap_servers,
                 group_id=settings.kafka_group_id,
                 enable_auto_commit=False,
                 auto_offset_reset="earliest",
+                **security_kwargs,
             )
-            producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers)
+            producer = AIOKafkaProducer(
+                bootstrap_servers=settings.kafka_bootstrap_servers,
+                **security_kwargs,
+            )
             await consumer.start()
             await producer.start()
             logger.info("consumer started on %s", settings.kafka_bootstrap_servers)

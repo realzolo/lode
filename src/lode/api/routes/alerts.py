@@ -44,7 +44,6 @@ async def list_alerts(
             topic=a.topic,
             title=a.title,
             level=a.level,
-            env=a.env,
             error_message=a.error_message,
             received_at=a.received_at,
         )

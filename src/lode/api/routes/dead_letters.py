@@ -20,7 +20,7 @@ from aiokafka import AIOKafkaProducer
 from lode.api.audit import audit_action
 from lode.api.deps import require_admin
 from lode.api.schemas import DeadLetterOut, ReplayOut
-from lode.config import settings
+from lode.config import kafka_security_kwargs, settings
 from lode.db.models.analysis import DeadLetter
 from lode.db.session import AsyncSessionLocal
 
@@ -72,7 +72,10 @@ async def replay_dead_letter(
 
     # Best-effort: a Kafka outage returns 502 instead of silently dropping.
     try:
-        producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers)
+        producer = AIOKafkaProducer(
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+            **kafka_security_kwargs(),
+        )
         await producer.start()
         try:
             await producer.send_and_wait(dl.topic, body)

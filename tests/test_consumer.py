@@ -67,13 +67,22 @@ class FakeSession:
 
 
 VALID_MSG = {
-    "schema_version": "1.1",
+    "schema_version": "alert.v1",
+    "alert_id": "PB_abc123",
+    "occurred_at": "2026-01-01T00:00:00Z",
+    "event_type": "deploy",
     "level": "CRITICAL",
     "title": "PaymentService latency spike",
-    "env": "prod",
-    "timestamp": "2026-01-01T00:00:00Z",
-    "event_type": "deploy",
+    "dedupe_key": "alert:deploy:7f3c9a1b2e",
+    "dedupe_ttl_seconds": 300,
     "fields": {"error": "p99 > 2s"},
+    "error_log": {
+        "name": "LatencyError",
+        "message": "p99 > 2s",
+        "stack": None,
+        "properties": {"service": "payments"},
+        "cause": None,
+    },
 }
 
 

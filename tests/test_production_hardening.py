@@ -97,19 +97,23 @@ async def test_complete_falls_back_when_network_always_fails(monkeypatch):
     assert await complete("sys", "user", cfg) is None
 
 
-# --- T10 schema version (strict 1.1, no backward-compat shims) ---------------
+# --- T10 schema version (strict alert.v1, no backward-compat shims) ---------------
 
-def test_schema_accepts_only_1_1():
+def test_schema_accepts_only_alert_v1():
     base = {
+        "alert_id": "PB_x",
+        "occurred_at": "2026-08-23T00:00:00Z",
+        "event_type": "deploy_error",
         "level": "CRITICAL",
         "title": "oops",
-        "env": "prod",
-        "timestamp": "2026-08-23T00:00:00Z",
+        "dedupe_key": "alert:deploy_error:abc",
+        "dedupe_ttl_seconds": 300,
     }
-    # Only the exact current contract (1.1) is accepted. There are deliberately
-    # no backward-compat shims: 1.0, 1.2, and the breaking 2.0 contract are all
-    # rejected by the strict pattern (and therefore route to the DLQ).
-    assert AlertMessage(schema_version="1.1", **base)
-    for bad in ("1.0", "1.2", "2.0", "1", "1.1.0"):
+    # Only the exact current contract (alert.v1) is accepted. There are
+    # deliberately no backward-compat shims: the old 1.1 envelope, a future
+    # alert.v2, and any breaking contract are all rejected by the Literal type
+    # (and therefore route to the DLQ).
+    assert AlertMessage(schema_version="alert.v1", **base)
+    for bad in ("1.1", "alert.v2", "1.0", "2.0", "1", "alert.v1.0"):
         with pytest.raises(Exception):
             AlertMessage(schema_version=bad, **base)

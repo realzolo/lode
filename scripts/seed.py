@@ -107,7 +107,7 @@ async def _make_alert(session, application_id: int, event_type: str, title: str,
     dedupe_key = compute_dedupe_key(event_type=event_type, title=title, fields=fields)
     alert = Alert(
         dedupe_key=dedupe_key, application_id=application_id, topic=TOPIC,
-        title=title, level=level, env="production",
+        title=title, level=level,
         error_message=error_message, fields=fields,
         raw_payload={"event_type": event_type, "title": title, "fields": fields},
     )

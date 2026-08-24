@@ -182,7 +182,6 @@ async def get_analysis(
             AlertSummary(
                 title=alert.title,
                 level=alert.level,
-                env=alert.env,
                 topic=alert.topic,
                 error_message=alert.error_message,
                 fields=alert.fields or {},

@@ -52,7 +52,6 @@ async def scenario():
             topic=topic,
             title="Engine test failure",
             level="CRITICAL",
-            env="production",
             error_message="TimeoutException: connection pool exhausted",
             fields={"orderId": key},
             raw_payload={"event_type": "engine_test_error", "title": "Engine test failure"},

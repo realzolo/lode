@@ -185,7 +185,6 @@ interface ApiHint {
 interface ApiAlert {
   title: string;
   level: string;
-  env: string;
   topic: string;
   error_message: string;
   fields: Record<string, unknown>;

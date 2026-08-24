@@ -34,7 +34,6 @@ class AnalysisHintOut(BaseModel):
 class AlertSummary(BaseModel):
     title: str
     level: str
-    env: str
     topic: str
     error_message: str
     fields: dict
@@ -268,7 +267,6 @@ class AlertListOut(BaseModel):
     topic: str
     title: str
     level: str
-    env: str
     error_message: str
     received_at: datetime
 
