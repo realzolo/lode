@@ -1,7 +1,13 @@
 # Lode — developer tasks
-# Always run inside the project virtualenv (see README).
+# This is a uv-managed project (see uv.lock). Targets below run through `uv run`,
+# which uses the project .venv created by `make install` (uv sync). `make` itself
+# does NOT read .env — only the Python app does via pydantic-settings.
 
 .PHONY: install migrate serve consume dev-up dev-down verify test
+
+# uv binary to use. Override from the shell if it is not on PATH, e.g.
+#   make serve UV=/Users/lixm/.local/bin/uv
+UV ?= uv
 
 # Defaults for the `serve` target. Override from the shell if needed — make does
 # NOT read .env (only the Python app does, via pydantic-settings), so without
@@ -9,24 +15,25 @@
 LODE_HTTP_HOST ?= 127.0.0.1
 LODE_HTTP_PORT ?= 8000
 
+# Install deps into the project .venv from the lockfile (incl. dev + pgvector).
 install:
-	pip install -e ".[dev]"
+	$(UV) sync --all-extras
 
 # Auto-execute database migrations (Alembic) against LODE_DATABASE_URL.
 migrate:
-	alembic upgrade head
+	$(UV) run alembic upgrade head
 
 # Run the API server. Migrations run automatically on startup (lifespan hook).
 serve:
-	uvicorn lode.api.main:app --host $(LODE_HTTP_HOST) --port $(LODE_HTTP_PORT) --reload
+	$(UV) run uvicorn lode.api.main:app --host $(LODE_HTTP_HOST) --port $(LODE_HTTP_PORT) --reload
 
 # Run the Kafka consumer.
 consume:
-	python -m lode.consumer.main
+	$(UV) run python -m lode.consumer.main
 
 # Run the durable analysis worker (claims + executes queued jobs).
 work:
-	python -m lode.worker.main
+	$(UV) run python -m lode.worker.main
 
 # Start Postgres + Kafka via docker-compose.
 dev-up:
@@ -40,7 +47,7 @@ verify:
 	./scripts/verify.sh
 
 test:
-	pytest -q
+	$(UV) run pytest -q
 
 # Build and run the full stack (postgres, kafka, api, web) via Docker.
 up:

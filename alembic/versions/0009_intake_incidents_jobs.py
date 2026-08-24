@@ -44,24 +44,6 @@ def upgrade() -> None:
         "analyses", sa.Column("failure_detail", sa.Text, nullable=True)
     )
     op.create_index("ix_analyses_incident_id", "analyses", ["incident_id"])
-    op.create_foreign_key(
-        "fk_analyses_incident_id_incidents",
-        "analyses",
-        "incidents",
-        ["incident_id"],
-        ["id"],
-        ondelete="SET NULL",
-        use_alter=True,
-    )
-    op.create_foreign_key(
-        "fk_analyses_job_id_analysis_jobs",
-        "analyses",
-        "analysis_jobs",
-        ["job_id"],
-        ["id"],
-        ondelete="SET NULL",
-        use_alter=True,
-    )
 
     # --- ingestion_events (Kafka idempotency) --------------------------------
     op.create_table(
@@ -279,6 +261,28 @@ def upgrade() -> None:
     op.create_index("ix_audit_events_created_at", "audit_events", ["created_at"])
     op.create_index("ix_audit_events_actor_id", "audit_events", ["actor_id"])
     op.create_index("ix_audit_events_action", "audit_events", ["action"])
+
+    # --- link analyses -> incidents / analysis_jobs ---------------------------
+    # Added AFTER incidents/analysis_jobs are created so the referenced tables
+    # exist at execution time (the use_alter deferral is not relied upon here).
+    op.create_foreign_key(
+        "fk_analyses_incident_id_incidents",
+        "analyses",
+        "incidents",
+        ["incident_id"],
+        ["id"],
+        ondelete="SET NULL",
+        use_alter=True,
+    )
+    op.create_foreign_key(
+        "fk_analyses_job_id_analysis_jobs",
+        "analyses",
+        "analysis_jobs",
+        ["job_id"],
+        ["id"],
+        ondelete="SET NULL",
+        use_alter=True,
+    )
 
 
 def downgrade() -> None:
