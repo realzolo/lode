@@ -47,7 +47,6 @@ def _now() -> datetime:
 
 
 def _is_retryable(exc: Exception) -> bool:
-    name = type(exc).__name__
     if isinstance(exc, _RETRYABLE):
         return True
     # Network/provider style errors surfaced as text (httpx, aiokafka, etc.).
@@ -158,7 +157,7 @@ async def run_job(job_id: int) -> None:
                 job.lease_owner = None
                 if analysis is not None:
                     analysis.job_id = job.id
-                ANALYSES.labels(result="completed").inc()
+                ANALYSES.labels(result=analysis.status if analysis is not None else "completed").inc()
                 # Flush the terminal status before adding a successor so the
                 # partial active-job uniqueness index remains satisfied.
                 await session.flush()

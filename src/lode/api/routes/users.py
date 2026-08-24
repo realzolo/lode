@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from lode.api.deps import require_admin, require_user
+from lode.api.deps import require_admin
 from lode.api.audit import audit_action
 from lode.api.schemas import(
     PasswordResetIn,
@@ -22,7 +22,7 @@ from lode.api.schemas import(
 )
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
-from lode.security import hash_password, verify_password
+from lode.security import hash_password
 from sqlalchemy import select
 
 router = APIRouter(prefix="/users", tags=["users"])

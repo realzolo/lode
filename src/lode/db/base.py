@@ -19,4 +19,7 @@ NAMING_CONVENTION: dict[str, str] = {
 
 
 class Base(DeclarativeBase):
-    metadata = MetaData(naming_convention=NAMING_CONVENTION, schema="public")
+    # PostgreSQL's default search path is the deployment contract. Keeping the
+    # metadata unqualified matches the explicit V1 DDL and makes Alembic drift
+    # detection compare the same table identities.
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)

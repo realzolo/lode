@@ -35,4 +35,9 @@ psql -h localhost -p "$PORT" -U postgres -d lode -c "\d alerts"
 echo "==> indexes on alerts"
 psql -h localhost -p "$PORT" -U postgres -d lode -c "\di *alerts*"
 
+if (( $# > 0 )); then
+  echo "==> running verification command: $*"
+  "$@"
+fi
+
 echo "==> OK"

@@ -22,7 +22,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -235,7 +234,7 @@ class EvidenceArtifact(Base):
         CheckConstraint(
             "artifact_type IN ('git_file', 'git_diff', 'db_query', "
             "'deploy', 'alert_payload', 'service_snapshot', 'operator_guidance')",
-            name="artifact_type",
+            name="type",
         ),
         Index("ix_evidence_artifacts_analysis_id", "analysis_id"),
     )

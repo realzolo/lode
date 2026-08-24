@@ -80,17 +80,36 @@ def upgrade() -> None:
             ON ai_model_configs (is_default) WHERE is_default;
         """,
         """
+        CREATE TABLE platform_settings (
+            key text PRIMARY KEY,
+            value text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT ck_platform_settings_ai_output_language
+                CHECK (key <> 'ai_output_language' OR value IN ('en', 'zh'))
+        );
+        """,
+        """
         CREATE TABLE applications (
             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             name text NOT NULL,
             created_by bigint,
             model_config_id bigint,
+            ingestion_state text NOT NULL DEFAULT 'draft',
+            ingestion_version integer NOT NULL DEFAULT 0,
+            ingestion_start_position text,
+            ingestion_started_at timestamptz,
+            ingestion_paused_at timestamptz,
             created_at timestamptz NOT NULL DEFAULT now(),
             updated_at timestamptz NOT NULL DEFAULT now(),
             CONSTRAINT fk_applications_created_by
                 FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL,
             CONSTRAINT fk_applications_model_config_id
-                FOREIGN KEY (model_config_id) REFERENCES ai_model_configs (id) ON DELETE SET NULL
+                FOREIGN KEY (model_config_id) REFERENCES ai_model_configs (id) ON DELETE SET NULL,
+            CONSTRAINT ck_applications_ingestion_state
+                CHECK (ingestion_state IN ('draft', 'active', 'paused')),
+            CONSTRAINT ck_applications_ingestion_start_position
+                CHECK (ingestion_start_position IS NULL OR ingestion_start_position IN ('earliest', 'latest'))
         );
         """,
         """
@@ -165,6 +184,39 @@ def upgrade() -> None:
         );
         """,
         """
+        CREATE TABLE application_ingestion_runtime (
+            application_id bigint PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
+            observed_state text NOT NULL DEFAULT 'idle',
+            observed_version integer NOT NULL DEFAULT 0,
+            consumer_id text,
+            assigned_partitions integer NOT NULL DEFAULT 0,
+            backlog bigint,
+            last_heartbeat_at timestamptz,
+            last_error text,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT ck_application_ingestion_runtime_observed_state
+                CHECK (observed_state IN ('idle', 'starting', 'listening', 'paused', 'error'))
+        );
+        """,
+        """
+        CREATE TABLE application_ingestion_offsets (
+            application_id bigint NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+            ingestion_version integer NOT NULL,
+            topic text NOT NULL,
+            partition integer NOT NULL,
+            start_position text NOT NULL,
+            target_offset bigint NOT NULL,
+            initialized_at timestamptz,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT pk_application_ingestion_offsets
+                PRIMARY KEY (application_id, ingestion_version, topic, partition),
+            CONSTRAINT ck_application_ingestion_offsets_start_position
+                CHECK (start_position IN ('earliest', 'latest'))
+        );
+        """,
+        "CREATE INDEX ix_application_ingestion_offsets_topic ON application_ingestion_offsets (topic, partition);",
+        """
         CREATE TABLE application_repos (
             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             application_id bigint NOT NULL,
@@ -189,7 +241,7 @@ def upgrade() -> None:
             updated_at timestamptz NOT NULL DEFAULT now(),
             CONSTRAINT fk_application_descriptions_application_id
                 FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE,
-            CONSTRAINT ck_application_descriptions_type
+            CONSTRAINT ck_application_descriptions_description_type
                 CHECK (description_type IN ('deploy', 'other'))
         );
         """,
@@ -211,9 +263,39 @@ def upgrade() -> None:
             created_at timestamptz NOT NULL DEFAULT now(),
             updated_at timestamptz NOT NULL DEFAULT now(),
             CONSTRAINT fk_db_sources_application_id
-                FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE
+                FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE,
+            CONSTRAINT ck_db_sources_secure_connection CHECK (
+                (conn_secret_ref IS NOT NULL
+                 AND conn_secret_ref ~ '^env://[A-Za-z_][A-Za-z0-9_]*$'
+                 AND host IS NULL AND port IS NULL AND database IS NULL
+                 AND username IS NULL AND password IS NULL AND sslmode IS NULL)
+                OR
+                (conn_secret_ref IS NULL AND host IS NOT NULL AND database IS NOT NULL
+                 AND sslmode = 'verify-full')
+            )
         );
         """,
+        """
+        CREATE TABLE application_integrations (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            application_id bigint NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+            name text NOT NULL,
+            kind text NOT NULL,
+            config jsonb NOT NULL DEFAULT '{}'::jsonb,
+            secret_ref text NOT NULL,
+            state text NOT NULL DEFAULT 'active',
+            readonly_verified_at timestamptz,
+            last_collected_at timestamptz,
+            last_error text,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT ck_application_integrations_kind
+                CHECK (kind IN ('redis', 'kafka', 'clickhouse')),
+            CONSTRAINT ck_application_integrations_state
+                CHECK (state IN ('active', 'disabled'))
+        );
+        """,
+        "CREATE INDEX ix_application_integrations_application_id ON application_integrations(application_id);",
         """
         CREATE TABLE alerts (
             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -242,6 +324,7 @@ def upgrade() -> None:
         """
         CREATE TABLE analyses (
             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            public_id text NOT NULL,
             dedupe_key text NOT NULL,
             application_id bigint NOT NULL,
             alert_id bigint,
@@ -262,8 +345,9 @@ def upgrade() -> None:
                 FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE,
             CONSTRAINT fk_analyses_alert_id
                 FOREIGN KEY (alert_id) REFERENCES alerts (id) ON DELETE SET NULL,
+            CONSTRAINT uq_analyses_public_id UNIQUE (public_id),
             CONSTRAINT ck_analyses_status
-                CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled')),
+                CHECK (status IN ('pending', 'running', 'completed', 'needs_review', 'failed', 'canceled')),
             CONSTRAINT ck_analyses_confidence
                 CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))
         );
@@ -287,9 +371,10 @@ def upgrade() -> None:
             CONSTRAINT fk_analysis_steps_analysis_id
                 FOREIGN KEY (analysis_id) REFERENCES analyses (id) ON DELETE CASCADE,
             CONSTRAINT ck_analysis_steps_node_type
-                CHECK (node_type IN ('receive', 'git_sync', 'context', 'ai_analysis', 'experience', 'conclusion')),
+                CHECK (node_type IN ('receive', 'git_sync', 'context', 'service_snapshot', 'experience', 'ai_analysis', 'conclusion')),
             CONSTRAINT ck_analysis_steps_status
-                CHECK (status IN ('pending', 'running', 'completed', 'failed', 'skipped'))
+                CHECK (status IN ('pending', 'running', 'completed', 'degraded', 'failed', 'skipped')),
+            CONSTRAINT uq_analysis_steps_analysis_node UNIQUE (analysis_id, node_type)
         );
         """,
         "CREATE INDEX ix_analysis_steps_analysis_id ON analysis_steps (analysis_id);",
@@ -354,8 +439,6 @@ def upgrade() -> None:
             created_at timestamptz NOT NULL DEFAULT now(),
             updated_at timestamptz NOT NULL DEFAULT now(),
             CONSTRAINT uq_incidents_public_id UNIQUE (public_id),
-            CONSTRAINT uq_incidents_application_id_dedupe_key
-                UNIQUE (application_id, dedupe_key),
             CONSTRAINT fk_incidents_application_id
                 FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE,
             CONSTRAINT fk_incidents_first_alert_id
@@ -368,6 +451,7 @@ def upgrade() -> None:
                 CHECK (state IN ('open', 'resolved', 'suppressed'))
         );
         """,
+        "CREATE UNIQUE INDEX uq_incidents_application_id_dedupe_key ON incidents (application_id, dedupe_key);",
         """
         CREATE TABLE analysis_jobs (
             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -447,6 +531,55 @@ def upgrade() -> None:
         """,
         "CREATE INDEX ix_analysis_guidance_uses_analysis_id ON analysis_guidance_uses (analysis_id);",
         """
+        CREATE TABLE analysis_recommendations (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            analysis_id bigint NOT NULL,
+            summary text NOT NULL,
+            risk_level text NOT NULL,
+            basis text NOT NULL DEFAULT 'evidence_backed',
+            evidence_refs jsonb NOT NULL DEFAULT '[]'::jsonb,
+            preconditions jsonb NOT NULL DEFAULT '[]'::jsonb,
+            steps jsonb NOT NULL DEFAULT '[]'::jsonb,
+            verification jsonb NOT NULL DEFAULT '[]'::jsonb,
+            rollback jsonb NOT NULL DEFAULT '[]'::jsonb,
+            owner_role text,
+            prompt_markdown text NOT NULL,
+            engine_version text,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT fk_analysis_recommendations_analysis_id
+                FOREIGN KEY (analysis_id) REFERENCES analyses (id) ON DELETE CASCADE,
+            CONSTRAINT uq_analysis_recommendations_analysis_id UNIQUE (analysis_id),
+            CONSTRAINT ck_analysis_recommendations_risk_level
+                CHECK (risk_level IN ('low', 'medium', 'high', 'critical')),
+            CONSTRAINT ck_analysis_recommendations_basis
+                CHECK (basis IN ('evidence_backed', 'safety_fallback'))
+        );
+        """,
+        "CREATE INDEX ix_analysis_recommendations_analysis_id ON analysis_recommendations (analysis_id);",
+        """
+        CREATE TABLE analysis_feedback (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            analysis_id bigint NOT NULL,
+            actor_id bigint NOT NULL,
+            target text NOT NULL,
+            value text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT uq_analysis_feedback_analysis_actor_target
+                UNIQUE (analysis_id, actor_id, target),
+            CONSTRAINT fk_analysis_feedback_analysis_id
+                FOREIGN KEY (analysis_id) REFERENCES analyses (id) ON DELETE CASCADE,
+            CONSTRAINT fk_analysis_feedback_actor_id
+                FOREIGN KEY (actor_id) REFERENCES users (id) ON DELETE CASCADE,
+            CONSTRAINT ck_analysis_feedback_target
+                CHECK (target IN ('remediation', 'agent_prompt')),
+            CONSTRAINT ck_analysis_feedback_value
+                CHECK (value IN ('useful', 'not_useful'))
+        );
+        """,
+        "CREATE INDEX ix_analysis_feedback_analysis_id ON analysis_feedback (analysis_id);",
+        """
         ALTER TABLE analyses
             ADD CONSTRAINT fk_analyses_incident_id
                 FOREIGN KEY (incident_id) REFERENCES incidents (id) ON DELETE SET NULL,
@@ -469,7 +602,8 @@ def upgrade() -> None:
             CONSTRAINT fk_evidence_artifacts_analysis_id
                 FOREIGN KEY (analysis_id) REFERENCES analyses (id) ON DELETE CASCADE,
             CONSTRAINT ck_evidence_artifacts_type
-                CHECK (artifact_type IN ('git_file', 'git_diff', 'db_query', 'deploy', 'alert_payload'))
+                CHECK (artifact_type IN ('git_file', 'git_diff', 'db_query', 'deploy',
+                                        'alert_payload', 'service_snapshot', 'operator_guidance'))
         );
         """,
         "CREATE INDEX ix_evidence_artifacts_analysis_id ON evidence_artifacts (analysis_id);",
@@ -522,6 +656,38 @@ def upgrade() -> None:
             WHERE partition IS NOT NULL AND "offset" IS NOT NULL;
         """,
         """
+        CREATE FUNCTION reject_evidence_artifact_update() RETURNS trigger AS $$
+        BEGIN
+            RAISE EXCEPTION 'evidence artifacts are immutable';
+        END;
+        $$ LANGUAGE plpgsql;
+        """,
+        """
+        CREATE TRIGGER trg_evidence_artifacts_immutable
+        BEFORE UPDATE ON evidence_artifacts
+        FOR EACH ROW EXECUTE FUNCTION reject_evidence_artifact_update();
+        """,
+        """
+        CREATE FUNCTION reject_integration_config_secret() RETURNS trigger AS $$
+        BEGIN
+            IF jsonb_path_exists(NEW.config, '$.**.password')
+               OR jsonb_path_exists(NEW.config, '$.**.passwd')
+               OR jsonb_path_exists(NEW.config, '$.**.secret')
+               OR jsonb_path_exists(NEW.config, '$.**.token')
+               OR jsonb_path_exists(NEW.config, '$.**.api_key')
+               OR jsonb_path_exists(NEW.config, '$.**.access_key') THEN
+                RAISE EXCEPTION 'integration config may not contain credentials';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        """,
+        """
+        CREATE TRIGGER trg_application_integrations_secret_free_config
+        BEFORE INSERT OR UPDATE OF config ON application_integrations
+        FOR EACH ROW EXECUTE FUNCTION reject_integration_config_secret();
+        """,
+        """
         DO $$
         DECLARE
             t text;
@@ -531,6 +697,7 @@ def upgrade() -> None:
                 'invites',
                 'ai_model_configs',
                 'applications',
+                'application_ingestion_runtime',
                 'user_application_perms',
                 'git_credentials',
                 'git_repos',
@@ -538,11 +705,15 @@ def upgrade() -> None:
                 'application_repos',
                 'application_descriptions',
                 'db_sources',
+                'application_integrations',
+                'platform_settings',
                 'analyses',
                 'analysis_steps',
                 'experiences',
                 'incidents',
-                'dead_letters'
+                'dead_letters',
+                'analysis_recommendations',
+                'analysis_feedback'
             ])
             LOOP
                 EXECUTE format(
@@ -562,6 +733,8 @@ def downgrade() -> None:
         "dead_letters",
         "audit_events",
         "evidence_artifacts",
+        "analysis_feedback",
+        "analysis_recommendations",
         "analysis_jobs",
         "incidents",
         "ingestion_events",
@@ -572,13 +745,17 @@ def downgrade() -> None:
         "analyses",
         "alerts",
         "db_sources",
+        "application_integrations",
         "application_descriptions",
         "application_repos",
         "application_kafka",
+        "application_ingestion_offsets",
+        "application_ingestion_runtime",
         "git_repos",
         "git_credentials",
         "user_application_perms",
         "applications",
+        "platform_settings",
         "ai_model_configs",
         "invites",
         "users",

@@ -38,4 +38,6 @@ export {
   Minus as IconMinus,
   Send as IconSend,
   Filter as IconFilter,
+  ThumbsUp as IconThumbsUp,
+  ThumbsDown as IconThumbsDown,
 } from 'lucide-react';

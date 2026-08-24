@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Text
+from sqlalchemy import CheckConstraint, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
@@ -22,4 +22,11 @@ class PlatformSetting(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "key <> 'ai_output_language' OR value IN ('en', 'zh')",
+            name="ai_output_language",
+        ),
     )

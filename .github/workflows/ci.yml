@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs for the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned to the version validated locally so lint results are stable.
+  RUFF_VERSION: "0.6.9"
+
+jobs:
+  backend:
+    name: Backend (lint + test)
+    runs-on: ubuntu-latest
+    # Postgres is required by the test suite (asyncpg-backed integration tests).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lode
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d lode"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # CI-only values. The app requires LODE_SECRET_KEY; tests need a migrated DB.
+      LODE_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/lode
+      LODE_SECRET_KEY: ci-test-secret-key-not-for-production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Ensure Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies (incl. dev + pgvector extras)
+        run: uv sync --all-extras
+
+      - name: Lint (ruff)
+        run: uvx ruff@${{ env.RUFF_VERSION }} check .
+
+      - name: Apply database migrations
+        run: uv run alembic upgrade head
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build

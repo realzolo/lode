@@ -14,7 +14,6 @@ entire monorepo into the prompt or exhaust disk, because ``max_files`` /
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import shutil

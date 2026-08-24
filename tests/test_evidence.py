@@ -10,9 +10,7 @@ from __future__ import annotations
 import types
 from pathlib import Path
 
-import pytest
 
-from lode.db.models.application import ApplicationRepo
 from lode.db.models.git import GitRepo
 from lode.db.models.intake import EvidenceArtifact
 from lode.engine.evidence import (

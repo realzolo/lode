@@ -9,12 +9,12 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
-    Float,
     ForeignKey,
     Identity,
     Index,
     Text,
 )
+from sqlalchemy.dialects.postgresql import REAL
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
@@ -37,7 +37,7 @@ class Experience(Base):
     # provider is configured. Used for cosine-similarity retrieval in
     # ``get_experience`` (semantic experience). Dimension is fixed at EMBEDDING_DIM.
     embedding: Mapped[list[float] | None] = mapped_column(
-        ARRAY(Float), nullable=True
+        ARRAY(REAL), nullable=True
     )
     source_analysis_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("analyses.id", ondelete="SET NULL")

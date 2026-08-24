@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.config import settings
@@ -15,7 +15,10 @@ from lode.api.audit import audit_action
 from lode.api.deps import assert_app_perm, permitted_app_ids, require_user
 from lode.api.schemas import (
     AddGuidanceIn,
+    AnalysisFeedbackIn,
+    AnalysisFeedbackSummary,
     AnalysisDetailOut,
+    AnalysisRecommendationOut,
     EvidenceArtifactOut,
     AnalysisGuidanceOut,
     AnalysisJobOut,
@@ -25,7 +28,14 @@ from lode.api.schemas import (
     ReanalyzeOut,
 )
 from lode.db.models.alert import Alert
-from lode.db.models.analysis import Analysis, AnalysisGuidance, AnalysisGuidanceUse, AnalysisStep
+from lode.db.models.analysis import (
+    Analysis,
+    AnalysisFeedback,
+    AnalysisGuidance,
+    AnalysisGuidanceUse,
+    AnalysisRecommendation,
+    AnalysisStep,
+)
 from lode.db.models.application import Application
 from lode.db.models.intake import AnalysisJob, EvidenceArtifact, Incident
 from lode.db.models.experience import Experience
@@ -97,6 +107,28 @@ def _guidance_effect(
     if ai_step is not None and ai_step.status in {"running", "completed", "failed", "skipped"}:
         return "needs_reanalysis"
     return "will_apply"
+
+
+async def _feedback_summary(session: AsyncSession, analysis_id: int, user_id: int) -> AnalysisFeedbackSummary:
+    rows = (
+        await session.execute(
+            select(AnalysisFeedback).where(AnalysisFeedback.analysis_id == analysis_id)
+        )
+    ).scalars().all()
+    counts = {(target, value): 0 for target in ("remediation", "agent_prompt") for value in ("useful", "not_useful")}
+    mine: dict[str, str] = {}
+    for row in rows:
+        counts[(row.target, row.value)] += 1
+        if row.actor_id == user_id:
+            mine[row.target] = row.value
+    return AnalysisFeedbackSummary(
+        remediation_useful=counts[("remediation", "useful")],
+        remediation_not_useful=counts[("remediation", "not_useful")],
+        agent_prompt_useful=counts[("agent_prompt", "useful")],
+        agent_prompt_not_useful=counts[("agent_prompt", "not_useful")],
+        my_remediation=mine.get("remediation"),
+        my_agent_prompt=mine.get("agent_prompt"),
+    )
 
 
 @router.get("", response_model=list[AnalysisListOut])
@@ -217,15 +249,32 @@ async def get_analysis(
         )
     ).all()
 
-    matched = (
-        await session.execute(
-            select(Experience)
-            .where(Experience.application_id == analysis.application_id)
-            .where(Experience.trigger_signature == analysis.dedupe_key)
-            .where(Experience.is_valid.is_(True))
-            .order_by(Experience.updated_at.desc())
-        )
-    ).scalars().first()
+    # New analyses persist an explicit match/no-match decision. Never replace an
+    # explicit no-match with a later experience written by this same run.
+    has_current_experience_decision = isinstance(analysis.evidence, dict)
+    experience_ref = (analysis.evidence or {}).get("experience_reference") if has_current_experience_decision else None
+    matched = None
+    if isinstance(experience_ref, dict) and isinstance(experience_ref.get("experience_id"), int):
+        matched = (
+            await session.execute(
+                select(Experience)
+                .where(Experience.id == experience_ref["experience_id"])
+                .where(Experience.application_id == analysis.application_id)
+                .where(Experience.is_valid.is_(True))
+                .where(or_(Experience.expires_at.is_(None), Experience.expires_at > datetime.now(UTC)))
+            )
+        ).scalars().first()
+    if matched is None and not has_current_experience_decision:
+        matched = (
+            await session.execute(
+                select(Experience)
+                .where(Experience.application_id == analysis.application_id)
+                .where(Experience.trigger_signature == analysis.dedupe_key)
+                .where(Experience.is_valid.is_(True))
+                .where(or_(Experience.expires_at.is_(None), Experience.expires_at > datetime.now(UTC)))
+                .order_by(Experience.updated_at.desc())
+            )
+        ).scalars().first()
 
     if user.role == "admin":
         my_perm = "admin"
@@ -242,6 +291,14 @@ async def get_analysis(
             .order_by(EvidenceArtifact.collected_at, EvidenceArtifact.id)
         )
     ).scalars().all()
+    recommendation = (
+        await session.execute(
+            select(AnalysisRecommendation)
+            .where(AnalysisRecommendation.analysis_id == analysis.id)
+            .limit(1)
+        )
+    ).scalars().first()
+    feedback = await _feedback_summary(session, analysis.id, user_id)
 
     return AnalysisDetailOut(
         id=analysis.public_id,
@@ -265,6 +322,26 @@ async def get_analysis(
             )
             for artifact in artifacts
         ],
+        recommendation=(
+            AnalysisRecommendationOut(
+                id=recommendation.id,
+                summary=recommendation.summary,
+                risk_level=recommendation.risk_level,
+                basis=recommendation.basis,
+                evidence_refs=[int(ref) for ref in (recommendation.evidence_refs or []) if isinstance(ref, int)],
+                preconditions=[str(item) for item in (recommendation.preconditions or [])],
+                steps=[item for item in (recommendation.steps or []) if isinstance(item, dict)],
+                verification=[str(item) for item in (recommendation.verification or [])],
+                rollback=[str(item) for item in (recommendation.rollback or [])],
+                owner_role=recommendation.owner_role,
+                prompt_markdown=recommendation.prompt_markdown,
+                engine_version=recommendation.engine_version,
+                created_at=recommendation.created_at,
+            )
+            if recommendation is not None
+            else None
+        ),
+        feedback=feedback,
         alert=(
             AlertSummary(
                 title=alert.title,
@@ -355,6 +432,47 @@ async def add_guidance(
         created_at=guidance.created_at,
         effect=_guidance_effect(analysis, ai_step, None),
     )
+
+
+@router.post("/{analysis_id}/feedback", response_model=AnalysisFeedbackSummary)
+async def submit_feedback(
+    analysis_id: str,
+    payload: AnalysisFeedbackIn,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> AnalysisFeedbackSummary:
+    analysis = await _analysis_by_public_id(session, analysis_id)
+    user = await session.get(User, user_id)
+    await assert_app_perm(session, user, analysis.application_id, "analyze")
+    feedback = (
+        await session.execute(
+            select(AnalysisFeedback)
+            .where(AnalysisFeedback.analysis_id == analysis.id)
+            .where(AnalysisFeedback.actor_id == user_id)
+            .where(AnalysisFeedback.target == payload.target)
+            .limit(1)
+        )
+    ).scalars().first()
+    if feedback is None:
+        session.add(AnalysisFeedback(
+            analysis_id=analysis.id,
+            actor_id=user_id,
+            target=payload.target,
+            value=payload.value,
+        ))
+    else:
+        feedback.value = payload.value
+    await session.commit()
+    await audit_action(
+        action="analysis.feedback_submitted",
+        actor_id=user_id,
+        target_type="analysis",
+        target_id=analysis.public_id,
+        application_id=analysis.application_id,
+        result="ok",
+        detail={"target": payload.target, "value": payload.value},
+    )
+    return await _feedback_summary(session, analysis.id, user_id)
 
 
 @router.post("/{analysis_id}/reanalyze", response_model=ReanalyzeOut)

@@ -20,7 +20,7 @@ class AnalysisStepOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     node_type: str
-    status: str
+    status: Literal["pending", "running", "completed", "degraded", "failed", "skipped"]
     order_index: int
     detail: str | None = None
     summary: str | None = None
@@ -54,7 +54,7 @@ class AnalysisListOut(BaseModel):
     application_name: str
     title: str
     level: str
-    status: str
+    status: Literal["pending", "running", "completed", "needs_review", "failed", "canceled"]
     confidence: float | None
     conclusion: str | None
     received_at: datetime | None
@@ -86,16 +86,50 @@ class EvidenceArtifactOut(BaseModel):
     collected_at: datetime
 
 
+class AnalysisRecommendationOut(BaseModel):
+    id: int
+    summary: str
+    risk_level: Literal["low", "medium", "high", "critical"]
+    basis: Literal["evidence_backed", "safety_fallback"]
+    evidence_refs: list[int]
+    preconditions: list[str]
+    steps: list[dict[str, str]]
+    verification: list[str]
+    rollback: list[str]
+    owner_role: str | None
+    prompt_markdown: str
+    engine_version: str | None
+    created_at: datetime
+
+
+class AnalysisFeedbackIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: Literal["remediation", "agent_prompt"]
+    value: Literal["useful", "not_useful"]
+
+
+class AnalysisFeedbackSummary(BaseModel):
+    remediation_useful: int = 0
+    remediation_not_useful: int = 0
+    agent_prompt_useful: int = 0
+    agent_prompt_not_useful: int = 0
+    my_remediation: Literal["useful", "not_useful"] | None = None
+    my_agent_prompt: Literal["useful", "not_useful"] | None = None
+
+
 class AnalysisDetailOut(BaseModel):
     id: str
     dedupe_key: str
     application_id: int
     application_name: str
-    status: str
+    status: Literal["pending", "running", "completed", "needs_review", "failed", "canceled"]
     confidence: float | None
     conclusion: str | None
     evidence: dict | None
     evidence_artifacts: list[EvidenceArtifactOut]
+    recommendation: AnalysisRecommendationOut | None = None
+    feedback: AnalysisFeedbackSummary = Field(default_factory=AnalysisFeedbackSummary)
     alert: AlertSummary | None
     steps: list[AnalysisStepOut]
     job: AnalysisJobOut

@@ -13,7 +13,7 @@ application at the required level — global admins always pass.
 
 from __future__ import annotations
 
-from fastapi import Depends, Header, HTTPException, Security
+from fastapi import Depends, Header, HTTPException
 from fastapi.security import SecurityScopes
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

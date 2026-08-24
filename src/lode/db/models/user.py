@@ -6,14 +6,11 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
     Identity,
-    String,
     Text,
     ForeignKey,
-    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 

@@ -18,7 +18,13 @@ from sqlalchemy import delete, select
 
 from lode.consumer.dedupe import compute_dedupe_key
 from lode.db.models.alert import Alert
-from lode.db.models.analysis import Analysis, AnalysisGuidance, AnalysisGuidanceUse, AnalysisStep
+from lode.db.models.analysis import (
+    Analysis,
+    AnalysisGuidance,
+    AnalysisGuidanceUse,
+    AnalysisRecommendation,
+    AnalysisStep,
+)
 from lode.db.models.application import Application, ApplicationDescription
 from lode.db.models.experience import Experience
 from lode.db.models.intake import AnalysisJob, Incident
@@ -154,7 +160,7 @@ async def test_run_analysis_completes(scenario):
             await session.execute(select(Analysis).where(Analysis.id == scenario["analysis_id"]))
         ).scalars().first()
         assert refreshed is not None
-        assert refreshed.status == "completed"
+        assert refreshed.status == "needs_review"
         assert refreshed.conclusion
         assert refreshed.confidence is not None
         assert refreshed.confidence <= 0.2
@@ -162,7 +168,7 @@ async def test_run_analysis_completes(scenario):
         # The workflow records the evidence snapshot stage before synthesis.
         steps = (
             await session.execute(
-                select(AnalysisStep).where(AnalysisStep.analysis_id == scenario["analysis_id"])
+                select(AnalysisStep).where(AnalysisStep.analysis_id == scenario["analysis_id"]).order_by(AnalysisStep.order_index)
             )
         ).scalars().all()
         node_types = {s.node_type for s in steps}
@@ -176,6 +182,20 @@ async def test_run_analysis_completes(scenario):
             "conclusion",
         }
         assert all(step.started_at is not None and step.finished_at is not None for step in steps)
+        assert steps[-1].node_type == "conclusion"
+        assert [step.node_type for step in steps] == [
+            "receive", "git_sync", "context", "service_snapshot", "experience", "ai_analysis", "conclusion",
+        ]
+
+        recommendation = (
+            await session.execute(
+                select(AnalysisRecommendation).where(
+                    AnalysisRecommendation.analysis_id == scenario["analysis_id"]
+                )
+            )
+        ).scalars().one()
+        assert recommendation.risk_level == "high"
+        assert recommendation.prompt_markdown.startswith("# Production incident investigation")
 
         guidance_uses = (
             await session.execute(

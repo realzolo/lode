@@ -22,7 +22,7 @@ committed and covered by tests.
   failure isolation, DLQ / unassigned-topic routing, and offset commit even after a
   failed message.
 - **M3 — Interactive workflow graph:** a pannable/zoomable canvas of the seven pipeline
-  steps (`receive → git_sync → context → service_snapshot → ai_analysis → experience → conclusion`) on the
+  steps (`receive → git_sync → context → service_snapshot → experience → ai_analysis → conclusion`) on the
   analysis detail page, built dependency-free.
 - **M4 — Fixed read-only database catalog:** a per-source, schema-qualified base-table
   catalog, a dedicated effective-role privilege proof, column desensitization, and
@@ -33,6 +33,10 @@ committed and covered by tests.
 - **M6 — Rate limiting & security hardening:** an in-memory fixed-window limiter
   (per user/IP), `429` + `Retry-After` + `X-RateLimit-*`, baseline security headers
   on every response, and CORS as the outermost layer. Details below.
+- **M7 — Actionable analysis output:** low-trust experience references are resolved
+  before synthesis; structured advisory remediation, a redacted Markdown Agent
+  prompt, `needs_review`/`degraded` status semantics, and per-target quality
+  feedback are persisted and exposed on the analysis detail page.
 
 ## Stack
 
@@ -90,6 +94,10 @@ The schema is applied by Alembic. The server runs `alembic upgrade head`
 automatically on startup (see `lode.api.main.lifespan`), so a fresh
 deploy is always schema-current before serving traffic.
 
+This new project currently ships one self-contained `0001_initial` baseline.
+Reset any pre-baseline local database before upgrading; once deployed, future
+schema changes must be added as incremental Alembic revisions.
+
 ```bash
 make install          # pip install -e ".[dev]"
 make dev-up           # docker compose up -d (postgres + kafka)
@@ -99,6 +107,9 @@ make consume          # kafka consumer
 make work             # durable analysis worker
 make verify           # throwaway local Postgres + migrate + schema dump
 ```
+
+To run a database test against that same isolated instance, pass the command
+through the verifier, for example `bash scripts/verify.sh uv run pytest -q tests/test_engine.py`.
 
 Or manually:
 
@@ -246,14 +257,24 @@ code-defined status reads. A policy-verification failure disables that binding a
 writes an audit event; availability failures yield partial evidence without blocking
 the incident analysis.
 
-The worker inserts a `service_snapshot` step before AI analysis. Alert, deployment,
+The worker executes `service_snapshot` and then the low-trust `experience` reference
+step before AI analysis. Alert, deployment,
 Git, database, service, and operator-guidance inputs are persisted as immutable, content-hashed,
 size-bounded, redacted evidence artifacts. Every artifact records its temporal scope;
 service snapshots carry collection start/end, configuration hash, collector version,
 and permission-verification result. The model receives only these excerpts. Its
-conclusion, facts, and inferences must each cite artifact IDs; operator guidance
+conclusion, facts, inferences, and remediation claims must each cite artifact IDs; operator guidance
 is explicitly untrusted data; uncited output is discarded in favor of a
-low-confidence “evidence insufficient” result.
+low-confidence “evidence insufficient” result. If a non-core collector fails, the
+step is marked `degraded`, the run continues, and the analysis status becomes
+`needs_review` even when the execution job succeeds.
+
+Completed analyses also expose a structured, advisory remediation playbook and a
+canonical Markdown prompt for external AI troubleshooting. The prompt is built
+only from redacted evidence excerpts, is capped at 16,000 characters, and never
+executes commands or changes production state. Users with `analyze` permission
+can rate the remediation and prompt via
+`POST /analyses/{analysis_id}/feedback` using `useful` or `not_useful`.
 
 ## Semantic shared experience (M5)
 

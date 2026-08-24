@@ -15,6 +15,7 @@ import {
   Loader2,
   Circle,
   Minus,
+  AlertTriangle,
 } from 'lucide-react';
 import type { AnalysisStep } from '@/lib/types';
 
@@ -44,8 +45,8 @@ export const PIPELINE: PipelineNode[] = [
   { nodeType: 'git_sync', icon: GitBranch, title: '同步源码' },
   { nodeType: 'context', icon: Layers, title: '收集上下文' },
   { nodeType: 'service_snapshot', icon: ServerCog, title: '服务快照' },
+  { nodeType: 'experience', icon: MemoryStick, title: '历史经验参考' },
   { nodeType: 'ai_analysis', icon: BrainCircuit, title: 'AI 根因分析' },
-  { nodeType: 'experience', icon: MemoryStick, title: '匹配经验' },
   { nodeType: 'conclusion', icon: Flag, title: '生成结论' },
 ];
 
@@ -54,6 +55,7 @@ const STATUS_TEXT: Record<StepState, string> = {
   running: '运行中',
   pending: '排队中',
   failed: '失败',
+  degraded: '部分完成',
   skipped: '已跳过',
 };
 
@@ -66,6 +68,8 @@ function StepGlyph({ state, size = 18 }: { state: StepState; size?: number }) {
       return <Loader2 size={size} className="wf-spin" />;
     case 'failed':
       return <X size={size} strokeWidth={2.5} />;
+    case 'degraded':
+      return <AlertTriangle size={size} strokeWidth={2.5} />;
     case 'skipped':
       return <Minus size={size} strokeWidth={2.5} />;
     case 'pending':

@@ -12,22 +12,23 @@ import {
   addGuidance,
   fetchAnalysis,
   reanalyze,
+  submitAnalysisFeedback,
   toUiSteps,
   type AnalysisDetail,
 } from '@/lib/api';
 import { PIPELINE, WorkflowStepper } from '@/components/workflow-stepper';
-import { IconRefreshCw, IconPlus } from '@/components/icons';
+import { IconRefreshCw, IconPlus, IconCopy, IconThumbsUp, IconThumbsDown } from '@/components/icons';
 
 type NodeType = AnalysisStep['nodeType'];
 
 const STEP_TITLE: Record<NodeType, string> = {
   receive: '接收告警', git_sync: '同步源码', context: '收集上下文',
   service_snapshot: '服务快照',
-  ai_analysis: 'AI 根因分析', experience: '匹配经验', conclusion: '生成结论',
+  ai_analysis: 'AI 根因分析', experience: '历史经验参考', conclusion: '生成结论',
 };
 
 const STEP_STATUS: Record<AnalysisStep['status'], string> = {
-  done: '已完成', running: '运行中', pending: '等待中', failed: '失败', skipped: '已跳过',
+  done: '已完成', running: '运行中', pending: '等待中', degraded: '部分完成', failed: '失败', skipped: '已跳过',
 };
 
 const GUIDANCE_EFFECT = {
@@ -37,7 +38,7 @@ const GUIDANCE_EFFECT = {
 function statusVariant(status: AnalysisStatus): 'success' | 'warning' | 'danger' | 'accent' | 'default' {
   if (status === 'completed') return 'success';
   if (status === 'failed') return 'danger';
-  if (status === 'running' || status === 'needs_human') return 'warning';
+  if (status === 'running' || status === 'needs_human' || status === 'needs_review') return 'warning';
   return 'accent';
 }
 
@@ -98,12 +99,63 @@ function StepArtifacts({ node, detail }: { node: NodeType; detail: AnalysisDetai
     const claims = (value: unknown) => asRecords(value).map((claim) => `${typeof claim.text === 'string' ? claim.text : ''} [证据 ${asStrings(claim.evidence_refs).join(', ') || (Array.isArray(claim.evidence_refs) ? (claim.evidence_refs as unknown[]).join(', ') : '无')}]`);
     return <><DetailList title="已确认事实" items={claims(evidence.facts)} /><DetailList title="推断" items={claims(evidence.inferences)} /><DetailList title="仍待确认" items={asStrings(evidence.unknowns)} /></>;
   }
-  if (node === 'experience' && detail.matched_experience) return <section className="analysis-detail-group"><h3>命中经验</h3><p>{detail.matched_experience}</p></section>;
+  if (node === 'experience' && detail.matched_experience) return <section className="analysis-detail-group"><h3>历史经验参考</h3><p>{detail.matched_experience}</p><p className="muted">匹配方式：{String(evidence.matched_experience_type ?? 'unknown')}{typeof evidence.matched_experience_similarity === 'number' ? ` · 相似度 ${evidence.matched_experience_similarity.toFixed(2)}` : ''}</p></section>;
   if (node === 'conclusion') {
     const cited = asRecords(evidence.cited_evidence).map((item) => typeof item.id === 'number' ? item.id : null).filter((id): id is number => id !== null);
     return <EvidenceList detail={detail} ids={cited} />;
   }
   return null;
+}
+
+function RecommendationPanel({
+  detail,
+  canAnalyze,
+  onFeedback,
+}: {
+  detail: AnalysisDetail;
+  canAnalyze: boolean;
+  onFeedback: (target: 'remediation' | 'agent_prompt', value: 'useful' | 'not_useful') => void;
+}) {
+  const t = useTranslations('analysis');
+  const recommendation = detail.recommendation;
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
+  if (!recommendation) return null;
+  const rec = recommendation;
+  async function copyPrompt() {
+    setCopyError(false);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(rec.prompt_markdown);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = rec.prompt_markdown;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const succeeded = document.execCommand('copy');
+        textarea.remove();
+        if (!succeeded) throw new Error('copy command was rejected');
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopyError(true);
+    }
+  }
+  const feedback = detail.feedback;
+  return <section className="analysis-recommendation" aria-labelledby="recommendation-heading">
+    <div className="analysis-section-heading"><div><p className="analysis-eyebrow">{t('remediationEyebrow')}</p><h2 id="recommendation-heading">{t('remediationTitle')}</h2></div><span className={`analysis-risk analysis-risk-${rec.risk_level}`}>{rec.risk_level}</span></div>
+    <p className="analysis-recommendation-summary">{rec.summary}</p>
+    {rec.basis === 'safety_fallback' && <p className="analysis-review-notice">{t('safetyFallback')}</p>}
+    {rec.preconditions.length > 0 && <DetailList title={t('preconditions')} items={rec.preconditions} />}
+    {rec.steps.length > 0 && <section className="analysis-detail-group"><h3>{t('stepsLabel')}</h3><ol>{rec.steps.map((step, index) => <li key={`${step.action}-${index}`}><b>{step.action}</b><br /><span className="muted">{t('expectedResult')}：{step.expected_result}</span></li>)}</ol></section>}
+    {rec.verification.length > 0 && <DetailList title={t('verification')} items={rec.verification} />}
+    {rec.rollback.length > 0 && <DetailList title={t('rollback')} items={rec.rollback} />}
+    <div className="analysis-agent-prompt"><div className="analysis-section-heading"><div><p className="analysis-eyebrow">{t('agentEyebrow')}</p><h3>{t('agentPrompt')}</h3></div><Button variant="default" size="sm" onClick={copyPrompt}><IconCopy size={15} /> {copied ? t('copied') : t('copyMarkdown')}</Button></div><pre>{rec.prompt_markdown}</pre><p className="muted">{copyError ? t('copyFailed') : t('redactedPrompt')}</p></div>
+    {canAnalyze && <div className="analysis-feedback"><span className="muted">{t('feedbackQuestion')}</span><Button variant="default" size="sm" aria-pressed={feedback.my_remediation === 'useful'} onClick={() => onFeedback('remediation', 'useful')}><IconThumbsUp size={15} /> {t('remediationFeedback')} {feedback.remediation_useful || ''}</Button><Button variant="default" size="sm" aria-pressed={feedback.my_remediation === 'not_useful'} onClick={() => onFeedback('remediation', 'not_useful')}><IconThumbsDown size={15} /> {t('remediationFeedback')} {feedback.remediation_not_useful || ''}</Button><Button variant="default" size="sm" aria-pressed={feedback.my_agent_prompt === 'useful'} onClick={() => onFeedback('agent_prompt', 'useful')}><IconThumbsUp size={15} /> {t('promptFeedback')} {feedback.agent_prompt_useful || ''}</Button><Button variant="default" size="sm" aria-pressed={feedback.my_agent_prompt === 'not_useful'} onClick={() => onFeedback('agent_prompt', 'not_useful')}><IconThumbsDown size={15} /> {t('promptFeedback')} {feedback.agent_prompt_not_useful || ''}</Button></div>}
+  </section>;
 }
 
 export default function AnalysisPage({ params }: { params: { analysisId: string } }) {
@@ -117,6 +169,7 @@ export default function AnalysisPage({ params }: { params: { analysisId: string 
   const [guidance, setGuidance] = useState('');
   const [guidanceOpen, setGuidanceOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [selectedNode, setSelectedNode] = useState<NodeType>('receive');
   const selectedInitialized = useRef(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -173,6 +226,14 @@ export default function AnalysisPage({ params }: { params: { analysisId: string 
     } finally { setBusy(false); }
   }
 
+  async function handleFeedback(target: 'remediation' | 'agent_prompt', value: 'useful' | 'not_useful') {
+    setFeedbackBusy(true);
+    try {
+      await submitAnalysisFeedback(analysisId, target, value);
+      await load();
+    } finally { setFeedbackBusy(false); }
+  }
+
   if (loading && !detail) return <div className="analysis-loading" aria-busy="true"><Skeleton className="h-9 w-56" /><Skeleton className="h-4 w-80" /><Skeleton className="h-44 w-full" /><Skeleton className="h-72 w-full" /></div>;
   if (error) return <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>;
   if (!detail) return <p className="muted">{tc('empty')}</p>;
@@ -201,22 +262,27 @@ export default function AnalysisPage({ params }: { params: { analysisId: string 
           ? '任务失败'
           : '已完成';
 
+  const evidence = detail.evidence ?? {};
+  const warnings = asStrings(evidence.warnings);
+  const coverage = typeof evidence.evidence_coverage === 'number' ? Math.round(evidence.evidence_coverage * 100) : null;
   return <main className="analysis-workspace">
     <header className="analysis-header">
       <div><p className="analysis-eyebrow">调查任务</p><h1 className="page-title">{t('title')}</h1><p className="mono muted">{analysisId}</p></div>
       <div className="analysis-actions"><Badge variant={statusVariant(uiStatus)}>{uiStatus}</Badge><Badge variant={jobStatus === 'dead' ? 'danger' : jobStatus === 'queued' || jobStatus === 'retry_wait' ? 'accent' : jobStatus === 'running' ? 'warning' : 'success'}>{jobLabel}</Badge>{totalDuration && <span className="analysis-duration">耗时 {totalDuration}</span>}{canAnalyze && <Button variant="primary" onClick={handleReanalyze} disabled={busy}><IconRefreshCw size={16} /> {tc('reanalyze')}</Button>}</div>
     </header>
 
-    <section className="analysis-outcome" aria-live="polite"><div className="analysis-outcome-meta"><span>当前结论</span><span>{t('confidence')} {detail.confidence != null ? detail.confidence.toFixed(2) : '—'}</span></div><p>{detail.conclusion ?? (uiStatus === 'failed' ? '分析未能完成，请查看失败步骤并补充分析引导。' : queueMessage)}</p></section>
+    <section className="analysis-outcome" data-state={uiStatus} aria-live="polite"><div className="analysis-outcome-meta"><span>当前结论</span><span>{t('confidence')} {detail.confidence != null ? detail.confidence.toFixed(2) : '—'}{coverage != null ? ` · 证据覆盖 ${coverage}%` : ''}</span></div><p>{detail.conclusion ?? (uiStatus === 'failed' ? '分析未能完成，请查看失败步骤并补充分析引导。' : queueMessage)}</p>{uiStatus === 'needs_review' && <p className="analysis-review-notice">结果可供参考，但证据不完整，建议人工复核后再执行修复。</p>}{warnings.length > 0 && <DetailList title="分析警告" items={warnings} />}</section>
 
     <section className="analysis-flow"><div className="analysis-section-heading"><div><p className="analysis-eyebrow">调查轨迹</p><h2>{t('steps')}</h2></div><span className="muted">选择步骤查看调查细节</span></div><WorkflowStepper steps={steps} selected={selectedNode} onSelect={setSelectedNode} /></section>
 
     <section className="analysis-inspector" data-state={selectedStep.status}>
-      <div className="analysis-inspector-head"><div><p className="analysis-eyebrow">阶段 {PIPELINE.findIndex((item) => item.nodeType === selectedNode) + 1} / 6</p><h2>{STEP_TITLE[selectedNode]}</h2></div><div className="analysis-inspector-status"><span>{STEP_STATUS[selectedStep.status]}</span>{formatDuration(selectedStep.startedAt, selectedStep.finishedAt) && <span>耗时 {formatDuration(selectedStep.startedAt, selectedStep.finishedAt)}</span>}</div></div>
+      <div className="analysis-inspector-head"><div><p className="analysis-eyebrow">阶段 {PIPELINE.findIndex((item) => item.nodeType === selectedNode) + 1} / {PIPELINE.length}</p><h2>{STEP_TITLE[selectedNode]}</h2></div><div className="analysis-inspector-status"><span>{STEP_STATUS[selectedStep.status]}</span>{formatDuration(selectedStep.startedAt, selectedStep.finishedAt) && <span>耗时 {formatDuration(selectedStep.startedAt, selectedStep.finishedAt)}</span>}</div></div>
       <p className="analysis-step-summary">{selectedStep.summary ?? (selectedStep.status === 'pending' ? '等待前置阶段完成。' : '该阶段暂未返回摘要。')}</p>
       {selectedStep.detail && <p className="analysis-step-detail">{selectedStep.detail}</p>}
       <StepArtifacts node={selectedNode} detail={detail} />
     </section>
+
+    <RecommendationPanel detail={detail} canAnalyze={canAnalyze && !feedbackBusy} onFeedback={handleFeedback} />
 
     <section className="analysis-guidance" aria-labelledby="guidance-heading">
       <div className="analysis-section-heading"><div><p className="analysis-eyebrow">人工协作</p><h2 id="guidance-heading">分析引导</h2></div><Button variant="default" size="sm" onClick={() => setGuidanceOpen((open) => !open)} disabled={busy}><IconPlus size={15} /> 添加分析引导</Button></div>

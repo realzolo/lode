@@ -9,7 +9,6 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    Identity,
     Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column

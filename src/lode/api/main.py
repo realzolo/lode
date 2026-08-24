@@ -14,7 +14,6 @@ Production hardening in this module:
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -24,7 +23,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, update
+from sqlalchemy import update
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from lode.api.deps import require_user
@@ -133,7 +132,7 @@ app = FastAPI(
 # M6 hardening: rate limiting + baseline security headers. CORS is added last
 # (below) so it remains the outermost layer and still stamps CORS headers on
 # rate-limited (429) responses.
-from lode.api.rate_limit import HardeningMiddleware, RateLimiter
+from lode.api.rate_limit import HardeningMiddleware, RateLimiter  # noqa: E402
 
 app.add_middleware(
     HardeningMiddleware,

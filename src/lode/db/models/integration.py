@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Identity, Text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Identity, Index, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,4 +45,5 @@ class ApplicationIntegration(Base):
             "kind IN ('redis', 'kafka', 'clickhouse')", name="kind"
         ),
         CheckConstraint("state IN ('active', 'disabled')", name="state"),
+        Index("ix_application_integrations_application_id", "application_id"),
     )

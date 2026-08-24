@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     Text,
     UniqueConstraint,
@@ -53,6 +54,14 @@ class Application(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        CheckConstraint("ingestion_state IN ('draft', 'active', 'paused')", name="ingestion_state"),
+        CheckConstraint(
+            "ingestion_start_position IS NULL OR ingestion_start_position IN ('earliest', 'latest')",
+            name="ingestion_start_position",
+        ),
     )
 
 
@@ -143,6 +152,7 @@ class ApplicationIngestionOffset(Base):
         CheckConstraint(
             "start_position IN ('earliest', 'latest')", name="start_position"
         ),
+        Index("ix_application_ingestion_offsets_topic", "topic", "partition"),
     )
 
 
@@ -239,4 +249,14 @@ class DbSource(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(conn_secret_ref IS NOT NULL AND conn_secret_ref ~ '^env://[A-Za-z_][A-Za-z0-9_]*$' "
+            "AND host IS NULL AND port IS NULL AND database IS NULL AND username IS NULL "
+            "AND password IS NULL AND sslmode IS NULL) OR (conn_secret_ref IS NULL "
+            "AND host IS NOT NULL AND database IS NOT NULL AND sslmode = 'verify-full')",
+            name="secure_connection",
+        ),
     )

@@ -41,9 +41,14 @@
   services. Its local Kafka advertises an internal `kafka:9092` listener and a
   host `localhost:9092` listener. Consumer and worker wait for the API health
   check, which runs only after API-owned migrations complete.
-- Any lifecycle/schema change requires a new incremental Alembic revision, never
-  edits to the existing baseline migration. Update this file and README whenever
-  architecture, dependencies, or the development workflow changes.
+- The project is in its fresh-initialization phase and has one self-contained
+  Alembic baseline, `0001_initial`. Delete and recreate a local database before
+  applying it. After the first production deployment, schema changes must use a
+  new incremental revision rather than editing this baseline. Update this file
+  and README whenever architecture, dependencies, or the development workflow changes.
+- The database uses PostgreSQL's default `public` search path. ORM metadata and
+  V1 DDL intentionally leave table names unqualified so Alembic drift checks
+  compare the same identities.
 
 ## Analysis Configuration And Isolation
 
@@ -91,4 +96,26 @@
   end, temporal scope, config hash, collector version, source position, redacted
   excerpt, and verification metadata. They are observations at analysis time, not
   proof of state at the earlier alert time.
+- The complete analysis path is `receive -> git_sync -> context -> service_snapshot
+  -> experience -> ai_analysis -> conclusion`. Experience retrieval is a low-trust
+  historical reference: it is injected into the AI prompt for comparison, but it
+  is never a citable evidence artifact and must be verified against current evidence.
+- Non-core evidence collectors fail independently. A degraded collector records its
+  reason on the workflow step and the analysis continues with available evidence.
+  Such runs use the persisted `needs_review` analysis status (the execution job can
+  still be `succeeded`) and must not be promoted to reusable experience when the
+  evidence is insufficient.
+- Completed runs persist a structured advisory remediation record and a canonical,
+  Markdown Agent prompt assembled only from redacted evidence. The platform never
+  executes generated commands or changes. Users with `analyze` permission can submit
+  per-target useful/not-useful feedback through
+  `POST /analyses/{analysis_id}/feedback`; feedback is append-audited and idempotent
+  per user, analysis, and target.
+- Analysis recommendations and feedback are in the `0001_initial` baseline. A
+  recommendation declares whether it is `evidence_backed` or a
+  `safety_fallback`; fallback advice is never presented as verified remediation.
+  Runs with warnings, unresolved unknowns, insufficient citation coverage,
+  fallback remediation, heuristic output, or low confidence are `needs_review`.
+  No new runtime dependency is required. The default Agent prompt size is capped
+  at 16,000 characters and all interpolated content is redacted again at export.
 - `redis` and `clickhouse-connect` are runtime dependencies.

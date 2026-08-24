@@ -9,11 +9,9 @@ experience lookup decision logic are tested directly.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import urllib.request
 
-import pytest
 
 from lode.db.vector import EMBEDDING_DIM
 from lode.engine.embeddings import (

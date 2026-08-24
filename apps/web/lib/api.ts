@@ -1,7 +1,7 @@
 // Thin client for the Lode backend API.
 //
 // The backend speaks snake_case and uses DB-native statuses
-// (pending/running/completed/failed/canceled). The UI expects camelCase and
+// (pending/running/completed/needs_review/failed/canceled). The UI expects camelCase and
 // a slightly wider status set (it adds `needs_human`). All mapping happens
 // here so the page components stay presentational.
 
@@ -20,6 +20,8 @@ import type {
   Level,
   Experience,
   StepStatus,
+  AnalysisRecommendation,
+  AnalysisFeedbackSummary,
 } from '@/lib/types';
 
 export const API_BASE =
@@ -100,6 +102,8 @@ export function mapAnalysisStatus(status: string): AnalysisStatus {
       return 'failed';
     case 'running':
       return 'running';
+    case 'needs_review':
+      return 'needs_review';
     case 'pending':
       return 'pending';
     case 'canceled':
@@ -118,6 +122,8 @@ export function mapStepStatus(status: string): StepStatus {
       return 'running';
     case 'failed':
       return 'failed';
+    case 'degraded':
+      return 'degraded';
     case 'skipped':
       return 'skipped';
     case 'pending':
@@ -210,6 +216,8 @@ export interface AnalysisDetail {
   conclusion: string | null;
   evidence: Record<string, unknown> | null;
   evidence_artifacts: EvidenceArtifact[];
+  recommendation: AnalysisRecommendation | null;
+  feedback: AnalysisFeedbackSummary;
   alert: ApiAlert | null;
   steps: ApiStep[];
   job: {
@@ -331,6 +339,27 @@ export async function addGuidance(
     const body = await res.json().catch(() => null);
     throw new Error(body?.error?.message ?? `add guidance failed: ${res.status}`);
   }
+}
+
+export async function submitAnalysisFeedback(
+  analysisId: string,
+  target: 'remediation' | 'agent_prompt',
+  value: 'useful' | 'not_useful',
+): Promise<AnalysisFeedbackSummary> {
+  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(analysisId)}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ target, value }),
+  });
+  if (res.status === 401) {
+    clearToken();
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error?.message ?? `feedback failed: ${res.status}`);
+  }
+  return (await res.json()) as AnalysisFeedbackSummary;
 }
 
 export interface LoginResult {

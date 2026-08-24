@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Semantic version of the analysis engine; stamped on each analysis run so
     # conclusions can be reproduced/attributed to a specific engine behaviour.
     engine_version: str = "1.0"
+    # A result that falls below either quality gate remains available, but is
+    # explicitly routed to human review instead of appearing as a final answer.
+    analysis_min_confidence: float = 0.70
+    analysis_min_evidence_coverage: float = 0.25
 
     # Evidence gateway (M2): bounds on the read-only Git source inspection.
     # Each analysis receives a fresh temporary sandbox beneath this directory;

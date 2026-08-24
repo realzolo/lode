@@ -17,6 +17,7 @@ function statusVariant(status: AnalysisStatus): 'success' | 'warning' | 'danger'
     case 'failed':
       return 'danger';
     case 'running':
+    case 'needs_review':
     case 'needs_human':
       return 'warning';
     case 'pending':

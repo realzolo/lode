@@ -16,14 +16,12 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from lode.api.main import app
 from lode.db.models.application import Application
-from lode.db.models.permission import UserApplicationPerm
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
 from lode.security import hash_password

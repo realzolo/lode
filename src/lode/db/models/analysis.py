@@ -17,6 +17,7 @@ from sqlalchemy import (
     Numeric,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -66,7 +67,7 @@ class Analysis(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'completed', 'failed', 'canceled')",
+            "status IN ('pending', 'running', 'completed', 'needs_review', 'failed', 'canceled')",
             name="status",
         ),
         CheckConstraint(
@@ -129,6 +130,91 @@ class AnalysisGuidanceUse(Base):
     )
 
 
+class AnalysisRecommendation(Base):
+    """Structured, advisory remediation output for one analysis run."""
+
+    __tablename__ = "analysis_recommendations"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=True), primary_key=True
+    )
+    analysis_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_level: Mapped[str] = mapped_column(Text, nullable=False)
+    basis: Mapped[str] = mapped_column(Text, nullable=False, server_default="evidence_backed")
+    evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    preconditions: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    steps: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    verification: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    rollback: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    owner_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    engine_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "risk_level IN ('low', 'medium', 'high', 'critical')",
+            name="risk_level",
+        ),
+        CheckConstraint(
+            "basis IN ('evidence_backed', 'safety_fallback')",
+            name="basis",
+        ),
+        Index("ix_analysis_recommendations_analysis_id", "analysis_id"),
+    )
+
+
+class AnalysisFeedback(Base):
+    """One user's quality signal for one generated analysis artifact."""
+
+    __tablename__ = "analysis_feedback"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=True), primary_key=True
+    )
+    analysis_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False
+    )
+    actor_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    target: Mapped[str] = mapped_column(Text, nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_id", "actor_id", "target",
+            name="uq_analysis_feedback_analysis_actor_target",
+        ),
+        CheckConstraint(
+            "target IN ('remediation', 'agent_prompt')",
+            name="target",
+        ),
+        CheckConstraint(
+            "value IN ('useful', 'not_useful')",
+            name="value",
+        ),
+        Index("ix_analysis_feedback_analysis_id", "analysis_id"),
+    )
+
+
 class AnalysisStep(Base):
     __tablename__ = "analysis_steps"
 
@@ -159,7 +245,7 @@ class AnalysisStep(Base):
             name="node_type",
         ),
         CheckConstraint(
-            "status IN ('pending', 'running', 'completed', 'failed', 'skipped')",
+            "status IN ('pending', 'running', 'completed', 'degraded', 'failed', 'skipped')",
             name="status",
         ),
         Index("ix_analysis_steps_analysis_id", "analysis_id"),
@@ -205,4 +291,9 @@ class DeadLetter(Base):
     __table_args__ = (
         Index("ix_dead_letters_kind", "kind"),
         Index("ix_dead_letters_created_at", "created_at"),
+        Index(
+            "uq_dead_letters_source", "topic", "partition", "offset", "kind",
+            unique=True,
+            postgresql_where=text('partition IS NOT NULL AND "offset" IS NOT NULL'),
+        ),
     )

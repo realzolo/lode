@@ -8,10 +8,11 @@ export type AnalysisStatus =
   | 'pending'
   | 'running'
   | 'completed'
+  | 'needs_review'
   | 'failed'
   | 'needs_human';
 
-export type StepStatus = 'done' | 'running' | 'pending' | 'failed' | 'skipped';
+export type StepStatus = 'done' | 'running' | 'pending' | 'degraded' | 'failed' | 'skipped';
 
 export interface Application {
   id: string;
@@ -53,6 +54,31 @@ export interface AnalysisStep {
   detail?: string;
   startedAt?: string;
   finishedAt?: string;
+}
+
+export interface AnalysisRecommendation {
+  id: number;
+  summary: string;
+  risk_level: 'low' | 'medium' | 'high' | 'critical';
+  basis: 'evidence_backed' | 'safety_fallback';
+  evidence_refs: number[];
+  preconditions: string[];
+  steps: { action: string; expected_result: string }[];
+  verification: string[];
+  rollback: string[];
+  owner_role: string | null;
+  prompt_markdown: string;
+  engine_version: string | null;
+  created_at: string;
+}
+
+export interface AnalysisFeedbackSummary {
+  remediation_useful: number;
+  remediation_not_useful: number;
+  agent_prompt_useful: number;
+  agent_prompt_not_useful: number;
+  my_remediation: 'useful' | 'not_useful' | null;
+  my_agent_prompt: 'useful' | 'not_useful' | null;
 }
 
 export interface Experience {

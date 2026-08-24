@@ -10,14 +10,12 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from lode.api.main import app
 from lode.crypto import decrypt_secret
-from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.git import GitCredential, GitRepo
 from lode.db.models.platform_setting import PlatformSetting
 from lode.db.models.user import Invite, User

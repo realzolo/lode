@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 
 import pytest
 
-from lode.api.routes import audit as audit_routes
 from lode.api.routes.audit import list_audit_events
 from lode.db.models.intake import AuditEvent
 

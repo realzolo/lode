@@ -57,6 +57,15 @@ def test_heuristic_is_low_confidence_and_cites_the_alert_artifact() -> None:
     assert unknowns
 
 
+def test_heuristic_redacts_alert_error_before_export() -> None:
+    alert = _Alert()
+    alert.error_message = "database token=really-secret-value"
+    _conclusion, _confidence, _refs, _claim, facts, _inferences, _unknowns = _heuristic_packet(
+        alert, evidence_catalog=CATALOG, output_language="en"
+    )
+    assert "really-secret-value" not in facts[0]["text"]
+
+
 def test_heuristic_without_artifact_refuses_root_cause() -> None:
     conclusion, confidence, refs, _claim, _facts, _inferences, _unknowns = _heuristic_packet(
         _Alert(), evidence_catalog=[]
