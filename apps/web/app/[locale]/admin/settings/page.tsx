@@ -98,7 +98,13 @@ export default function SettingsPage() {
           ))}
         </div>
       )}
-      {error && (
+      {error && !settings && (
+        <div className="dashboard-error" role="alert">
+          <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>
+          <Button variant="outline" size="sm" onClick={() => void reload()}>{tc('retry')}</Button>
+        </div>
+      )}
+      {error && settings && (
         <p className="muted" style={{ color: 'var(--danger)' }}>
           {error}
         </p>
@@ -339,6 +345,7 @@ function AiModelManager({
       await onChanged();
     } catch (e) {
       onError(String(e));
+      throw e;
     }
   }
 
@@ -509,6 +516,7 @@ function GitCredentialManager({
       await onChanged();
     } catch (e) {
       onError(String(e));
+      throw e;
     }
   }
 
@@ -681,6 +689,7 @@ function GitRepoManager({
       await onChanged();
     } catch (e) {
       onError(String(e));
+      throw e;
     }
   }
 

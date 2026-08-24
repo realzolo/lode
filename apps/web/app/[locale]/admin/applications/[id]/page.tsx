@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Link } from '@/lib/navigation';
+import { useUser } from '@/lib/user-context';
 import { IconCheck } from '@/components/icons';
 import { setApplicationTopic } from '@/lib/api';
 import { ApplicationLoader, makeRefreshDispatcher } from './sections';
@@ -14,6 +15,7 @@ export default function ApplicationOverviewPage({ params }: { params: { id: stri
   const t = useTranslations('application');
   const tn = useTranslations('nav');
   const tAdmin = useTranslations('admin');
+  const { isAdmin } = useUser();
   const [refreshNonce, setRefreshNonce] = useState(0);
   const onRefresh = makeRefreshDispatcher(setRefreshNonce);
 
@@ -42,11 +44,11 @@ export default function ApplicationOverviewPage({ params }: { params: { id: stri
               )}
             </Card>
 
-            <div className="row" style={{ gap: 12, marginTop: 20, flexWrap: 'wrap' }}>
+            {isAdmin && <div className="row" style={{ gap: 12, marginTop: 20, flexWrap: 'wrap' }}>
               <StatCard label={tn('repositories')} count={data.repos.length} href={`/admin/applications/${params.id}/repos`} />
               <StatCard label={tn('descriptions')} count={data.descriptions.length} href={`/admin/applications/${params.id}/descriptions`} />
               <StatCard label={tn('dataSources')} count={data.db_sources.length} href={`/admin/applications/${params.id}/db`} />
-            </div>
+            </div>}
           </>
         )}
       </ApplicationLoader>
@@ -145,7 +147,7 @@ function StatCard({ label, count, href }: { label: string; count: number; href: 
       href={href}
       className="flex w-44 flex-col gap-1 rounded-md border border-border bg-card p-5 text-card-foreground transition hover:border-foreground/25 hover:bg-accent/40 focus-visible:shadow-geist-focus"
     >
-      <span className="text-2xl font-semibold tracking-[-0.02em]">{count}</span>
+      <span className="text-2xl font-semibold tracking-normal">{count}</span>
       <span className="text-sm text-muted-foreground">{label}</span>
     </Link>
   );

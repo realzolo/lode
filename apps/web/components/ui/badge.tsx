@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils';
 // (rounded-full). `accent` = brand link blue (primary is now ink/black, so the
 // blue highlight lives here); the rest are tinted semantic pills.
 const badgeVariants = cva(
-  'inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors focus:outline-none',
+  'inline-flex items-center whitespace-nowrap rounded-sm border px-2 py-0.5 text-xs font-medium transition-colors focus:outline-none',
   {
     variants: {
       variant: {

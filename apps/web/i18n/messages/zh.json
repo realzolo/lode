@@ -23,6 +23,7 @@
     "command": "命令",
     "theme": "主题",
     "language": "语言",
+    "logout": "退出登录",
     "save": "保存",
     "cancel": "取消",
     "delete": "删除",
@@ -33,6 +34,10 @@
     "reanalyze": "重新分析",
     "actionSuccess": "操作成功",
     "actionFailed": "操作失败",
+    "copied": "已复制",
+    "copyFailed": "无法自动复制，请手动复制。",
+    "clearFilters": "清除筛选",
+    "retry": "重试",
     "loggedOut": "已退出登录"
   },
   "login": {
@@ -47,6 +52,9 @@
     "feature2": "AI 根因分析",
     "feature3": "跨事故经验库",
     "newHere": "首次使用？通过邀请链接激活账号。"
+    ,"acceptInviteTitle": "激活你的账号"
+    ,"acceptInviteSubtitle": "设置姓名和密码后即可加入 Lode。"
+    ,"acceptInviteComplete": "账号已激活，正在跳转到登录页..."
   },
   "dashboard": {
     "title": "应用",
@@ -176,6 +184,10 @@
     "currentPassword": "当前密码",
     "copyLink": "复制邀请链接",
     "inviteSent": "邀请已创建——请分享以下链接",
+    "invites": "邀请记录",
+    "invitesEmpty": "暂无邀请记录。",
+    "invitePending": "待激活",
+    "inviteAccepted": "已接受",
     "grantAdmin": "设为管理员",
     "revokeAdmin": "取消管理员",
     "roleUser": "普通用户",
@@ -188,6 +200,7 @@
     "topicPlaceholder": "如 orders.events",
     "topicSaved": "Topic 已更新。",
     "topicClearedHint": "留空将清除该应用与 Kafka 的绑定。",
+    "integrationTestPassed": "连接校验通过，可以保存此集成。",
     "ingestion": "摄取运行状态",
     "ingestionState": {"draft": "草稿", "active": "已启用", "paused": "已暂停"},
     "ingestionObserved": {"draft": "尚未发布", "starting": "正在建立监听", "listening": "正在监听", "paused": "已暂停", "error": "监听异常"},
@@ -317,6 +330,9 @@
     "actions": "操作",
     "replayed": "已重投",
     "pending": "待处理",
-    "replay": "重投"
+    "replay": "重投",
+    "replayTitle": "确认重投此消息？",
+    "replayDescription": "原始消息将重新发送到 {topic} 并由消费者再次处理。",
+    "replaySucceeded": "消息已重投"
   }
 }

@@ -123,3 +123,52 @@
   No new runtime dependency is required. The default Agent prompt size is capped
   at 16,000 characters and all interpolated content is redacted again at export.
 - `redis` and `clickhouse-connect` are runtime dependencies.
+
+## Web Dashboard UI
+
+- The authenticated web product follows the Vercel Dashboard interaction model:
+  a shared workspace sidebar, context top bar, full-width content area, compact
+  bordered panels, and horizontally scrollable operational tables. Reuse the
+  shared shell and UI primitives rather than introducing page-specific visual
+  systems. Both light and dark themes retain the same information hierarchy.
+- `apps/web/DESIGN.md` is the visual source of truth. Product routes must not
+  use marketing gradients, hero bands, or pill CTAs; table rows with detail
+  views need an explicit keyboard-accessible navigation target.
+- The sidebar is context-scoped: global admin navigation is shown only on
+  global admin routes. Under `/admin/applications/:id`, render only the return
+  link and the selected application's navigation; do not append global admin
+  items. Account preferences (locale, theme, sign-out) belong in the
+  left-bottom user menu, not the context top bar.
+- `AppShell` mounts the command palette once for authenticated routes. Sidebar
+  Find opens that instance; `F` opens it outside editable controls and
+  `Cmd/Ctrl+K` toggles it. It must only offer routes and records authorized for
+  the active portal.
+- Dashboard text inputs, selects, and toolbar controls use the shared 36px
+  field geometry. A composite search field owns a single outer border; its
+  nested input must remain borderless so it cannot create a double-outline.
+- Visible form labels use the shared vertical field layout: 13px label text in
+  a 20px line box and a 12px separation before the associated input or select.
+  Do not apply `gap` to an element without first establishing flex or grid
+  layout.
+- Any API `401` expires the browser session as one shared event. The user
+  context clears immediately and the authenticated shell redirects to login;
+  page-level mutations must not leave the operator on a stale dashboard.
+- The web API client is the sole error-normalization boundary. It normalizes
+  both network failures and backend responses, preserving a backend error
+  envelope's message or FastAPI `detail` (including validation messages) for
+  the initiating surface and falling back to a concise actionable error only
+  when no safe server explanation exists.
+- The workflow inspector overlays stored step rows onto the fixed pipeline.
+  Missing steps are `pending` only while an analysis is active; for a terminal
+  historical run they are `skipped`, so a completed analysis is never shown as
+  still queued merely because it predates a later pipeline stage.
+- Dead-letter replay is a side-effecting Kafka republish. The UI must require
+  record-specific confirmation, keep the dialog open on a backend failure, and
+  only mark the row replayed after the API confirms delivery.
+- Application-level `admin` permission grants a narrow application workspace:
+  list the caller's applications, configure that application's Kafka topic,
+  control its ingestion lifecycle, and administer its members. The app-scoped
+  Members page uses `/applications/{id}/member-candidates`, never the
+  platform-wide `/users` endpoint. Global resources and operations (users,
+  audit, dead letters, shared models, repository registry, data sources, and
+  integrations) remain platform-admin only and must not surface in this menu.

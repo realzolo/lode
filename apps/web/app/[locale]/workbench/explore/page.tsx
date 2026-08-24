@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { Select } from '@/components/ui/select';
 import { Table, THead, TBody, Tr, Th, Td } from '@/components/ui/table';
 import { fetchApplications, fetchApplication, executeQuery, type QueryResult } from '@/lib/api';
@@ -30,6 +29,7 @@ function renderCell(value: unknown): string {
 
 export default function ExplorePage() {
   const t = useTranslations('query');
+  const tc = useTranslations('common');
   const [apps, setApps] = useState<Application[]>([]);
   const [appId, setAppId] = useState<string>('');
   const [sources, setSources] = useState<SourceRow[]>([]);
@@ -40,13 +40,21 @@ export default function ExplorePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [appLoading, setAppLoading] = useState(true);
+  const [appError, setAppError] = useState<string | null>(null);
+  const [appReloadKey, setAppReloadKey] = useState(0);
 
   useEffect(() => {
+    let active = true;
+    setAppLoading(true);
+    setAppError(null);
     fetchApplications()
-      .then(setApps)
-      .catch(() => setApps([]))
-      .finally(() => setAppLoading(false));
-  }, []);
+      .then((data) => active && setApps(data))
+      .catch((e) => active && setAppError(String(e)))
+      .finally(() => active && setAppLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [appReloadKey]);
 
   useEffect(() => {
     if (!appId) {
@@ -107,23 +115,29 @@ export default function ExplorePage() {
   }
 
   return (
-    <>
-      <h1 className="page-title">{t('title')}</h1>
-      <p className="muted" style={{ marginTop: -8, marginBottom: 16, maxWidth: 760 }}>
-        {t('subtitle')}
-      </p>
+    <main className="query-page">
+      <header className="query-page-header">
+        <h1 className="page-title">{t('title')}</h1>
+        <p className="muted query-page-description">{t('subtitle')}</p>
+      </header>
 
-      <Card style={{ padding: 20, marginBottom: 16 }}>
+      {appError ? (
+        <div className="query-error" role="alert">
+          <p className="muted" style={{ color: 'var(--red)' }}>{t('failed')}: {appError}</p>
+          <Button variant="outline" size="sm" onClick={() => setAppReloadKey((key) => key + 1)}>{tc('retry')}</Button>
+        </div>
+      ) : <section className="query-controls">
         <div className="stack" style={{ gap: 16 }}>
           <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-            <label className="col" style={{ gap: 6, minWidth: 240, flex: 1 }}>
+            <label className="form-field query-field" style={{ minWidth: 240, flex: 1 }}>
               <span className="muted text-sm">{t('selectApp')}</span>
               <Select
                 value={appId}
                 disabled={appLoading}
+                placeholder={appLoading ? '…' : apps.length === 0 ? tc('empty') : t('selectAppHint')}
                 onChange={(e) => setAppId(e.target.value)}
               >
-                <option value="">{appLoading ? '…' : t('selectAppHint')}</option>
+                <option value="">{appLoading ? '…' : apps.length === 0 ? tc('empty') : t('selectAppHint')}</option>
                 {apps.map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.name}
@@ -133,7 +147,7 @@ export default function ExplorePage() {
             </label>
 
             {sources.length > 0 && (
-              <label className="col" style={{ gap: 6, minWidth: 240, flex: 1 }}>
+              <label className="form-field query-field" style={{ minWidth: 240, flex: 1 }}>
                 <span className="muted text-sm">{t('dataSource')}</span>
                 <Select
                   value={sourceId === '' ? '' : String(sourceId)}
@@ -163,13 +177,13 @@ export default function ExplorePage() {
           {sources.length > 0 && (
             <>
               <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-                <label className="col" style={{ gap: 6, minWidth: 240, flex: 1 }}>
+                <label className="form-field query-field" style={{ minWidth: 240, flex: 1 }}>
                   <span className="muted text-sm">{t('allowedTables')}</span>
                   <Select value={table} onChange={(e) => setTable(e.target.value)}>
                     {(selectedSource?.allowed_tables ?? []).map((item) => <option key={item} value={item}>{item}</option>)}
                   </Select>
                 </label>
-                <label className="col" style={{ gap: 6, minWidth: 200, flex: 1 }}>
+                <label className="form-field query-field" style={{ minWidth: 200, flex: 1 }}>
                   <span className="muted text-sm">查询操作</span>
                   <Select value={operation} onChange={(e) => setOperation(e.target.value as 'sample' | 'count')}>
                     <option value="sample">脱敏样本（最多 100 行）</option>
@@ -186,18 +200,18 @@ export default function ExplorePage() {
             </>
           )}
         </div>
-      </Card>
+      </section>}
 
       {error && (
-        <Card style={{ padding: 16, marginBottom: 16, borderColor: 'var(--red)' }}>
+        <div className="query-error">
           <p className="muted" style={{ color: 'var(--red)' }}>
             {t('failed')}: {error}
           </p>
-        </Card>
+        </div>
       )}
 
       {result && (
-        <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <section className="query-result">
           <div
             className="row"
             style={{ gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--border)' }}
@@ -235,8 +249,8 @@ export default function ExplorePage() {
               </Table>
             </div>
           )}
-        </Card>
+        </section>
       )}
-    </>
+    </main>
   );
 }

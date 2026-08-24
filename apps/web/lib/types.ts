@@ -31,6 +31,7 @@ export interface Analysis {
   id: string;
   dedupeKey: string;
   applicationId: string;
+  applicationName: string;
   title: string;
   level: Level;
   status: AnalysisStatus;

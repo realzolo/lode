@@ -7,7 +7,11 @@ import {
 import { cx } from '@/lib/cn';
 
 export function Table({ className, ...props }: TableHTMLAttributes<HTMLTableElement>) {
-  return <table className={cx('table', className)} {...props} />;
+  return (
+    <div className="table-wrap">
+      <table className={cx('table', className)} {...props} />
+    </div>
+  );
 }
 
 export function THead(props: HTMLAttributes<HTMLTableSectionElement>) {

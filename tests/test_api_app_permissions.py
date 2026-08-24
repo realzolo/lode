@@ -144,6 +144,18 @@ async def test_outsider_cannot_view_members(owned_app: int, outsider: int) -> No
         assert resp.status_code == 403
 
 
+async def test_outsider_cannot_view_member_candidates(
+    owned_app: int, outsider: int
+) -> None:
+    token = await _login(OUTSIDER_EMAIL, OUTSIDER_PASSWORD)
+    async with _client() as client:
+        resp = await client.get(
+            f"/applications/{owned_app}/member-candidates",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+
+
 async def test_outsider_cannot_add_member(owned_app: int, outsider: int) -> None:
     token = await _login(OUTSIDER_EMAIL, OUTSIDER_PASSWORD)
     async with _client() as client:
@@ -172,6 +184,42 @@ async def test_owner_sees_self_as_member(owned_app: int, owner: int) -> None:
         assert len(members) == 1
         assert members[0]["user_id"] == owner
         assert members[0]["perm"] == "admin"
+
+
+async def test_owner_can_configure_own_topic(owned_app: int) -> None:
+    token = await _login(APP_OWNER_EMAIL, APP_OWNER_PASSWORD)
+    async with _client() as client:
+        resp = await client.put(
+            f"/applications/{owned_app}/topic",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"topic": f"alerts-{uuid.uuid4().hex}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["application_id"] == owned_app
+
+
+async def test_outsider_cannot_configure_topic(owned_app: int, outsider: int) -> None:
+    token = await _login(OUTSIDER_EMAIL, OUTSIDER_PASSWORD)
+    async with _client() as client:
+        resp = await client.put(
+            f"/applications/{owned_app}/topic",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"topic": f"alerts-{uuid.uuid4().hex}"},
+        )
+        assert resp.status_code == 403
+
+
+async def test_owner_can_list_member_candidates(
+    owned_app: int, owner: int, guest: int
+) -> None:
+    token = await _login(APP_OWNER_EMAIL, APP_OWNER_PASSWORD)
+    async with _client() as client:
+        resp = await client.get(
+            f"/applications/{owned_app}/member-candidates",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert {user["id"] for user in resp.json()} >= {owner, guest}
 
 
 async def test_owner_add_update_remove_member(

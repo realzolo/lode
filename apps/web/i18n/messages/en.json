@@ -23,6 +23,7 @@
     "command": "Command",
     "theme": "Theme",
     "language": "Language",
+    "logout": "Sign out",
     "save": "Save",
     "cancel": "Cancel",
     "delete": "Delete",
@@ -33,6 +34,10 @@
     "reanalyze": "Re-analyze",
     "actionSuccess": "Action completed",
     "actionFailed": "Action failed",
+    "copied": "Copied",
+    "copyFailed": "Automatic copy failed. Copy it manually.",
+    "clearFilters": "Clear filters",
+    "retry": "Retry",
     "loggedOut": "Signed out"
   },
   "login": {
@@ -47,6 +52,9 @@
     "feature2": "AI root-cause analysis",
     "feature3": "Experience library across incidents",
     "newHere": "New here? Activate your account with an invite link."
+    ,"acceptInviteTitle": "Activate your account"
+    ,"acceptInviteSubtitle": "Set your name and password to join Lode."
+    ,"acceptInviteComplete": "Your account is active. Redirecting to sign in..."
   },
   "dashboard": {
     "title": "Applications",
@@ -176,6 +184,10 @@
     "currentPassword": "Current password",
     "copyLink": "Copy invite link",
     "inviteSent": "Invite created — share the link below",
+    "invites": "Invitations",
+    "invitesEmpty": "No invitations yet.",
+    "invitePending": "Pending",
+    "inviteAccepted": "Accepted",
     "grantAdmin": "Grant admin",
     "revokeAdmin": "Revoke admin",
     "roleUser": "User",
@@ -188,6 +200,7 @@
     "topicPlaceholder": "e.g. orders.events",
     "topicSaved": "Topic updated.",
     "topicClearedHint": "Empty value clears the Kafka binding for this application.",
+    "integrationTestPassed": "Connection verified. You can save this integration.",
     "ingestion": "Ingestion status",
     "ingestionState": {"draft": "Draft", "active": "Active", "paused": "Paused"},
     "ingestionObserved": {"draft": "Not published", "starting": "Establishing subscription", "listening": "Listening", "paused": "Paused", "error": "Subscription error"},
@@ -317,6 +330,9 @@
     "actions": "Actions",
     "replayed": "Replayed",
     "pending": "Pending",
-    "replay": "Replay"
+    "replay": "Replay",
+    "replayTitle": "Replay this message?",
+    "replayDescription": "The original payload will be sent to {topic} and processed again.",
+    "replaySucceeded": "Message replayed"
   }
 }

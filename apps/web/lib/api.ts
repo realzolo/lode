@@ -33,6 +33,7 @@ export const API_BASE =
 // It is a readable (non-HttpOnly) cookie because the cross-origin FastAPI backend
 // is authorized via the `Authorization: Bearer` header (read here), not cookies.
 const TOKEN_KEY = 'lode_token';
+export const SESSION_EXPIRED_EVENT = 'lode:session-expired';
 
 export function getToken(): string | null {
   if (typeof document === 'undefined') return null;
@@ -55,6 +56,45 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   if (typeof document === 'undefined') return;
   document.cookie = `${TOKEN_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
+}
+
+function rejectExpiredSession(): never {
+  clearToken();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  }
+  throw new Error('unauthorized');
+}
+
+function assertAuthenticated(response: Response): void {
+  if (response.status === 401) rejectExpiredSession();
+}
+
+async function responseErrorMessage(response: Response, fallback: string): Promise<string> {
+  const body: unknown = await response.json().catch(() => null);
+  if (!body || typeof body !== 'object') return fallback;
+
+  const payload = body as {
+    error?: { message?: unknown };
+    detail?: unknown;
+  };
+  if (typeof payload.error?.message === 'string' && payload.error.message.trim()) {
+    return payload.error.message;
+  }
+  if (typeof payload.detail === 'string' && payload.detail.trim()) {
+    return payload.detail;
+  }
+  if (Array.isArray(payload.detail)) {
+    const messages = payload.detail
+      .map((item) => (
+        item && typeof item === 'object' && typeof (item as { msg?: unknown }).msg === 'string'
+          ? (item as { msg: string }).msg
+          : null
+      ))
+      .filter((item): item is string => Boolean(item));
+    if (messages.length) return messages.join('; ');
+  }
+  return fallback;
 }
 
 // Derive cookie lifetime from the JWT `exp` claim so the cookie expires with the
@@ -136,26 +176,19 @@ export function mapStepStatus(status: string): StepStatus {
 // Fetch helpers
 // ---------------------------------------------------------------------------
 
-async function getJson<T>(path: string): Promise<T> {
-  let res: Response;
+async function apiFetch(path: string, init: RequestInit): Promise<Response> {
   try {
-    res = await fetch(`${API_BASE}${path}`, {
-      cache: 'no-store',
-      headers: authHeaders(),
-    });
+    return await fetch(`${API_BASE}${path}`, init);
   } catch {
-    // A rejected promise here is a network-level failure (backend down, CORS
-    // block, offline) — the browser reports it as the unhelpful
-    // "TypeError: Failed to fetch". Surface a clear, actionable message so the
-    // UI can show what actually went wrong instead of the raw TypeError.
     throw new Error(`network error: ${API_BASE}${path}`);
   }
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  const res = await apiFetch(path, { cache: 'no-store', headers: authHeaders() });
+  assertAuthenticated(res);
   if (!res.ok) {
-    throw new Error(`request failed: ${res.status} ${path}`);
+    throw new Error(await responseErrorMessage(res, `request failed: ${res.status} ${path}`));
   }
   return (await res.json()) as T;
 }
@@ -306,18 +339,14 @@ export interface ReanalyzeResult {
 }
 
 export async function reanalyze(analysisId: string): Promise<ReanalyzeResult> {
-  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(analysisId)}/reanalyze`, {
+  const res = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/reanalyze`, {
     method: 'POST',
     cache: 'no-store',
     headers: authHeaders(),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `reanalyze failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `reanalyze failed: ${res.status}`));
   }
   return (await res.json()) as ReanalyzeResult;
 }
@@ -326,18 +355,14 @@ export async function addGuidance(
   analysisId: string,
   content: string
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(analysisId)}/guidances`, {
+  const res = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/guidances`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ content, author: 'web' }),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `add guidance failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `add guidance failed: ${res.status}`));
   }
 }
 
@@ -346,18 +371,14 @@ export async function submitAnalysisFeedback(
   target: 'remediation' | 'agent_prompt',
   value: 'useful' | 'not_useful',
 ): Promise<AnalysisFeedbackSummary> {
-  const res = await fetch(`${API_BASE}/analyses/${encodeURIComponent(analysisId)}/feedback`, {
+  const res = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ target, value }),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `feedback failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `feedback failed: ${res.status}`));
   }
   return (await res.json()) as AnalysisFeedbackSummary;
 }
@@ -368,14 +389,13 @@ export interface LoginResult {
 }
 
 export async function login(email: string, password: string): Promise<LoginResult> {
-  const res = await fetch(`${API_BASE}/auth/login`, {
+  const res = await apiFetch('/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? 'login failed');
+    throw new Error(await responseErrorMessage(res, 'login failed'));
   }
   return (await res.json()) as LoginResult;
 }
@@ -514,20 +534,16 @@ export async function unbindRepo(
   applicationId: string | number,
   repoId: number
 ): Promise<void> {
-  const res = await fetch(
-    `${API_BASE}/applications/${applicationId}/repos/${repoId}`,
+  const res = await apiFetch(
+    `/applications/${applicationId}/repos/${repoId}`,
     {
       method: 'DELETE',
       headers: authHeaders(),
     }
   );
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const b = await res.json().catch(() => null);
-    throw new Error(b?.error?.message ?? `unbind repo failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `unbind repo failed: ${res.status}`));
   }
 }
 
@@ -617,10 +633,10 @@ export async function updateApplicationIntegration(applicationId: string | numbe
 }
 
 export async function deleteApplicationIntegration(applicationId: string | number, integrationId: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/applications/${applicationId}/integrations/${integrationId}`, { method: 'DELETE', headers: authHeaders() });
+  const res = await apiFetch(`/applications/${applicationId}/integrations/${integrationId}`, { method: 'DELETE', headers: authHeaders() });
+  assertAuthenticated(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `delete integration failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `delete integration failed: ${res.status}`));
   }
 }
 
@@ -650,17 +666,13 @@ export async function deleteDbSource(
   applicationId: string | number,
   sourceId: number
 ): Promise<void> {
-  const res = await fetch(
-    `${API_BASE}/applications/${applicationId}/db-sources/${sourceId}`,
+  const res = await apiFetch(
+    `/applications/${applicationId}/db-sources/${sourceId}`,
     { method: 'DELETE', headers: authHeaders() }
   );
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const b = await res.json().catch(() => null);
-    throw new Error(b?.error?.message ?? `delete data source failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `delete data source failed: ${res.status}`));
   }
 }
 
@@ -724,17 +736,13 @@ export async function deleteApplicationDescription(
   applicationId: string | number,
   descriptionId: number
 ): Promise<void> {
-  const res = await fetch(
-    `${API_BASE}/applications/${applicationId}/descriptions/${descriptionId}`,
+  const res = await apiFetch(
+    `/applications/${applicationId}/descriptions/${descriptionId}`,
     { method: 'DELETE', headers: authHeaders() }
   );
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const b = await res.json().catch(() => null);
-    throw new Error(b?.error?.message ?? `delete description failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `delete description failed: ${res.status}`));
   }
 }
 
@@ -777,6 +785,10 @@ export async function fetchAppMembers(appId: string | number): Promise<AppMember
   return getJson<AppMember[]>(`/applications/${appId}/members`);
 }
 
+export async function fetchAppMemberCandidates(appId: string | number): Promise<CurrentUser[]> {
+  return getJson<CurrentUser[]>(`/applications/${appId}/member-candidates`);
+}
+
 export async function addAppMember(
   appId: string | number,
   userId: number,
@@ -800,17 +812,13 @@ export async function removeAppMember(
   appId: string | number,
   userId: number
 ): Promise<void> {
-  const res = await fetch(
-    `${API_BASE}/applications/${appId}/members/${userId}`,
+  const res = await apiFetch(
+    `/applications/${appId}/members/${userId}`,
     { method: 'DELETE', headers: authHeaders() }
   );
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const b = await res.json().catch(() => null);
-    throw new Error(b?.error?.message ?? `remove member failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `remove member failed: ${res.status}`));
   }
 }
 
@@ -883,15 +891,12 @@ export async function updateAiModel(id: number, input: AiModelInput): Promise<Ai
 }
 
 export async function deleteAiModel(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/settings/ai-models/${id}`, {
+  const res = await apiFetch(`/settings/ai-models/${id}`, {
     method: 'DELETE',
     headers: authHeaders(),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
-  if (!res.ok) throw new Error(`delete ai model failed: ${res.status}`);
+  assertAuthenticated(res);
+  if (!res.ok) throw new Error(await responseErrorMessage(res, `delete ai model failed: ${res.status}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -924,15 +929,12 @@ export async function updateGitCredential(id: number, input: Partial<GitCredenti
 }
 
 export async function deleteGitCredential(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/settings/git-credentials/${id}`, {
+  const res = await apiFetch(`/settings/git-credentials/${id}`, {
     method: 'DELETE',
     headers: authHeaders(),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
-  if (!res.ok) throw new Error(`delete git credential failed: ${res.status}`);
+  assertAuthenticated(res);
+  if (!res.ok) throw new Error(await responseErrorMessage(res, `delete git credential failed: ${res.status}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -967,15 +969,12 @@ export async function updateGitRepo(id: number, input: Partial<GitRepoInput>): P
 }
 
 export async function deleteGitRepo(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/settings/git-repos/${id}`, {
+  const res = await apiFetch(`/settings/git-repos/${id}`, {
     method: 'DELETE',
     headers: authHeaders(),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
-  if (!res.ok) throw new Error(`delete git repo failed: ${res.status}`);
+  assertAuthenticated(res);
+  if (!res.ok) throw new Error(await responseErrorMessage(res, `delete git repo failed: ${res.status}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -987,18 +986,14 @@ export async function fetchCurrentUser(): Promise<CurrentUser> {
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/auth/change-password`, {
+  const res = await apiFetch('/auth/change-password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `change password failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `change password failed: ${res.status}`));
   }
 }
 
@@ -1027,33 +1022,25 @@ export async function updateUser(id: number, input: UserInput): Promise<CurrentU
 }
 
 export async function deleteUser(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/users/${id}`, {
+  const res = await apiFetch(`/users/${id}`, {
     method: 'DELETE',
     headers: authHeaders(),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `delete user failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `delete user failed: ${res.status}`));
   }
 }
 
 export async function resetUserPassword(id: number, password: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/users/${id}/reset-password`, {
+  const res = await apiFetch(`/users/${id}/reset-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ password }),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `reset password failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `reset password failed: ${res.status}`));
   }
 }
 
@@ -1070,14 +1057,13 @@ export async function fetchInvites(): Promise<Invite[]> {
 }
 
 export async function acceptInvite(token: string, password: string, name: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/invites/accept`, {
+  const res = await apiFetch('/invites/accept', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, password, name }),
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `accept invite failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `accept invite failed: ${res.status}`));
   }
 }
 
@@ -1125,17 +1111,13 @@ export async function fetchDeadLetters(
 }
 
 export async function replayDeadLetter(id: number): Promise<ReplayOut> {
-  const res = await fetch(`${API_BASE}/dead-letters/${id}/replay`, {
+  const res = await apiFetch(`/dead-letters/${id}/replay`, {
     method: 'POST',
     headers: authHeaders(),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const b = await res.json().catch(() => null);
-    throw new Error(b?.error?.message ?? `replay failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, `replay failed: ${res.status}`));
   }
   return (await res.json()) as ReplayOut;
 }
@@ -1145,35 +1127,27 @@ export async function replayDeadLetter(id: number): Promise<ReplayOut> {
 // ---------------------------------------------------------------------------
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await apiFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const b = await res.json().catch(() => null);
-    throw new Error(b?.error?.message ?? `request failed: ${res.status} ${path}`);
+    throw new Error(await responseErrorMessage(res, `request failed: ${res.status} ${path}`));
   }
   return (await res.json()) as T;
 }
 
 async function putJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   });
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('unauthorized');
-  }
+  assertAuthenticated(res);
   if (!res.ok) {
-    const b = await res.json().catch(() => null);
-    throw new Error(b?.error?.message ?? `request failed: ${res.status} ${path}`);
+    throw new Error(await responseErrorMessage(res, `request failed: ${res.status} ${path}`));
   }
   return (await res.json()) as T;
 }

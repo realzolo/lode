@@ -25,8 +25,10 @@ import type { AnalysisStep } from '@/lib/types';
  * Always renders the fixed pipeline (receive -> git_sync -> context -> service_snapshot
  * -> ai_analysis -> experience -> conclusion) so even a `pending` analysis shows what
  * *will* happen instead of an empty "No workflow steps." Live `AnalysisStep`
- * records from the API are overlaid on top of the static skeleton; any node
- * without a record is shown as `pending` (排队中).
+ * records from the API are overlaid on top of the static skeleton. A missing
+ * node is pending only while its analysis is still active. In a terminal
+ * historical run, it is accurately shown as skipped rather than implying the
+ * worker is still waiting to execute it.
  *
  * No pan/zoom — the whole pipeline fits the card at a glance. Clicking a node
  * reveals its detail text below the row.
@@ -87,27 +89,35 @@ function connectorState(left: StepState, right: StepState): ConnectorState {
   return 'idle';
 }
 
+export function mergeWorkflowSteps(
+  steps: AnalysisStep[],
+  isTerminalAnalysis: boolean,
+): AnalysisStep[] {
+  const byType = new Map(steps.map((step) => [step.nodeType, step]));
+  return PIPELINE.map((node) => {
+    const found = byType.get(node.nodeType);
+    if (found) return found;
+    return {
+      nodeType: node.nodeType,
+      status: isTerminalAnalysis ? 'skipped' : 'pending',
+    };
+  });
+}
+
 export function WorkflowStepper({
   steps,
   selected,
   onSelect,
+  isTerminalAnalysis,
 }: {
   steps: AnalysisStep[];
   selected: AnalysisStep['nodeType'];
   onSelect: (nodeType: AnalysisStep['nodeType']) => void;
+  isTerminalAnalysis: boolean;
 }) {
-
-  // Overlay live records onto the fixed pipeline. Any node missing a record
-  // (e.g. a not-yet-run step, or a whole pending analysis) defaults to pending.
-  const byType = new Map(steps.map((s) => [s.nodeType, s]));
-  const merged: AnalysisStep[] = PIPELINE.map((node) => {
-    const found = byType.get(node.nodeType);
-    // `node_type` is a stable backend identifier, not UI copy. Keep all
-    // display labels in the pipeline definition so API values can never leak
-    // into the operator-facing workflow.
-    if (found) return found;
-    return { nodeType: node.nodeType, status: 'pending' as StepState };
-  });
+  // `node_type` is a stable backend identifier, not UI copy. Keep all display
+  // labels in the pipeline definition so API values never leak into the UI.
+  const merged = mergeWorkflowSteps(steps, isTerminalAnalysis);
 
   return (
     <div>
@@ -119,26 +129,27 @@ export function WorkflowStepper({
           const next = merged[i + 1];
           return (
             <Fragment key={step.nodeType}>
-              <button
-                type="button"
-                role="listitem"
-                className="wf-step"
-                data-state={step.status}
-                aria-pressed={isSel}
-                onClick={() => onSelect(step.nodeType)}
-              >
-                <span className="wf-step-icon">
-                  <StepGlyph state={step.status} />
-                </span>
-                <span className="wf-step-body">
-                  <span className="wf-step-title">{node.title}</span>
-                  <span className="wf-step-status">{STATUS_TEXT[step.status]}</span>
-                </span>
-                {/* Tiny type glyph kept faint so each step is still identifiable */}
-                <span className="wf-step-kind" aria-hidden>
-                  <Icon size={13} />
-                </span>
-              </button>
+              <div role="listitem">
+                <button
+                  type="button"
+                  className="wf-step"
+                  data-state={step.status}
+                  aria-pressed={isSel}
+                  onClick={() => onSelect(step.nodeType)}
+                >
+                  <span className="wf-step-icon">
+                    <StepGlyph state={step.status} />
+                  </span>
+                  <span className="wf-step-body">
+                    <span className="wf-step-title">{node.title}</span>
+                    <span className="wf-step-status">{STATUS_TEXT[step.status]}</span>
+                  </span>
+                  {/* Tiny type glyph kept faint so each step is still identifiable */}
+                  <span className="wf-step-kind" aria-hidden>
+                    <Icon size={13} />
+                  </span>
+                </button>
+              </div>
               {next && (
                 <span
                   className="wf-connector"

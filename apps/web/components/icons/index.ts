@@ -25,6 +25,7 @@ export {
   TriangleAlert as IconAlertTriangle,
   RefreshCw as IconRefreshCw,
   MoreVertical as IconMoreVertical,
+  Menu as IconMenu,
   ArrowUpRight as IconArrowUpRight,
   ChevronLeft as IconChevronLeft,
   ChevronRight as IconChevronRight,

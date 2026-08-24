@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { ChevronRight } from 'lucide-react';
 import { Card } from '@/components/ui/card';
@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -59,20 +60,26 @@ export default function DashboardPage() {
   const [startPosition, setStartPosition] = useState<'latest' | 'earliest'>('latest');
   const [actionAppId, setActionAppId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Polling may overlap with a lifecycle mutation. A response that started
+  // before the mutation must not replace the backend-confirmed local state.
+  const applicationsRequestRef = useRef(0);
 
-  const loadApplications = useCallback(async () => {
+  const loadApplications = useCallback(async (showLoading = false) => {
+    const requestId = ++applicationsRequestRef.current;
+    if (showLoading) setLoading(true);
+    setError(null);
     try {
-      setApps(await fetchApplications());
-      setError(null);
+      const nextApps = await fetchApplications();
+      if (requestId === applicationsRequestRef.current) setApps(nextApps);
     } catch (e) {
-      setError(String(e));
+      if (requestId === applicationsRequestRef.current) setError(String(e));
     } finally {
-      setLoading(false);
+      if (showLoading && requestId === applicationsRequestRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadApplications();
+    void loadApplications(true);
   }, [loadApplications]);
 
   const shouldPollIngestion = apps.some((app) => app.ingestionState === 'active');
@@ -89,6 +96,7 @@ export default function DashboardPage() {
     setFormError(null);
     try {
       const created = await createApplication({ name });
+      applicationsRequestRef.current += 1;
       setApps((prev) => [created, ...prev]);
       setNewOpen(false);
       setNewName('');
@@ -106,6 +114,7 @@ export default function DashboardPage() {
     ingestionObservedState: Application['ingestionObservedState'],
     ingestionStartPosition: Application['ingestionStartPosition'],
   ) {
+    applicationsRequestRef.current += 1;
     setApps((previous) => previous.map((app) => (
       app.id === appId
         ? { ...app, ingestionState, ingestionObservedState, ingestionStartPosition }
@@ -157,7 +166,7 @@ export default function DashboardPage() {
     <div className="space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-[32px] font-semibold tracking-[-0.04em] leading-[1.15] text-foreground">
+          <h1 className="text-[32px] font-semibold tracking-normal leading-[1.15] text-foreground">
             {t('title')}
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">{t('subtitle')}</p>
@@ -168,7 +177,7 @@ export default function DashboardPage() {
         </Button>
       </div>
 
-      {loading && (
+      {loading && apps.length === 0 && (
         <div
           className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3"
           aria-busy="true"
@@ -196,7 +205,12 @@ export default function DashboardPage() {
         </div>
       )}
       {error && (
-        <p className="text-sm text-destructive">{error}</p>
+        <div className="dashboard-error" role="alert">
+          <p className="text-sm text-destructive">{error}</p>
+          <Button variant="outline" size="sm" onClick={() => void loadApplications(true)}>
+            {tc('retry')}
+          </Button>
+        </div>
       )}
       {actionError && (
         <p className="text-sm text-destructive">{actionError}</p>
@@ -317,17 +331,17 @@ export default function DashboardPage() {
               {t('startIngestionDesc', { name: startTarget?.name ?? '' })}
             </DialogDescription>
           </DialogHeader>
-          <label className="stack gap-2 text-sm font-medium text-foreground">
+          <label className="form-field text-sm font-medium text-foreground">
             {t('startPosition')}
-            <select
+            <Select
               value={startPosition}
               onChange={(event) => setStartPosition(event.target.value as 'latest' | 'earliest')}
               disabled={actionAppId !== null}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm font-normal"
+              aria-label={t('startPosition')}
             >
               <option value="latest">{t('startLatest')}</option>
               <option value="earliest">{t('startEarliest')}</option>
-            </select>
+            </Select>
           </label>
           <DialogFooter>
             <Button variant="default" onClick={() => setStartTarget(null)} disabled={actionAppId !== null}>

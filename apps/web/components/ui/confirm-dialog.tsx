@@ -37,7 +37,7 @@ export interface ConfirmDialogProps {
   successMessage?: string;
   /**
    * Toast shown if `onConfirm` rejects. Defaults to a generic failure message.
-   * The dialog stays open on error so any inline error UI remains visible too.
+   * The dialog stays open and renders the same error in its action area.
    */
   errorMessage?: string;
 }
@@ -67,20 +67,26 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const t = useTranslations();
   const [busy, setBusy] = React.useState(false);
+  const [actionError, setActionError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!open) setActionError(null);
+  }, [open]);
 
   async function handleConfirm() {
     if (busy) return;
     setBusy(true);
+    setActionError(null);
     try {
       await onConfirm();
-      // Close only after the action settles successfully; on error the dialog
-      // stays open so the caller's error message remains visible.
+      // Close only after the backend-backed action settles successfully.
       onOpenChange(false);
       toast.success(successMessage ?? t('common.actionSuccess'));
-    } catch {
-      // Errors are owned by the caller's surrounding UI (inline message). A
-      // toast makes the failure visible even while the modal is still open.
-      toast.error(errorMessage ?? t('common.actionFailed'));
+    } catch (error) {
+      const message = errorMessage
+        ?? (error instanceof Error && error.message ? error.message : t('common.actionFailed'));
+      setActionError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -93,6 +99,7 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
         </DialogHeader>
+        {actionError ? <p className="dialog-action-error" role="alert">{actionError}</p> : null}
         <DialogFooter>
           <Button variant="default" onClick={() => onOpenChange(false)} disabled={busy}>
             {cancelLabel}

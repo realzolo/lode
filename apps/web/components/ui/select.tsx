@@ -16,7 +16,7 @@ import { IconCheck, IconChevronDown } from '@/components/icons';
  * trigger + Radix-floated content (elevation-5, 6 px radius, Geist body-sm
  * with canvas-soft-2 hover wash and a check indicator on the selected item).
  *
- * The trigger mirrors the form-input geometry (h-10, rounded-sm, hairline
+ * The trigger mirrors the compact form-input geometry (h-9, rounded-sm, hairline
  * border) and reuses the canonical Geist focus ring via
  * `focus-visible:shadow-geist-focus`, so it sits in the same row as
  * `<Input>` and `<Textarea>`.
@@ -31,6 +31,9 @@ export interface SelectProps {
   name?: string;
   'aria-label'?: string;
   'aria-labelledby'?: string;
+  /** Label to show while the controlled value is empty. If omitted, an empty
+   * option supplies it, preserving the existing native-select call sites. */
+  placeholder?: string;
 }
 
 export function Select({
@@ -43,11 +46,12 @@ export function Select({
   name,
   'aria-label': ariaLabel,
   'aria-labelledby': ariaLabelledBy,
+  placeholder: placeholderProp,
 }: SelectProps) {
   // Build Radix SelectItems from any <option> children. We support plain
   // string / number labels and concatenated string children (everything the
   // current call sites use).
-  const items = React.Children.toArray(children)
+  const optionItems = React.Children.toArray(children)
     .filter(
       (
         c,
@@ -68,8 +72,15 @@ export function Select({
           .map(String)
           .join('');
       }
-      return { value: opt.props.value, label, disabled: opt.props.disabled };
+      return { value: String(opt.props.value), label, disabled: opt.props.disabled };
     });
+
+  // Radix reserves the empty string for clearing a controlled Select, so it
+  // cannot be rendered as an item. Native callers already express an initial
+  // hint as `<option value="">...`, which we promote to Value's placeholder.
+  const emptyOption = optionItems.find((item) => item.value === '');
+  const placeholder = placeholderProp ?? emptyOption?.label;
+  const items = optionItems.filter((item) => item.value !== '');
 
   return (
     <SelectPrimitive.Root
@@ -83,17 +94,18 @@ export function Select({
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
         className={cn(
-          'flex h-10 w-full items-center justify-between rounded-sm border border-hairline bg-canvas px-3 text-sm text-ink',
+          'flex h-9 w-full items-center justify-between rounded-sm border border-hairline bg-canvas px-3 text-sm text-ink',
           'font-sans',
           'focus:outline-none focus-visible:shadow-geist-focus',
           'disabled:cursor-not-allowed disabled:opacity-50',
           'transition-colors hover:border-hairline-strong',
+          'select-trigger',
           '[&>span]:line-clamp-1',
           'data-[placeholder]:text-mute',
           className,
         )}
       >
-        <SelectPrimitive.Value />
+        <SelectPrimitive.Value placeholder={placeholder} />
         <SelectPrimitive.Icon asChild>
           <IconChevronDown className="h-4 w-4 shrink-0 text-mute" />
         </SelectPrimitive.Icon>

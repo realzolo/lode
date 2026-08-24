@@ -16,7 +16,7 @@ import {
   toUiSteps,
   type AnalysisDetail,
 } from '@/lib/api';
-import { PIPELINE, WorkflowStepper } from '@/components/workflow-stepper';
+import { PIPELINE, WorkflowStepper, mergeWorkflowSteps } from '@/components/workflow-stepper';
 import { IconRefreshCw, IconPlus, IconCopy, IconThumbsUp, IconThumbsDown } from '@/components/icons';
 
 type NodeType = AnalysisStep['nodeType'];
@@ -110,10 +110,12 @@ function StepArtifacts({ node, detail }: { node: NodeType; detail: AnalysisDetai
 function RecommendationPanel({
   detail,
   canAnalyze,
+  feedbackBusy,
   onFeedback,
 }: {
   detail: AnalysisDetail;
   canAnalyze: boolean;
+  feedbackBusy: boolean;
   onFeedback: (target: 'remediation' | 'agent_prompt', value: 'useful' | 'not_useful') => void;
 }) {
   const t = useTranslations('analysis');
@@ -154,7 +156,7 @@ function RecommendationPanel({
     {rec.verification.length > 0 && <DetailList title={t('verification')} items={rec.verification} />}
     {rec.rollback.length > 0 && <DetailList title={t('rollback')} items={rec.rollback} />}
     <div className="analysis-agent-prompt"><div className="analysis-section-heading"><div><p className="analysis-eyebrow">{t('agentEyebrow')}</p><h3>{t('agentPrompt')}</h3></div><Button variant="default" size="sm" onClick={copyPrompt}><IconCopy size={15} /> {copied ? t('copied') : t('copyMarkdown')}</Button></div><pre>{rec.prompt_markdown}</pre><p className="muted">{copyError ? t('copyFailed') : t('redactedPrompt')}</p></div>
-    {canAnalyze && <div className="analysis-feedback"><span className="muted">{t('feedbackQuestion')}</span><Button variant="default" size="sm" aria-pressed={feedback.my_remediation === 'useful'} onClick={() => onFeedback('remediation', 'useful')}><IconThumbsUp size={15} /> {t('remediationFeedback')} {feedback.remediation_useful || ''}</Button><Button variant="default" size="sm" aria-pressed={feedback.my_remediation === 'not_useful'} onClick={() => onFeedback('remediation', 'not_useful')}><IconThumbsDown size={15} /> {t('remediationFeedback')} {feedback.remediation_not_useful || ''}</Button><Button variant="default" size="sm" aria-pressed={feedback.my_agent_prompt === 'useful'} onClick={() => onFeedback('agent_prompt', 'useful')}><IconThumbsUp size={15} /> {t('promptFeedback')} {feedback.agent_prompt_useful || ''}</Button><Button variant="default" size="sm" aria-pressed={feedback.my_agent_prompt === 'not_useful'} onClick={() => onFeedback('agent_prompt', 'not_useful')}><IconThumbsDown size={15} /> {t('promptFeedback')} {feedback.agent_prompt_not_useful || ''}</Button></div>}
+    {canAnalyze && <div className="analysis-feedback" aria-busy={feedbackBusy}><span className="muted">{t('feedbackQuestion')}</span><Button variant="default" size="sm" aria-pressed={feedback.my_remediation === 'useful'} onClick={() => onFeedback('remediation', 'useful')} disabled={feedbackBusy}><IconThumbsUp size={15} /> {t('remediationFeedback')} {feedback.remediation_useful || ''}</Button><Button variant="default" size="sm" aria-pressed={feedback.my_remediation === 'not_useful'} onClick={() => onFeedback('remediation', 'not_useful')} disabled={feedbackBusy}><IconThumbsDown size={15} /> {t('remediationFeedback')} {feedback.remediation_not_useful || ''}</Button><Button variant="default" size="sm" aria-pressed={feedback.my_agent_prompt === 'useful'} onClick={() => onFeedback('agent_prompt', 'useful')} disabled={feedbackBusy}><IconThumbsUp size={15} /> {t('promptFeedback')} {feedback.agent_prompt_useful || ''}</Button><Button variant="default" size="sm" aria-pressed={feedback.my_agent_prompt === 'not_useful'} onClick={() => onFeedback('agent_prompt', 'not_useful')} disabled={feedbackBusy}><IconThumbsDown size={15} /> {t('promptFeedback')} {feedback.agent_prompt_not_useful || ''}</Button></div>}
   </section>;
 }
 
@@ -166,6 +168,7 @@ export default function AnalysisPage({ params }: { params: { analysisId: string 
   const [detail, setDetail] = useState<AnalysisDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [guidance, setGuidance] = useState('');
   const [guidanceOpen, setGuidanceOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -196,6 +199,12 @@ export default function AnalysisPage({ params }: { params: { analysisId: string 
   }, [load]);
 
   useEffect(() => {
+    selectedInitialized.current = false;
+    setSelectedNode('receive');
+    setActionError(null);
+  }, [analysisId]);
+
+  useEffect(() => {
     if (!detail || selectedInitialized.current) return;
     const running = detail.steps.find((step) => step.status === 'running');
     const completed = detail.status === 'completed' ? 'conclusion' : detail.steps.filter((step) => step.status === 'completed').at(-1)?.node_type;
@@ -205,6 +214,7 @@ export default function AnalysisPage({ params }: { params: { analysisId: string 
 
   async function handleReanalyze() {
     setBusy(true);
+    setActionError(null);
     try {
       const next = await reanalyze(analysisId);
       if (next.analysis_id === analysisId) {
@@ -212,34 +222,43 @@ export default function AnalysisPage({ params }: { params: { analysisId: string 
       } else {
         router.push(`/workbench/analysis/${next.analysis_id}`);
       }
+    } catch (cause) {
+      setActionError(String(cause));
     } finally { setBusy(false); }
   }
 
   async function handleAddGuidance() {
     if (!guidance.trim()) return;
     setBusy(true);
+    setActionError(null);
     try {
       await addGuidance(analysisId, guidance.trim());
       setGuidance('');
       setGuidanceOpen(false);
       await load();
+    } catch (cause) {
+      setActionError(String(cause));
     } finally { setBusy(false); }
   }
 
   async function handleFeedback(target: 'remediation' | 'agent_prompt', value: 'useful' | 'not_useful') {
     setFeedbackBusy(true);
+    setActionError(null);
     try {
       await submitAnalysisFeedback(analysisId, target, value);
       await load();
+    } catch (cause) {
+      setActionError(String(cause));
     } finally { setFeedbackBusy(false); }
   }
 
   if (loading && !detail) return <div className="analysis-loading" aria-busy="true"><Skeleton className="h-9 w-56" /><Skeleton className="h-4 w-80" /><Skeleton className="h-44 w-full" /><Skeleton className="h-72 w-full" /></div>;
-  if (error) return <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>;
+  if (error && !detail) return <div className="stack gap-3"><p className="muted" style={{ color: 'var(--danger)' }}>{error}</p><Button variant="default" size="sm" onClick={() => void load()}>{tc('retry')}</Button></div>;
   if (!detail) return <p className="muted">{tc('empty')}</p>;
 
   const uiStatus = detail.status as AnalysisStatus;
-  const steps = toUiSteps(detail.steps);
+  const isTerminalAnalysis = !['pending', 'running'].includes(uiStatus);
+  const steps = mergeWorkflowSteps(toUiSteps(detail.steps), isTerminalAnalysis);
   const canAnalyze = detail.my_perm == null || detail.my_perm === 'analyze' || detail.my_perm === 'admin';
   const selectedStep = steps.find((step) => step.nodeType === selectedNode) ?? { nodeType: selectedNode, status: 'pending' as const };
   const totalDuration = formatDuration(detail.started_at ?? undefined, detail.finished_at ?? undefined);
@@ -270,19 +289,20 @@ export default function AnalysisPage({ params }: { params: { analysisId: string 
       <div><p className="analysis-eyebrow">调查任务</p><h1 className="page-title">{t('title')}</h1><p className="mono muted">{analysisId}</p></div>
       <div className="analysis-actions"><Badge variant={statusVariant(uiStatus)}>{uiStatus}</Badge><Badge variant={jobStatus === 'dead' ? 'danger' : jobStatus === 'queued' || jobStatus === 'retry_wait' ? 'accent' : jobStatus === 'running' ? 'warning' : 'success'}>{jobLabel}</Badge>{totalDuration && <span className="analysis-duration">耗时 {totalDuration}</span>}{canAnalyze && <Button variant="primary" onClick={handleReanalyze} disabled={busy}><IconRefreshCw size={16} /> {tc('reanalyze')}</Button>}</div>
     </header>
+    {actionError && <p className="analysis-action-error" role="alert">{actionError}</p>}
 
     <section className="analysis-outcome" data-state={uiStatus} aria-live="polite"><div className="analysis-outcome-meta"><span>当前结论</span><span>{t('confidence')} {detail.confidence != null ? detail.confidence.toFixed(2) : '—'}{coverage != null ? ` · 证据覆盖 ${coverage}%` : ''}</span></div><p>{detail.conclusion ?? (uiStatus === 'failed' ? '分析未能完成，请查看失败步骤并补充分析引导。' : queueMessage)}</p>{uiStatus === 'needs_review' && <p className="analysis-review-notice">结果可供参考，但证据不完整，建议人工复核后再执行修复。</p>}{warnings.length > 0 && <DetailList title="分析警告" items={warnings} />}</section>
 
-    <section className="analysis-flow"><div className="analysis-section-heading"><div><p className="analysis-eyebrow">调查轨迹</p><h2>{t('steps')}</h2></div><span className="muted">选择步骤查看调查细节</span></div><WorkflowStepper steps={steps} selected={selectedNode} onSelect={setSelectedNode} /></section>
+    <section className="analysis-flow"><div className="analysis-section-heading"><div><p className="analysis-eyebrow">调查轨迹</p><h2>{t('steps')}</h2></div><span className="muted">选择步骤查看调查细节</span></div><WorkflowStepper steps={steps} selected={selectedNode} onSelect={setSelectedNode} isTerminalAnalysis={isTerminalAnalysis} /></section>
 
     <section className="analysis-inspector" data-state={selectedStep.status}>
       <div className="analysis-inspector-head"><div><p className="analysis-eyebrow">阶段 {PIPELINE.findIndex((item) => item.nodeType === selectedNode) + 1} / {PIPELINE.length}</p><h2>{STEP_TITLE[selectedNode]}</h2></div><div className="analysis-inspector-status"><span>{STEP_STATUS[selectedStep.status]}</span>{formatDuration(selectedStep.startedAt, selectedStep.finishedAt) && <span>耗时 {formatDuration(selectedStep.startedAt, selectedStep.finishedAt)}</span>}</div></div>
-      <p className="analysis-step-summary">{selectedStep.summary ?? (selectedStep.status === 'pending' ? '等待前置阶段完成。' : '该阶段暂未返回摘要。')}</p>
+      <p className="analysis-step-summary">{selectedStep.summary ?? (selectedStep.status === 'pending' ? '等待前置阶段完成。' : selectedStep.status === 'skipped' ? '此历史任务未执行该阶段。' : '该阶段暂未返回摘要。')}</p>
       {selectedStep.detail && <p className="analysis-step-detail">{selectedStep.detail}</p>}
       <StepArtifacts node={selectedNode} detail={detail} />
     </section>
 
-    <RecommendationPanel detail={detail} canAnalyze={canAnalyze && !feedbackBusy} onFeedback={handleFeedback} />
+    <RecommendationPanel detail={detail} canAnalyze={canAnalyze} feedbackBusy={feedbackBusy} onFeedback={handleFeedback} />
 
     <section className="analysis-guidance" aria-labelledby="guidance-heading">
       <div className="analysis-section-heading"><div><p className="analysis-eyebrow">人工协作</p><h2 id="guidance-heading">分析引导</h2></div><Button variant="default" size="sm" onClick={() => setGuidanceOpen((open) => !open)} disabled={busy}><IconPlus size={15} /> 添加分析引导</Button></div>

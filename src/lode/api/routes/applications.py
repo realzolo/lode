@@ -58,6 +58,7 @@ from lode.api.schemas import (
     SetApplicationTopicIn,
     StartApplicationIngestionIn,
     UpdateDbSourceIn,
+    UserOut,
     normalize_integration_config,
 )
 from lode.db.models.alert import Alert
@@ -1369,6 +1370,37 @@ async def list_members(
             perm=perm.perm,
         )
         for perm, user in rows
+    ]
+
+
+@router.get(
+    "/{application_id}/member-candidates",
+    response_model=list[UserOut],
+)
+async def list_member_candidates(
+    application_id: int,
+    _auth: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> list[UserOut]:
+    """Return selectable users for an application-admin membership change.
+
+    This is deliberately application-scoped: a user with ``admin`` permission
+    on one application may manage that application's members but must not gain
+    access to the platform-wide ``/users`` administration endpoint.
+    """
+    if await session.get(Application, application_id) is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    rows = (await session.execute(select(User).order_by(User.created_at))).scalars().all()
+    return [
+        UserOut(
+            id=user.id,
+            email=user.email,
+            name=user.name,
+            role=user.role,
+            status=user.status,
+            created_at=user.created_at,
+        )
+        for user in rows
     ]
 
 

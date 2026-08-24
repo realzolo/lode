@@ -59,10 +59,15 @@ export default function AdminAuditPage() {
   // Where the next "load more" page starts. A ref (not state) so the effect and
   // the button share one source of truth without re-triggering the effect.
   const offsetRef = useRef(0);
+  // Filters can change while the initial request is still in flight. Only the
+  // newest response may update the table, otherwise an older unfiltered fetch
+  // can briefly replace the filtered results.
+  const requestRef = useRef(0);
 
   const runQuery = useCallback(
     async (reset: boolean) => {
       const nextOffset = reset ? 0 : offsetRef.current;
+      const requestId = ++requestRef.current;
       setLoading(true);
       setError(null);
       try {
@@ -75,14 +80,15 @@ export default function AdminAuditPage() {
           limit: PAGE_SIZE,
           offset: nextOffset,
         });
+        if (requestId !== requestRef.current) return;
         setTotal(res.total);
         setEvents((prev) => (reset ? res.items : [...prev, ...res.items]));
         offsetRef.current = res.offset + res.items.length;
         setHasMore(res.offset + res.items.length < res.total);
       } catch (e) {
-        setError(String(e));
+        if (requestId === requestRef.current) setError(String(e));
       } finally {
-        setLoading(false);
+        if (requestId === requestRef.current) setLoading(false);
       }
     },
     [q],
@@ -164,9 +170,10 @@ export default function AdminAuditPage() {
       </Card>
 
       {error && (
-        <p className="muted" style={{ color: 'var(--danger)', marginTop: 16 }}>
-          {error}
-        </p>
+        <div className="dashboard-error" role="alert">
+          <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>
+          <Button variant="outline" size="sm" onClick={() => void runQuery(true)}>{tc('retry')}</Button>
+        </div>
       )}
 
       {loading && events.length === 0 && (
@@ -193,7 +200,7 @@ export default function AdminAuditPage() {
       )}
 
       {events.length > 0 && (
-        <Card style={{ padding: 0, marginTop: 16, overflow: 'hidden' }}>
+        <div className="operational-table">
           <Table>
             <THead>
               <Tr>
@@ -227,7 +234,7 @@ export default function AdminAuditPage() {
               ))}
             </TBody>
           </Table>
-        </Card>
+        </div>
       )}
 
       <div
@@ -256,7 +263,7 @@ export default function AdminAuditPage() {
 const labelStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 4,
+  gap: 12,
   fontSize: 13,
   minWidth: 200,
 };

@@ -16,7 +16,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { clearToken, fetchCurrentUser, getToken } from '@/lib/api';
+import { clearToken, fetchCurrentUser, getToken, SESSION_EXPIRED_EVENT } from '@/lib/api';
 import type { CurrentUser } from '@/lib/types';
 
 interface UserContextValue {
@@ -57,6 +57,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    const onSessionExpired = () => {
+      setUserState(null);
+      setLoading(false);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   }, []);
 
   useEffect(() => {

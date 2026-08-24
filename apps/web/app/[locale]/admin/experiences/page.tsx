@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, THead, TBody, Tr, Th, Td } from '@/components/ui/table';
 import type { Experience } from '@/lib/types';
@@ -19,9 +19,12 @@ export default function AdminExperiencesPage() {
   const [experiences, setExperiences] = useState<Experience[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let active = true;
+    setLoading(true);
+    setError(null);
     fetchExperiences()
       .then((data) => active && setExperiences(data))
       .catch((e) => active && setError(String(e)))
@@ -29,14 +32,14 @@ export default function AdminExperiencesPage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [reloadKey]);
 
   return (
     <>
       <h1 className="page-title">{t('title')}</h1>
-      {loading && (
-        <Card style={{ padding: 0, marginTop: 16, overflow: 'hidden' }} aria-busy="true">
-          <div className="stack" style={{ padding: 12, gap: 12 }}>
+      <div className="experience-panel" aria-busy={loading}>
+        {loading ? (
+          <div className="experience-state experience-loading">
             {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="flex items-center gap-4">
                 <Skeleton className="h-3.5 w-32" />
@@ -45,36 +48,38 @@ export default function AdminExperiencesPage() {
               </div>
             ))}
           </div>
-        </Card>
-      )}
-      {error && <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>}
-      {!loading && !error && experiences.length === 0 && (
-        <p className="muted">{tc('empty')}</p>
-      )}
-      <Card style={{ padding: 0, marginTop: 16, overflow: 'hidden' }}>
-        <Table>
-          <THead>
-            <Tr>
-              <Th>{t('trigger')}</Th>
-              <Th>{t('content')}</Th>
-              <Th>{t('valid')}</Th>
-            </Tr>
-          </THead>
-          <TBody>
-            {experiences.map((m) => (
-              <Tr key={m.id}>
-                <Td className="mono muted">{m.triggerSignature}</Td>
-                <Td>{m.content}</Td>
-                <Td>
-                  <Badge variant={m.valid ? 'success' : 'danger'}>
-                    {m.valid ? t('valid') : 'invalid'}
-                  </Badge>
-                </Td>
+        ) : error ? (
+          <div className="experience-state">
+            <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>
+            <Button variant="outline" size="sm" onClick={() => setReloadKey((key) => key + 1)}>{tc('retry')}</Button>
+          </div>
+        ) : experiences.length === 0 ? (
+          <div className="experience-state"><p className="muted">{tc('empty')}</p></div>
+        ) : (
+          <div className="experience-table"><Table>
+            <THead>
+              <Tr>
+                <Th>{t('trigger')}</Th>
+                <Th>{t('content')}</Th>
+                <Th>{t('valid')}</Th>
               </Tr>
-            ))}
-          </TBody>
-        </Table>
-      </Card>
+            </THead>
+            <TBody>
+              {experiences.map((m) => (
+                <Tr key={m.id}>
+                  <Td className="mono muted">{m.triggerSignature}</Td>
+                  <Td>{m.content}</Td>
+                  <Td>
+                    <Badge variant={m.valid ? 'success' : 'danger'}>
+                      {m.valid ? t('valid') : 'invalid'}
+                    </Badge>
+                  </Td>
+                </Tr>
+              ))}
+            </TBody>
+          </Table></div>
+        )}
+      </div>
     </>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -21,18 +22,20 @@ import {
   createInvite,
   createUser,
   deleteUser,
+  fetchInvites,
   fetchUsers,
   resetUserPassword,
   updateUser,
 } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
 import { IconPlus, IconMail, IconTrash2 } from '@/components/icons';
-import type { CurrentUser } from '@/lib/types';
+import type { CurrentUser, Invite } from '@/lib/types';
 
 export default function UsersPage() {
   const t = useTranslations('users');
   const tc = useTranslations('common');
   const [users, setUsers] = useState<CurrentUser[]>([]);
+  const [invites, setInvites] = useState<Invite[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,7 +64,9 @@ export default function UsersPage() {
     setLoading(true);
     setError(null);
     try {
-      setUsers(await fetchUsers());
+      const [nextUsers, nextInvites] = await Promise.all([fetchUsers(), fetchInvites()]);
+      setUsers(nextUsers);
+      setInvites([...nextInvites].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -113,13 +118,40 @@ export default function UsersPage() {
     setInviteLink(null);
     try {
       const inv = await createInvite(inviteEmail);
-      const link = `${window.location.origin}/accept-invite?token=${encodeURIComponent(inv.token)}`;
+      const link = inviteLinkFor(inv);
       setInviteLink(link);
+      setInvites((previous) => [inv, ...previous]);
       setInviteEmail('');
     } catch (e) {
       setError(String(e));
     } finally {
       setBusyInvite(false);
+    }
+  }
+
+  function inviteLinkFor(invite: Invite) {
+    return `${window.location.origin}/accept-invite?token=${encodeURIComponent(invite.token)}`;
+  }
+
+  async function copyInviteLink(link = inviteLink) {
+    if (!link) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = link;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand('copy');
+        textarea.remove();
+        if (!copied) throw new Error('copy command was rejected');
+      }
+      toast.success(tc('copied'));
+    } catch {
+      toast.error(tc('copyFailed'));
     }
   }
 
@@ -139,9 +171,10 @@ export default function UsersPage() {
     setError(null);
     try {
       await deleteUser(id);
-      await load();
+      setUsers((previous) => previous.filter((user) => user.id !== id));
     } catch (e) {
       setError(String(e));
+      throw e;
     }
   }
 
@@ -169,7 +202,7 @@ export default function UsersPage() {
     <>
       <h1 className="page-title">{t('title')}</h1>
       <p className="page-subtitle">{t('subtitle')}</p>
-      {loading && (
+      {loading && users.length === 0 && (
         <Card style={{ marginTop: 16 }} aria-busy="true">
           <div className="stack" style={{ gap: 12 }}>
             {Array.from({ length: 6 }).map((_, i) => (
@@ -189,9 +222,10 @@ export default function UsersPage() {
         </Card>
       )}
       {error && (
-        <p className="muted" style={{ color: 'var(--danger)' }}>
-          {error}
-        </p>
+        <div className="dashboard-error" role="alert">
+          <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>
+          <Button variant="outline" size="sm" onClick={() => void load()}>{tc('retry')}</Button>
+        </div>
       )}
 
       <div className="row" style={{ gap: 8, marginTop: 16 }}>
@@ -268,9 +302,7 @@ export default function UsersPage() {
                 </code>
                 <Button
                   size="sm"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(inviteLink);
-                  }}
+                  onClick={() => void copyInviteLink()}
                 >
                   {t('copyLink')}
                 </Button>
@@ -283,8 +315,11 @@ export default function UsersPage() {
         </DialogContent>
       </Dialog>
 
-      <Card style={{ marginTop: 16 }}>
-        <div className="table-wrap">
+      {!loading && !error && users.length === 0 ? (
+        <div className="experience-state"><p className="muted">{tc('empty')}</p></div>
+      ) : users.length > 0 ? (
+        <div className="operational-table">
+          <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
@@ -350,8 +385,54 @@ export default function UsersPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
-      </Card>
+      ) : null}
+
+      <section className="invite-list" aria-label={t('invites')}>
+        <div className="invite-list-heading">
+          <h2>{t('invites')}</h2>
+          <span className="muted">{invites.length}</span>
+        </div>
+        {invites.length === 0 ? (
+          <p className="muted">{t('invitesEmpty')}</p>
+        ) : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>{t('email')}</th>
+                  <th>{t('status')}</th>
+                  <th>{t('created')}</th>
+                  <th>{t('actions')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invites.map((invite) => (
+                  <tr key={invite.id}>
+                    <td className="mono">{invite.email}</td>
+                    <td>
+                      <Badge variant={invite.status === 'accepted' ? 'success' : 'warning'}>
+                        {invite.status === 'accepted' ? t('inviteAccepted') : t('invitePending')}
+                      </Badge>
+                    </td>
+                    <td className="muted" style={{ fontSize: 12 }}>
+                      {new Date(invite.created_at).toLocaleString()}
+                    </td>
+                    <td>
+                      {invite.status === 'pending' && (
+                        <Button size="sm" onClick={() => void copyInviteLink(inviteLinkFor(invite))}>
+                          {t('copyLink')}
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <ConfirmDialog
         open={deleteId != null}

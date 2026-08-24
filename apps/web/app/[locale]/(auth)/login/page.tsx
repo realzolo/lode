@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { clearToken, login, setToken } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
-import { IconDatabase, IconTerminal, IconBarChart, IconArrowUpRight } from '@/components/icons';
+import { IconArrowUpRight } from '@/components/icons';
 
 export default function LoginPage() {
   const t = useTranslations('login');
@@ -52,42 +52,8 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="login-split">
-      {/* ---- Brand / hero panel ---- */}
-      <aside className="login-aside">
-        <div className="login-aside-inner">
-          <div className="login-brand">
-            <span className="login-mark" aria-hidden="true">▲</span>
-            <span className="login-brand-name">{tc('appName')}</span>
-          </div>
-
-          <div className="login-hero">
-            <h2 className="login-hero-title">{t('asideTitle')}</h2>
-            <p className="login-hero-desc">{t('asideDesc')}</p>
-          </div>
-
-          <ul className="login-features">
-            <li>
-              <span className="login-feature-icon"><IconDatabase size={16} /></span>
-              <span>{t('feature1')}</span>
-            </li>
-            <li>
-              <span className="login-feature-icon"><IconTerminal size={16} /></span>
-              <span>{t('feature2')}</span>
-            </li>
-            <li>
-              <span className="login-feature-icon"><IconBarChart size={16} /></span>
-              <span>{t('feature3')}</span>
-            </li>
-          </ul>
-        </div>
-
-        <p className="login-aside-foot">© 2026 {tc('appName')}</p>
-      </aside>
-
-      {/* ---- Form panel ---- */}
-      <main className="login-main">
-        <Card className="login-form-card">
+    <main className="auth-shell">
+      <Card className="auth-card">
           <div className="login-form-brand">
             <span className="login-mark" aria-hidden="true">▲</span>
             <span className="login-brand-name">{tc('appName')}</span>
@@ -137,8 +103,7 @@ export default function LoginPage() {
           </form>
 
           <p className="login-note">{t('newHere')}</p>
-        </Card>
-      </main>
-    </div>
+      </Card>
+    </main>
   );
 }

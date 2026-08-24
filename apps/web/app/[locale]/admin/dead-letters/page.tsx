@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type CSSProperties,
 } from 'react';
@@ -12,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
   Table,
   THead,
@@ -39,19 +41,22 @@ export default function AdminDeadLettersPage() {
   const [kind, setKind] = useState<KindFilter>('all');
   const [replayingId, setReplayingId] = useState<number | null>(null);
   const [replayError, setReplayError] = useState<string | null>(null);
+  const [replayTarget, setReplayTarget] = useState<DeadLetter | null>(null);
+  const requestRef = useRef(0);
 
   const load = useCallback(async () => {
+    const requestId = ++requestRef.current;
     setLoading(true);
     setError(null);
     try {
       const data = await fetchDeadLetters(
         kind === 'all' ? undefined : (kind as 'dlq' | 'unassigned'),
       );
-      setItems(data);
+      if (requestId === requestRef.current) setItems(data);
     } catch (e) {
-      setError(String(e));
+      if (requestId === requestRef.current) setError(String(e));
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current) setLoading(false);
     }
   }, [kind]);
 
@@ -59,17 +64,19 @@ export default function AdminDeadLettersPage() {
     load();
   }, [load]);
 
-  const onReplay = async (id: number) => {
-    setReplayingId(id);
+  const onReplay = async () => {
+    if (!replayTarget) return;
+    setReplayingId(replayTarget.id);
     setReplayError(null);
     try {
-      await replayDeadLetter(id);
+      await replayDeadLetter(replayTarget.id);
       // Reflect the replay locally without a refetch flash.
       setItems((prev) =>
-        prev.map((d) => (d.id === id ? { ...d, replayed: true } : d)),
+        prev.map((d) => (d.id === replayTarget.id ? { ...d, replayed: true } : d)),
       );
     } catch (e) {
       setReplayError(String(e));
+      throw e;
     } finally {
       setReplayingId(null);
     }
@@ -109,9 +116,10 @@ export default function AdminDeadLettersPage() {
         </p>
       )}
       {error && (
-        <p className="muted" style={{ color: 'var(--danger)', marginTop: 16 }}>
-          {error}
-        </p>
+        <div className="dashboard-error" role="alert">
+          <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>
+          <Button variant="outline" size="sm" onClick={() => void load()}>{tc('retry')}</Button>
+        </div>
       )}
 
       {loading && items.length === 0 && (
@@ -138,7 +146,7 @@ export default function AdminDeadLettersPage() {
       )}
 
       {items.length > 0 && (
-        <Card style={{ padding: 0, marginTop: 16, overflow: 'hidden' }}>
+        <div className="operational-table">
           <Table>
             <THead>
               <Tr>
@@ -188,7 +196,7 @@ export default function AdminDeadLettersPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => onReplay(d.id)}
+                        onClick={() => setReplayTarget(d)}
                         disabled={replayingId === d.id}
                       >
                         {t('replay')}
@@ -199,8 +207,18 @@ export default function AdminDeadLettersPage() {
               ))}
             </TBody>
           </Table>
-        </Card>
+        </div>
       )}
+      <ConfirmDialog
+        open={replayTarget !== null}
+        onOpenChange={(open) => !open && setReplayTarget(null)}
+        title={t('replayTitle')}
+        description={replayTarget ? t('replayDescription', { topic: replayTarget.topic }) : undefined}
+        confirmLabel={t('replay')}
+        cancelLabel={tc('cancel')}
+        successMessage={t('replaySucceeded')}
+        onConfirm={onReplay}
+      />
     </>
   );
 }
@@ -208,7 +226,7 @@ export default function AdminDeadLettersPage() {
 const labelStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 4,
+  gap: 12,
   fontSize: 13,
   minWidth: 200,
 };

@@ -40,15 +40,19 @@ function AcceptInviteForm() {
   return (
     <div className="auth-shell">
       <Card className="auth-card">
-        <h1 className="page-title">{t('title')}</h1>
-        <p className="page-subtitle">{tu('inviteSent')}</p>
+        <div className="login-form-brand">
+          <span className="login-mark" aria-hidden="true">▲</span>
+          <span className="login-brand-name">Lode</span>
+        </div>
+        <h1 className="login-form-title">{t('acceptInviteTitle')}</h1>
+        <p className="login-form-subtitle">{t('acceptInviteSubtitle')}</p>
         {!token && (
           <p className="muted" style={{ color: 'var(--danger)' }}>
             missing or invalid invite token
           </p>
         )}
         {done ? (
-          <p className="muted">{tu('subtitle')}</p>
+          <p className="muted">{t('acceptInviteComplete')}</p>
         ) : (
           <form className="stack" onSubmit={handleSubmit}>
             <Input

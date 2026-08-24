@@ -17,8 +17,8 @@ import {
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
   addAppMember,
+  fetchAppMemberCandidates,
   fetchAppMembers,
-  fetchUsers,
   removeAppMember,
   updateAppMember,
   type AppMember,
@@ -50,7 +50,7 @@ export default function MembersPage({ params }: { params: { id: string } }) {
     try {
       const [m, u] = await Promise.all([
         fetchAppMembers(params.id),
-        fetchUsers(),
+        fetchAppMemberCandidates(params.id),
       ]);
       setMembers(m);
       setUsers(u);
@@ -94,10 +94,9 @@ export default function MembersPage({ params }: { params: { id: string } }) {
       setMembers((prev) =>
         prev.filter((m) => m.user_id !== removeTarget.user_id)
       );
-      setRemoveTarget(null);
     } catch (e) {
       setError(String(e));
-      setRemoveTarget(null);
+      throw e;
     }
   }
 
@@ -128,14 +127,15 @@ export default function MembersPage({ params }: { params: { id: string } }) {
           </p>
 
           {error && (
-            <p className="muted" style={{ color: 'var(--danger)', marginTop: 12 }}>
-              {error}
-            </p>
+            <div className="dashboard-error" role="alert">
+              <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>
+              <Button variant="outline" size="sm" onClick={() => void load()}>{tc('retry')}</Button>
+            </div>
           )}
 
           {/* Add member */}
           <Card className="row" style={{ marginTop: 16, gap: 12, flexWrap: 'wrap' }}>
-            <div className="stack" style={{ gap: 6, minWidth: 220 }}>
+            <div className="form-field" style={{ minWidth: 220 }}>
               <label className="field-label">{t('addMember')}</label>
               <Select
                 value={addUserId}
@@ -150,7 +150,7 @@ export default function MembersPage({ params }: { params: { id: string } }) {
                 ))}
               </Select>
             </div>
-            <div className="stack" style={{ gap: 6 }}>
+            <div className="form-field">
               <label className="field-label">{t('permission')}</label>
               <Select
                 value={addPerm}
@@ -180,11 +180,7 @@ export default function MembersPage({ params }: { params: { id: string } }) {
               <p className="muted" style={{ padding: 16 }}>
                 {tc('loading')}
               </p>
-            ) : members.length === 0 ? (
-              <p className="muted" style={{ padding: 16 }}>
-                {tc('empty')}
-              </p>
-            ) : (
+            ) : members.length > 0 ? (
               <Table>
                 <THead>
                   <Tr>
@@ -236,7 +232,11 @@ export default function MembersPage({ params }: { params: { id: string } }) {
                   ))}
                 </TBody>
               </Table>
-            )}
+            ) : !error ? (
+              <p className="muted" style={{ padding: 16 }}>
+                {tc('empty')}
+              </p>
+            ) : null}
           </Card>
 
           <ConfirmDialog

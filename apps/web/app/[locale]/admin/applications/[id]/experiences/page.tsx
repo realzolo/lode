@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, THead, TBody, Tr, Th, Td } from '@/components/ui/table';
 import type { Experience } from '@/lib/types';
@@ -30,9 +30,12 @@ function AppExperiencesView({ appId }: { appId: number }) {
   const [experiences, setExperiences] = useState<Experience[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let active = true;
+    setLoading(true);
+    setError(null);
     fetchExperiences(appId)
       .then((d) => active && setExperiences(d))
       .catch((e) => active && setError(String(e)))
@@ -40,13 +43,13 @@ function AppExperiencesView({ appId }: { appId: number }) {
     return () => {
       active = false;
     };
-  }, [appId]);
+  }, [appId, reloadKey]);
 
   return (
     <div style={{ marginTop: 20 }}>
-      {loading && (
-        <Card style={{ padding: 0, overflow: 'hidden' }} aria-busy="true">
-          <div className="stack" style={{ padding: 12, gap: 12 }}>
+      <div className="experience-panel" aria-busy={loading}>
+        {loading ? (
+          <div className="experience-state experience-loading">
             {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="flex items-center gap-4">
                 <Skeleton className="h-3.5 w-32" />
@@ -55,19 +58,15 @@ function AppExperiencesView({ appId }: { appId: number }) {
               </div>
             ))}
           </div>
-        </Card>
-      )}
-      {error && (
-        <p className="muted" style={{ color: 'var(--danger)' }}>
-          {error}
-        </p>
-      )}
-      {!loading && !error && experiences.length === 0 && (
-        <p className="muted">{tc('empty')}</p>
-      )}
-      {!loading && !error && experiences.length > 0 && (
-        <Card style={{ padding: 0, overflow: 'hidden' }}>
-          <Table>
+        ) : error ? (
+          <div className="experience-state">
+            <p className="muted" style={{ color: 'var(--danger)' }}>{error}</p>
+            <Button variant="outline" size="sm" onClick={() => setReloadKey((key) => key + 1)}>{tc('retry')}</Button>
+          </div>
+        ) : experiences.length === 0 ? (
+          <div className="experience-state"><p className="muted">{tc('empty')}</p></div>
+        ) : (
+          <div className="experience-table"><Table>
             <THead>
               <Tr>
                 <Th>{t('trigger')}</Th>
@@ -88,9 +87,9 @@ function AppExperiencesView({ appId }: { appId: number }) {
                 </Tr>
               ))}
             </TBody>
-          </Table>
-        </Card>
-      )}
+          </Table></div>
+        )}
+      </div>
     </div>
   );
 }
