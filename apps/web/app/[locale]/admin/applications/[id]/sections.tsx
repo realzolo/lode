@@ -92,6 +92,12 @@ export function ReposSection({
   const [unbind, setUnbind] = useState<BoundRepo | null>(null);
 
   const boundRepos = data.repos;
+  // IDs already bound to this application — used to block re-binding (the
+  // backend returns 409 on a duplicate (application_id, repo_id) binding).
+  const boundRepoIds = useMemo(
+    () => new Set(boundRepos.map((r) => r.repo_id)),
+    [boundRepos],
+  );
 
   useEffect(() => {
     if (!open || !isAdmin) return;
@@ -213,11 +219,14 @@ export function ReposSection({
               {repos.length === 0 ? (
                 <option value="">— no repos in registry —</option>
               ) : (
-                repos.map((r) => (
-                  <option key={r.id} value={String(r.id)}>
-                    {r.name} ({r.url})
-                  </option>
-                ))
+                repos.map((r) => {
+                  const isBound = boundRepoIds.has(r.id);
+                  return (
+                    <option key={r.id} value={String(r.id)} disabled={isBound}>
+                      {r.name} ({r.url}){isBound ? ' — 已绑定' : ''}
+                    </option>
+                  );
+                })
               )}
             </Select>
             <Textarea
@@ -232,7 +241,11 @@ export function ReposSection({
             <Button
               variant="primary"
               onClick={handleBind}
-              disabled={busy || !selectedRepoId}
+              disabled={
+                busy ||
+                !selectedRepoId ||
+                boundRepoIds.has(Number(selectedRepoId))
+              }
             >
               {tc('save')}
             </Button>

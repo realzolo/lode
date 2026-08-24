@@ -346,7 +346,7 @@ async def bind_repo(
         action="application.bind_repo",
         actor_id=_admin,
         target_type="git_repo",
-        target_id=str(repo_id),
+        target_id=str(payload.repo_id),
         application_id=application_id,
     )
     return ApplicationRepoOut(
