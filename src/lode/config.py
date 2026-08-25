@@ -74,13 +74,20 @@ class Settings(BaseSettings):
     job_max_attempts: int = 5
     # Base delay (seconds) for exponential backoff between retries.
     job_base_retry_delay: float = 5.0
-    # Semantic version of the analysis engine; stamped on each analysis run so
+    # Semantic version of the investigation engine; stamped on every run so
     # conclusions can be reproduced/attributed to a specific engine behaviour.
     engine_version: str = "1.0"
     # A result that falls below either quality gate remains available, but is
     # explicitly routed to human review instead of appearing as a final answer.
     analysis_min_confidence: float = 0.70
     analysis_min_evidence_coverage: float = 0.25
+
+    # Investigation evidence is collected in a bounded interval around the
+    # alert's occurrence. The window is persisted with each run and never
+    # recomputed after the fact.
+    investigation_window_before_seconds: int = 900
+    investigation_window_after_seconds: int = 900
+    investigation_collector_budget_seconds: int = 15
 
     # Evidence gateway (M2): bounds on the read-only Git source inspection.
     # Each analysis receives a fresh temporary sandbox beneath this directory;
@@ -92,6 +99,11 @@ class Settings(BaseSettings):
     evidence_git_max_bytes: int = 200_000
     evidence_git_snippet_lines: int = 12
     evidence_git_clone_timeout_seconds: int = 60
+    # Administrator-controlled repository context files. These are the only
+    # instruction/document files that can enter immutable source evidence.
+    evidence_git_context_paths: str = "AGENTS.md,AGENT.md,README.md,README.*,\.github/AGENTS.md"
+    evidence_git_context_max_files: int = 8
+    evidence_git_context_max_bytes: int = 80_000
     # Evidence retention (M3): how many days an EvidenceArtifact stays valid
     # before the startup reaper hard-deletes it. 0 disables expiry (keep forever).
     evidence_retention_days: int = 90

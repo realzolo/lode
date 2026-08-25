@@ -1,5 +1,5 @@
-"""Analysis engine: controlled tools + agentic workflow runner."""
+"""Canonical investigation engine."""
 
-from lode.engine.runner import run_analysis
+from lode.engine.investigation_runner import run_investigation
 
-__all__ = ["run_analysis"]
+__all__ = ["run_investigation"]

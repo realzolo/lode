@@ -16,132 +16,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from lode.integration_policy import normalize_integration_config
 
 
-class AnalysisStepOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    node_type: str
-    status: Literal["pending", "running", "completed", "degraded", "failed", "skipped"]
-    order_index: int
-    detail: str | None = None
-    summary: str | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-
-
-class AnalysisGuidanceOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    author: str
-    content: str
-    created_at: datetime
-    effect: Literal["will_apply", "applied", "needs_reanalysis"]
-    applied_at: datetime | None = None
-
-
-class AlertSummary(BaseModel):
-    title: str
-    level: str
-    topic: str
-    error_message: str
-    fields: dict
-
-
-class AnalysisListOut(BaseModel):
-    id: str
-    dedupe_key: str
-    application_id: int
-    application_name: str
-    title: str
-    level: str
-    status: Literal["pending", "running", "completed", "needs_review", "failed", "canceled"]
-    confidence: float | None
-    conclusion: str | None
-    received_at: datetime | None
-    updated_at: datetime
-    # The caller's permission on this analysis's application, or ``None`` when
-    # the caller is a global admin (unrestricted). Surfaced so the UI can gate
-    # actions like re-analyze.
-    my_perm: str | None = None
-
-
-class AnalysisJobOut(BaseModel):
-    id: str
-    status: Literal["queued", "running", "retry_wait", "succeeded", "dead"]
-    attempt: int
-    max_attempts: int
-    available_at: datetime
-    last_error_code: str | None = None
-    last_error_detail: str | None = None
-
-
-class EvidenceArtifactOut(BaseModel):
-    id: int
-    artifact_type: str
-    source_kind: str | None
-    locator: str | None
-    content_hash: str | None
-    redacted_excerpt: str | None
-    metadata: dict | None
-    collected_at: datetime
-
-
-class AnalysisRecommendationOut(BaseModel):
-    id: int
-    summary: str
-    risk_level: Literal["low", "medium", "high", "critical"]
-    basis: Literal["evidence_backed", "safety_fallback"]
-    evidence_refs: list[int]
-    preconditions: list[str]
-    steps: list[dict[str, str]]
-    verification: list[str]
-    rollback: list[str]
-    owner_role: str | None
-    prompt_markdown: str
-    engine_version: str | None
-    created_at: datetime
-
-
-class AnalysisFeedbackIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    target: Literal["remediation", "agent_prompt"]
-    value: Literal["useful", "not_useful"]
-
-
-class AnalysisFeedbackSummary(BaseModel):
-    remediation_useful: int = 0
-    remediation_not_useful: int = 0
-    agent_prompt_useful: int = 0
-    agent_prompt_not_useful: int = 0
-    my_remediation: Literal["useful", "not_useful"] | None = None
-    my_agent_prompt: Literal["useful", "not_useful"] | None = None
-
-
-class AnalysisDetailOut(BaseModel):
-    id: str
-    dedupe_key: str
-    application_id: int
-    application_name: str
-    status: Literal["pending", "running", "completed", "needs_review", "failed", "canceled"]
-    confidence: float | None
-    conclusion: str | None
-    evidence: dict | None
-    evidence_artifacts: list[EvidenceArtifactOut]
-    recommendation: AnalysisRecommendationOut | None = None
-    feedback: AnalysisFeedbackSummary = Field(default_factory=AnalysisFeedbackSummary)
-    alert: AlertSummary | None
-    steps: list[AnalysisStepOut]
-    job: AnalysisJobOut
-    guidances: list[AnalysisGuidanceOut]
-    follow_up_status: Literal["none", "requested"] = "none"
-    matched_experience: str | None = None
-    started_at: datetime | None
-    finished_at: datetime | None
-    updated_at: datetime
-    my_perm: str | None = None
-
-
 class ApplicationOut(BaseModel):
     id: int
     name: str
@@ -641,6 +515,43 @@ class AiOutputLanguageIn(BaseModel):
 
 class AiOutputLanguageOut(BaseModel):
     language: Literal["en", "zh"]
+
+
+class EvidenceConnectorIn(BaseModel):
+    """Administrator-owned, capability-limited evidence connector."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    kind: Literal["loki", "prometheus", "tempo", "postgres", "redis", "kafka", "clickhouse"]
+    config: dict[str, Any] = Field(default_factory=dict)
+    secret_ref: str | None = Field(default=None, max_length=4000)
+    diagnostic_profile: dict[str, Any] = Field(default_factory=dict)
+    collection_budget_seconds: int = Field(default=15, ge=1, le=60)
+    state: Literal["active", "disabled"] = "active"
+
+
+class EvidenceConnectorUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    config: dict[str, Any] | None = None
+    secret_ref: str | None = Field(default=None, max_length=4000)
+    diagnostic_profile: dict[str, Any] | None = None
+    collection_budget_seconds: int | None = Field(default=None, ge=1, le=60)
+    state: Literal["active", "disabled"] | None = None
+
+
+class EvidenceConnectorOut(BaseModel):
+    id: int
+    application_id: int
+    name: str
+    kind: str
+    state: str
+    config: dict[str, Any]
+    diagnostic_profile: dict[str, Any]
+    collection_budget_seconds: int
+    has_secret: bool
 
 
 # --- User management (admin) --------------------------------------------

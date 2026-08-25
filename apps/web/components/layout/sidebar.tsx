@@ -14,7 +14,6 @@ import type { Portal } from '@/components/layout/app-shell';
 import {
   IconHome,
   IconBarChart,
-  IconDatabase,
   IconSettings,
   IconUsers,
   IconChevronLeft,
@@ -38,14 +37,12 @@ const ADMIN_NAV = [
   { key: 'applications', href: '/admin', Icon: IconHome },
   { key: 'settings', href: '/admin/settings', Icon: IconSettings },
   { key: 'users', href: '/admin/users', Icon: IconUsers },
-  { key: 'experiences', href: '/admin/experiences', Icon: IconDatabase },
   { key: 'audit', href: '/admin/audit', Icon: IconShield },
   { key: 'deadLetters', href: '/admin/dead-letters', Icon: IconAlertTriangle },
 ] as const;
 
 const WORKBENCH_NAV = [
-  { key: 'analyses', href: '/workbench', Icon: IconBarChart },
-  { key: 'experiences', href: '/workbench/experiences', Icon: IconDatabase },
+  { key: 'investigations', href: '/workbench', Icon: IconBarChart },
   { key: 'explore', href: '/workbench/explore', Icon: IconTerminal },
 ] as const;
 
@@ -57,7 +54,6 @@ const ADMIN_APP_SUBNAV = [
   { key: 'descriptions', suffix: 'descriptions' },
   { key: 'dataSources', suffix: 'db' },
   { key: 'model', suffix: 'model' },
-  { key: 'experiences', suffix: 'experiences' },
   { key: 'members', suffix: 'members' },
 ] as const;
 

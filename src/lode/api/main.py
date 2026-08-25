@@ -28,21 +28,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from lode.api.deps import require_user
 from lode.api.routes.alerts import router as alerts_router
-from lode.api.routes.analyses import router as analyses_router
+from lode.api.routes.investigations import router as investigations_router
 from lode.api.routes.applications import router as applications_router
 from lode.api.routes.audit import router as audit_router
 from lode.api.routes.auth import router as auth_router
 from lode.api.routes.dead_letters import router as dead_letters_router
 from lode.api.routes.health import router as health_router
 from lode.api.routes.invites import router as invites_router
-from lode.api.routes.experiences import router as experiences_router
 from lode.api.routes.metrics import router as metrics_router
-from lode.api.routes.queries import router as queries_router
 from lode.api.routes.settings import router as settings_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
 from lode.db.models.ai_model import reencrypt_plaintext_keys
-from lode.db.models.experience import Experience
 from lode.db.session import AsyncSessionLocal
 from lode.migrations import run_migrations
 from lode.api.audit import _request_id
@@ -86,39 +83,6 @@ async def lifespan(app: FastAPI) -> None:
     # ``running`` analyses here: a job legitimately in flight under the worker
     # would otherwise be wrongly marked failed.
 
-    # Reap experience-library entries that have aged past their TTL (T8). Renewed experiences
-    # get a fresh ``expires_at`` on write, so only truly stale conclusions are
-    # retired here. Best-effort so a transient DB error never blocks startup.
-    async with AsyncSessionLocal() as session:
-        try:
-            now_utc = datetime.now(UTC)
-            reap = (
-                await session.execute(
-                    update(Experience)
-                    .where(Experience.expires_at.isnot(None))
-                    .where(Experience.expires_at < now_utc)
-                    .where(Experience.is_valid.is_(True))
-                    .values(is_valid=False)
-                )
-            )
-            reaped = reap.rowcount
-            if reaped:
-                await session.commit()
-                logger.info("reaped %d expired experience entr(y/ies)", reaped)
-        except Exception:
-            logger.exception("failed to reap expired experiences")
-
-    # Reap evidence artifacts past their retention window (M3). Like the experience
-    # reaper, best-effort so a transient DB error never blocks startup.
-    async with AsyncSessionLocal() as session:
-        try:
-            from lode.db.models.intake import reap_expired_evidence
-
-            reaped = await reap_expired_evidence(session)
-            if reaped:
-                logger.info("reaped %d expired evidence artifact(s)", reaped)
-        except Exception:
-            logger.exception("failed to reap expired evidence artifacts")
     yield
 
 
@@ -202,13 +166,11 @@ app.include_router(auth_router)
 
 # Protected business routes (require a valid bearer token).
 _protected = [Depends(require_user)]
-app.include_router(analyses_router, dependencies=_protected)
+app.include_router(investigations_router, dependencies=_protected)
 app.include_router(applications_router, dependencies=_protected)
-app.include_router(experiences_router, dependencies=_protected)
 app.include_router(alerts_router, dependencies=_protected)
 app.include_router(settings_router, dependencies=_protected)
 app.include_router(users_router, dependencies=_protected)
-app.include_router(queries_router, dependencies=_protected)
 
 # Invites: admin endpoints carry require_admin (which itself requires auth);
 # the accept endpoint is intentionally left open so new users can onboard.

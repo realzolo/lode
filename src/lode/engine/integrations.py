@@ -20,7 +20,8 @@ from typing import Any, Protocol
 from lode.config import settings
 from lode.crypto import decrypt_secret
 from lode.db.models.integration import ApplicationIntegration
-from lode.db.models.intake import AuditEvent, EvidenceArtifact
+from lode.db.models.intake import AuditEvent
+from lode.db.models.investigation import EvidenceArtifact
 from lode.engine.evidence.secret_mask import mask_secrets
 from lode.integration_policy import (
     IntegrationPolicyError,

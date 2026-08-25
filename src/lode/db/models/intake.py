@@ -22,6 +22,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -131,115 +132,6 @@ class Incident(Base):
     )
 
 
-class AnalysisJob(Base):
-    __tablename__ = "analysis_jobs"
-
-    id: Mapped[int] = mapped_column(
-        BigInteger, Identity(always=True), primary_key=True
-    )
-    public_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), nullable=False, unique=True
-    )
-    incident_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
-    )
-    analysis_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("analyses.id", ondelete="SET NULL"), nullable=True
-    )
-    trigger: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="ingest"
-    )
-    status: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="queued"
-    )
-    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    max_attempts: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="5"
-    )
-    available_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
-    )
-    lease_owner: Mapped[str | None] = mapped_column(Text, nullable=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    requested_by: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-    trace_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
-    )
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('queued', 'running', 'retry_wait', 'succeeded', "
-            "'failed', 'canceled', 'dead')",
-            name="status",
-        ),
-        CheckConstraint("attempt >= 0", name="attempt"),
-        Index("ix_analysis_jobs_status_available", "status", "available_at", "priority", "created_at"),
-        Index(
-            "ix_analysis_jobs_lease_expires",
-            "lease_expires_at",
-            postgresql_where=text("status = 'running'"),
-        ),
-        # At most one active job per incident: prevents the same error event from
-        # being analyzed more than once concurrently. A redelivered alert that
-        # collides here is safely treated as a duplicate.
-        Index(
-            "uq_analysis_jobs_active_incident",
-            "incident_id",
-            unique=True,
-            postgresql_where=text(
-                "status IN ('queued', 'running', 'retry_wait')"
-            ),
-        ),
-    )
-
-
-class EvidenceArtifact(Base):
-    __tablename__ = "evidence_artifacts"
-
-    id: Mapped[int] = mapped_column(
-        BigInteger, Identity(always=True), primary_key=True
-    )
-    analysis_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False
-    )
-    artifact_type: Mapped[str] = mapped_column(Text, nullable=False)
-    source_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    locator: Mapped[str | None] = mapped_column(Text, nullable=True)
-    content_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
-    redacted_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
-    retention_until: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    collected_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "artifact_type IN ('git_file', 'git_diff', 'db_query', "
-            "'deploy', 'alert_payload', 'service_snapshot', 'operator_guidance')",
-            name="type",
-        ),
-        Index("ix_evidence_artifacts_analysis_id", "analysis_id"),
-    )
-
-
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 
@@ -271,23 +163,26 @@ class AuditEvent(Base):
     )
 
 
-async def reap_expired_evidence(session) -> int:
-    """Hard-delete evidence artifacts past their retention window (M3).
+class DeadLetter(Base):
+    """Rejected Kafka records retained for audit and explicit replay."""
 
-    Best-effort cleanup so stale DB-query / git evidence does not accumulate
-    indefinitely. Called at startup alongside the shared-experience reaper; a
-    transient DB error is the caller's responsibility to swallow so startup
-    never blocks.
-    """
-    from datetime import UTC, datetime
+    __tablename__ = "dead_letters"
 
-    from sqlalchemy import delete
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    topic: Mapped[str] = mapped_column(Text, nullable=False)
+    application_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("applications.id", ondelete="SET NULL"))
+    dedupe_key: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    reason: Mapped[str | None] = mapped_column(Text)
+    partition: Mapped[int | None] = mapped_column(Integer)
+    offset: Mapped[int | None] = mapped_column(BigInteger)
+    replayed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default="now()")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default="now()")
 
-    now = datetime.now(UTC)
-    result = await session.execute(
-        delete(EvidenceArtifact)
-        .where(EvidenceArtifact.retention_until.isnot(None))
-        .where(EvidenceArtifact.retention_until < now)
+    __table_args__ = (
+        Index("ix_dead_letters_kind", "kind"),
+        Index("ix_dead_letters_created_at", "created_at"),
+        Index("uq_dead_letters_source", "topic", "partition", "offset", "kind", unique=True, postgresql_where=text('partition IS NOT NULL AND "offset" IS NOT NULL')),
     )
-    await session.commit()
-    return result.rowcount

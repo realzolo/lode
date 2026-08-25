@@ -30,7 +30,7 @@ from lode.config import settings
 from lode.db.models.alert import Alert
 from lode.db.models.application import ApplicationRepo
 from lode.db.models.git import GitRepo
-from lode.db.models.intake import EvidenceArtifact
+from lode.db.models.investigation import EvidenceArtifact
 from lode.engine.evidence.secret_mask import mask_secrets
 
 logger = logging.getLogger("lode.evidence.git")

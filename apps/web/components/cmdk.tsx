@@ -4,13 +4,13 @@ import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent 
 import { useRouter, usePathname } from '@/lib/navigation';
 import { useTranslations } from 'next-intl';
 import { IconSearch } from '@/components/icons';
-import { fetchAnalyses, fetchApplications } from '@/lib/api';
+import { fetchInvestigations, fetchApplications, type InvestigationSummary } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
-import type { Analysis, Application } from '@/lib/types';
+import type { Application } from '@/lib/types';
 
 // Command palette (⌘K). Scoped to the active portal so it never offers a route
 // the user can't reach: the admin console lists management screens + apps, the
-// workbench lists analysis surfaces. This keeps the two ends from leaking into
+// workbench lists investigation surfaces. This keeps the two ends from leaking into
 // each other even through the search shortcut.
 
 interface Command {
@@ -23,14 +23,12 @@ const ADMIN_NAV: { id: string; key: string; href: string }[] = [
   { id: 'applications', key: 'nav.applications', href: '/admin' },
   { id: 'settings', key: 'nav.settings', href: '/admin/settings' },
   { id: 'users', key: 'nav.users', href: '/admin/users' },
-  { id: 'experiences', key: 'nav.experiences', href: '/admin/experiences' },
   { id: 'audit', key: 'nav.audit', href: '/admin/audit' },
   { id: 'dead-letters', key: 'nav.deadLetters', href: '/admin/dead-letters' },
 ];
 
 const WORKBENCH_NAV: { id: string; key: string; href: string }[] = [
-  { id: 'analyses', key: 'nav.analyses', href: '/workbench' },
-  { id: 'experiences', key: 'nav.experiences', href: '/workbench/experiences' },
+  { id: 'investigations', key: 'nav.investigations', href: '/workbench' },
 ];
 
 export function CommandPalette({ showTrigger = true }: { showTrigger?: boolean }) {
@@ -42,7 +40,7 @@ export function CommandPalette({ showTrigger = true }: { showTrigger?: boolean }
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const [apps, setApps] = useState<Application[]>([]);
-  const [analyses, setAnalyses] = useState<Analysis[]>([]);
+  const [investigations, setInvestigations] = useState<InvestigationSummary[]>([]);
 
   const portal = pathname.startsWith('/admin') ? 'admin' : 'workbench';
 
@@ -72,9 +70,9 @@ export function CommandPalette({ showTrigger = true }: { showTrigger?: boolean }
     let active = true;
     if (portal === 'admin') {
       fetchApplications().then((data) => active && setApps(data)).catch(() => active && setApps([]));
-      setAnalyses([]);
+      setInvestigations([]);
     } else {
-      fetchAnalyses().then((data) => active && setAnalyses(data)).catch(() => active && setAnalyses([]));
+      fetchInvestigations().then((data) => active && setInvestigations(data)).catch(() => active && setInvestigations([]));
       setApps([]);
     }
     return () => {
@@ -106,22 +104,22 @@ export function CommandPalette({ showTrigger = true }: { showTrigger?: boolean }
         }))
       : [];
 
-  const analysisCommands: Command[] =
+  const investigationCommands: Command[] =
     portal === 'workbench'
-      ? analyses.map((analysis) => ({
-          id: `analysis-${analysis.id}`,
-          label: `${analysis.title || analysis.dedupeKey} · ${analysis.status}`,
-          run: () => go(`/workbench/analysis/${analysis.id}`),
+      ? investigations.map((investigation) => ({
+          id: `investigation-${investigation.id}`,
+          label: `${investigation.title || investigation.id} · ${investigation.status}`,
+          run: () => go(`/workbench/investigation/${investigation.id}`),
         }))
       : [];
 
   const q = query.toLowerCase();
   const filteredNav = navCommands.filter((c) => c.label.toLowerCase().includes(q));
   const filteredApps = appCommands.filter((c) => c.label.toLowerCase().includes(q));
-  const filteredAnalyses = analysisCommands.filter((c) => c.label.toLowerCase().includes(q));
+  const filteredInvestigations = investigationCommands.filter((c) => c.label.toLowerCase().includes(q));
   const visibleCommands = useMemo(
-    () => [...filteredNav, ...filteredApps, ...filteredAnalyses],
-    [filteredAnalyses, filteredApps, filteredNav],
+    () => [...filteredNav, ...filteredApps, ...filteredInvestigations],
+    [filteredInvestigations, filteredApps, filteredNav],
   );
 
   useEffect(() => {
@@ -173,7 +171,7 @@ export function CommandPalette({ showTrigger = true }: { showTrigger?: boolean }
           onKeyDown={onInputKeyDown}
         />
         <div id="command-results" className="cmdk-list" role="listbox">
-          {filteredNav.length === 0 && filteredApps.length === 0 && filteredAnalyses.length === 0 && (
+          {filteredNav.length === 0 && filteredApps.length === 0 && filteredInvestigations.length === 0 && (
             <div className="cmdk-empty">{t('common.empty')}</div>
           )}
           {filteredNav.map((c) => (
@@ -191,10 +189,10 @@ export function CommandPalette({ showTrigger = true }: { showTrigger?: boolean }
               ))}
             </>
           )}
-          {filteredAnalyses.length > 0 && (
+          {filteredInvestigations.length > 0 && (
             <>
-              <div className="cmdk-group">{t('nav.analyses')}</div>
-              {filteredAnalyses.map((c) => (
+              <div className="cmdk-group">调查</div>
+              {filteredInvestigations.map((c) => (
                 <button key={c.id} id={`command-${c.id}`} role="option" aria-selected={activeIndex === commandIndex(c)} className="cmdk-item" data-active={activeIndex === commandIndex(c) ? 'true' : undefined} onMouseEnter={() => setActiveIndex(commandIndex(c))} onClick={c.run}>
                   {c.label}
                 </button>

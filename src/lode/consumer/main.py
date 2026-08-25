@@ -1,4 +1,4 @@
-"""Kafka consumer: validate alerts (v1.1), dedupe, and persist a task.
+"""Kafka consumer: validate alerts, dedupe, and persist an investigation.
 
 Reliability contract (production-grade):
 
@@ -8,14 +8,14 @@ Reliability contract (production-grade):
   unassigned topic.
 * A message is **idempotent** at the Kafka level: ``ingestion_events`` has a
   unique ``(topic, partition, offset)`` triple, so a redelivered record can
-  never create a second alert/analysis.
+  never create a second alert/investigation.
 * An application-scoped dedupe key suppresses an *additional* alert for an
-  incident that already has an active (pending/running) analysis, so the same
-  error event is never analyzed twice. A partial unique index on
-  ``analysis_jobs`` is the database-level backstop for concurrent consumers.
+  incident that already has an active investigation, so the same error event
+  is never investigated twice. A partial unique index on
+  ``investigation_jobs`` is the database-level backstop for concurrent consumers.
 * The consumer **creates a queued job and commits the Kafka offset
   immediately** after the persist transaction succeeds. It does NOT execute the
-  analysis. Execution is the worker's job (``lode.worker``), which means a
+  investigation. Execution is the worker's job (``lode.worker``), which means a
   burst of alerts is absorbed by the queue and a crashed process loses nothing.
 * The offset is committed only when ``process_message`` returns normally. A
   transient failure (DB/Kafka/DLQ unavailable) raises so the offset is NOT
@@ -27,9 +27,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
@@ -43,15 +44,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lode.config import kafka_security_kwargs, settings
 from lode.consumer.alert_schema import AlertMessage
 from lode.db.models.alert import Alert
-from lode.db.models.analysis import Analysis, AnalysisStep, DeadLetter
 from lode.db.models.application import (
     Application,
     ApplicationIngestionOffset,
     ApplicationIngestionRuntime,
     ApplicationKafka,
 )
-from lode.db.models.intake import AnalysisJob, Incident, IngestionEvent
+from lode.db.models.intake import DeadLetter, Incident, IngestionEvent
+from lode.db.models.investigation import EvidenceArtifact, Investigation, InvestigationJob, InvestigationStage, STAGE_TYPES
+from lode.db.models.platform_setting import PlatformSetting
+from lode.ai_output import AI_OUTPUT_LANGUAGE_SETTING_KEY, normalize_ai_output_language
 from lode.db.session import AsyncSessionLocal
+from lode.engine.evidence.secret_mask import mask_secrets
 from lode.metrics import (
     ANALYSES,
     CONSUMER_LAG,
@@ -282,12 +286,12 @@ async def resolve_application_id(
 async def _dedupe_active_exists(
     session: AsyncSession, application_id: int, dedupe_key: str
 ) -> bool:
-    """True if the incident already has an active (pending/running) analysis."""
+    """True if the incident already has an active canonical investigation."""
     result = await session.execute(
-        select(Analysis.id)
-        .where(Analysis.application_id == application_id)
-        .where(Analysis.dedupe_key == dedupe_key)
-        .where(Analysis.status.in_(["pending", "running"]))
+        select(Investigation.id)
+        .where(Investigation.application_id == application_id)
+        .where(Investigation.trigger_signature == dedupe_key)
+        .where(Investigation.status.in_(["queued", "running"]))
         .limit(1)
     )
     return result.scalars().first() is not None
@@ -306,13 +310,14 @@ async def _persist(
     payload_hash: str | None,
     trace_id: str | None,
 ) -> tuple[int, int]:
-    """Atomically record the ingestion event, alert, analysis and queued job.
+    """Atomically record the ingestion event, alert, investigation and queued job.
 
-    Returns ``(analysis_id, job_id)``. Raises ``IntegrityError`` (caught by the
+    Returns ``(investigation_id, job_id)``. Raises ``IntegrityError`` (caught by the
     caller and treated as a duplicate) if a redelivery or a concurrent consumer
-    beat us to the unique ``ingestion_events`` / active ``analysis_jobs`` row.
+    beat us to the unique ``ingestion_events`` / active ``investigation_jobs`` row.
     """
     now = datetime.now(timezone.utc)
+    occurred_at = alert.occurred_at or now
     ie = IngestionEvent(
         application_id=application_id,
         topic=topic,
@@ -343,64 +348,79 @@ async def _persist(
             first_alert_id=None,
             latest_alert_id=None,
             alert_count=0,
-            first_seen_at=now,
-            last_seen_at=now,
+        first_seen_at=occurred_at,
+        last_seen_at=occurred_at,
         )
         db.add(incident)
         await db.flush()
     else:
         incident.latest_alert_id = None
-        incident.last_seen_at = now
+        incident.last_seen_at = occurred_at
 
     alert.incident_id = incident.id
     db.add(alert)
     await db.flush()
 
-    analysis = Analysis(
-        public_id=uuid.uuid4().hex,
-        dedupe_key=dedupe_key,
+    setting = await db.get(PlatformSetting, AI_OUTPUT_LANGUAGE_SETTING_KEY)
+    output_language = normalize_ai_output_language(setting.value if setting is not None else None)
+    fields = alert.fields or {}
+    deployment_sha = next((str(fields[key]) for key in ("commit", "git_commit", "sha", "revision") if fields.get(key)), None)
+    service_name = next((str(fields[key]) for key in ("service", "service_name", "app") if fields.get(key)), None)
+    environment = next((str(fields[key]) for key in ("environment", "env") if fields.get(key)), None)
+    investigation = Investigation(
         application_id=application_id,
         alert_id=alert.id,
         incident_id=incident.id,
-        status="pending",
-        engine_version=None,
+        trigger_signature=dedupe_key,
+        status="queued",
+        output_language=output_language,
+        service_name=service_name,
+        environment=environment,
+        trace_id=trace_id,
+        deployment_sha=deployment_sha,
+        window_started_at=occurred_at - timedelta(seconds=settings.investigation_window_before_seconds),
+        window_finished_at=occurred_at + timedelta(seconds=settings.investigation_window_after_seconds),
+        scope={"topic": topic, "partition": partition, "offset": offset, "alert_occurred_at": occurred_at.isoformat(), "alert_received_at": now.isoformat()},
     )
-    db.add(analysis)
+    db.add(investigation)
     await db.flush()
-    db.add(
-        AnalysisStep(
-            analysis_id=analysis.id,
-            node_type="receive",
-            status="completed",
-            order_index=0,
-            input={"topic": topic, "partition": partition, "offset": offset},
-            output={
-                "summary": "Alert received",
-                "detail": f"Routed via topic {topic}",
-            },
-            started_at=now,
-            finished_at=now,
+    db.add_all(
+        InvestigationStage(
+            investigation_id=investigation.id,
+            stage_type=stage_type,
+            status="succeeded" if stage_type == "ingest" else "queued",
+            order_index=index,
+            input={"topic": topic, "partition": partition, "offset": offset} if stage_type == "ingest" else {},
+            output={"summary": "Alert normalized", "time_window": [investigation.window_started_at.isoformat(), investigation.window_finished_at.isoformat()]} if stage_type == "ingest" else {},
+            started_at=now if stage_type == "ingest" else None,
+            finished_at=now if stage_type == "ingest" else None,
         )
+        for index, stage_type in enumerate(STAGE_TYPES)
     )
-
-    job = AnalysisJob(
-        public_id=str(uuid.uuid4()),
+    await db.flush()
+    ingest_stage = (await db.execute(select(InvestigationStage).where(InvestigationStage.investigation_id == investigation.id).where(InvestigationStage.stage_type == "ingest"))).scalars().one()
+    alert_excerpt = json.dumps({"title": alert.title, "level": alert.level, "error_message": alert.error_message, "fields": alert.fields or {}}, ensure_ascii=False, default=str)
+    redacted_excerpt, categories = mask_secrets(alert_excerpt)
+    db.add(EvidenceArtifact(
+        investigation_id=investigation.id, collection_id=None, artifact_type="alert", source_kind="alert", source_id=alert.id,
+        locator=f"alert://{alert.id}", content_hash=hashlib.sha256(alert_excerpt.encode()).hexdigest(), redacted_excerpt=redacted_excerpt[:20_000],
+        metadata_={"stage_id": ingest_stage.id, "received_at": now.isoformat(), "time_scope": "incident_input", "secret_categories": categories},
+    ))
+    job = InvestigationJob(
         incident_id=incident.id,
-        analysis_id=analysis.id,
-        trigger="ingest",
+        investigation_id=investigation.id,
         status="queued",
         priority=0,
         attempt=0,
         max_attempts=settings.job_max_attempts,
         available_at=now,
-        trace_id=trace_id,
     )
     db.add(job)
     await db.commit()
     incident.alert_count = (incident.alert_count or 0) + 1
     incident.latest_alert_id = alert.id
     await db.commit()
-    return analysis.id, job.id
+    return investigation.id, job.id
 
 
 async def _route_failure(
@@ -545,17 +565,17 @@ async def _process_with_session(
         raw_payload=msg.model_dump(mode="json"),
     )
 
-    # Suppress an additional alert for an incident with an active analysis.
+    # Suppress an additional alert for an incident with an active investigation.
     if await _dedupe_active_exists(session, app_id, dedupe_key):
         MESSAGES_RECEIVED.labels(outcome="duplicate").inc()
         logger.info(
-            "skipping duplicate active analysis for application_id=%s dedupe_key=%s",
+            "skipping duplicate active investigation for application_id=%s dedupe_key=%s",
             app_id, dedupe_key,
         )
         return "duplicate"
 
     try:
-        analysis_id, _job_id = await _persist(
+        investigation_id, _job_id = await _persist(
             session,
             application_id=app_id,
             topic=topic,

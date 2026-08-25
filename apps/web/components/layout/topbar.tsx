@@ -9,7 +9,7 @@ import { IconMenu } from '@/components/icons';
 // the Vercel dashboard's interaction model.
 export function Topbar({ portal, onMenu }: { portal: 'admin' | 'workbench'; onMenu: () => void }) {
   const t = useTranslations();
-  const section = portal === 'admin' ? t('nav.applications') : t('nav.analyses');
+  const section = portal === 'admin' ? t('nav.applications') : t('nav.investigations');
   const homeHref = portal === 'admin' ? '/admin' : '/workbench';
 
   return (

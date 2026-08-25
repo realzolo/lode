@@ -1,174 +1,133 @@
 # Lode Development Context
 
-## Application ingestion lifecycle
+## Canonical V2 Investigation Architecture
 
-- `applications.ingestion_state` is the desired control-plane state:
-  `draft`, `active`, or `paused`. New applications start as `draft`; existing
-  topic bindings are migrated to `paused` for explicit operator confirmation.
-- Only `active` applications are Kafka subscription targets. The consumer polls
-  the database for exact active topics, so no global topic regex is a second
-  source of truth and no service restart is needed after a state change.
-- First start is explicit and validates the Kafka topic's partition metadata.
-  Administrators choose `latest` (new messages only) or `earliest` (Kafka
-  retention replay). Chosen per-partition offsets are persisted before Kafka
-  commits so activation retries do not change the selected starting point.
-- `paused` stops new intake and worker claims. In-flight analyses finish; queued
-  jobs and Kafka offsets remain for resume. Runtime observation (`starting`,
-  `listening`, `error`) is separate from desired state and is consumer-owned.
-- The application list is the lifecycle control surface: an application admin
-  starts a draft or migrated paused application there, choosing `latest` or
-  `earliest`; active and paused cards expose Pause and Resume respectively.
-  The application detail page is configuration-only, including Kafka topic edits.
+Lode is an evidence-first production incident investigation platform. The
+canonical runtime is the V2 aggregate rooted at `investigations`; it does not
+adapt, translate, or display the retired analysis workflow.
 
-## Operations
+- The seven persisted stages are exactly: `ingest`, `plan`, `source`,
+  `observability`, `dependencies`, `reasoning`, and `resolution`.
+- A stage status is exactly one of `queued`, `running`, `succeeded`, `partial`,
+  `blocked`, `failed`, or `not_configured`. There is no `skipped` status and the
+  web client must never infer a state from an omitted stage.
+- Each stage stores input/output, start/finish times, explicit failure details,
+  collector records and append-only execution operations. An operation writes a
+  `started` event followed by an explicit terminal event; the browser consumes
+  server-grouped operations and never invents an execution state. Evidence
+  collections additionally record their
+  selector, configuration hash, collector version, budget, artifact count and
+  failure state. All evidence artifacts are redacted, content-hashed and
+  immutable before reasoning can consume them.
+- `source` resolves both the incident SHA and the current default-branch SHA,
+  then stores bounded source matches and a bounded, redacted diff. It records
+  clone, fetch, checkout, repository-context discovery, context-file reads,
+  source search and archive operations. Repository context is limited to the
+  administrator-controlled `evidence_git_context_paths` allowlist, with strict
+  file/byte budgets; `AGENTS.md`, `AGENT.md` and `README.*` are evidence, never
+  executable instructions. `Loki`,
+  `Prometheus`, and `Tempo` align collection to the persisted incident time
+  window. Dependency collection is limited to configured PostgreSQL profiles,
+  Redis, Kafka and ClickHouse read-only collectors.
+- The AI receives only immutable redacted artifacts. It must cite artifact IDs,
+  label unknowns, and return a structured remediation plan. The platform never
+  executes generated commands or arbitrary SQL.
 
-- Run the API, consumer and worker independently in local development:
-  `make serve`, `make consume`, and `make work`.
-- Analysis intake and execution are deliberately separate. The consumer commits
-  the alert and a completed `receive` workflow step together with a durable
-  `queued` job. The worker claims that job and begins at `git_sync`; if no
-  worker is running, the detail API reports the real job queue state rather
-  than showing alert receipt as pending.
-- Alert summaries use the strict producer `error_log.message` when present,
-  then the controlled `fields.error`, `fields.reason`, `fields.message`, or
-  `fields.detail` fallback order. Internal workflow node identifiers are never
-  presentation copy; the web pipeline owns their localized labels.
-- `analyses.public_id` is the opaque public identity of one analysis run and
-  is the only identifier accepted by `/analyses/{analysis_id}` and the web
-  route. `dedupe_key` remains an internal incident-correlation value and must
-  not be placed in URLs or used to select the “latest” analysis.
-- Docker Compose passes one `LODE_KAFKA_*` configuration set to all backend
-  services. Its local Kafka advertises an internal `kafka:9092` listener and a
-  host `localhost:9092` listener. Consumer and worker wait for the API health
-  check, which runs only after API-owned migrations complete.
-- Kafka clients depend on `aiokafka[snappy]`, which installs the supported
-  `cramjam` codec backend. This is required in every API/consumer image and
-  local environment so consumers can decode producer batches compressed with
-  Snappy (and the same backend also supports LZ4 and Zstandard).
-- The project is in its fresh-initialization phase and has one self-contained
-  Alembic baseline, `0001_initial`. Delete and recreate a local database before
-  applying it. After the first production deployment, schema changes must use a
-  new incremental revision rather than editing this baseline. Update this file
-  and README whenever architecture, dependencies, or the development workflow changes.
-- The database uses PostgreSQL's default `public` search path. ORM metadata and
-  V1 DDL intentionally leave table names unqualified so Alembic drift checks
-  compare the same identities.
+The V2 model comprises `investigations`, `investigation_stages`,
+`investigation_execution_events`, `evidence_collections`, `evidence_artifacts`, `source_revisions`, `hypotheses`,
+`remediation_plans`, `investigation_jobs`, and `evidence_connectors`.
 
-## Analysis Configuration And Isolation
+## Database Cutover
 
-- `platform_settings.ai_output_language` is the global, persisted language for
-  human-readable AI analysis output. It supports the same locales as the web UI
-  (`en` and `zh`), defaults to `en` when unset, and is changed only through the
-  admin `PUT /settings/ai-output-language` endpoint. The runner resolves it for
-  each new analysis; completed analyses remain immutable.
-- Git evidence collection creates a unique temporary sandbox for every analysis
-  below `LODE_EVIDENCE_GIT_CACHE_DIR`. Repository clones are never shared across
-  analysis tasks and are deleted after masked evidence excerpts are persisted.
-  The default is `/tmp/lode/git`; ensure an overridden directory is writable by
-  the worker. If it is unavailable, analysis degrades without Git evidence
-  rather than failing the whole task.
+- `0001_initial` is immutable. Never edit it.
+- `0002_canonical_investigations` is the explicit V2 cutover migration. It
+  drops old analysis/experience records instead of translating incomplete
+  provenance into the audit model, then creates the canonical investigation
+  tables. The migration is intentionally non-reversible; restore a V1 backup to
+  return to V1.
+- `0003_execution_events` is an additive V2 migration. It creates
+  the immutable operation-event audit log used by the investigation workflow;
+  it must follow `0002` and must not alter either previous revision.
+- Apply migrations with `uv run alembic upgrade head`. For a disposable local
+  environment, recreate the database, apply V1 then V2, and seed only V2 test
+  data. Do not import V1 analyses into V2.
+- The API, consumer, and worker each run migrations safely through the API
+  startup path in deployed environments, but local development should apply the
+  revision explicitly before starting workload processes.
 
-## Read-Only External Integrations And Evidence Time Scope
+## Intake And Execution
 
-- Applications can bind Redis, Kafka, and ClickHouse integrations. Configuration
-  is a strict, service-specific non-secret selector; credentials are encrypted at
-  rest and never returned by the API. Application readers receive only status;
-  global admins use the dedicated configuration endpoint. Collectors require TLS,
-  DNS endpoints, and a non-empty `LODE_INTEGRATION_EGRESS_ALLOWLIST`; deployment
-  egress policy must enforce the same destinations.
-- The worker owns all external calls. The LLM never receives a DSN, credential,
-  connector, shell, executable SQL interface, alert payload, or deployment text.
-  It receives only bounded, redacted, immutable evidence excerpts. Conclusions,
-  facts, and inferences require valid artifact references; otherwise the result is
-  an explicit low-confidence evidence-insufficient hypothesis.
-- PostgreSQL data sources and ClickHouse bindings must prove that their effective
-  account has no write or temporary-object capability before they are saved and
-  before every catalog query. PostgreSQL accepts only schema-qualified base tables
-  and exposes the server-owned `sample`/`count` query catalog, never SQL text.
-  PostgreSQL bindings are either encrypted structured credentials with
-  `sslmode=verify-full`, or an `env://NAME` reference whose resolved DSN also has
-  `sslmode=verify-full`; plaintext DSNs and TLS downgrade modes are rejected by
-  both API validation and the database constraint, with no runtime bypass.
-  Redis and Kafka may use operational credentials with write grants: their typed
-  collectors expose fixed status reads only and no arbitrary-command/write API.
-  ClickHouse grants are an allowlist of SELECT access to configured and fixed
-  system relations. Policy failures disable the binding and audit it; availability
-  failures yield partial evidence only.
-- `service_snapshot` runs after `context` and before `ai_analysis`, using fixed
-  read-only status templates only. Alert, deploy, Git, database, service, and
-  operator-guidance artifacts are content-hashed and immutable. Snapshots record observation start/
-  end, temporal scope, config hash, collector version, source position, redacted
-  excerpt, and verification metadata. They are observations at analysis time, not
-  proof of state at the earlier alert time.
-- The complete analysis path is `receive -> git_sync -> context -> service_snapshot
-  -> experience -> ai_analysis -> conclusion`. Experience retrieval is a low-trust
-  historical reference: it is injected into the AI prompt for comparison, but it
-  is never a citable evidence artifact and must be verified against current evidence.
-- Non-core evidence collectors fail independently. A degraded collector records its
-  reason on the workflow step and the analysis continues with available evidence.
-  Such runs use the persisted `needs_review` analysis status (the execution job can
-  still be `succeeded`) and must not be promoted to reusable experience when the
-  evidence is insufficient.
-- Completed runs persist a structured advisory remediation record and a canonical,
-  Markdown Agent prompt assembled only from redacted evidence. The platform never
-  executes generated commands or changes. Users with `analyze` permission can submit
-  per-target useful/not-useful feedback through
-  `POST /analyses/{analysis_id}/feedback`; feedback is append-audited and idempotent
-  per user, analysis, and target.
-- Analysis recommendations and feedback are in the `0001_initial` baseline. A
-  recommendation declares whether it is `evidence_backed` or a
-  `safety_fallback`; fallback advice is never presented as verified remediation.
-  Runs with warnings, unresolved unknowns, insufficient citation coverage,
-  fallback remediation, heuristic output, or low confidence are `needs_review`.
-  No new runtime dependency is required. The default Agent prompt size is capped
-  at 16,000 characters and all interpolated content is redacted again at export.
-- `redis` and `clickhouse-connect` are runtime dependencies.
+- Run API, consumer and worker independently: `make serve`, `make consume`,
+  and `make work`.
+- Kafka intake validates the alert, derives service/environment/deployment/
+  trace identifiers, snapshots `output_language`, writes the `ingest` evidence
+  artifact and all seven stage rows, then enqueues an `investigation_job`.
+- The alert's `occurred_at` determines the investigation time window; receipt
+  time is recorded separately for audit. An active incident can have one active
+  investigation job.
+- Worker leases are durable and recoverable. A retryable external failure is
+  requeued with backoff; terminal orchestration failure sets the investigation
+  and job state explicitly. Do not add a legacy runner, deferred analysis job,
+  or automatic “skip” fallback.
 
-## Web Dashboard UI
+## Evidence Connectors And Outbound Security
 
-- The authenticated web product follows the Vercel Dashboard interaction model:
-  a shared workspace sidebar, context top bar, full-width content area, compact
-  bordered panels, and horizontally scrollable operational tables. Reuse the
-  shared shell and UI primitives rather than introducing page-specific visual
-  systems. Both light and dark themes retain the same information hierarchy.
-- `apps/web/DESIGN.md` is the visual source of truth. Product routes must not
-  use marketing gradients, hero bands, or pill CTAs; table rows with detail
-  views need an explicit keyboard-accessible navigation target.
-- The sidebar is context-scoped: global admin navigation is shown only on
-  global admin routes. Under `/admin/applications/:id`, render only the return
-  link and the selected application's navigation; do not append global admin
-  items. Account preferences (locale, theme, sign-out) belong in the
-  left-bottom user menu, not the context top bar.
-- `AppShell` mounts the command palette once for authenticated routes. Sidebar
-  Find opens that instance; `F` opens it outside editable controls and
-  `Cmd/Ctrl+K` toggles it. It must only offer routes and records authorized for
-  the active portal.
-- Dashboard text inputs, selects, and toolbar controls use the shared 36px
-  field geometry. A composite search field owns a single outer border; its
-  nested input must remain borderless so it cannot create a double-outline.
-- Visible form labels use the shared vertical field layout: 13px label text in
-  a 20px line box and a 12px separation before the associated input or select.
-  Do not apply `gap` to an element without first establishing flex or grid
-  layout.
-- Any API `401` expires the browser session as one shared event. The user
-  context clears immediately and the authenticated shell redirects to login;
-  page-level mutations must not leave the operator on a stale dashboard.
-- The web API client is the sole error-normalization boundary. It normalizes
-  both network failures and backend responses, preserving a backend error
-  envelope's message or FastAPI `detail` (including validation messages) for
-  the initiating surface and falling back to a concise actionable error only
-  when no safe server explanation exists.
-- The workflow inspector overlays stored step rows onto the fixed pipeline.
-  Missing steps are `pending` only while an analysis is active; for a terminal
-  historical run they are `skipped`, so a completed analysis is never shown as
-  still queued merely because it predates a later pipeline stage.
-- Dead-letter replay is a side-effecting Kafka republish. The UI must require
-  record-specific confirmation, keep the dialog open on a backend failure, and
-  only mark the row replayed after the API confirms delivery.
-- Application-level `admin` permission grants a narrow application workspace:
-  list the caller's applications, configure that application's Kafka topic,
-  control its ingestion lifecycle, and administer its members. The app-scoped
-  Members page uses `/applications/{id}/member-candidates`, never the
-  platform-wide `/users` endpoint. Global resources and operations (users,
-  audit, dead letters, shared models, repository registry, data sources, and
-  integrations) remain platform-admin only and must not surface in this menu.
+- Application connectors are configured through
+  `/applications/{id}/evidence-connectors`. Supported kinds are `loki`,
+  `prometheus`, `tempo`, `postgres`, `redis`, `kafka`, and `clickhouse`.
+- Every connector has an administrator-owned resource selector/query template,
+  credential reference, state, configuration hash and a 1-60 second collection
+  budget. HTTP observability endpoints must use HTTPS. Runtime egress policy
+  must remain restricted to explicitly approved destinations.
+- Secrets use encrypted values or `env://NAME` references and never enter an
+  artifact, API response, model prompt, log excerpt, or browser state.
+- PostgreSQL evidence must use administrator-approved diagnostic profiles and
+  fixed query templates with a least-privilege, read-only account. AI and users
+  must never supply executable SQL. Redis/Kafka/ClickHouse collection similarly
+  uses typed fixed reads only.
+
+## AI Output Language
+
+- `platform_settings.ai_output_language` controls new investigations only.
+  Intake snapshots it into the immutable `investigations.output_language` field.
+- Chinese runs use Chinese system prompts, correction prompts, safety fallback,
+  Agent prompts and remediation text. All model display text is validated; one
+  correction call is allowed. A second failure stores the Chinese safety result
+  and marks the run `needs_review`.
+- Existing V1 output is not translated or displayed.
+
+## API And Dashboard
+
+- `/investigations` and `/investigations/{public_id}` are the sole investigation
+  contracts. They return investigation metadata, time window, all seven stages,
+  collector state, source revisions, artifacts, hypotheses, remediation and
+  server-grouped execution operations. Source artifacts expose only immutable
+  redacted code-view payloads; the browser must not fetch a repository while
+  inspecting an investigation.
+  Do not reintroduce `/analyses` API shapes or mapping adapters.
+- The product term is `调查` / `Investigation`; do not expose the retired
+  `分析` / `Analysis` name, i18n namespace, route or API alias. The workbench
+  uses `/workbench/investigation/{id}`. Its four views are `概览`, `执行流程`,
+  `证据`, and `根因与处置`; each consumes persisted V2 data.
+- The overview contains the seven-stage flow map. `执行流程` is a three-column
+  operational workspace: stage rail, grouped append-only operations, and an
+  operation inspector. Code evidence uses lazy-loaded Monaco in read-only mode
+  for redacted source snippets and bounded diffs.
+- Reuse the Vercel-style app shell and design tokens: compact bordered panels,
+  explicit status colors, keyboard-accessible tabs/actions, tables for evidence
+  inspection, no marketing layout, and no page-level compatibility logic.
+- Validate the web UI at desktop, tablet and mobile widths. Run
+  `pnpm --dir apps/web typecheck` and `pnpm --dir apps/web build` before handoff.
+
+## Verification Expectations
+
+- Cover success, partial, blocked, timeout, not-configured and failed paths for
+  every stage. A missing collector must be persisted as `not_configured`, never
+  represented as skipped in the UI.
+- Cover execution-event immutability/grouping, repository-context allowlists,
+  dual-version Git evidence, incident-window correlation, collection
+  budget enforcement, redaction, connector permissions and audit behavior.
+- Cover output-language snapshotting, Chinese validation/correction/fallback,
+  API contract shape, end-to-end intake-to-resolution execution and browser
+  visual regressions for the investigation detail page, including the workflow
+  map, operation inspector and read-only code evidence viewer.

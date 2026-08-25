@@ -30,12 +30,8 @@ it never runs on extension-less hosts)::
 The cast ``embedding::vector`` relies on pgvector's array→vector parsing; if a
 given pgvector build rejects it, wrap as ``(embedding::text::vector)``.
 
-Upgrade note: if you ever want to change the *stored* type to a native
-``pgvector.sqlalchemy.Vector(EMBEDDING_DIM)`` column (instead of casting), swap
-the column in ``lode.db.models.experience`` and add an Alembic migration that does
-``CREATE EXTENSION vector`` + ``ALTER COLUMN embedding TYPE vector(EMBEDDING_DIM)
-USING (embedding::text::vector)``. The current design deliberately avoids this
-to stay portable.
+This module is retained only for general embedding utilities; the retired
+experience store is not part of the V2 investigation schema.
 """
 
 from __future__ import annotations

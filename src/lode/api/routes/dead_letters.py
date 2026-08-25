@@ -21,7 +21,7 @@ from lode.api.audit import audit_action
 from lode.api.deps import require_admin
 from lode.api.schemas import DeadLetterOut, ReplayOut
 from lode.config import kafka_security_kwargs, settings
-from lode.db.models.analysis import DeadLetter
+from lode.db.models.intake import DeadLetter
 from lode.db.session import AsyncSessionLocal
 
 logger = logging.getLogger("lode.api.dead_letters")

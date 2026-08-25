@@ -54,6 +54,9 @@ from lode.api.schemas import (
     CreateDbSourceIn,
     DbSourceListItem,
     DbSourceOut,
+    EvidenceConnectorIn,
+    EvidenceConnectorOut,
+    EvidenceConnectorUpdateIn,
     SetApplicationModelIn,
     SetApplicationTopicIn,
     StartApplicationIngestionIn,
@@ -72,6 +75,7 @@ from lode.db.models.application import (
     DbSource,
 )
 from lode.db.models.integration import ApplicationIntegration
+from lode.db.models.investigation import EvidenceConnector
 from lode.config import kafka_security_kwargs, settings
 from lode.db.models.git import GitCredential, GitRepo
 from lode.db.models.permission import UserApplicationPerm
@@ -86,6 +90,14 @@ from lode.engine.db_proxy import (
 from lode.engine.integrations import IntegrationError, connector_for, resolve_integration_secret
 
 router = APIRouter(prefix="/applications", tags=["applications"])
+
+
+def _evidence_connector_out(row: EvidenceConnector) -> EvidenceConnectorOut:
+    return EvidenceConnectorOut(
+        id=row.id, application_id=row.application_id, name=row.name, kind=row.kind,
+        state=row.state, config=row.config or {}, diagnostic_profile=row.diagnostic_profile or {},
+        collection_budget_seconds=row.collection_budget_seconds, has_secret=bool(row.secret_ref),
+    )
 
 
 async def get_session() -> AsyncSession:
@@ -1535,3 +1547,79 @@ async def remove_member(
         target_id=str(user_id),
         application_id=application_id,
     )
+
+
+@router.get("/{application_id}/evidence-connectors", response_model=list[EvidenceConnectorOut])
+async def list_evidence_connectors(
+    application_id: int,
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> list[EvidenceConnectorOut]:
+    rows = (await session.execute(
+        select(EvidenceConnector)
+        .where(EvidenceConnector.application_id == application_id)
+        .order_by(EvidenceConnector.kind, EvidenceConnector.name)
+    )).scalars().all()
+    return [_evidence_connector_out(row) for row in rows]
+
+
+@router.post("/{application_id}/evidence-connectors", response_model=EvidenceConnectorOut, status_code=201)
+async def create_evidence_connector(
+    application_id: int,
+    payload: EvidenceConnectorIn,
+    actor_id: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> EvidenceConnectorOut:
+    if await session.get(Application, application_id) is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    if payload.kind in {"loki", "prometheus", "tempo"} and not str(payload.config.get("base_url") or "").startswith("https://"):
+        raise HTTPException(status_code=422, detail="observability connectors require an HTTPS base_url")
+    secret_ref = payload.secret_ref
+    if secret_ref and not secret_ref.startswith("env://"):
+        secret_ref = encrypt_secret(secret_ref)
+    row = EvidenceConnector(
+        application_id=application_id, name=payload.name, kind=payload.kind, state=payload.state,
+        config=payload.config, secret_ref=secret_ref, diagnostic_profile=payload.diagnostic_profile,
+        collection_budget_seconds=payload.collection_budget_seconds,
+    )
+    session.add(row)
+    await session.commit()
+    await audit_action(action="application.evidence_connector.create", actor_id=actor_id, target_type="evidence_connector", target_id=str(row.id), application_id=application_id, detail={"kind": row.kind, "state": row.state})
+    return _evidence_connector_out(row)
+
+
+@router.put("/{application_id}/evidence-connectors/{connector_id}", response_model=EvidenceConnectorOut)
+async def update_evidence_connector(
+    application_id: int,
+    connector_id: int,
+    payload: EvidenceConnectorUpdateIn,
+    actor_id: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> EvidenceConnectorOut:
+    row = await session.get(EvidenceConnector, connector_id)
+    if row is None or row.application_id != application_id:
+        raise HTTPException(status_code=404, detail="evidence connector not found")
+    for field in ("name", "config", "diagnostic_profile", "collection_budget_seconds", "state"):
+        value = getattr(payload, field)
+        if value is not None:
+            setattr(row, field, value)
+    if payload.secret_ref is not None:
+        row.secret_ref = payload.secret_ref if payload.secret_ref.startswith("env://") else encrypt_secret(payload.secret_ref)
+    await session.commit()
+    await audit_action(action="application.evidence_connector.update", actor_id=actor_id, target_type="evidence_connector", target_id=str(row.id), application_id=application_id, detail={"kind": row.kind, "state": row.state})
+    return _evidence_connector_out(row)
+
+
+@router.delete("/{application_id}/evidence-connectors/{connector_id}", status_code=204)
+async def delete_evidence_connector(
+    application_id: int,
+    connector_id: int,
+    actor_id: int = Security(require_app_perm, scopes=["admin"]),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    row = await session.get(EvidenceConnector, connector_id)
+    if row is None or row.application_id != application_id:
+        raise HTTPException(status_code=404, detail="evidence connector not found")
+    await session.delete(row)
+    await session.commit()
+    await audit_action(action="application.evidence_connector.delete", actor_id=actor_id, target_type="evidence_connector", target_id=str(connector_id), application_id=application_id, detail={})

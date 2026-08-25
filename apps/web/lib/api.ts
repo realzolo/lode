@@ -6,9 +6,6 @@
 // here so the page components stay presentational.
 
 import type {
-  Analysis,
-  AnalysisStatus,
-  AnalysisStep,
   AiModelConfig,
   Application,
   AuditEvent,
@@ -18,10 +15,6 @@ import type {
   ReplayOut,
   Invite,
   Level,
-  Experience,
-  StepStatus,
-  AnalysisRecommendation,
-  AnalysisFeedbackSummary,
 } from '@/lib/types';
 
 export const API_BASE =
@@ -131,48 +124,6 @@ function authHeaders(): Record<string, string> {
 }
 
 // ---------------------------------------------------------------------------
-// Status normalization
-// ---------------------------------------------------------------------------
-
-export function mapAnalysisStatus(status: string): AnalysisStatus {
-  switch (status) {
-    case 'completed':
-      return 'completed';
-    case 'failed':
-      return 'failed';
-    case 'running':
-      return 'running';
-    case 'needs_review':
-      return 'needs_review';
-    case 'pending':
-      return 'pending';
-    case 'canceled':
-      // canceled == needs human-in-the-loop attention
-      return 'needs_human';
-    default:
-      throw new Error(`Unknown analysis status: ${status}`);
-  }
-}
-
-export function mapStepStatus(status: string): StepStatus {
-  switch (status) {
-    case 'completed':
-      return 'done';
-    case 'running':
-      return 'running';
-    case 'failed':
-      return 'failed';
-    case 'degraded':
-      return 'degraded';
-    case 'skipped':
-      return 'skipped';
-    case 'pending':
-    default:
-      return 'pending';
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Fetch helpers
 // ---------------------------------------------------------------------------
 
@@ -197,91 +148,6 @@ async function getJson<T>(path: string): Promise<T> {
 // Shapes returned by the API (snake_case)
 // ---------------------------------------------------------------------------
 
-interface ApiAnalysis {
-  id: string;
-  dedupe_key: string;
-  application_id: number;
-  application_name: string;
-  title: string;
-  level: string;
-  status: string;
-  confidence: number | null;
-  conclusion: string | null;
-  received_at: string | null;
-  updated_at: string;
-  my_perm: string | null;
-}
-
-interface ApiStep {
-  node_type: string;
-  status: string;
-  order_index: number;
-  detail: string | null;
-  summary: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
-export interface AnalysisGuidance {
-  id: number;
-  author: string;
-  content: string;
-  created_at: string;
-  effect: 'will_apply' | 'applied' | 'needs_reanalysis';
-  applied_at: string | null;
-}
-
-interface ApiAlert {
-  title: string;
-  level: string;
-  topic: string;
-  error_message: string;
-  fields: Record<string, unknown>;
-}
-
-export interface AnalysisDetail {
-  id: string;
-  dedupe_key: string;
-  application_id: number;
-  application_name: string;
-  status: string;
-  confidence: number | null;
-  conclusion: string | null;
-  evidence: Record<string, unknown> | null;
-  evidence_artifacts: EvidenceArtifact[];
-  recommendation: AnalysisRecommendation | null;
-  feedback: AnalysisFeedbackSummary;
-  alert: ApiAlert | null;
-  steps: ApiStep[];
-  job: {
-    id: string;
-    status: 'queued' | 'running' | 'retry_wait' | 'succeeded' | 'dead';
-    attempt: number;
-    max_attempts: number;
-    available_at: string;
-    last_error_code: string | null;
-    last_error_detail: string | null;
-  };
-  guidances: AnalysisGuidance[];
-  follow_up_status: 'none' | 'requested';
-  matched_experience: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-  updated_at: string;
-  my_perm: string | null;
-}
-
-export interface EvidenceArtifact {
-  id: number;
-  artifact_type: string;
-  source_kind: string | null;
-  locator: string | null;
-  content_hash: string | null;
-  redacted_excerpt: string | null;
-  metadata: Record<string, unknown> | null;
-  collected_at: string;
-}
-
 interface ApiApplication {
   id: number;
   name: string;
@@ -295,93 +161,31 @@ interface ApiApplication {
   created_at: string;
 }
 
-interface ApiExperience {
-  id: number;
-  application_id: number;
-  application_name: string;
-  trigger_signature: string;
-  content: string;
-  is_valid: boolean;
-  created_at: string;
-}
-
 // ---------------------------------------------------------------------------
 // Public client functions
 // ---------------------------------------------------------------------------
 
-export async function fetchAnalyses(): Promise<Analysis[]> {
-  const rows = await getJson<ApiAnalysis[]>('/analyses');
-  return rows.map((r) => ({
-    id: r.id,
-    dedupeKey: r.dedupe_key,
-    applicationId: String(r.application_id),
-    applicationName: r.application_name,
-    title: r.title,
-    level: r.level as Level,
-    status: mapAnalysisStatus(r.status),
-    confidence: r.confidence,
-    conclusion: r.conclusion,
-    myPerm: r.my_perm ?? undefined,
-  }));
+// Canonical investigation contract. The UI never adapts the retired analysis
+// payload; each displayed state is returned by the new evidence-first API.
+export type InvestigationStageStatus = 'queued' | 'running' | 'succeeded' | 'partial' | 'blocked' | 'failed' | 'not_configured';
+export interface InvestigationSummary { id: string; application_id: number; application_name: string; title: string; level: string; status: 'queued' | 'running' | 'completed' | 'needs_review' | 'failed'; confidence: number | null; conclusion: string | null; created_at: string; }
+export interface InvestigationDetail {
+  id: string; application: { id: number; name: string }; alert: { title: string; level: string; topic: string; error_message: string } | null;
+  status: InvestigationSummary['status']; output_language: 'en' | 'zh';
+  scope: Record<string, string | number | null> & { service?: string | null; environment?: string | null; trace_id?: string | null; deployment_sha?: string | null; window_started_at: string; window_finished_at: string };
+  conclusion: string | null; confidence: number | null;
+  stages: { name: 'ingest' | 'plan' | 'source' | 'observability' | 'dependencies' | 'reasoning' | 'resolution'; status: InvestigationStageStatus; order: number; input: Record<string, unknown>; output: Record<string, unknown>; failure_code: string | null; failure_detail: string | null; started_at: string | null; finished_at: string | null; collections: { id: number; connector: string; status: InvestigationStageStatus; selector: Record<string, unknown>; config_hash: string | null; artifact_count: number; failure_code: string | null; failure_detail: string | null; started_at: string | null; finished_at: string | null }[]; operations: { id: string; type: string; status: 'running' | 'succeeded' | 'partial' | 'blocked' | 'failed' | 'not_configured'; collection_id: number | null; started_at: string | null; finished_at: string | null; detail: Record<string, unknown>; artifact_refs: number[]; sequence: number }[] }[];
+  source_revisions: { role: 'incident' | 'latest'; requested_ref: string | null; resolved_sha: string | null; origin_url: string; status: string; failure_detail: string | null }[];
+  evidence: { id: number; type: string; source: string; locator: string | null; content_hash: string; excerpt: string; metadata: Record<string, unknown>; collected_at: string; code?: { mode: 'source'; language: string; content: string; highlight_line: number | null } | { mode: 'diff'; language: string; before: string; after: string } }[];
+  hypotheses: { rank: number; status: string; text: string; confidence: number; evidence_refs: number[] }[];
+  remediation: { summary: string; risk_level: 'low' | 'medium' | 'high' | 'critical'; evidence_refs: number[]; preconditions: string[]; steps: { action?: string; expected_result?: string }[]; verification: string[]; rollback: string[]; agent_prompt: string } | null;
+  job: { status: string; attempt: number; max_attempts: number; last_error_code: string | null; last_error_detail: string | null } | null;
+  started_at: string | null; finished_at: string | null; created_at: string;
 }
+export async function fetchInvestigations(): Promise<InvestigationSummary[]> { return getJson<InvestigationSummary[]>('/investigations'); }
+export async function fetchInvestigation(id: string): Promise<InvestigationDetail> { return getJson<InvestigationDetail>(`/investigations/${encodeURIComponent(id)}`); }
+export async function reinvestigate(id: string): Promise<{ id: string; status: 'queued' }> { return postJson(`/investigations/${encodeURIComponent(id)}/reanalyze`, {}); }
 
-export async function fetchAnalysis(analysisId: string): Promise<AnalysisDetail> {
-  return getJson<AnalysisDetail>(
-    `/analyses/${encodeURIComponent(analysisId)}`
-  );
-}
-
-export interface ReanalyzeResult {
-  analysis_id: string;
-  job_id: string | null;
-  status: 'queued' | 'scheduled_after_active';
-  message: string;
-}
-
-export async function reanalyze(analysisId: string): Promise<ReanalyzeResult> {
-  const res = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/reanalyze`, {
-    method: 'POST',
-    cache: 'no-store',
-    headers: authHeaders(),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `reanalyze failed: ${res.status}`));
-  }
-  return (await res.json()) as ReanalyzeResult;
-}
-
-export async function addGuidance(
-  analysisId: string,
-  content: string
-): Promise<void> {
-  const res = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/guidances`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ content, author: 'web' }),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `add guidance failed: ${res.status}`));
-  }
-}
-
-export async function submitAnalysisFeedback(
-  analysisId: string,
-  target: 'remediation' | 'agent_prompt',
-  value: 'useful' | 'not_useful',
-): Promise<AnalysisFeedbackSummary> {
-  const res = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/feedback`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ target, value }),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `feedback failed: ${res.status}`));
-  }
-  return (await res.json()) as AnalysisFeedbackSummary;
-}
 
 export interface LoginResult {
   token: string;
@@ -820,29 +624,6 @@ export async function removeAppMember(
   if (!res.ok) {
     throw new Error(await responseErrorMessage(res, `remove member failed: ${res.status}`));
   }
-}
-
-export async function fetchExperiences(applicationId?: number): Promise<Experience[]> {
-  const qs = applicationId != null ? `?application_id=${applicationId}` : '';
-  const rows = await getJson<ApiExperience[]>(`/experiences${qs}`);
-  return rows.map((r) => ({
-    id: String(r.id),
-    applicationName: r.application_name,
-    triggerSignature: r.trigger_signature,
-    content: r.content,
-    valid: r.is_valid,
-  }));
-}
-
-export function toUiSteps(steps: ApiStep[]): AnalysisStep[] {
-  return steps.map((s) => ({
-    nodeType: s.node_type as AnalysisStep['nodeType'],
-    status: mapStepStatus(s.status),
-    summary: s.summary ?? undefined,
-    detail: s.detail ?? undefined,
-    startedAt: s.started_at ?? undefined,
-    finishedAt: s.finished_at ?? undefined,
-  }));
 }
 
 export interface GlobalSettings {
