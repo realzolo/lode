@@ -54,6 +54,7 @@ _SKIP_EXT = {
     ".ttf", ".eot", ".pdf", ".zip", ".gz", ".tar", ".tgz", ".lock", ".bin",
     ".so", ".dylib", ".dll", ".exe", ".pyc", ".class",
 }
+_SOURCE_EXT = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".java", ".rs", ".rb", ".php", ".cs", ".kt", ".kts", ".swift", ".scala", ".sql", ".sh"}
 _TOKEN_SPLIT = re.compile(r"[\s:.,/()\[\]{}'\"`]+")
 _MIN_TERM_LEN = 4
 # Generic English words that are useless as search terms (kept tiny on purpose).
@@ -68,8 +69,9 @@ def derive_query_terms(alert: Alert) -> list[str]:
     """Extract candidate search terms from an alert's error and metadata.
 
     Pulls tokens from the error message, common fields (``error`` / ``exception``
-    / ``stack`` / ``function`` / ``class`` / ``symbol``), and the title. Returns
-    at most 25 distinct, non-trivial terms.
+    / ``stack`` / ``function`` / ``class`` / ``symbol``), and the title. Exact
+    error codes and identifier-shaped fields are prioritized; returns at most
+    eight terms so a generic title cannot flood the code search.
     """
     raw: list[str] = []
 
@@ -81,13 +83,15 @@ def derive_query_terms(alert: Alert) -> list[str]:
             if len(t) >= _MIN_TERM_LEN and not t.isdigit():
                 raw.append(t)
 
-    _add(alert.error_message)
-    _add(alert.title)
     fields = getattr(alert, "fields", None) or {}
-    for key in ("error", "exception", "stack", "function", "class", "symbol", "message"):
+    # Exact machine-readable identifiers name code paths and contracts more
+    # reliably than an alert title, so they always lead the bounded search.
+    for key in ("code", "error_code", "gatewayCode", "providerCode", "function", "class", "symbol", "error", "exception", "stack", "message"):
         val = fields.get(key)
         if isinstance(val, str):
             _add(val)
+    _add(alert.error_message)
+    _add(alert.title)
 
     terms: list[str] = []
     seen: set[str] = set()
@@ -97,7 +101,7 @@ def derive_query_terms(alert: Alert) -> list[str]:
             continue
         seen.add(low)
         terms.append(t)
-        if len(terms) >= 25:
+        if len(terms) >= 8:
             break
     return terms
 
@@ -119,17 +123,14 @@ def search_tree(
     if not terms:
         return []
     compiled = [(t, re.compile(re.escape(t), re.IGNORECASE)) for t in terms]
-    hits: list[dict[str, Any]] = []
-    bytes_used = 0
+    candidates: list[dict[str, Any]] = []
 
     for path in sorted(root.rglob("*")):
-        if len(hits) >= max_files:
-            break
         if not path.is_file():
             continue
         if any(part in _SKIP_DIRS for part in path.parts):
             continue
-        if path.suffix.lower() in _SKIP_EXT:
+        if path.suffix.lower() in _SKIP_EXT or path.suffix.lower() not in _SOURCE_EXT:
             continue
 
         try:
@@ -148,21 +149,36 @@ def search_tree(
         if not matched_here:
             continue
 
-        start = max(0, first_line - snippet_lines // 2)
-        snippet = _slice_lines(text, start, snippet_lines)
-        snippet_bytes = len(snippet.encode("utf-8"))
-        if bytes_used + snippet_bytes > max_bytes:
-            break
-        bytes_used += snippet_bytes
-
-        hits.append(
+        start_line = max(1, first_line - snippet_lines // 2)
+        snippet = _slice_lines(text, start_line, snippet_lines)
+        end_line = start_line + max(0, len(snippet.splitlines()) - 1)
+        relative = str(path.relative_to(root))
+        score = len(matched_here) * 100 + sum(len(pattern.findall(text)) for _, pattern in compiled if pattern.search(text))
+        if any("_" in term or term.isupper() for term in matched_here):
+            score += 60
+        if any(term.lower() in relative.lower() for term in matched_here):
+            score += 20
+        candidates.append(
             {
-                "path": str(path.relative_to(root)),
+                "path": relative,
                 "line": first_line,
+                "snippet_start_line": start_line,
+                "snippet_end_line": end_line,
                 "snippet": snippet,
                 "terms": matched_here,
+                "score": score,
             }
         )
+    hits: list[dict[str, Any]] = []
+    bytes_used = 0
+    for candidate in sorted(candidates, key=lambda item: (-item["score"], item["path"], item["line"])):
+        if len(hits) >= max_files:
+            break
+        snippet_bytes = len(candidate["snippet"].encode("utf-8"))
+        if bytes_used + snippet_bytes > max_bytes and hits:
+            continue
+        bytes_used += snippet_bytes
+        hits.append(candidate)
     return hits
 
 

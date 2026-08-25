@@ -51,11 +51,12 @@ from lode.db.models.application import (
     ApplicationKafka,
 )
 from lode.db.models.intake import DeadLetter, Incident, IngestionEvent
-from lode.db.models.investigation import EvidenceArtifact, Investigation, InvestigationJob, InvestigationStage, STAGE_TYPES
+from lode.db.models.investigation import EvidenceArtifact, Investigation, InvestigationEvidenceLink, InvestigationJob, InvestigationStage
 from lode.db.models.platform_setting import PlatformSetting
 from lode.ai_output import AI_OUTPUT_LANGUAGE_SETTING_KEY, normalize_ai_output_language
 from lode.db.session import AsyncSessionLocal
 from lode.engine.evidence.secret_mask import mask_secrets
+from lode.engine.investigation_events import append_execution_event
 from lode.metrics import (
     ANALYSES,
     CONSUMER_LAG,
@@ -364,9 +365,15 @@ async def _persist(
     setting = await db.get(PlatformSetting, AI_OUTPUT_LANGUAGE_SETTING_KEY)
     output_language = normalize_ai_output_language(setting.value if setting is not None else None)
     fields = alert.fields or {}
-    deployment_sha = next((str(fields[key]) for key in ("commit", "git_commit", "sha", "revision") if fields.get(key)), None)
-    service_name = next((str(fields[key]) for key in ("service", "service_name", "app") if fields.get(key)), None)
-    environment = next((str(fields[key]) for key in ("environment", "env") if fields.get(key)), None)
+    def scope_value(keys: tuple[str, ...]) -> tuple[str | None, str | None]:
+        for key in keys:
+            if fields.get(key) not in (None, ""):
+                return str(fields[key]), f"alert.fields.{key}"
+        return None, None
+
+    deployment_sha, deployment_source = scope_value(("commit", "git_commit", "sha", "revision"))
+    service_name, service_source = scope_value(("service", "service_name"))
+    environment, environment_source = scope_value(("environment", "env"))
     investigation = Investigation(
         application_id=application_id,
         alert_id=alert.id,
@@ -380,32 +387,95 @@ async def _persist(
         deployment_sha=deployment_sha,
         window_started_at=occurred_at - timedelta(seconds=settings.investigation_window_before_seconds),
         window_finished_at=occurred_at + timedelta(seconds=settings.investigation_window_after_seconds),
-        scope={"topic": topic, "partition": partition, "offset": offset, "alert_occurred_at": occurred_at.isoformat(), "alert_received_at": now.isoformat()},
+        scope={
+            "topic": topic,
+            "partition": partition,
+            "offset": offset,
+            "alert_occurred_at": occurred_at.isoformat(),
+            "alert_received_at": now.isoformat(),
+            "scope_sources": {
+                "service": service_source,
+                "environment": environment_source,
+                "deployment_sha": deployment_source,
+                "trace_id": "alert.trace_id" if trace_id else None,
+            },
+        },
     )
     db.add(investigation)
     await db.flush()
-    db.add_all(
-        InvestigationStage(
-            investigation_id=investigation.id,
-            stage_type=stage_type,
-            status="succeeded" if stage_type == "ingest" else "queued",
-            order_index=index,
-            input={"topic": topic, "partition": partition, "offset": offset} if stage_type == "ingest" else {},
-            output={"summary": "Alert normalized", "time_window": [investigation.window_started_at.isoformat(), investigation.window_finished_at.isoformat()]} if stage_type == "ingest" else {},
-            started_at=now if stage_type == "ingest" else None,
-            finished_at=now if stage_type == "ingest" else None,
-        )
-        for index, stage_type in enumerate(STAGE_TYPES)
+    ingest_stage = InvestigationStage(
+        investigation_id=investigation.id,
+        stage_type="ingest",
+        status="running",
+        order_index=0,
+        input={"topic": topic, "partition": partition, "offset": offset},
+        output={},
+        started_at=now,
     )
+    db.add(ingest_stage)
     await db.flush()
-    ingest_stage = (await db.execute(select(InvestigationStage).where(InvestigationStage.investigation_id == investigation.id).where(InvestigationStage.stage_type == "ingest"))).scalars().one()
+    validation = await append_execution_event(
+        db,
+        investigation_id=investigation.id,
+        stage_id=ingest_stage.id,
+        event_type="intake_validation",
+        phase="started",
+        detail={"topic": topic, "partition": partition, "offset": offset},
+    )
+    await append_execution_event(
+        db,
+        investigation_id=investigation.id,
+        stage_id=ingest_stage.id,
+        event_type="intake_validation",
+        phase="succeeded",
+        operation_id=validation,
+        detail={"alert_id": alert.id, "time_window": [investigation.window_started_at.isoformat(), investigation.window_finished_at.isoformat()]},
+    )
+    scope_operation = await append_execution_event(
+        db,
+        investigation_id=investigation.id,
+        stage_id=ingest_stage.id,
+        event_type="scope_resolution",
+        phase="started",
+        detail={},
+    )
+    await append_execution_event(
+        db,
+        investigation_id=investigation.id,
+        stage_id=ingest_stage.id,
+        event_type="scope_resolution",
+        phase="succeeded",
+        operation_id=scope_operation,
+        detail={"scope_sources": investigation.scope["scope_sources"], "identified": {"service": bool(service_name), "environment": bool(environment), "deployment_sha": bool(deployment_sha), "trace_id": bool(trace_id)}},
+    )
     alert_excerpt = json.dumps({"title": alert.title, "level": alert.level, "error_message": alert.error_message, "fields": alert.fields or {}}, ensure_ascii=False, default=str)
     redacted_excerpt, categories = mask_secrets(alert_excerpt)
-    db.add(EvidenceArtifact(
+    archive_operation = await append_execution_event(
+        db,
+        investigation_id=investigation.id,
+        stage_id=ingest_stage.id,
+        event_type="alert_archive",
+        phase="started",
+        detail={"source": "kafka_alert"},
+    )
+    artifact = EvidenceArtifact(
         investigation_id=investigation.id, collection_id=None, artifact_type="alert", source_kind="alert", source_id=alert.id,
         locator=f"alert://{alert.id}", content_hash=hashlib.sha256(alert_excerpt.encode()).hexdigest(), redacted_excerpt=redacted_excerpt[:20_000],
         metadata_={"stage_id": ingest_stage.id, "received_at": now.isoformat(), "time_scope": "incident_input", "secret_categories": categories},
-    ))
+    )
+    db.add(artifact)
+    await db.flush()
+    db.add(InvestigationEvidenceLink(investigation_id=investigation.id, artifact_id=artifact.id, relation="collected"))
+    await append_execution_event(
+        db,
+        investigation_id=investigation.id,
+        stage_id=ingest_stage.id,
+        event_type="alert_archive",
+        phase="succeeded",
+        operation_id=archive_operation,
+        detail={"artifact_type": "alert", "redacted": bool(categories)},
+        artifact_refs=[artifact.id],
+    )
     job = InvestigationJob(
         incident_id=incident.id,
         investigation_id=investigation.id,
@@ -416,6 +486,31 @@ async def _persist(
         available_at=now,
     )
     db.add(job)
+    await db.flush()
+    enqueue_operation = await append_execution_event(
+        db,
+        investigation_id=investigation.id,
+        stage_id=ingest_stage.id,
+        event_type="job_enqueue",
+        phase="started",
+        detail={"max_attempts": job.max_attempts},
+    )
+    await append_execution_event(
+        db,
+        investigation_id=investigation.id,
+        stage_id=ingest_stage.id,
+        event_type="job_enqueue",
+        phase="succeeded",
+        operation_id=enqueue_operation,
+        detail={"job_id": job.public_id},
+    )
+    ingest_stage.status = "succeeded"
+    ingest_stage.finished_at = now
+    ingest_stage.output = {
+        "summary": "Alert normalized and archived.",
+        "time_window": [investigation.window_started_at.isoformat(), investigation.window_finished_at.isoformat()],
+        "scope_sources": investigation.scope["scope_sources"],
+    }
     await db.commit()
     incident.alert_count = (incident.alert_count or 0) + 1
     incident.latest_alert_id = alert.id

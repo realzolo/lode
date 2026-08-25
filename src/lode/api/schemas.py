@@ -605,6 +605,34 @@ class ReanalyzeOut(BaseModel):
     message: str
 
 
+class InvestigationFollowUpEvidenceIn(BaseModel):
+    """A bounded, redacted operator fact that can seed an inherited run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["log", "trace", "gateway_response", "deployment", "dependency"] = "log"
+    content: str = Field(min_length=1, max_length=20_000)
+    locator: str | None = Field(default=None, max_length=1_000)
+
+
+class InvestigationScopePatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service_name: str | None = Field(default=None, max_length=300)
+    environment: str | None = Field(default=None, max_length=300)
+    trace_id: str | None = Field(default=None, max_length=1_000)
+    deployment_sha: str | None = Field(default=None, max_length=300)
+
+
+class InvestigationFollowUpIn(BaseModel):
+    """Restricted input accepted after a provisional investigation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence: list[InvestigationFollowUpEvidenceIn] = Field(default_factory=list, max_length=10)
+    scope_patch: InvestigationScopePatchIn | None = None
+
+
 # --- Application membership (admin / app-admin) -------------------------
 #
 # These power the per-application Members tab. A membership is a row in

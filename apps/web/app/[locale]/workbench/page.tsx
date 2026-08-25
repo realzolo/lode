@@ -9,10 +9,11 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { fetchInvestigations, type InvestigationSummary } from '@/lib/api';
 import { Link } from '@/lib/navigation';
 
-function statusVariant(status: InvestigationSummary['status']) {
-  if (status === 'completed') return 'success';
-  if (status === 'failed') return 'danger';
-  if (status === 'running' || status === 'needs_review') return 'warning';
+function statusVariant(item: InvestigationSummary) {
+  if (item.status === 'completed' && (item.review_required || item.result_state !== 'confirmed')) return 'warning';
+  if (item.status === 'completed') return 'success';
+  if (item.status === 'failed') return 'danger';
+  if (item.status === 'running') return 'warning';
   return 'accent';
 }
 
@@ -46,7 +47,7 @@ export default function InvestigationsPage() {
     <header className="dashboard-page-header"><div><p className="eyebrow">INVESTIGATIONS</p><h1 className="page-title">错误调查</h1></div></header>
     <div className="dashboard-filterbar" aria-label="调查筛选">
       <label className="dashboard-search"><IconSearch size={16} /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索事故、应用或调查 ID" aria-label="搜索调查" /></label>
-      <Select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="状态" className="dashboard-filter-select"><option value="all">所有状态</option><option value="queued">排队中</option><option value="running">调查中</option><option value="completed">已完成</option><option value="needs_review">待复核</option><option value="failed">失败</option></Select>
+      <Select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="状态" className="dashboard-filter-select"><option value="all">所有状态</option><option value="queued">排队中</option><option value="running">调查中</option><option value="completed">已完成</option><option value="failed">失败</option></Select>
       <Select value={level} onChange={(event) => setLevel(event.target.value)} aria-label="严重级别" className="dashboard-filter-select dashboard-filter-select-sm"><option value="all">所有级别</option><option value="CRITICAL">严重</option><option value="WARNING">警告</option></Select>
       <Select value={application} onChange={(event) => setApplication(event.target.value)} aria-label="应用" className="dashboard-filter-select"><option value="all">所有应用</option>{applications.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</Select>
       {filteredActive && <Button variant="ghost" className="h-9 px-2" onClick={() => { setQuery(''); setStatus('all'); setLevel('all'); setApplication('all'); }}>清除筛选</Button>}
@@ -55,6 +56,6 @@ export default function InvestigationsPage() {
     {error && <div className="dashboard-error"><p className="muted" style={{ color: 'var(--danger)' }}>{error}</p><Button variant="outline" size="sm" onClick={() => setReload((value) => value + 1)}>重试</Button></div>}
     {!loading && !error && !investigations.length && <p className="muted dashboard-empty">尚无调查记录。</p>}
     {!loading && !error && investigations.length > 0 && !filtered.length && <p className="muted dashboard-empty">没有匹配的调查。</p>}
-    {!loading && !error && filtered.length > 0 && <div className="analysis-record-list" role="list" aria-label="调查列表">{filtered.map((item) => <div key={item.id} role="listitem"><Link className="analysis-record" href={`/workbench/investigation/${item.id}`} aria-label={`查看调查 ${item.title || item.id}`}><span className="analysis-record-title">{item.title || item.id}</span><span className={`table-status table-status-${statusVariant(item.status)}`}><i />{item.status}</span><span className={`analysis-environment analysis-environment-${item.level === 'CRITICAL' ? 'critical' : 'warning'}`}>{item.level}</span><span className="analysis-record-application">{item.application_name}</span><span className="analysis-record-key mono">{item.conclusion || item.id}</span><IconArrowUpRight className="analysis-record-arrow" size={15} /></Link></div>)}</div>}
+    {!loading && !error && filtered.length > 0 && <div className="analysis-record-list" role="list" aria-label="调查列表">{filtered.map((item) => <div key={item.id} role="listitem"><Link className="analysis-record" href={`/workbench/investigation/${item.id}`} aria-label={`查看调查 ${item.title || item.id}`}><span className="analysis-record-title">{item.title || item.id}</span><span className={`table-status table-status-${statusVariant(item)}`}><i />{item.review_required ? '生产变更待审批' : item.result_state}</span><span className={`analysis-environment analysis-environment-${item.level === 'CRITICAL' ? 'critical' : 'warning'}`}>{item.level}</span><span className="analysis-record-application">{item.application_name}</span><span className="analysis-record-key mono">{item.conclusion || item.id}</span><IconArrowUpRight className="analysis-record-arrow" size={15} /></Link></div>)}</div>}
   </div>;
 }

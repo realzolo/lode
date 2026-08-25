@@ -6,9 +6,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
-from lode.db.models.investigation import InvestigationExecutionEvent
+from lode.db.models.investigation import EXECUTION_EVENT_PHASES, InvestigationExecutionEvent
 from lode.engine.evidence.secret_mask import mask_secrets
 
 
@@ -33,7 +33,8 @@ async def append_execution_event(
     session,
     *,
     investigation_id: int,
-    stage_id: int,
+    stage_id: int | None,
+    node_id: int | None = None,
     event_type: str,
     phase: str,
     operation_id: str | None = None,
@@ -43,6 +44,13 @@ async def append_execution_event(
     commit: bool = False,
 ) -> str:
     """Persist one fact. Callers append terminal records rather than updating it."""
+    if phase not in EXECUTION_EVENT_PHASES:
+        raise ValueError(f"unsupported investigation execution phase: {phase}")
+    # Independent read-only collection waves use separate sessions.  Lock the
+    # per-investigation sequence allocation so concurrent workers cannot emit
+    # duplicate cursors for SSE replay.
+    if session.bind and session.bind.dialect.name == "postgresql":
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": investigation_id})
     sequence = int((await session.execute(
         select(func.coalesce(func.max(InvestigationExecutionEvent.sequence), 0)).where(
             InvestigationExecutionEvent.investigation_id == investigation_id
@@ -51,6 +59,7 @@ async def append_execution_event(
     event = InvestigationExecutionEvent(
         investigation_id=investigation_id,
         stage_id=stage_id,
+        node_id=node_id,
         collection_id=collection_id,
         operation_id=operation_id or uuid.uuid4().hex,
         sequence=sequence,

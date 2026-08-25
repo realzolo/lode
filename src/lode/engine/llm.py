@@ -36,6 +36,19 @@ class ModelConfig:
     model: str
 
 
+@dataclass(frozen=True)
+class CompletionResult:
+    """A model result with usage metadata safe to persist in investigation audit."""
+
+    text: str | None
+    latency_ms: int
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    token_source: str
+    error_code: str | None = None
+
+
 def resolve_api_key(api_key_ref: str) -> str:
     """Resolve an ``api_key_ref`` to the actual secret value.
 
@@ -90,14 +103,45 @@ async def complete(
     deterministic offline heuristic so the product never hard-fails on an LLM
     outage.
     """
+    return (await complete_with_usage(system_prompt, user_prompt, config)).text
+
+
+def _estimated_tokens(value: str) -> int:
+    """Conservative, provider-neutral token estimate for providers without usage."""
+    return max(1, (len(value) + 3) // 4)
+
+
+def _usage(provider: str, body: dict[str, Any], system_prompt: str, user_prompt: str, text: str) -> tuple[int, int, int, str]:
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    if provider == "anthropic":
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+    else:
+        input_tokens = usage.get("prompt_tokens")
+        output_tokens = usage.get("completion_tokens")
+    if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        total = usage.get("total_tokens")
+        return input_tokens, output_tokens, total if isinstance(total, int) else input_tokens + output_tokens, "provider"
+    input_estimate = _estimated_tokens(system_prompt + "\n" + user_prompt)
+    output_estimate = _estimated_tokens(text)
+    return input_estimate, output_estimate, input_estimate + output_estimate, "estimated"
+
+
+async def complete_with_usage(
+    system_prompt: str,
+    user_prompt: str,
+    config: ModelConfig | None,
+) -> CompletionResult:
+    """Run one bounded completion and retain provider usage when available."""
+    started = time.monotonic()
     if config is None or not config.api_key_ref:
-        return None
+        return CompletionResult(None, 0, None, None, None, "unavailable", "model_not_configured")
 
     # Resolve the reference form (env://NAME) to the real secret before any
     # network call. If it resolves empty, degrade to the offline heuristic.
     api_key = resolve_api_key(config.api_key_ref)
     if not api_key:
-        return None
+        return CompletionResult(None, int((time.monotonic() - started) * 1000), None, None, None, "unavailable", "api_key_unavailable")
 
     if config.provider == "anthropic":
         payload, headers = _anthropic_payload(api_key, config.base_url, config.model, system_prompt, user_prompt)
@@ -107,24 +151,25 @@ async def complete(
     headers["Content-Type"] = "application/json"
     data = json.dumps(payload).encode("utf-8")
 
-    def _post() -> str:
+    def _post() -> dict[str, Any]:
         req = urllib.request.Request(config.base_url, data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        return _extract_text(config.provider, body)
+            return json.loads(resp.read().decode("utf-8"))
 
     max_retries = settings.llm_max_retries
     base_delay = settings.llm_retry_base_delay
     last_exc: Exception | None = None
     # Time only the network round-trip(s); retries add their own sleep that is
     # not part of "provider latency". A successful call reports one observation.
-    started = time.monotonic()
     for attempt in range(1, max_retries + 1):
         try:
-            text = await _run_blocking(_post)
-            LLM_LATENCY.observe(time.monotonic() - started)
+            body = await _run_blocking(_post)
+            text = _extract_text(config.provider, body)
+            elapsed = time.monotonic() - started
+            input_tokens, output_tokens, total_tokens, token_source = _usage(config.provider, body, system_prompt, user_prompt, text)
+            LLM_LATENCY.observe(elapsed)
             LLM_CALLS.labels(outcome="success").inc()
-            return text
+            return CompletionResult(text, int(elapsed * 1000), input_tokens, output_tokens, total_tokens, token_source)
         except Exception as exc:  # noqa: BLE001 - retry transient, degrade on exhaustion
             last_exc = exc
             if attempt >= max_retries or not _is_retryable(exc):
@@ -136,11 +181,17 @@ async def complete(
             )
             await asyncio.sleep(delay)
 
-    LLM_LATENCY.observe(time.monotonic() - started)
+    elapsed = time.monotonic() - started
+    LLM_LATENCY.observe(elapsed)
     LLM_CALLS.labels(outcome="fallback").inc()
     logger.warning("LLM call failed after %d attempt(s), using heuristic fallback: %s",
                    max_retries, last_exc)
-    return None
+    error_code = "provider_error"
+    if isinstance(last_exc, urllib.error.HTTPError):
+        error_code = f"http_{last_exc.code}"
+    elif isinstance(last_exc, TimeoutError):
+        error_code = "timeout"
+    return CompletionResult(None, int(elapsed * 1000), None, None, None, "unavailable", error_code)
 
 def _openai_payload(api_key: str, base_url: str, model: str, system: str, user: str) -> tuple[dict, dict]:
     payload = {

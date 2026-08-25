@@ -95,13 +95,13 @@ class Settings(BaseSettings):
     # The caps guarantee a single incident can never exhaust disk or blow up the
     # prompt with an entire monorepo.
     evidence_git_cache_dir: str = "/tmp/lode/git"
-    evidence_git_max_files: int = 20
-    evidence_git_max_bytes: int = 200_000
+    evidence_git_max_files: int = 8
+    evidence_git_max_bytes: int = 80_000
     evidence_git_snippet_lines: int = 12
     evidence_git_clone_timeout_seconds: int = 60
     # Administrator-controlled repository context files. These are the only
     # instruction/document files that can enter immutable source evidence.
-    evidence_git_context_paths: str = "AGENTS.md,AGENT.md,README.md,README.*,\.github/AGENTS.md"
+    evidence_git_context_paths: str = "AGENTS.md,AGENT.md,CLAUDE.md,README.md,README.*,\.github/AGENTS.md"
     evidence_git_context_max_files: int = 8
     evidence_git_context_max_bytes: int = 80_000
     # Evidence retention (M3): how many days an EvidenceArtifact stays valid
