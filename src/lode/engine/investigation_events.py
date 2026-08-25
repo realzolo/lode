@@ -1,76 +1,203 @@
-"""Append-only execution facts for the canonical investigation pipeline."""
+"""Rich, append-only operation events for the sequential investigation engine."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, update
 
-from lode.db.models.investigation import EXECUTION_EVENT_PHASES, InvestigationExecutionEvent
+from lode.db.models.investigation import (
+    Investigation,
+    InvestigationOperation,
+    InvestigationOperationEvent,
+    InvestigationStep,
+    OPERATION_STATUSES,
+)
 from lode.engine.evidence.secret_mask import mask_secrets
 
 
-def _safe_detail(value: dict[str, Any] | None) -> dict[str, Any]:
-    """Keep event payloads operationally useful without leaking credentials."""
-    safe: dict[str, Any] = {}
-    for key, raw in (value or {}).items():
-        if isinstance(raw, str):
-            safe[str(key)] = mask_secrets(raw)[0][:2_000]
-        elif isinstance(raw, (int, float, bool)) or raw is None:
-            safe[str(key)] = raw
-        elif isinstance(raw, list):
-            safe[str(key)] = [mask_secrets(str(item))[0][:500] for item in raw[:50]]
-        elif isinstance(raw, dict):
-            safe[str(key)] = _safe_detail({str(nested_key): nested for nested_key, nested in raw.items()})
-        else:
-            safe[str(key)] = mask_secrets(str(raw))[0][:2_000]
-    return safe
+def _safe(value: Any, *, string_limit: int = 2_000) -> Any:
+    if isinstance(value, str):
+        return mask_secrets(value)[0][:string_limit]
+    if isinstance(value, dict):
+        return {str(key): _safe(child, string_limit=string_limit) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_safe(child, string_limit=500) for child in value[:50]]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return mask_secrets(str(value))[0][:string_limit]
 
 
-async def append_execution_event(
-    session,
-    *,
-    investigation_id: int,
-    stage_id: int | None,
-    node_id: int | None = None,
-    event_type: str,
-    phase: str,
-    operation_id: str | None = None,
-    collection_id: int | None = None,
-    detail: dict[str, Any] | None = None,
-    artifact_refs: list[int] | None = None,
-    commit: bool = False,
-) -> str:
-    """Persist one fact. Callers append terminal records rather than updating it."""
-    if phase not in EXECUTION_EVENT_PHASES:
-        raise ValueError(f"unsupported investigation execution phase: {phase}")
-    # Independent read-only collection waves use separate sessions.  Lock the
-    # per-investigation sequence allocation so concurrent workers cannot emit
-    # duplicate cursors for SSE replay.
-    if session.bind and session.bind.dialect.name == "postgresql":
-        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": investigation_id})
-    sequence = int((await session.execute(
-        select(func.coalesce(func.max(InvestigationExecutionEvent.sequence), 0)).where(
-            InvestigationExecutionEvent.investigation_id == investigation_id
+async def _next_sequence(session, investigation_id: int) -> int:
+    value = (
+        await session.execute(
+            update(Investigation)
+            .where(Investigation.id == investigation_id)
+            .values(event_cursor=Investigation.event_cursor + 1)
+            .returning(Investigation.event_cursor)
         )
-    )).scalar_one()) + 1
-    event = InvestigationExecutionEvent(
-        investigation_id=investigation_id,
-        stage_id=stage_id,
-        node_id=node_id,
-        collection_id=collection_id,
-        operation_id=operation_id or uuid.uuid4().hex,
-        sequence=sequence,
-        event_type=event_type,
-        phase=phase,
-        detail=_safe_detail(detail),
-        artifact_refs=[item for item in (artifact_refs or []) if isinstance(item, int)],
+    ).scalar_one()
+    return int(value)
+
+
+async def _append(
+    session,
+    operation: InvestigationOperation,
+    *,
+    kind: str,
+    message: str,
+    detail: dict[str, Any] | None = None,
+    evidence_refs: list[int] | None = None,
+) -> InvestigationOperationEvent:
+    event = InvestigationOperationEvent(
+        investigation_id=operation.investigation_id,
+        step_id=operation.step_id,
+        operation_id=operation.id,
+        sequence=await _next_sequence(session, operation.investigation_id),
+        kind=kind,
+        message=_safe(message, string_limit=1_000),
+        detail=_safe(detail or {}),
+        evidence_refs=[ref for ref in (evidence_refs or []) if isinstance(ref, int)],
         occurred_at=datetime.now(UTC),
     )
     session.add(event)
     await session.flush()
+    return event
+
+
+async def start_operation(
+    session,
+    *,
+    investigation_id: int,
+    step_id: int,
+    kind: str,
+    actor: str,
+    title: str,
+    purpose: str,
+    input_summary: dict[str, Any] | None = None,
+    message: str,
+    commit: bool = False,
+) -> InvestigationOperation:
+    ordinal = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.max(InvestigationOperation.ordinal), 0)).where(
+                    InvestigationOperation.investigation_id == investigation_id
+                )
+            )
+        ).scalar_one()
+    ) + 1
+    operation = InvestigationOperation(
+        investigation_id=investigation_id,
+        step_id=step_id,
+        ordinal=ordinal,
+        kind=kind,
+        actor=actor,
+        title=_safe(title, string_limit=200),
+        purpose=_safe(purpose, string_limit=1_000),
+        input_summary=_safe(input_summary or {}),
+        status="running",
+        started_at=datetime.now(UTC),
+    )
+    session.add(operation)
+    await session.flush()
+    await _append(session, operation, kind="started", message=message, detail={"input": operation.input_summary})
     if commit:
         await session.commit()
-    return event.operation_id
+    return operation
+
+
+async def progress_operation(
+    session,
+    operation: InvestigationOperation,
+    *,
+    message: str,
+    detail: dict[str, Any] | None = None,
+    evidence_refs: list[int] | None = None,
+    commit: bool = False,
+) -> InvestigationOperationEvent:
+    event = await _append(
+        session,
+        operation,
+        kind="progress",
+        message=message,
+        detail=detail,
+        evidence_refs=evidence_refs,
+    )
+    if commit:
+        await session.commit()
+    return event
+
+
+async def finish_operation(
+    session,
+    operation: InvestigationOperation,
+    *,
+    status: str,
+    result_summary: str,
+    message: str,
+    metrics: dict[str, Any] | None = None,
+    evidence_refs: list[int] | None = None,
+    failure: Exception | str | None = None,
+    commit: bool = False,
+) -> InvestigationOperationEvent:
+    if status not in OPERATION_STATUSES or status in {"queued", "running"}:
+        raise ValueError(f"invalid terminal operation status: {status}")
+    operation.status = status
+    operation.result_summary = _safe(result_summary, string_limit=2_000)
+    operation.metrics = _safe(metrics or {})
+    operation.evidence_refs = [ref for ref in (evidence_refs or []) if isinstance(ref, int)]
+    operation.finished_at = datetime.now(UTC)
+    if failure is not None:
+        operation.failure_code = type(failure).__name__ if isinstance(failure, Exception) else "operation_failed"
+        operation.failure_detail = _safe(str(failure), string_limit=1_000)
+    event = await _append(
+        session,
+        operation,
+        kind="finished",
+        message=message,
+        detail={
+            "status": status,
+            "result": operation.result_summary,
+            "metrics": operation.metrics,
+            "failure_code": operation.failure_code,
+            "failure_detail": operation.failure_detail,
+        },
+        evidence_refs=operation.evidence_refs,
+    )
+    if commit:
+        await session.commit()
+    return event
+
+
+async def start_step(session, step: InvestigationStep, *, commit: bool = False) -> None:
+    step.status = "running"
+    step.started_at = datetime.now(UTC)
+    await session.flush()
+    if commit:
+        await session.commit()
+
+
+async def finish_step(
+    session,
+    step: InvestigationStep,
+    *,
+    status: str,
+    result_summary: str,
+    output_refs: list[int] | None = None,
+    failure: Exception | str | None = None,
+    commit: bool = False,
+) -> None:
+    if status not in OPERATION_STATUSES or status in {"queued", "running"}:
+        raise ValueError(f"invalid terminal step status: {status}")
+    step.status = status
+    step.result_summary = _safe(result_summary, string_limit=2_000)
+    step.output_refs = [ref for ref in (output_refs or []) if isinstance(ref, int)]
+    step.finished_at = datetime.now(UTC)
+    if failure is not None:
+        step.failure_code = type(failure).__name__ if isinstance(failure, Exception) else "step_failed"
+        step.failure_detail = _safe(str(failure), string_limit=1_000)
+    await session.flush()
+    if commit:
+        await session.commit()

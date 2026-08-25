@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from lode.consumer.alert_schema import AlertMessage
+from lode.consumer.alert_schema import AlertMessage, normalize_alert_error
 
 
 def _valid() -> dict:
@@ -18,6 +18,8 @@ def _valid() -> dict:
         "title": "Checkout failed: balance validation timeout",
         "dedupe_key": "alert:checkout_error:9f2c1a7b3e",
         "dedupe_ttl_seconds": 300,
+        "version": "1.1.21",
+        "git_commit": "6c36658895cb220b66f89f17718a001f3f9f02e4",
         "fields": {"error": "TimeoutException", "orderId": "20260821000123"},
         "error_log": {
             "name": "TimeoutException",
@@ -71,3 +73,65 @@ def test_occurred_at_parses_iso8601_with_tz():
     msg = AlertMessage(**_valid())
     assert msg.occurred_at.year == 2026
     assert msg.occurred_at.utcoffset().total_seconds() == 8 * 3600
+
+
+def test_real_gateway_object_is_normalized_without_losing_wire_error() -> None:
+    payload = {
+        "schema_version": "alert.v1",
+        "alert_id": "PB_SlZBH_Wt",
+        "occurred_at": "2026-08-25T10:38:59.522Z",
+        "event_type": "payment.order_create.gateway_failed",
+        "level": "CRITICAL",
+        "title": "Payment order creation failed",
+        "dedupe_key": "alert:payment.order_create.gateway_failed:ac9c5fa678b2245d87d403d4d34e1c723e52b22c",
+        "dedupe_ttl_seconds": 300,
+        "version": "1.1.21",
+        "git_commit": "6c36658895cb220b66f89f17718a001f3f9f02e4",
+        "fields": {
+            "providerCode": "Payssion",
+            "methodCode": "enets_sg",
+            "gatewayCode": "PAYMENT_FAILED",
+            "gatewayMessage": "Payment creation failed",
+            "httpStatus": 200,
+        },
+        "error_log": {
+            "name": "object",
+            "message": '{"success":false,"code":"PAYMENT_FAILED","message":"Payment creation failed"}',
+            "stack": None,
+            "properties": {
+                "value": {
+                    "success": False,
+                    "code": "PAYMENT_FAILED",
+                    "message": "Payment creation failed",
+                }
+            },
+            "cause": None,
+        },
+    }
+
+    message = AlertMessage.model_validate(payload)
+    normalized = normalize_alert_error(message)
+
+    assert message.git_commit == "6c36658895cb220b66f89f17718a001f3f9f02e4"
+    assert message.version == "1.1.21"
+    assert normalized.name == "PAYMENT_FAILED"
+    assert normalized.message == "Payment creation failed"
+    assert normalized.stack is None
+    assert normalized.properties["contract"]["success"] is False
+    assert normalized.properties["wire_error"]["name"] == "object"
+
+
+def test_alert_v1_rejects_missing_build_identity_and_unknown_fields() -> None:
+    for field in ("version", "git_commit"):
+        payload = _valid()
+        del payload[field]
+        with pytest.raises(ValidationError):
+            AlertMessage.model_validate(payload)
+
+    with pytest.raises(ValidationError):
+        AlertMessage.model_validate({**_valid(), "legacy_payload": True})
+
+
+def test_alert_v1_rejects_naive_timestamp() -> None:
+    with pytest.raises(ValidationError):
+        AlertMessage.model_validate({**_valid(), "occurred_at": "2026-08-25T10:38:59"})

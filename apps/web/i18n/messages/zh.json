@@ -3,7 +3,6 @@
     "dashboard": "概览",
     "applications": "应用",
     "investigations": "调查",
-    "experiences": "经验库",
     "settings": "全局设置",
     "users": "用户",
     "audit": "审计日志",
@@ -30,8 +29,6 @@
     "edit": "编辑",
     "loading": "加载中...",
     "empty": "暂无数据",
-    "addHint": "添加分析引导",
-    "reanalyze": "重新分析",
     "actionSuccess": "操作成功",
     "actionFailed": "操作失败",
     "copied": "已复制",
@@ -47,10 +44,10 @@
     "password": "密码",
     "submit": "继续",
     "asideTitle": "把事故噪音变成根因",
-    "asideDesc": "Lode 将你的 Kafka 流水线接入 AI 根因分析与经验库。",
+    "asideDesc": "Lode 将 Kafka 告警转化为可追溯的事故根因与精确代码诊断。",
     "feature1": "Kafka 实时接入",
-    "feature2": "AI 根因分析",
-    "feature3": "跨事故经验库",
+    "feature2": "精确代码缺陷定位",
+    "feature3": "完整证据与操作审计",
     "newHere": "首次使用？通过邀请链接激活账号。"
     ,"acceptInviteTitle": "激活你的账号"
     ,"acceptInviteSubtitle": "设置姓名和密码后即可加入 Lode。"
@@ -125,12 +122,6 @@
     "dbSources": "只读数据源",
     "model": "模型",
     "modelSelection": "选择全局支持的模型"
-  },
-  "experiences": {
-    "title": "经验库",
-    "trigger": "触发签名",
-    "content": "内容",
-    "valid": "有效"
   },
   "users": {
     "title": "用户",
@@ -228,7 +219,7 @@
   },
   "members": {
     "title": "成员",
-    "subtitle": "控制谁可以访问本应用的分析与经验库。",
+    "subtitle": "控制谁可以访问本应用的调查与证据。",
     "user": "用户",
     "globalRole": "全局角色",
     "permission": "权限",

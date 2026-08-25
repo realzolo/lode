@@ -1,371 +1,141 @@
 # Lode
 
-AI-powered production incident root-cause analysis platform. Business services
-publish a simplified error to a per-application Kafka topic; the platform consumes
-it, recomputes a stable dedupe key, and (in later phases) runs an agentic analysis
-that correlates code, read-only databases, deployment context, and shared experience.
+Lode turns production alerts into evidence-backed incident causes and exact code diagnoses. It accepts strict Kafka `alert.v1` messages or authorized manual input, executes one investigation action at a time, archives every result, and refuses to label a related file as a proven defect.
 
-This repository implements **Phase 1**: the production-grade data layer, the
-Kafka ingestion contract, the agentic analysis engine, the authenticated REST API,
-and the Next.js frontend that visualizes the workflow and supports human-in-the-loop
-(hints / re-analysis).
+## Investigation Contract
 
-## Implemented milestones (M1–M6)
+Every investigation follows this sequence:
 
-The platform is feature-complete for its current scope. Each milestone below is
-committed and covered by tests.
+1. Normalize and redact the complete incident input.
+2. Parse the error contract and stack frames.
+3. Form a leading mechanism and choose one server-registered read-only action.
+4. Archive the action input, progress, result, duration, failure, and evidence links.
+5. Update supporting facts, counter-evidence, and missing validation.
+6. Produce separate `incident_cause` and `code_diagnosis` results.
 
-- **M1 — Per-application authorization & members (FR-602):** `read` / `analyze` /
-  `admin` permission ranks, a per-application `require_app_perm` guard, member CRUD
-  with last-admin protection, and `my_perm` surfaced to the frontend.
-- **M2 — Kafka consumer resilience:** reconnect backoff on slow brokers, per-message
-  failure isolation, DLQ / unassigned-topic routing, and offset commit even after a
-  failed message.
-- **M3 — Interactive workflow graph:** a pannable/zoomable canvas of the seven pipeline
-  steps (`receive → git_sync → context → service_snapshot → experience → ai_analysis → conclusion`) on the
-  analysis detail page, built dependency-free.
-- **M4 — Fixed read-only database catalog:** a per-source, schema-qualified base-table
-  catalog, a dedicated effective-role privilege proof, column desensitization, and
-  `POST /applications/{id}/query` operations that never accept SQL text.
-- **M5 — Semantic shared experience:** an exact `trigger_signature` match plus embedding
-  cosine similarity (OpenAI-compatible `/embeddings`); an optional `pgvector` backend
-  offloads distance to the `<=>` operator. Details below.
-- **M6 — Rate limiting & security hardening:** an in-memory fixed-window limiter
-  (per user/IP), `429` + `Retry-After` + `X-RateLimit-*`, baseline security headers
-  on every response, and CORS as the outermost layer. Details below.
-- **M7 — Actionable analysis output:** low-trust experience references are resolved
-  before synthesis; structured advisory remediation, a redacted Markdown Agent
-  prompt, `needs_review`/`degraded` status semantics, and per-target quality
-  feedback are persisted and exposed on the analysis detail page.
+Actions within one investigation never overlap. Workers may process different investigations concurrently. Each investigation is bounded to 12 evidence actions, 10 model calls, and 10 minutes. Repeating an action fingerprint is rejected, and durable steps allow a worker to resume from the first unfinished action.
 
-## Stack
+### Result States
 
-- Python 3.12+ (async), FastAPI, SQLAlchemy 2.0 (async), Alembic
-- PostgreSQL 16+ (jsonb, timestamptz, GENERATED ALWAYS AS IDENTITY, partial indexes)
-- aiokafka consumer with Snappy codec support (`aiokafka[snappy]`)
-- Analysis engine: controlled read-only tools + LLM client with a deterministic
-  heuristic fallback (runs fully offline when no model key is configured)
-- Auth: PBKDF2 password hashing + HMAC-signed tokens (stdlib only, no extra deps)
-- Frontend: Next.js 14 (App Router, TypeScript strict) + Geist + next-intl
-- Tests: pytest + pytest-asyncio + httpx
-- Containerized via Docker (backend + frontend) and docker-compose
+- `pending`: no terminal result exists yet.
+- `confirmed`: an incident-version code finding passed structural and independent semantic verification.
+- `hypothesis`: one leading mechanism has supporting evidence but still needs validation.
+- `insufficient`: the available evidence cannot support a single cause.
+- `unavailable`: required analysis capability, normally the configured model, was unavailable.
 
-## Repository layout
+Lode does not expose a model-generated confidence score. Non-confirmed reports contain evidence requests and test suggestions, not production code change instructions.
 
+### Code Findings
+
+A source file is only a candidate. A code finding must identify an immutable artifact with repository ID, full revision SHA, revision role, path, symbol, and an exact line range. It also records:
+
+- faulty behavior, explicit contract violation, and expected behavior;
+- trigger condition and propagation from the code branch to the observed error;
+- incident, supporting, and counter-evidence references;
+- missing validation, a minimal fix direction, and a verification test.
+
+`confirmed` additionally requires the deployed revision plus a stack, runtime, dependency, or alert-contract link to the incident. An independent model pass must verify the branch, trigger, and propagation. Default-branch source is always shown as an unverified `hypothesis`. Documentation and lexical matches can provide context but cannot prove a defect.
+
+External failures remain valid incident causes. Code diagnosis independently reports `no_defect`, `not_found`, or an exact resilience finding such as missing timeout, retry, validation, or error preservation.
+
+## Kafka `alert.v1`
+
+Messages are strict and reject unknown top-level fields. `version` and `git_commit` are top-level deployment fields. The complete `error_log.stack`, recursive `cause`, `properties`, business `fields`, trace context, version, revision, and time window are normalized and archived after secret masking.
+
+```json
+{
+  "schema_version": "alert.v1",
+  "alert_id": "PB_SlZBH_Wt",
+  "occurred_at": "2026-08-25T10:38:59.522Z",
+  "event_type": "payment.order_create.gateway_failed",
+  "level": "CRITICAL",
+  "title": "Payment order creation failed",
+  "dedupe_key": "alert:payment.order_create.gateway_failed:sha1",
+  "dedupe_ttl_seconds": 300,
+  "version": "1.1.21",
+  "git_commit": "6c36658895cb220b66f89f17718a001f3f9f02e4",
+  "fields": {
+    "providerCode": "Payssion",
+    "methodCode": "enets_sg",
+    "gatewayCode": "PAYMENT_FAILED"
+  },
+  "error_log": {
+    "name": "object",
+    "message": "{\"success\":false,\"code\":\"PAYMENT_FAILED\",\"message\":\"Payment creation failed\"}",
+    "stack": null,
+    "properties": {
+      "value": {
+        "success": false,
+        "code": "PAYMENT_FAILED",
+        "message": "Payment creation failed"
+      }
+    },
+    "cause": null
+  }
+}
 ```
-lode/
-├── alembic/                 # migration tool (async env + versions)
-├── alembic.ini
-├── Dockerfile               # backend API image (python:3.12-slim)
-├── docker-compose.yml       # postgres + kafka + api + web
-├── src/lode/
-│   ├── config.py            # settings (LODE_* env vars)
-│   ├── security.py          # password hashing + signed tokens (stdlib only)
-│   ├── db/                  # Base, async engine/session, ORM models
-│   │   └── models/          # tables, one module per domain
-│   ├── engine/              # agentic runner, LLM client, read-only tools
-│   ├── api/                 # FastAPI app (auto-migrates + auth + error envelope)
-│   │   ├── deps.py          # require_user bearer-token dependency
-│   │   └── routes/          # analyses, applications, experiences, alerts, auth, settings
-│   ├── migrations.py        # run `alembic upgrade head` from the server
-│   └── consumer/            # Kafka consumer: v1.1 validation + dedupe key
-├── apps/web/                # Next.js frontend (Dockerfile + standalone output)
-├── scripts/                 # seed.py, set_admin_password.py
-└── tests/                   # security, api-auth, engine, dedupe, schema tests
-```
 
-## Database naming conventions (PostgreSQL best practice)
+When an error is serialized as an object, Lode promotes the structured `properties.value` contract and JSON message into searchable error code and message fields while retaining the original wire value. Source lookup prioritizes stack locations, incident-revision symbols, error contract identifiers, related symbols, then default-branch reference material.
 
-- All identifiers **lowercase snake_case** (never quoted, never CamelCase).
-- **Plural** table names (e.g. `applications`, `alerts`, `analyses`).
-- Primary keys: `bigint GENERATED ALWAYS AS IDENTITY`.
-- Timestamps: `timestamptz` with `DEFAULT now()`; an `updated_at` trigger keeps
-  them current on every `UPDATE`.
-- Semi-structured data: `jsonb` (not `json`); alert `fields` carry a GIN index.
-- Booleans: `is_*` prefixed (`is_default`, `is_valid`, `readonly`).
-- Integrity: explicit `CHECK` constraints on every enum-like column; FK columns
-  named `<table>_id` with explicit `ON DELETE` rules.
-- "Exactly one default model" enforced by **partial unique indexes**
-  (`WHERE scope = 'global' AND is_default`, `WHERE scope = 'application' AND is_default`).
+## API
 
-## Migrations (Alembic) — auto-executed
+- `POST /investigations`: authorized manual intake with application, error message, stack, occurrence time, deployment version, trace, structured fields, and bounded redacted attachments.
+- `GET /investigations`: investigation list.
+- `GET /investigations/{id}`: normalized input, report, ordered steps, decisions, operations, evidence, and code findings.
+- `GET /investigations/{id}/events`: durable operation event history.
+- `GET /investigations/{id}/audit`: separately paginated operation and AI-call audit streams.
+- `GET /investigations/{id}/stream`: live SSE updates.
 
-The schema is applied by Alembic. The server runs `alembic upgrade head`
-automatically on startup (see `lode.api.main.lifespan`), so a fresh
-deploy is always schema-current before serving traffic.
+SSE event names are `step.updated`, `operation.started`, `operation.progress`, `operation.finished`, `decision.recorded`, `code_finding.updated`, `report.updated`, and `investigation.finished`.
 
-This new project currently ships one self-contained `0001_initial` baseline.
-Reset any pre-baseline local database before upgrading; once deployed, future
-schema changes must be added as incremental Alembic revisions.
+Kafka and manual intake call the same normalization, evidence archiving, and job creation service.
+
+## Data Model
+
+The V1 database has one schema snapshot: `alembic/versions/0001_initial.py`. It contains inputs, ordered steps, decisions, operations and events, evidence, findings and edges, code findings, AI audit, reports, jobs, connectors, and application configuration.
+
+Create a fresh PostgreSQL database for V1. There is no historical payload conversion, dual schema, or adapter. Partial unique indexes enforce at most one running step and one running operation per investigation.
 
 ```bash
-make install          # pip install -e ".[dev]"
-make dev-up           # docker compose up -d (postgres + kafka)
-make migrate          # alembic upgrade head
-make serve            # uvicorn (also migrates on boot)
-make consume          # kafka consumer
-make work             # durable analysis worker
-make verify           # throwaway local Postgres + migrate + schema dump
+uv sync --extra dev
+export LODE_SECRET_KEY='replace-with-a-random-secret'
+uv run alembic upgrade head
+uv run python scripts/seed.py
 ```
 
-To run a database test against that same isolated instance, pass the command
-through the verifier, for example `bash scripts/verify.sh uv run pytest -q tests/test_engine.py`.
-
-Or manually:
+The Web app uses pnpm:
 
 ```bash
-alembic upgrade head
-python -m lode.consumer.main
+cd apps/web
+pnpm install
+pnpm dev
 ```
 
-## Authentication
-
-All business endpoints require a bearer token. Log in to obtain one:
+For the complete local stack:
 
 ```bash
-curl -X POST http://localhost:8000/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"admin@lode.local","password":"lode"}'
+export LODE_SECRET_KEY='replace-with-a-random-secret'
+docker compose up --build
 ```
 
-- Passwords are hashed with PBKDF2-HMAC-SHA256 (per-user salt); tokens are
-  HMAC-SHA256-signed JWT-shaped claims (`sub`/`iat`/`exp`). Both use the standard
-  library only — no `passlib`/`pyjwt` dependency.
-- `LODE_SECRET_KEY` signs tokens; `LODE_JWT_TTL_SECONDS` sets lifetime (default 86400).
-- Seeding creates a demo admin. If its password is ever missing, regenerate it:
-  `python scripts/set_admin_password.py`.
+Web is available at `http://localhost:3000`; the API is at `http://localhost:8000`.
 
-## Admin & user management
+## Development
 
-The platform has two roles: `admin` and `user`. Admin-only endpoints are
-guarded by a `require_admin` dependency (HTTP 403 otherwise).
-
-- **Users** (`/users`, admin): list, create, update (role/status/name), delete,
-  and admin reset-password. The last active admin can never be demoted or
-  deleted, so the console can't be locked out.
-- **Invites** (`/invites`, admin): create an invite for a teammate's email; the
-  single-use token is returned. The recipient opens `/accept-invite?token=...`
-  (no session required) and sets a password to activate the account.
-- **Self-service**: any authenticated user can change their own password at
-  `POST /auth/change-password`.
-
-## AI model configuration (real LLM activation)
-
-Analyses run through the agentic engine. When an AI model is configured it is
-called; otherwise the engine falls back to a deterministic offline heuristic so
-the product stays runnable with no external keys.
-
-- Configure OpenAI-/Anthropic-compatible endpoints at
-  `POST/PUT/DELETE /settings/ai-models` (admin). Exactly one config is the
-  `default` per scope (`global` or `application`); the engine resolves
-  application → global.
-- **Secrets stay out of the database.** `api_key_ref` supports `env://NAME`
-  (the real key is read from the environment at request time) or a literal key.
-  The API never echoes the value back — only `has_key` (boolean).
-- Example: create a global default backed by an env var, then run an analysis:
+Run the backend services individually:
 
 ```bash
-curl -X POST http://localhost:8000/settings/ai-models \
-  -H 'Authorization: Bearer <admin-token>' -H 'Content-Type: application/json' \
-  -d '{"scope":"global","provider":"openai","base_url":"https://api.openai.com/v1",
-       "api_key_ref":"env://OPENAI_API_KEY","model":"gpt-4o-mini","is_default":true}'
+uv run uvicorn lode.api.main:app --reload
+uv run python -m lode.consumer.main
+uv run python -m lode.worker.main
 ```
 
-- **Output language:** Admins select the language for human-readable analysis
-  output at `PUT /settings/ai-output-language` with `{"language":"en"}` or
-  `{"language":"zh"}`. The default is English when the setting has not yet
-  been saved; it applies to new runs only.
-
-## Ingestion → analysis chain
-
-Applications have an explicit ingestion lifecycle: `draft → active ↔ paused`.
-Creating or binding a topic leaves an application in `draft`; an application
-administrator must start it and choose either **new messages only** (`latest`)
-or **replay retained Kafka messages** (`earliest`). Starting validates that the
-configured topic has Kafka partitions and returns `202` while the consumer
-obtains a real assignment. The application list card is the operational control
-surface: it shows the observed state (`starting`, `listening`, or `error`) and
-offers Start, Pause, or Resume to application administrators. Application
-settings remain the place to configure the topic.
-
-Only active application topics are subscribed. The consumer refreshes that exact
-database-backed topic list without a restart, validates each alert, and commits
-the `Alert`, a completed `receive` workflow step, a pending `Analysis`, and a
-durable `AnalysisJob` in one transaction. The separate worker (`make work`)
-claims the job and starts work at `git_sync`. If the worker is unavailable, the
-task remains explicitly `queued` rather than falsely showing alert receipt as
-pending. Pausing stops new subscriptions and worker claims while allowing an
-already-running analysis to finish. Kafka offsets and queued jobs remain
-untouched until resume.
-
-For reliable analysis prompts and evidence search, producers should populate
-`error_log.message`. When it is unavailable, intake derives the alert summary
-from the controlled `fields.error`, `fields.reason`, `fields.message`, then
-`fields.detail` fallback order.
-
-Each analysis run has an opaque `public_id`; this is the sole identifier for
-`GET /analyses/{analysis_id}`, guidance, re-analysis, and the web detail URL.
-The alert `dedupe_key` is retained only for incident correlation and is never
-used in a route or to select an arbitrary “latest” run.
-
-Git evidence uses a fresh, temporary sandbox under
-`LODE_EVIDENCE_GIT_CACHE_DIR` for every analysis run. Clones are never shared
-between tasks, so a checkout for one alert cannot affect another; the sandbox is
-removed once masked excerpts have been persisted. The worker needs write access
-to that directory (default: `/tmp/lode/git`). If it is unavailable, analysis
-continues without Git evidence.
-
-The lifecycle API is application-admin scoped:
-
-```text
-GET  /applications/{id}/ingestion
-POST /applications/{id}/ingestion/start  {"start_position":"latest"|"earliest"}
-POST /applications/{id}/ingestion/pause
-POST /applications/{id}/ingestion/resume
-```
-
-## Fixed read-only database catalog (M4)
-
-The product intentionally has no SQL console. `POST /applications/{id}/query`
-(requires `analyze`) accepts only `{source_id, table, operation}` where `operation`
-is `sample` or `count` and `table` is an administrator-approved,
-schema-qualified base table. SQL is generated exclusively by server-owned templates.
-
-Binding and every execution prove that the effective PostgreSQL identity has no
-database/schema/table/sequence write privilege, no temporary-object privilege, and
-`SELECT` only on each approved base table. Bindings use either encrypted structured
-credentials with `sslmode=verify-full`, or an `env://NAME` DSN reference whose DSN
-also uses `sslmode=verify-full`; plaintext DSNs and TLS downgrade modes are rejected
-without a configuration bypass. Every execution runs in an explicit read-only
-transaction. The UI always masks sensitive columns.
-
-## Read-only service integrations and evidence time scope
-
-Applications may bind Redis, Kafka, and ClickHouse integrations. These are
-fixed, capability-limited status collectors used during analysis; they do not
-accept arbitrary commands, business-key reads, or LLM-authored SQL. Credentials
-are encrypted at rest and never returned by the API. Integration selectors use
-strict service-specific schemas, require TLS, DNS hostnames, and an explicit
-worker `LODE_INTEGRATION_EGRESS_ALLOWLIST` (comma-separated hostnames or wildcard
-suffixes such as `*.example.internal`). The deployment network policy must enforce
-the same allowlist through its egress gateway.
-
-PostgreSQL data sources and ClickHouse bindings must prove least privilege before
-they are saved. Redis and Kafka can use operational credentials with write grants,
-because their collectors expose no write-capable command surface and execute only
-code-defined status reads. A policy-verification failure disables that binding and
-writes an audit event; availability failures yield partial evidence without blocking
-the incident analysis.
-
-The worker executes `service_snapshot` and then the low-trust `experience` reference
-step before AI analysis. Alert, deployment,
-Git, database, service, and operator-guidance inputs are persisted as immutable, content-hashed,
-size-bounded, redacted evidence artifacts. Every artifact records its temporal scope;
-service snapshots carry collection start/end, configuration hash, collector version,
-and permission-verification result. The model receives only these excerpts. Its
-conclusion, facts, inferences, and remediation claims must each cite artifact IDs; operator guidance
-is explicitly untrusted data; uncited output is discarded in favor of a
-low-confidence “evidence insufficient” result. If a non-core collector fails, the
-step is marked `degraded`, the run continues, and the analysis status becomes
-`needs_review` even when the execution job succeeds.
-
-Completed analyses also expose a structured, advisory remediation playbook and a
-canonical Markdown prompt for external AI troubleshooting. The prompt is built
-only from redacted evidence excerpts, is capped at 16,000 characters, and never
-executes commands or changes production state. Users with `analyze` permission
-can rate the remediation and prompt via
-`POST /analyses/{analysis_id}/feedback` using `useful` or `not_useful`.
-
-## Semantic shared experience (M5)
-
-When an embedding provider is configured via `LODE_EMBEDDING_API_KEY_REF` (an
-`env://NAME` reference or literal, resolved by the same path as model keys), the
-engine embeds each incident's signature and stores the vector on the experience row. On a
-new incident, `get_experience` first tries an exact `trigger_signature` match, then falls
-back to a semantic top-k within a cosine-distance threshold
-(`LODE_EMBEDDING_THRESHOLD`, default `0.25` ≙ similarity ≥ `0.75`).
-
-Embeddings are stored in a portable `real[]` column and ranked in Python by default —
-no `pgvector` extension required.
-
-**Optional pgvector backend.** Set `LODE_EMBEDDING_BACKEND=pgvector` to offload
-distance computation to the database via the `<=>` operator. The `real[]` column is
-cast to `vector` at query time, so **no column-type migration is needed**; if the
-`vector` extension is unavailable the search transparently falls back to the Python
-backend. For large tables, add an HNSW index manually:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE INDEX IF NOT EXISTS ix_experiences_embedding_hnsw
-    ON experiences USING hnsw ((embedding::vector) vector_cosine_ops);
-```
-
-Install the optional dependency with `pip install "lode[pgvector]"`. The default
-backend has no extra dependency.
-
-## Rate limiting & security hardening (M6)
-
-`HardeningMiddleware` (raw ASGI, not `BaseHTTPMiddleware`) applies an in-memory
-fixed-window rate limiter to every non-exempt route (`/`, `/health`, `/docs`,
-`/openapi.json`, `/redoc` are exempt). Authenticated callers are bucketed by user id
-(the HMAC token `sub`); others by client IP. Exceeding `LODE_RATE_LIMIT_PER_MINUTE`
-(default `600`) returns `429` with `Retry-After` and `X-RateLimit-*` headers.
-
-Baseline security headers are stamped on every non-exempt response — including
-throttled ones:
-
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `Referrer-Policy: no-referrer`
-- `Cross-Origin-Opener-Policy: same-origin`
-- a strict `Content-Security-Policy`
-
-`CORSMiddleware` is registered as the **outermost** layer so CORS headers survive on
-`429` / error responses. Disable the limiter entirely with
-`LODE_RATE_LIMIT_ENABLED=false`.
-
-## Running the full stack (Docker)
+Verification:
 
 ```bash
-make up        # build + run postgres, kafka, api (:8000), web (:3000)
-make seed      # populate demo data into the running api container
-make down      # stop (keeps volumes)
-make test      # run the pytest suite
+uv run pytest -q
+uv run python -m compileall -q src scripts alembic tests
+cd apps/web && pnpm typecheck && pnpm build
 ```
 
-Locally without Docker:
-
-```bash
-make install    # pip install -e ".[dev]"
-make dev-up     # postgres + kafka
-make serve      # uvicorn (also migrates on boot)
-make consume    # kafka consumer
-make work       # durable analysis worker
-python scripts/seed.py
-```
-
-## Tests
-
-```bash
-make test        # or: pytest -q
-```
-
-Covers password/token security, the auth boundary (401 without token, login+token
-flow), and the analysis engine (completion + shared-experience upsert with no duplicate
-on re-analysis). The engine test runs against the configured database and cleans up
-after itself.
-
-## Kafka contract (spec v1.1)
-
-The message body may contain **only** what the business `lark-alert.ts` tool can
-produce. Required: `schema_version` ("1.1"), `level`, `title`, `env`, `timestamp`.
-Optional: `eventType`, `project`, `fields`.
-
-Routing is **purely topic-based**: an active `application_kafka` mapping is the
-consumer's exact subscription source. The platform recomputes `dedupeKey` with the
-exact `lark-alert.ts` algorithm for incident correlation, while each analysis run
-receives a separate opaque public ID for its detail URL. Invalid messages go to the
-dead-letter topic. A topic is required when an application is started, and the
-broker validates it before the application can become active.
-
-See `Kafka告警消息格式规范.md` (design repo) for the full contract.
+Schema verification must run `alembic upgrade head` against a newly created PostgreSQL database. Source evidence collection needs read access to the repositories configured for the application. All connector inputs are server-controlled and read-only; model output cannot introduce commands, SQL, URLs, paths, or credentials.

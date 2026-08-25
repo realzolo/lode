@@ -18,11 +18,13 @@ Schema-version policy (strict, no backward-compat shims):
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AlertLevel(str, Enum):
@@ -37,6 +39,8 @@ CONSUMER_SCHEMA_VERSION = "alert.v1"
 class AlertErrorLog(BaseModel):
     """Faithful port of the lark-alert.ts ``AlertErrorLog`` structure."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     message: str
     stack: str | None = None
@@ -46,6 +50,8 @@ class AlertErrorLog(BaseModel):
 
 
 class AlertMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     # Locked contract: only exactly "alert.v1" is accepted; everything else DLQs.
     schema_version: Literal["alert.v1"]
     alert_id: str = Field(min_length=1)
@@ -54,10 +60,93 @@ class AlertMessage(BaseModel):
     level: AlertLevel
     title: str = Field(min_length=1)
     dedupe_key: str = Field(min_length=1)
-    dedupe_ttl_seconds: int
+    dedupe_ttl_seconds: int = Field(gt=0)
+    version: str = Field(min_length=1)
+    git_commit: str = Field(min_length=1)
     fields: dict[str, Any] = Field(default_factory=dict)
     error_log: AlertErrorLog | None = None
+
+    @field_validator("occurred_at")
+    @classmethod
+    def occurred_at_must_include_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone")
+        return value
 
     @property
     def level_value(self) -> str:
         return self.level.value
+
+
+@dataclass(frozen=True)
+class NormalizedAlertError:
+    """Lossless wire error plus its most useful structured failure contract."""
+
+    name: str
+    message: str
+    stack: str | None
+    cause: Any
+    properties: dict[str, Any]
+
+
+_GENERIC_ERROR_NAMES = {"object", "string", "number", "boolean", "undefined", "null"}
+
+
+def normalize_alert_error(message: AlertMessage) -> NormalizedAlertError:
+    """Normalize real errors and the producer's serialized non-Error values."""
+
+    error = message.error_log
+    if error is None:
+        fallback = next(
+            (
+                value.strip()
+                for key in ("error", "reason", "message", "detail")
+                if isinstance((value := message.fields.get(key)), str) and value.strip()
+            ),
+            "",
+        )
+        return NormalizedAlertError(
+            name="Error",
+            message=fallback,
+            stack=None,
+            cause=None,
+            properties={"contract": {}, "wire_error": None},
+        )
+
+    parsed_message: Any = None
+    try:
+        parsed_message = json.loads(error.message)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    property_value = error.properties.get("value")
+    contract = property_value if isinstance(property_value, (dict, list)) else parsed_message
+    if not isinstance(contract, (dict, list)):
+        contract = {}
+
+    code = None
+    contract_message = None
+    if isinstance(contract, dict):
+        code = contract.get("code") or contract.get("errorCode") or contract.get("error_code")
+        contract_message = contract.get("message") or contract.get("error") or contract.get("reason")
+    code = code or message.fields.get("gatewayCode") or message.fields.get("errorCode")
+    contract_message = contract_message or message.fields.get("gatewayMessage")
+    normalized_name = error.name.strip() or "Error"
+    if normalized_name.lower() in _GENERIC_ERROR_NAMES and isinstance(code, str) and code.strip():
+        normalized_name = code.strip()
+    normalized_message = (
+        contract_message.strip()
+        if isinstance(contract_message, str) and contract_message.strip()
+        else error.message.strip()
+    )
+    return NormalizedAlertError(
+        name=normalized_name,
+        message=normalized_message,
+        stack=error.stack,
+        cause=error.cause,
+        properties={
+            **error.properties,
+            "contract": contract,
+            "wire_error": {"name": error.name, "message": error.message},
+        },
+    )

@@ -1,9 +1,7 @@
 """One-off operational script: ensure the demo admin user can log in.
 
-Migration 0002 added the ``password_hash`` column, but earlier seed runs stored
-the hash as an unmapped Python attribute that was never persisted (the column
-stayed NULL). This script idempotently sets the password for the seed admin so
-the UI can authenticate. Safe to re-run.
+The V1 baseline includes the ``password_hash`` column. This script
+idempotently resets the password for the seed admin. Safe to re-run.
 
     .venv/bin/python3 scripts/set_admin_password.py
 """

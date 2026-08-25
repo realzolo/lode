@@ -46,12 +46,13 @@ export function CommandPalette({ showTrigger = true }: { showTrigger?: boolean }
 
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      const key = typeof e.key === 'string' ? e.key.toLowerCase() : '';
+      if ((e.metaKey || e.ctrlKey) && key === 'k') {
         e.preventDefault();
         setOpen((o) => !o);
       }
       const isTyping = e.target instanceof HTMLElement && e.target.matches('input, textarea, select, [contenteditable="true"]');
-      if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'f' && !isTyping) {
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && key === 'f' && !isTyping) {
         e.preventDefault();
         setOpen(true);
       }

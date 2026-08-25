@@ -3,7 +3,6 @@
     "dashboard": "Dashboard",
     "applications": "Applications",
     "investigations": "Investigations",
-    "experiences": "Experience Library",
     "settings": "Global Settings",
     "users": "Users",
     "audit": "Audit Log",
@@ -30,8 +29,6 @@
     "edit": "Edit",
     "loading": "Loading...",
     "empty": "No data yet",
-    "addHint": "Add analysis guidance",
-    "reanalyze": "Re-analyze",
     "actionSuccess": "Action completed",
     "actionFailed": "Action failed",
     "copied": "Copied",
@@ -47,10 +44,10 @@
     "password": "Password",
     "submit": "Continue",
     "asideTitle": "Turn incident noise into root cause",
-    "asideDesc": "Lode streams your Kafka pipelines into AI root-cause analysis and an experience library.",
+    "asideDesc": "Lode turns Kafka alerts into traceable incident causes and exact code diagnoses.",
     "feature1": "Real-time Kafka ingestion",
-    "feature2": "AI root-cause analysis",
-    "feature3": "Experience library across incidents",
+    "feature2": "Exact code defect localization",
+    "feature3": "Complete evidence and operation audit",
     "newHere": "New here? Activate your account with an invite link."
     ,"acceptInviteTitle": "Activate your account"
     ,"acceptInviteSubtitle": "Set your name and password to join Lode."
@@ -125,12 +122,6 @@
     "dbSources": "Read-only data sources",
     "model": "Model",
     "modelSelection": "Select a globally supported model"
-  },
-  "experiences": {
-    "title": "Experience Library",
-    "trigger": "Trigger signature",
-    "content": "Content",
-    "valid": "Valid"
   },
   "users": {
     "title": "Users",
@@ -228,7 +219,7 @@
   },
   "members": {
     "title": "Members",
-    "subtitle": "Control who can access this application's analyses and experience library.",
+    "subtitle": "Control who can access this application's investigations and evidence.",
     "user": "User",
     "globalRole": "Global role",
     "permission": "Permission",

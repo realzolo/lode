@@ -1,352 +1,319 @@
-"""Read-only, ref-pinned Git evidence collection.
-
-``collect_git_evidence`` clones each registered repo at a *fixed* ref (the
-incident's deploy commit when known, otherwise the repo's default branch),
-searches the working tree for terms derived from the alert (exception class,
-function/symbol names, key phrases), extracts a small context snippet around
-each hit, masks secrets, and persists one :class:`EvidenceArtifact` per file so
-the analysis can cite ``repo@commit:path:line``.
-
-Cloning is strictly read-only and bounded: a single incident can never pull an
-entire monorepo into the prompt or exhaust disk, because ``max_files`` /
-``max_bytes`` caps are enforced in :func:`search_tree`.
-"""
+"""Bounded, stack-first helpers for immutable Git source evidence."""
 
 from __future__ import annotations
 
-import logging
 import re
-import shutil
-import subprocess
-import tempfile
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from lode.config import settings
-from lode.db.models.alert import Alert
-from lode.db.models.application import ApplicationRepo
-from lode.db.models.git import GitRepo
-from lode.db.models.investigation import EvidenceArtifact
-from lode.engine.evidence.secret_mask import mask_secrets
-
-logger = logging.getLogger("lode.evidence.git")
-
-# Directories and binary-ish extensions we never open for source inspection.
-_SKIP_DIRS = {
-    ".git",
-    "node_modules",
-    "vendor",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-    "target",
-    ".tox",
-    "coverage",
-}
-_SKIP_EXT = {
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".woff", ".woff2",
-    ".ttf", ".eot", ".pdf", ".zip", ".gz", ".tar", ".tgz", ".lock", ".bin",
-    ".so", ".dylib", ".dll", ".exe", ".pyc", ".class",
-}
-_SOURCE_EXT = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".java", ".rs", ".rb", ".php", ".cs", ".kt", ".kts", ".swift", ".scala", ".sql", ".sh"}
+_SKIP_DIRS = {".git", ".next", ".nuxt", ".output", ".tox", ".venv", "__pycache__", "build", "coverage", "dist", "node_modules", "target", "vendor", "venv"}
+_SOURCE_EXT = {".cs", ".go", ".java", ".js", ".jsx", ".kt", ".kts", ".php", ".py", ".rb", ".rs", ".scala", ".sh", ".sql", ".swift", ".ts", ".tsx"}
 _TOKEN_SPLIT = re.compile(r"[\s:.,/()\[\]{}'\"`]+")
-_MIN_TERM_LEN = 4
-# Generic English words that are useless as search terms (kept tiny on purpose).
-_STOPWORDS = {
-    "error", "exception", "failed", "failure", "occurred", "occurred", "service",
-    "timeout", "timed", "traceback", "stack", "cause", "root", "the", "and",
-    "for", "with", "from", "this", "that", "null", "none", "true", "false",
-}
+_STOPWORDS = {"and", "cause", "error", "exception", "failed", "failure", "false", "from", "none", "null", "occurred", "service", "stack", "that", "this", "timeout", "traceback", "true", "with"}
+_STACK_PATTERNS = (
+    re.compile(r'File\s+"(?P<path>[^\"]+)",\s+line\s+(?P<line>\d+)(?:,\s+in\s+(?P<symbol>[^\s]+))?'),
+    re.compile(r"(?:at\s+(?:(?P<symbol>[^\s(]+)\s+\()?)(?P<path>[^\s():]+):(?P<line>\d+)(?::\d+)?\)?"),
+    re.compile(r"(?P<path>[\w./\\-]+\.(?:go|rs|rb|php|cs|swift|scala|kt|kts)):(?P<line>\d+)(?::\d+)?"),
+)
+_CALL_PATTERN = re.compile(r"(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(")
+_CALL_STOPWORDS = {"Boolean", "Error", "Number", "Object", "Promise", "Response", "String", "catch", "for", "if", "switch", "while"}
 
 
-def derive_query_terms(alert: Alert) -> list[str]:
-    """Extract candidate search terms from an alert's error and metadata.
+def _walk_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        result: list[str] = []
+        for item in value.values():
+            result.extend(_walk_strings(item))
+        return result
+    if isinstance(value, (list, tuple)):
+        result = []
+        for item in value:
+            result.extend(_walk_strings(item))
+        return result
+    return []
 
-    Pulls tokens from the error message, common fields (``error`` / ``exception``
-    / ``stack`` / ``function`` / ``class`` / ``symbol``), and the title. Exact
-    error codes and identifier-shaped fields are prioritized; returns at most
-    eight terms so a generic title cannot flood the code search.
-    """
+
+def _walk_keys(value: object) -> list[str]:
+    if isinstance(value, dict):
+        result: list[str] = []
+        for key, item in value.items():
+            result.extend([str(key), *_walk_keys(item)])
+        return result
+    if isinstance(value, (list, tuple)):
+        return [key for item in value for key in _walk_keys(item)]
+    return []
+
+
+def derive_query_terms(incident_input: object) -> list[str]:
+    """Derive bounded code identifiers from the complete normalized error."""
     raw: list[str] = []
-
-    def _add(text: str | None) -> None:
-        if not text:
-            return
-        for tok in _TOKEN_SPLIT.split(text):
-            t = tok.strip()
-            if len(t) >= _MIN_TERM_LEN and not t.isdigit():
-                raw.append(t)
-
-    fields = getattr(alert, "fields", None) or {}
-    # Exact machine-readable identifiers name code paths and contracts more
-    # reliably than an alert title, so they always lead the bounded search.
-    for key in ("code", "error_code", "gatewayCode", "providerCode", "function", "class", "symbol", "error", "exception", "stack", "message"):
-        val = fields.get(key)
-        if isinstance(val, str):
-            _add(val)
-    _add(alert.error_message)
-    _add(alert.title)
-
+    fields = getattr(incident_input, "fields", None) or {}
+    properties = getattr(incident_input, "error_properties", None) or {}
+    cause = getattr(incident_input, "error_cause", None)
+    scope = getattr(incident_input, "scope", None) or {}
+    contract_field_values = [
+        value
+        for key, value in fields.items()
+        if isinstance(value, str)
+        and any(label in str(key).lower() for label in ("code", "provider", "method", "error"))
+    ]
+    prioritized = [
+        getattr(incident_input, "error_name", None),
+        *contract_field_values,
+        *_walk_strings(properties),
+        *_walk_strings(cause),
+        getattr(incident_input, "error_message", None),
+        *_walk_strings(fields),
+        *_walk_strings(scope),
+        *_walk_keys(properties),
+        *_walk_keys(fields),
+    ]
+    for value in prioritized:
+        if not isinstance(value, str):
+            continue
+        for token in _TOKEN_SPLIT.split(value):
+            token = token.strip()
+            if len(token) >= 4 and not token.isdigit():
+                raw.append(token)
     terms: list[str] = []
     seen: set[str] = set()
-    for t in raw:
-        low = t.lower()
-        if low in _STOPWORDS or low in seen:
+    for token in raw:
+        normalized = token.lower()
+        if normalized in seen or normalized in _STOPWORDS:
             continue
-        seen.add(low)
-        terms.append(t)
-        if len(terms) >= 8:
+        seen.add(normalized)
+        terms.append(token)
+        if len(terms) == 24:
             break
     return terms
 
 
-def search_tree(
-    root: Path,
-    terms: list[str],
-    *,
-    max_files: int = 20,
-    max_bytes: int = 200_000,
-    snippet_lines: int = 12,
-) -> list[dict[str, Any]]:
-    """Find ``terms`` in ``root`` and return bounded context snippets.
-
-    Returns a list of ``{"path", "line", "snippet", "terms"}`` — one entry per
-    matched file (centered on its first hit). Enforces ``max_files`` and a
-    running ``max_bytes`` budget so a single search can never explode.
-    """
-    if not terms:
-        return []
-    compiled = [(t, re.compile(re.escape(t), re.IGNORECASE)) for t in terms]
-    candidates: list[dict[str, Any]] = []
-
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        if any(part in _SKIP_DIRS for part in path.parts):
-            continue
-        if path.suffix.lower() in _SKIP_EXT or path.suffix.lower() not in _SOURCE_EXT:
-            continue
-
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, UnicodeDecodeError):
-            continue
-
-        matched_here: list[str] = []
-        first_line = None
-        for t, pat in compiled:
-            m = pat.search(text)
-            if m is not None:
-                matched_here.append(t)
-                if first_line is None:
-                    first_line = text.count("\n", 0, m.start()) + 1
-        if not matched_here:
-            continue
-
-        start_line = max(1, first_line - snippet_lines // 2)
-        snippet = _slice_lines(text, start_line, snippet_lines)
-        end_line = start_line + max(0, len(snippet.splitlines()) - 1)
-        relative = str(path.relative_to(root))
-        score = len(matched_here) * 100 + sum(len(pattern.findall(text)) for _, pattern in compiled if pattern.search(text))
-        if any("_" in term or term.isupper() for term in matched_here):
-            score += 60
-        if any(term.lower() in relative.lower() for term in matched_here):
-            score += 20
-        candidates.append(
-            {
-                "path": relative,
-                "line": first_line,
-                "snippet_start_line": start_line,
-                "snippet_end_line": end_line,
-                "snippet": snippet,
-                "terms": matched_here,
-                "score": score,
-            }
-        )
-    hits: list[dict[str, Any]] = []
-    bytes_used = 0
-    for candidate in sorted(candidates, key=lambda item: (-item["score"], item["path"], item["line"])):
-        if len(hits) >= max_files:
+def extract_stack_frames(stack: str | None) -> list[dict[str, Any]]:
+    """Parse source locators without treating arbitrary stack text as a path."""
+    frames: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for raw_line in (stack or "").splitlines():
+        for pattern in _STACK_PATTERNS:
+            match = pattern.search(raw_line)
+            if not match:
+                continue
+            groups = match.groupdict()
+            path = str(groups.get("path") or "").replace("\\", "/").strip()
+            if not path or "://" in path:
+                continue
+            line = int(groups["line"])
+            key = (path, line)
+            if key not in seen:
+                frames.append({"path": path, "line": line, "symbol": (groups.get("symbol") or "").strip() or None, "raw": raw_line.strip()[:1_000]})
+                seen.add(key)
             break
-        snippet_bytes = len(candidate["snippet"].encode("utf-8"))
-        if bytes_used + snippet_bytes > max_bytes and hits:
+    return frames[:40]
+
+
+def _resolve_frame_path(root: Path, raw_path: str) -> Path | None:
+    normalized = raw_path.lstrip("./")
+    direct = (root / normalized).resolve()
+    if direct.is_relative_to(root.resolve()) and direct.is_file():
+        return direct
+    parts = Path(normalized).parts
+    candidates: list[Path] = []
+    for path in root.rglob(Path(normalized).name):
+        if path.is_file() and not any(part in _SKIP_DIRS for part in path.parts):
+            relative_parts = path.relative_to(root).parts
+            suffix = parts[-min(len(parts), len(relative_parts)) :]
+            if tuple(relative_parts[-len(suffix) :]) == tuple(suffix):
+                candidates.append(path)
+    return sorted(candidates, key=lambda item: len(item.parts))[0] if candidates else None
+
+
+def _symbol_range(lines: list[str], target_line: int, symbol_hint: str | None) -> tuple[int, int, str | None]:
+    target = max(1, min(target_line, len(lines)))
+    declarations = (
+        re.compile(r"^\s*(?:async\s+)?(?:def|function|func|fn)\s+([\w$]+)"),
+        re.compile(r"^\s*export\s+default\s+([\w$]+)"),
+        re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>"),
+        re.compile(r"^\s*(?:export\s+)?class\s+([\w$]+)"),
+        re.compile(r"^\s*(?:public|private|protected|static|final|synchronized|override|open|internal|export|async|[\w<>\[\],?]+\s+)*\s+([\w$]+)\s*\([^;]*\)\s*(?:\{|:)\s*$"),
+    )
+
+    def declared_symbol(line: str) -> str | None:
+        for declaration in declarations:
+            match = declaration.match(line)
+            if match:
+                symbol = match.group(1)
+                if symbol not in {"await", "catch", "else", "for", "if", "return", "switch", "while"}:
+                    return symbol
+        return None
+
+    start = max(1, target - 24)
+    symbol = symbol_hint
+    declaration_index: int | None = None
+    for index in range(target - 1, -1, -1):
+        declared = declared_symbol(lines[index])
+        if declared:
+            declaration_index = index
+            symbol = symbol or declared
+            break
+    branch = re.compile(r"^\s*(?:if|else\s+if|else|catch|switch|case)\b.*\{")
+    branch_index = next(
+        (
+            index
+            for index in range(target - 1, max(-1, target - 80), -1)
+            if branch.match(lines[index])
+        ),
+        None,
+    )
+    if branch_index is not None:
+        start = branch_index + 1
+        depth = 0
+        for index in range(branch_index, min(len(lines), branch_index + 200)):
+            depth += lines[index].count("{") - lines[index].count("}")
+            if index + 1 >= target and depth <= 0:
+                return start, index + 1, symbol
+    elif declaration_index is not None and target - declaration_index <= 120:
+        start = declaration_index + 1
+    end = min(len(lines), max(target + 24, start + 12))
+    base_indent = len(lines[start - 1]) - len(lines[start - 1].lstrip()) if lines else 0
+    for index in range(target, min(len(lines), start + 160)):
+        stripped = lines[index].strip()
+        indent = len(lines[index]) - len(lines[index].lstrip())
+        if stripped and index + 1 > target and indent <= base_indent and declared_symbol(lines[index]):
+            end = index
+            break
+    return start, end, symbol
+
+
+def stack_hits(root: Path, stack: str | None, *, max_files: int = 12, max_bytes: int = 160_000) -> list[dict[str, Any]]:
+    """Open exact stack locations and archive the surrounding symbol body."""
+    hits: list[dict[str, Any]] = []
+    used = 0
+    seen: set[tuple[str, int]] = set()
+    for frame in extract_stack_frames(stack):
+        path = _resolve_frame_path(root, frame["path"])
+        if path is None or path.suffix.lower() not in _SOURCE_EXT:
             continue
-        bytes_used += snippet_bytes
-        hits.append(candidate)
+        relative = str(path.relative_to(root))
+        key = (relative, frame["line"])
+        if key in seen:
+            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if not lines or frame["line"] > len(lines):
+            continue
+        start, end, symbol = _symbol_range(lines, frame["line"], frame.get("symbol"))
+        snippet = "\n".join(lines[start - 1 : end])
+        size = len(snippet.encode("utf-8"))
+        if hits and used + size > max_bytes:
+            continue
+        hits.append({"path": relative, "line": frame["line"], "snippet_start_line": start, "snippet_end_line": end, "snippet": snippet, "symbol": symbol, "terms": [], "score": 10_000 - len(hits), "selection_reason": "exact incident stack frame", "stack_frame": frame["raw"]})
+        seen.add(key)
+        used += size
+        if len(hits) == max_files:
+            break
     return hits
 
 
-def _slice_lines(text: str, start: int, count: int) -> str:
-    lines = text.splitlines()
-    # start is 1-based
-    lo = max(0, start - 1)
-    return "\n".join(lines[lo : lo + count])
+def search_tree(root: Path, terms: list[str], *, max_files: int = 20, max_bytes: int = 200_000, snippet_lines: int = 48) -> list[dict[str, Any]]:
+    """Return bounded lexical candidates; these are never causal proof alone."""
+    if not terms:
+        return []
+    patterns = [(term, re.compile(re.escape(term), re.IGNORECASE)) for term in terms]
+    candidates: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _SOURCE_EXT or any(part in _SKIP_DIRS for part in path.parts):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        matches = [(term, pattern.search(text)) for term, pattern in patterns]
+        matches = [(term, match) for term, match in matches if match]
+        if not matches:
+            continue
+        # Terms are already ordered by causal specificity. Center the snippet on
+        # the first matching term instead of an earlier generic word elsewhere.
+        line = text.count("\n", 0, matches[0][1].start()) + 1
+        lines = text.splitlines()
+        start, end, symbol = _symbol_range(lines, line, None)
+        if end - start + 1 > snippet_lines:
+            start = max(1, line - snippet_lines // 2)
+            end = min(len(lines), start + snippet_lines - 1)
+        snippet = "\n".join(lines[start - 1 : end])
+        candidates.append({"path": str(path.relative_to(root)), "line": line, "snippet_start_line": start, "snippet_end_line": end, "snippet": snippet, "symbol": symbol, "terms": [term for term, _ in matches], "score": len(matches) * 100 + (50 if any(term.isupper() for term, _ in matches) else 0), "selection_reason": "error identifier or symbol candidate; not causal proof"})
+    hits: list[dict[str, Any]] = []
+    used = 0
+    for candidate in sorted(candidates, key=lambda item: (-item["score"], item["path"])):
+        size = len(candidate["snippet"].encode("utf-8"))
+        if hits and used + size > max_bytes:
+            continue
+        hits.append(candidate)
+        used += size
+        if len(hits) == max_files:
+            break
+    return hits
 
 
-def _resolve_ref(alert: Alert, repo: GitRepo) -> str:
-    fields = getattr(alert, "fields", None) or {}
-    for key in ("commit", "git_commit", "sha", "revision", "ref"):
-        val = fields.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-    return repo.default_branch or "main"
+def related_symbol_hits(
+    root: Path,
+    primary_hits: list[dict[str, Any]],
+    *,
+    max_files: int = 6,
+    max_bytes: int = 100_000,
+) -> list[dict[str, Any]]:
+    """Open definitions of functions called by the selected error branches."""
 
-
-async def ensure_repo_clone(repo: GitRepo, ref: str, cache_root: Path, timeout: int) -> Path:
-    """Read-only clone of ``repo`` at ``ref`` into an analysis sandbox.
-
-    ``cache_root`` is a unique temporary directory owned by one analysis task.
-    Only ``clone`` / ``checkout`` (no push, no write remotes) are used; a fixed
-    ref keeps the evidence reproducible. Raises ``RuntimeError`` on clone failure
-    so the caller can degrade gracefully rather than attributing a missing repo to
-    a root cause.
-    """
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", repo.repo_url)
-    checkout = cache_root / f"{repo.id}_{safe}"
-    cache_root.mkdir(parents=True, exist_ok=True)
-
-    def _git(args: list[str], cwd: Path | None = None) -> None:
-        subprocess.run(
-            ["git", "-c", "protocol.ext.allow=never", *args],
-            cwd=str(cwd) if cwd else None,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-
-    try:
-        _git(
-            ["clone", "--depth", "1", "--single-branch", "--branch", ref,
-             repo.repo_url, str(checkout)],
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        # The ref may be a commit SHA rather than a branch; clone default then
-        # check out the exact ref.
-        _git(["clone", "--depth", "1", repo.repo_url, str(checkout)])
-        _git(["checkout", "--force", ref], cwd=checkout)
-    return checkout
-
-
-async def collect_git_evidence(
-    session: AsyncSession,
-    application_id: int,
-    alert: Alert,
-    analysis_id: int,
-) -> dict[str, Any]:
-    """Collect and persist Git evidence for an incident.
-
-    Adds :class:`EvidenceArtifact` rows to ``session`` (caller commits). Returns
-    a summary the runner embeds in the analysis prompt and the final evidence
-    packet so every conclusion can cite a locator. Failures are logged and
-    skipped — missing source is a degraded analysis, not a hard error.
-    """
-    result = await session.execute(
-        select(GitRepo)
-        .join(ApplicationRepo, ApplicationRepo.repo_id == GitRepo.id)
-        .where(ApplicationRepo.application_id == application_id)
-    )
-    repos = result.scalars().all()
-    terms = derive_query_terms(alert)
-    sandbox_base = Path(settings.evidence_git_cache_dir)
-    try:
-        sandbox_base.mkdir(parents=True, exist_ok=True)
-        sandbox_path = Path(
-            tempfile.mkdtemp(prefix=f"analysis-{analysis_id}-", dir=sandbox_base)
-        )
-    except OSError as exc:
-        logger.warning("git evidence sandbox unavailable for analysis %s: %s", analysis_id, exc)
-        return {
-            "artifact_count": 0,
-            "files": [],
-            "repos_searched": len(repos),
-            "terms": terms,
-        }
-    artifacts: list[dict[str, Any]] = []
-
-    try:
-        if not repos:
-            return {"artifact_count": 0, "files": [], "repos_searched": 0}
-
-        if not terms:
-            return {"artifact_count": 0, "files": [], "repos_searched": len(repos)}
-
-        for repo in repos:
-            ref = _resolve_ref(alert, repo)
-            try:
-                checkout = await ensure_repo_clone(
-                    repo, ref, sandbox_path, settings.evidence_git_clone_timeout_seconds
-                )
-            except Exception as exc:  # noqa: BLE001 - degrade, don't fail the analysis
-                logger.warning("git evidence clone failed for %s: %s", repo.repo_url, exc)
+    symbols: list[str] = []
+    for hit in primary_hits:
+        for symbol in _CALL_PATTERN.findall(str(hit.get("snippet") or "")):
+            if symbol in _CALL_STOPWORDS or symbol in symbols or len(symbol) < 4:
                 continue
+            symbols.append(symbol)
+            if len(symbols) == 16:
+                break
+    if not symbols:
+        return []
 
-            hits = search_tree(
-                checkout,
-                terms,
-                max_files=settings.evidence_git_max_files,
-                max_bytes=settings.evidence_git_max_bytes,
-                snippet_lines=settings.evidence_git_snippet_lines,
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _SOURCE_EXT or any(part in _SKIP_DIRS for part in path.parts):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for priority, symbol in enumerate(symbols):
+            patterns = (
+                re.compile(rf"^\s*(?:export\s+)?(?:async\s+)?(?:function|def|func|fn)\s+{re.escape(symbol)}\b", re.MULTILINE),
+                re.compile(rf"^\s*(?:export\s+)?(?:const|let|var)\s+{re.escape(symbol)}\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>", re.MULTILINE),
             )
-            for hit in hits:
-                masked, categories = mask_secrets(hit["snippet"])
-                retention = None
-                days = settings.evidence_retention_days
-                if days and days > 0:
-                    retention = datetime.now(timezone.utc) + timedelta(days=days)
-                artifact = EvidenceArtifact(
-                    analysis_id=analysis_id,
-                    artifact_type="git_file",
-                    source_kind="git",
-                    source_id=repo.id,
-                    locator=f"{repo.repo_url}@{ref}:{hit['path']}:{hit['line']}",
-                    content_hash=_hash(hit["snippet"]),
-                    redacted_excerpt=masked,
-                    metadata_={
-                        "terms": hit["terms"],
-                        "matched_line": hit["line"],
-                        "repo_name": repo.name,
-                        "ref": ref,
-                        "secret_categories": categories,
-                        "time_scope": "source_revision",
-                        "collector_version": "2",
-                    },
-                    retention_until=retention,
-                )
-                session.add(artifact)
-                artifacts.append(
-                    {
-                        "_artifact": artifact,
-                        "locator": artifact.locator,
-                        "line": hit["line"],
-                        "terms": hit["terms"],
-                        "secret_categories": categories,
-                        "excerpt": masked[:4000],
-                    }
-                )
+            match = next((candidate for pattern in patterns if (candidate := pattern.search(text))), None)
+            relative = str(path.relative_to(root))
+            if match is None or (relative, symbol) in seen:
+                continue
+            lines = text.splitlines()
+            line = text.count("\n", 0, match.start()) + 1
+            start, end, identified = _symbol_range(lines, line, symbol)
+            snippet = "\n".join(lines[start - 1 : end])
+            candidates.append(
+                {
+                    "path": relative,
+                    "line": line,
+                    "snippet_start_line": start,
+                    "snippet_end_line": end,
+                    "snippet": snippet,
+                    "symbol": identified or symbol,
+                    "terms": [symbol],
+                    "score": 1_000 - priority,
+                    "selection_reason": "called symbol definition candidate; not causal proof",
+                    "related_symbol": symbol,
+                }
+            )
+            seen.add((relative, symbol))
 
-        await session.flush()  # assign IDs without committing the analysis txn
-        for item in artifacts:
-            artifact = item.pop("_artifact")
-            item["artifact_id"] = artifact.id
-    finally:
-        shutil.rmtree(sandbox_path, ignore_errors=True)
-
-    return {
-        "artifact_count": len(artifacts),
-        "files": artifacts,
-        "repos_searched": len(repos),
-        "terms": terms,
-    }
-
-
-def _hash(text: str) -> str:
-    import hashlib
-
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    hits: list[dict[str, Any]] = []
+    used = 0
+    for candidate in sorted(candidates, key=lambda item: (-item["score"], item["path"])):
+        size = len(candidate["snippet"].encode())
+        if hits and used + size > max_bytes:
+            continue
+        hits.append(candidate)
+        used += size
+        if len(hits) == max_files:
+            break
+    return hits

@@ -308,16 +308,6 @@ class ApplicationDescriptionOut(BaseModel):
     content: str
 
 
-class ExperienceOut(BaseModel):
-    id: int
-    application_id: int
-    application_name: str
-    trigger_signature: str
-    content: str
-    is_valid: bool
-    created_at: datetime
-
-
 class AlertListOut(BaseModel):
     id: int
     dedupe_key: str
@@ -328,10 +318,6 @@ class AlertListOut(BaseModel):
     level: str
     error_message: str
     received_at: datetime
-
-
-class AddGuidanceIn(BaseModel):
-    content: str = Field(min_length=1, max_length=2000)
 
 
 class DeadLetterOut(BaseModel):
@@ -598,39 +584,47 @@ class InviteAcceptIn(BaseModel):
     name: str = Field(default="", max_length=200)
 
 
-class ReanalyzeOut(BaseModel):
-    analysis_id: str
-    job_id: str | None = None
-    status: str
-    message: str
-
-
-class InvestigationFollowUpEvidenceIn(BaseModel):
-    """A bounded, redacted operator fact that can seed an inherited run."""
-
+class InvestigationErrorIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["log", "trace", "gateway_response", "deployment", "dependency"] = "log"
+    name: str = Field(default="Error", min_length=1, max_length=500)
+    message: str = Field(min_length=1, max_length=20_000)
+    stack: str | None = Field(default=None, max_length=50_000)
+    cause: Any = None
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class InvestigationAttachmentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["log", "trace", "dependency", "gateway_response"]
+    label: str = Field(min_length=1, max_length=1_000)
     content: str = Field(min_length=1, max_length=20_000)
-    locator: str | None = Field(default=None, max_length=1_000)
 
 
-class InvestigationScopePatchIn(BaseModel):
+class InvestigationCreateIn(BaseModel):
+    """Manual input using the same normalized contract as Kafka intake."""
+
     model_config = ConfigDict(extra="forbid")
 
+    application_id: int = Field(gt=0)
+    title: str = Field(min_length=1, max_length=500)
+    severity: Literal["CRITICAL", "WARNING"] = "WARNING"
+    occurred_at: datetime
+    error: InvestigationErrorIn
     service_name: str | None = Field(default=None, max_length=300)
     environment: str | None = Field(default=None, max_length=300)
     trace_id: str | None = Field(default=None, max_length=1_000)
     deployment_sha: str | None = Field(default=None, max_length=300)
+    fields: dict[str, Any] = Field(default_factory=dict)
+    attachments: list[InvestigationAttachmentIn] = Field(default_factory=list, max_length=10)
 
-
-class InvestigationFollowUpIn(BaseModel):
-    """Restricted input accepted after a provisional investigation."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    evidence: list[InvestigationFollowUpEvidenceIn] = Field(default_factory=list, max_length=10)
-    scope_patch: InvestigationScopePatchIn | None = None
+    @field_validator("occurred_at")
+    @classmethod
+    def occurred_at_must_include_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone")
+        return value
 
 
 # --- Application membership (admin / app-admin) -------------------------

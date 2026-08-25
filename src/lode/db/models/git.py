@@ -13,6 +13,7 @@ from sqlalchemy import (
     Identity,
     Index,
     Text,
+    text as sql_text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,10 +32,10 @@ class GitCredential(Base):
     readonly: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     note: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
 
     __table_args__ = (
@@ -67,10 +68,10 @@ class GitRepo(Base):
         BigInteger, ForeignKey("git_credentials.id", ondelete="SET NULL")
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
 
     __table_args__ = (

@@ -2,8 +2,7 @@
 //
 // The backend speaks snake_case and uses DB-native statuses
 // (queued/running/completed/failed). Result maturity is a separate contract.
-// a slightly wider status set (it adds `needs_human`). All mapping happens
-// here so the page components stay presentational.
+// All mapping happens here so page components stay presentational.
 
 import type {
   AiModelConfig,
@@ -165,97 +164,28 @@ interface ApiApplication {
 // Public client functions
 // ---------------------------------------------------------------------------
 
-// Canonical investigation contract. The UI never adapts the retired analysis
-// payload; each displayed state is returned by the new evidence-first API.
-export type InvestigationNodeStatus = 'queued' | 'running' | 'succeeded' | 'partial' | 'blocked' | 'failed' | 'canceled';
-export interface InvestigationSummary { id: string; application_id: number; application_name: string; title: string; level: string; status: 'queued' | 'running' | 'completed' | 'failed'; result_state: 'confirmed' | 'provisional' | 'insufficient' | 'unavailable'; review_required: boolean; confidence: number | null; conclusion: string | null; created_at: string; }
-export interface InvestigationAiUsage {
-  participating_node_count: number; call_count: number; total_latency_ms: number; input_tokens: number; output_tokens: number; total_tokens: number;
-  token_breakdown: { provider_exact: { calls: number; input_tokens: number; output_tokens: number; total_tokens: number }; local_estimated: { calls: number; input_tokens: number; output_tokens: number; total_tokens: number } };
-  calls: { purpose: string; provider: string | null; model: string | null; status: 'succeeded' | 'failed' | 'fallback'; latency_ms: number; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; token_source: 'provider' | 'estimated' | 'unavailable'; error_code: string | null; summary: string; evidence_refs: number[] }[];
-}
-export interface InvestigationBriefItem { text: string; evidence_refs: number[]; }
-export interface InvestigationBrief {
-  headline: string;
-  summary: string;
-  direct_cause: InvestigationBriefItem & { status: 'confirmed' | 'not_proven' };
-  confirmed: InvestigationBriefItem[];
-  impact: InvestigationBriefItem[];
-  uncertain: InvestigationBriefItem[];
-  next_step: InvestigationBriefItem;
-}
-export const INVESTIGATION_V2_CONTRACT_ERROR = '此调查记录不符合工作台 2.0 展示契约，请重新调查。';
+export type InvestigationStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type InvestigationResultState = 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
+export type InvestigationStepStatus = 'queued' | 'running' | 'succeeded' | 'partial' | 'blocked' | 'failed' | 'canceled';
+export interface InvestigationSummary { id: string; application_id: number; application_name: string; title: string; level: string; status: InvestigationStatus; result_state: InvestigationResultState; review_required: boolean; created_at: string; }
+export interface InvestigationEvidence { id: number; type: string; source: string; locator: string | null; content_hash: string; excerpt: string; metadata: Record<string, unknown>; collected_at: string; code?: { language: string; content: string; highlight_start: number; highlight_end: number; anchor: { repo_id: number | null; path: string; revision: string; revision_role: 'incident' | 'latest'; symbol: string | null; start_line: number; end_line: number } }; }
+export interface InvestigationOperationEvent { sequence: number; kind: 'started' | 'progress' | 'finished'; message: string; detail: Record<string, unknown>; evidence_refs: number[]; occurred_at: string; }
+export interface InvestigationOperation { id: string; step_id: number; ordinal: number; kind: string; actor: 'engine' | 'ai' | 'collector'; title: string; purpose: string; input: Record<string, unknown>; status: InvestigationStepStatus; result: string; metrics: Record<string, unknown>; evidence_refs: number[]; failure: { code: string; detail: string | null } | null; started_at: string | null; finished_at: string | null; duration_ms: number | null; events: InvestigationOperationEvent[]; }
+export interface InvestigationStep { id: string; db_id: number; ordinal: number; kind: string; title: string; objective: string; selection_reason: string; expected_evidence: string; tool_name: string | null; tool_input: Record<string, unknown>; status: InvestigationStepStatus; input_refs: number[]; output_refs: number[]; result: string; failure: { code: string; detail: string | null } | null; started_at: string | null; finished_at: string | null; duration_ms: number | null; }
+export interface InvestigationCodeFinding { id: number; artifact_id: number | null; status: 'confirmed' | 'hypothesis' | 'no_defect' | 'not_found'; repo_id: number | null; revision: string | null; revision_role: 'incident' | 'latest' | null; path: string | null; symbol: string | null; start_line: number | null; end_line: number | null; issue_type: string | null; faulty_behavior: string; why_wrong: string; expected_behavior: string; trigger_condition: string; causal_chain: string[]; incident_evidence_refs: number[]; supporting_evidence_refs: number[]; counter_evidence_refs: number[]; missing_validation: string[]; fix_direction: string; test_scenario: string; created_at: string; }
+export interface InvestigationReport { result_state: Exclude<InvestigationResultState, 'pending'>; headline: string; summary: string; incident_cause: { status: string; mechanism: string; why: string; causal_chain: string[]; evidence_refs: number[] }; code_diagnosis: { status: string; summary: string; findings: unknown[] }; confirmed_facts: { text: string; evidence_refs: number[] }[]; counter_evidence: ({ text: string; evidence_refs: number[] } | string)[]; evidence_gaps: string[]; next_step: { type?: string; text?: string }; evidence_refs: number[]; }
+export interface InvestigationDetail { id: string; application_id: number; application_name: string; status: InvestigationStatus; result_state: InvestigationResultState; output_language: 'en' | 'zh'; scope: { service: string | null; environment: string | null; trace_id: string | null; deployment_sha: string | null; sources: Record<string, string | null>; window_started_at: string; window_finished_at: string }; review_required: boolean; review_reasons: string[]; engine_version: string | null; created_at: string; started_at: string | null; finished_at: string | null; input: { source_type: string; title: string; severity: string; occurred_at: string; error: { name: string; message: string; stack: string | null; cause: unknown; properties: Record<string, unknown> }; fields: Record<string, unknown> } | null; report: InvestigationReport | null; steps: InvestigationStep[]; decisions: { id: number; ordinal: number; after_step_id: number | null; action: string; selected_tool: string | null; rationale: string; hypothesis: Record<string, unknown>; evidence_refs: number[]; created_at: string }[]; operations: InvestigationOperation[]; evidence: InvestigationEvidence[]; code_findings: InvestigationCodeFinding[]; event_cursor: number; }
+export interface InvestigationLiveEvent { type: string; sequence?: number; payload: Record<string, unknown>; }
+export interface InvestigationCreateInput { application_id: number; title: string; severity: 'CRITICAL' | 'WARNING'; occurred_at: string; error: { name: string; message: string; stack?: string; cause?: unknown; properties?: Record<string, unknown> }; service_name?: string; environment?: string; trace_id?: string; deployment_sha?: string; fields?: Record<string, unknown>; attachments?: { kind: 'log' | 'trace' | 'dependency' | 'gateway_response'; label: string; content: string }[]; }
+export interface InvestigationAuditCall { id: number; step_id: number | null; purpose: string; provider: string | null; model: string | null; status: string; prompt_template_version: string; input_hash: string; output_hash: string | null; latency_ms: number; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; token_source: string; error_code: string | null; summary: string; evidence_refs: number[]; created_at: string; }
+export interface InvestigationAuditPage { operations: { items: InvestigationOperation[]; next_cursor: number | null }; ai_calls: { items: InvestigationAuditCall[]; next_cursor: number | null }; }
 
-function isBriefItem(value: unknown): value is InvestigationBriefItem {
-  if (!value || typeof value !== 'object') return false;
-  const item = value as { text?: unknown; evidence_refs?: unknown };
-  return typeof item.text === 'string' && Array.isArray(item.evidence_refs) && item.evidence_refs.every((ref) => typeof ref === 'number');
-}
+export async function fetchInvestigations(): Promise<InvestigationSummary[]> { return getJson('/investigations'); }
+export async function fetchInvestigation(id: string): Promise<InvestigationDetail> { return getJson('/investigations/' + encodeURIComponent(id)); }
+export async function createInvestigation(body: InvestigationCreateInput): Promise<{ id: string; job_id: string; status: 'queued' }> { return postJson('/investigations', body); }
+export async function fetchInvestigationAudit(id: string, operationCursor = 0, aiCursor = 0): Promise<InvestigationAuditPage> { return getJson(`/investigations/${encodeURIComponent(id)}/audit?operation_cursor=${operationCursor}&ai_cursor=${aiCursor}&limit=50`); }
 
-function isInvestigationBrief(value: unknown): value is InvestigationBrief {
-  if (!value || typeof value !== 'object') return false;
-  const brief = value as Partial<InvestigationBrief>;
-  return typeof brief.headline === 'string'
-    && typeof brief.summary === 'string'
-    && isBriefItem(brief.direct_cause)
-    && (brief.direct_cause.status === 'confirmed' || brief.direct_cause.status === 'not_proven')
-    && Array.isArray(brief.confirmed) && brief.confirmed.every(isBriefItem)
-    && Array.isArray(brief.impact) && brief.impact.every(isBriefItem)
-    && Array.isArray(brief.uncertain) && brief.uncertain.every(isBriefItem)
-    && isBriefItem(brief.next_step);
-}
-export interface InvestigationEventDisplay {
-  actor: 'ai' | 'collector' | 'engine';
-  headline: string;
-  message: string;
-  tone: 'active' | 'success' | 'warning' | 'danger' | 'neutral';
-  evidence_refs: number[];
-}
-export interface InvestigationLiveEvent {
-  sequence: number;
-  type: string;
-  phase: string;
-  node_id: string | null;
-  operation_id: string;
-  display: InvestigationEventDisplay;
-  detail: Record<string, unknown>;
-  artifact_refs: number[];
-  occurred_at: string;
-}
-export interface InvestigationDetail {
-  id: string; application: { id: number; name: string }; alert: { title: string; level: string; topic: string; error_message: string } | null;
-  status: InvestigationSummary['status']; result_state: InvestigationSummary['result_state']; review_required: boolean; review_reasons: string[]; audit_status: 'auditable' | 'unverifiable' | 'violated'; engine_version: string | null; output_language: 'en' | 'zh';
-  scope: { service: string | null; environment: string | null; trace_id: string | null; deployment_sha: string | null; window_started_at: string; window_finished_at: string; sources: Record<string, string | null>; context: Record<string, unknown> };
-  conclusion: string | null; brief: InvestigationBrief | null; confidence: number | null; conclusion_version: number; superseded_by_investigation_id: string | null;
-  capability_catalog: { repositories?: unknown[]; observability?: unknown[]; dependencies?: unknown[]; data_sources?: unknown[]; inherited_evidence_refs?: number[]; policy?: Record<string, string> };
-  plan_history: { revision: number; decision: 'initial' | 'continue' | 'conclude' | 'add' | 'cancel' | 'reorder' | 'converge' | 'request_evidence'; wave: number; trigger_node_id: string | null; rationale: string; change_set: Record<string, unknown>; evidence_refs: number[]; created_at: string }[];
-  nodes: { id: string; capability: string; plan_revision: number; title: string; objective: string; selection_reason: string; expected_evidence: string; decision_rule: string; budget: Record<string, unknown>; stop_condition: string; tool_input: Record<string, unknown>; status: InvestigationNodeStatus; input_refs: number[]; output_refs: number[]; outcome: Record<string, unknown>; failure_code: string | null; failure_detail: string | null; started_at: string | null; finished_at: string | null; dependencies: string[]; operations: { id: string; type: string; status: 'running' | 'succeeded' | 'partial' | 'blocked' | 'failed' | 'not_configured' | 'canceled'; collection_id: number | null; started_at: string | null; finished_at: string | null; detail: Record<string, unknown>; artifact_refs: number[]; sequence: number; display: InvestigationEventDisplay }[]; ai_participated: boolean; ai_usage: InvestigationAiUsage }[];
-  source_revisions: { role: 'incident' | 'latest'; requested_ref: string | null; resolved_sha: string | null; resolution_basis: string | null; origin_url: string; status: string; failure_detail: string | null }[];
-  evidence: { id: number; type: string; source: string; locator: string | null; content_hash: string; excerpt: string; metadata: Record<string, unknown>; collected_at: string; code?: { mode: 'source'; language: string; content: string; highlight_line: number; anchor: { path: string; revision: string; snippet_start_line: number; snippet_end_line: number; match_line: number } } | { mode: 'diff'; language: string; before: string; after: string; revisions: { incident: string; latest: string } } }[];
-  evidence_coverage: { artifact_count: number; by_type: Record<string, number>; open_requirements: { text: string; rationale: string }[] };
-  reasoning_path: { id: number; kind: 'fact' | 'hypothesis' | 'counter_evidence' | 'impact' | 'evidence_gap' | 'conclusion'; status: string; text: string; rationale: string; confidence: number | null; evidence_refs: number[] }[];
-  reasoning_edges: { from: number; to: number; relation: 'supports' | 'contradicts' | 'caused_by' | 'needs_test'; evidence_refs: number[] }[];
-  ai_usage: InvestigationAiUsage;
-  inheritance: { parent_investigation_id: string | null; superseded_by_investigation_id: string | null; evidence_members: { artifact_id: number; relation: 'collected' | 'inherited' | 'manual' }[] };
-  hypotheses: { rank: number; status: string; text: string; confidence: number; evidence_refs: number[] }[];
-  remediation: { summary: string; risk_level: 'low' | 'medium' | 'high' | 'critical'; evidence_refs: number[]; preconditions: string[]; steps: { action?: string; expected_result?: string }[]; verification: string[]; rollback: string[]; agent_prompt: string } | null;
-  job: { status: string; attempt: number; max_attempts: number; last_error_code: string | null; last_error_detail: string | null } | null;
-  execution: { current_activity: (InvestigationLiveEvent & { is_running: boolean }) | null; operation_count: number };
-  live_timeline: InvestigationLiveEvent[]; event_cursor: number;
-  started_at: string | null; finished_at: string | null; created_at: string;
-}
-export async function fetchInvestigations(): Promise<InvestigationSummary[]> { return getJson<InvestigationSummary[]>('/investigations'); }
-export async function fetchInvestigation(id: string): Promise<InvestigationDetail> {
-  const detail = await getJson<InvestigationDetail>('/investigations/' + encodeURIComponent(id));
-  if (detail.brief !== null && !isInvestigationBrief(detail.brief)) throw new Error(INVESTIGATION_V2_CONTRACT_ERROR);
-  return detail;
-}
-
-export function openInvestigationStream(
-  id: string,
-  after: number,
-  handlers: { onSnapshot: (snapshot: { sequence: number; status: string; result_state: string; conclusion: string | null; conclusion_version: number }) => void; onEvent: (event: InvestigationLiveEvent) => void; onClose: () => void; onError: (message: string) => void },
-): () => void {
+export function openInvestigationStream(id: string, after: number, handlers: { onEvent: (event: InvestigationLiveEvent) => void; onClose: () => void; onError: (message: string) => void }): () => void {
   const controller = new AbortController();
   void (async () => {
     try {
@@ -277,9 +207,7 @@ export function openInvestigationStream(
           const body = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
           if (!eventName || !body) continue;
           const payload: unknown = JSON.parse(body);
-          if (eventName === 'snapshot' && payload && typeof payload === 'object') handlers.onSnapshot(payload as { sequence: number; status: string; result_state: string; conclusion: string | null; conclusion_version: number });
-          if (eventName === 'investigation_event' && payload && typeof payload === 'object') handlers.onEvent(payload as InvestigationLiveEvent);
-          if (eventName === 'terminal' && payload && typeof payload === 'object') handlers.onEvent({ ...(payload as Omit<InvestigationLiveEvent, 'type' | 'phase' | 'node_id' | 'operation_id' | 'display' | 'detail' | 'artifact_refs' | 'occurred_at'>), type: 'terminal', phase: 'succeeded', node_id: null, operation_id: `terminal-${String((payload as { sequence?: number }).sequence || Date.now())}`, display: { actor: 'engine', headline: '调查执行结束', message: '', tone: 'success', evidence_refs: [] }, detail: payload as Record<string, unknown>, artifact_refs: [], occurred_at: new Date().toISOString() });
+          if (payload && typeof payload === 'object') handlers.onEvent({ type: eventName, sequence: typeof (payload as { sequence?: unknown }).sequence === 'number' ? (payload as { sequence: number }).sequence : undefined, payload: payload as Record<string, unknown> });
         }
       }
       if (!controller.signal.aborted) handlers.onClose();
@@ -289,8 +217,6 @@ export function openInvestigationStream(
   })();
   return () => controller.abort();
 }
-export async function reinvestigate(id: string): Promise<{ id: string; status: 'queued'; parent_investigation_id: string }> { return postJson('/investigations/' + encodeURIComponent(id) + '/reanalyze', {}); }
-export async function submitInvestigationFollowUp(id: string, body: { evidence?: { kind: 'log' | 'trace' | 'gateway_response' | 'deployment' | 'dependency'; content: string; locator?: string }[]; scope_patch?: { service_name?: string; environment?: string; trace_id?: string; deployment_sha?: string } }): Promise<{ id: string; status: 'queued'; parent_investigation_id: string }> { return postJson('/investigations/' + encodeURIComponent(id) + '/follow-ups', body); }
 
 
 export interface LoginResult {

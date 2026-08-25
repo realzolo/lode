@@ -1,200 +1,157 @@
-# Lode Development Context
+# Lode Project Context
 
-## Dynamic Investigation Architecture
+Lode is an evidence-backed production incident investigation service. The V1 architecture is intentionally serial within each investigation and has no historical execution-path adapters. Different investigations may execute concurrently.
 
-Lode investigates production incidents through a capability-constrained,
-evidence-first graph rooted at investigations. The retired fixed seven-stage
-pipeline is not a runtime or browser contract.
+## Runtime Components
 
-- At investigation start, the worker builds a persisted capability catalog from
-  application-bound read-only Git repositories, active evidence connectors,
-  approved data sources and diagnostic profiles, and inherited evidence.
-- The worker creates the minimum wave-parallel plan graph from that catalog. A
-  repository, Redis connector, data source, or observability backend that is
-  not bound and active does not produce a node, a fake operation, or an
-  unconfigured user-facing stage.
-- When a missing capability is necessary to distinguish hypotheses, the graph
-  creates an evidence_request node. Its persisted outcome states the missing
-  fact, why it matters, the minimum redacted input, and an authorized
-  alternative path. It never simulates a collector.
-- Every node has an objective, selection reason, expected evidence, upstream
-  dependencies, restricted tool input, budget, stop condition, append-only
-  operation events, evidence references, outcome and next decision.
-  investigation_plan_revisions records the initial plan and every replan
-  decision, wave, and structural change set; investigation_plan_node_dependencies
-  makes ordering auditable. A completed wave may add, cancel, reorder, or
-  converge nodes instead of merely recording a cosmetic revision.
-- Collector categories remain internal compatibility records because existing
-  bounded collectors require investigation_stages foreign keys. The dashboard
-  must render investigation_plan_nodes, never a fixed stage list.
-- Node execution status is queued, running, succeeded, partial, blocked,
-  failed, or canceled. Investigation execution status is only queued, running,
-  completed, or failed. Conclusion maturity is independent: confirmed,
-  provisional, insufficient, or unavailable. review_required is reserved for
-  production-change approval or an audit violation, not for normal evidence
-  gaps.
+- `src/lode/api`: FastAPI control plane, authorization, manual intake, investigation detail, audit pagination, and SSE.
+- `src/lode/consumer`: strict Kafka `alert.v1` validation and shared intake dispatch.
+- `src/lode/worker`: durable job claiming, investigation-scoped leases, retry, and bounded cross-investigation concurrency.
+- `src/lode/engine/investigation_intake.py`: canonical normalization, masking, immutable input evidence, and job creation.
+- `src/lode/engine/investigation_engine.py`: one-action-at-a-time adaptive decision loop and terminal synthesis.
+- `src/lode/engine/investigation_evidence.py`: serial Git and connector evidence collection.
+- `src/lode/engine/evidence/git.py`: stack parsing, exact revision lookup, symbol range extraction, lexical candidates, and related-symbol expansion.
+- `src/lode/engine/investigation_events.py`: durable step, operation, progress, failure, timing, and evidence events.
+- `apps/web`: Next.js workbench with manual intake, serial execution track, exact code viewer, evidence browser, and paginated audit drawer.
 
-## Evidence And Autonomous Execution
+PostgreSQL is the source of truth. Kafka consumers only validate and enqueue; workers execute investigations. Model configuration is selected from the application binding first, then the global default.
 
-- The worker may automatically invoke only registered, policy-approved,
-  read-only collectors. AI never authors commands, SQL, URLs, credential
-  references, or connector configuration. PostgreSQL, Redis, Kafka, and
-  ClickHouse collection remains typed and administrator-template-bound.
-- Source nodes derive at most eight terms, with exact error codes and symbols
-  ahead of alert prose; they inspect only source-language files, rank a bounded
-  candidate set, and let the configured model select at most the configured
-  code-evidence cap. The model receives only redacted candidate snippets and
-  can return only existing candidate indexes with a safe selection reason.
-  Project memory files (AGENTS.md, AGENT.md, CLAUDE.md, README.md, README.*,
-  and .github/AGENTS.md) are bounded orientation material, never root-cause
-  proof. New source-file artifacts persist the immutable path, revision,
-  snippet start/end, and matched line so the browser can open an exact
-  read-only source anchor. If the alert has no deployed revision, the default
-  branch is marked default_branch_reference, never presented as incident proof,
-  and collected once as reference context rather than duplicated as incident
-  and latest revision.
-- Every operation writes a started event, may append bounded progress facts,
-  and writes an explicit terminal event with the same operation_id. Input/output
-  are redacted before persistence. Evidence artifacts are
-  content-hashed and immutable; investigation_evidence_links records
-  collected, inherited, and manual membership without duplicating evidence.
-- Concurrent evidence waves use separate async sessions. After the coordinating
-  session expires its identity map, capture node IDs and explicitly await a
-  reload before reading those nodes; never dereference an expired ORM attribute
-  and trigger implicit I/O in async code.
-- When no model is configured or a structured response fails validation, the
-  worker produces a deterministic, authoritative failure-boundary conclusion
-  from alert facts. It records evidence that can refine the boundary without
-  asking a user to verify the conclusion. A follow-up automatically creates an
-  inherited investigation and supersedes the prior conclusion version.
+## Investigation Execution
 
-## AI Audit And Reasoning
+An investigation owns exactly one execution lane:
 
-- AI receives only redacted immutable evidence. It can participate in planning
-  review, evidence review, attribution, and node re-planning, but the browser
-  receives an auditable summary of evidence to facts to hypothesis or
-  counter-evidence to next decision, never raw internal reasoning.
-- investigation_ai_invocations stores purpose, provider, model, outcome,
-  latency, input/output/total tokens, token source (provider, estimated, or
-  unavailable), safe failure code, evidence references and a display-safe
-  summary. Provider-reported usage is exact; otherwise the local estimate is
-  labelled as such.
-- Invalid JSON, invalid evidence references, language validation failures, and
-  provider failures retain their safe failure code and any available usage.
-  ai_participated is true only when a model returned a usable response.
-- API and final conclusion totals aggregate participating nodes, actual model
-  calls, latency, input/output/total tokens, and exact-versus-estimated usage.
-- investigation_findings and investigation_finding_edges form the citable
-  browser reasoning graph. Relationships are supports, contradicts, caused_by,
-  or needs_test; internal model reasoning is never persisted or shown.
-- The attribution dossier is capped at 24 artifacts and ordered by causal
-  value: incident-time runtime facts, fixed incident-revision code, relevant
-  diff, reference code, then project context. The attribution prompt must stop
-  at the observed boundary unless source behavior is tied to an alert contract,
-  incident-time runtime fact, or verified incident revision; it must request
-  the smallest discriminating evidence rather than guess a root cause.
-- Every new reasoning packet also persists a reader-facing brief with a
-  headline, summary, direct_cause, cited confirmed facts, impact, uncertainty,
-  and next step. `direct_cause` is a single AI-attributed mechanism with a
-  confirmed/not_proven state. A confirmed direct cause has one to three valid
-  citations and may never cite repository_context artifacts such as README or
-  project instructions. The brief is a presentation contract, not model
-  chain-of-thought: confirmed claims require valid evidence references and
-  explicit evidence gaps may carry none. Invalid or missing briefs fail safe
-  into the deterministic new-run brief; a persisted incomplete brief is
-  rejected with a reinvestigation-required response, never adapted in the
-  browser.
+1. Canonicalize and mask the complete error input.
+2. Parse stack frames and the structured error contract.
+3. Build or update the leading mechanism.
+4. Select one action ID from the server-generated catalog.
+5. Execute and await that action before selecting another.
+6. Archive evidence, facts, counter-evidence, and validation gaps.
+7. Synthesize separate incident and code results.
+8. Persist one terminal decision and report.
 
-## Intake, Follow-ups, And APIs
+Do not add `asyncio.gather`, overlapping connector calls, or task-local parallelism to the investigation path. Blocking Git or HTTP work may run in a thread pool only when immediately awaited. `engine_concurrency` controls how many separate investigations workers may run.
 
-- Run API, consumer and worker independently with make serve, make consume,
-  and make work. Kafka intake validates an alert, persists only the ingress
-  stage and its operation facts, archives the alert evidence, records scope
-  field provenance, and queues the job. It does not pre-create empty stages.
-- Scope values have explicit sources. Do not infer a service from an
-  application name; absent service/environment/version/trace values remain
-  unknown and are surfaced with their missing source.
-- GET /investigations/{id} returns capability catalog, dynamic nodes,
-  dependencies, plan history, source-version basis, immutable evidence,
-  coverage/open requirements, structured reasoning path, node and aggregate AI
-  usage, scope provenance, conclusion version/supersession, inheritance links,
-  reasoning edges, event cursor, recent live timeline, and execution.current_activity.
-  Every visible event and node operation includes operation_id plus a
-  server-generated display object (actor, headline, message, tone, and cited
-  evidence references). The main workbench uses this presentation layer; raw
-  event detail is reserved for the audit drawer.
-  It also returns the new-workbench `brief`; source evidence exposes code only
-  when its complete immutable anchor is present. Historical artifacts without
-  that anchor are not synthesized into a code-viewer payload.
-- GET /investigations/{id}/stream is an authenticated SSE stream. It supports
-  Last-Event-ID / after replay, an initial snapshot, heartbeats, and terminal
-  closure. Browser clients use bearer-authenticated streaming fetch because the
-  API may be cross-origin.
-- POST /investigations/{id}/follow-ups accepts bounded redacted operator
-  evidence and an allowlisted scope patch. It creates a new queued
-  investigation linked to its parent, copies immutable evidence membership as
-  inherited, archives supplied content as operator_input, and reruns the
-  graph. POST /investigations/{id}/reanalyze creates the same inheritance
-  chain with no new manual payload.
-- The workbench investigation page is one centered, responsive real-time
-  workspace with no local views or tabs. It presents the reader-facing brief
-  and reversible recommendation before the execution trust trail. The CI-style
-  workflow is a horizontal flow canvas: compact wave/job nodes are connected
-  by dependency and wave-transition arrows, while planning revisions appear as
-  explicit update markers. It collapses low-level Git and collector operations
-  into a few semantic milestones. The live console folds started/progress/terminal facts with the
-  same operation_id into one lifecycle row; raw event JSON remains audit-only.
-  The evidence explorer shows only the one-to-three references that prove an
-  AI-confirmed direct cause. Candidate files and project context remain out of
-  the reader path; while a direct cause is not proven, the workspace shows the
-  exact evidence gap rather than a list of related files. A missing causal path
-  is a compact evidence-threshold state, not a blank graph. `@xyflow/react` is
-  reserved for the citable reasoning graph.
-  AI usage, budgets, restricted boundaries, and raw execution detail live in an
-  on-demand audit drawer. No historical payload adapter or legacy workbench is
-  maintained for this UI.
+Limits are configured by:
 
-## Database Cutover And Worker Verification
+- `investigation_max_evidence_steps`, default 12;
+- `investigation_max_model_calls`, default 10;
+- `investigation_timeout_seconds`, default 600.
 
-- 0001_initial, 0002_canonical_investigations, and
-  0003_execution_events are immutable. 0004_dynamic_graph is the
-  non-reversible dynamic-graph migration. It converts historic needs_review
-  rows to completed plus conclusion maturity, adds graph/AI audit tables,
-  creates immutable evidence memberships, and marks completed runs without
-  operation events unverifiable. 0005_realtime_investigation_v2 adds conclusion
-  versioning/supersession, plan waves/change sets, and immutable reasoning
-  edges. 0006_investigation_live_progress extends the immutable execution-event
-  phase constraint with bounded progress facts for the live console. Both are
-  additive and non-reversible; neither backfills or adapts historical runs.
-- Apply migrations intentionally with uv run alembic upgrade head against the
-  target environment. Do not run it against an unreviewed remote
-  LODE_DATABASE_URL. Static review uses uv run alembic upgrade head --sql.
-- Before activating a deployment, verify the API, consumer, and worker are all
-  running code with ENGINE_VERSION = dynamic-graph-v2 and the database
-  alembic_version is 0006_investigation_live_progress. Drain/restart workers after the
-  migration so no process creates legacy fixed-stage rows. A worker failure
-  must leave the job and investigation terminal state explicit; it must not
-  fall back to the retired runner.
+Every action uses a server-generated fingerprint and may run once. Steps and operations commit independently. PostgreSQL partial unique indexes allow no more than one running step and one running operation for an investigation. On worker recovery, completed evidence is reused and the first unfinished durable action resumes. Lease cleanup only changes jobs whose own leases expired.
 
-## Verification Expectations
+Model output may select catalog IDs and cite archived evidence IDs. It may never create commands, SQL, URLs, repository paths, connector configuration, or credentials.
 
-- Cover capability selection: absent Redis/data source means no corresponding
-  node; an active bound capability permits only its registered collector; a
-  necessary unavailable capability becomes an evidence request.
-- Cover plan dependencies, real replan change sets, wave parallelism,
-  cancellation, budgets, unsafe parameter rejection, operation-event
-  start/progress/terminal pairing, source incident version absence without
-  duplicate default-branch collection, exact-term source ranking, model source
-  candidate selection, and evidence inheritance.
-- Cover provider-exact and locally-estimated token accounting, unavailable and
-  failed model calls, node/overall aggregation, language/citation validation,
-  direct-cause citation validation (including project-context rejection),
-  deterministic failure-boundary conclusions, conclusion supersession, SSE
-  replay/reconnect, reasoning-edge citation validation, and the boundary for
-  production-change approval.
-- Validate the web UI at desktop, tablet and mobile widths, including centered
-  wide-workspace layout, workflow/log selection, live-console follow/pause,
-  evidence-to-code anchor jumps, and the audit drawer. Run pnpm
-  --dir apps/web typecheck and pnpm --dir apps/web build before handoff,
-  alongside focused Python investigation tests for brief citation validation
-  and strict source-anchor contracts.
+## Input Contract
+
+Kafka accepts strict `alert.v1`. The important deployment and error fields are:
+
+- top-level `version` and full `git_commit`;
+- `occurred_at`, `event_type`, severity, title, dedupe key and TTL;
+- business `fields` including trace and provider-specific error codes;
+- `error_log.name`, `message`, full `stack`, recursive `cause`, and `properties`.
+
+Object errors often arrive with `error_log.name = "object"`, a JSON string in `message`, and the real response in `properties.value`. Normalization promotes structured code/message values for diagnosis while retaining the complete masked wire representation. Do not discard a null stack or replace structured properties with a generic message.
+
+Manual `POST /investigations` accepts the same logical fields plus bounded attachments. It requires application `analyze` permission and calls the same normalization service as Kafka.
+
+## Source Investigation
+
+Source lookup order is fixed:
+
+1. Exact file, line, class, and function from the stack at the incident revision.
+2. Incident-revision symbols and structured error identifiers.
+3. Error code definitions and references.
+4. Caller, callee, error branch, exception conversion, return checks, timeout, retry, and related tests.
+5. Default-branch source only as an explicitly unverified reference.
+
+Generated build directories are excluded. Project documentation provides vocabulary and repository context only. A file read, path match, error-code match, or README excerpt is never code-cause proof.
+
+The context package always retains normalized input and error structure. Evidence is ordered by causal relevance instead of a simple first-N slice.
+
+## Result And Code Contracts
+
+Investigation result states are `pending`, `confirmed`, `hypothesis`, `insufficient`, and `unavailable`. There is no overall confidence number.
+
+- `confirmed` requires at least one incident-version code finding that passes all structural gates and an independent semantic verification pass.
+- `hypothesis` contains one supported mechanism, exact candidate code when available, counter-evidence, and a validation method.
+- `insufficient` contains no invented cause.
+- `unavailable` reports missing required capability without a fabricated fallback conclusion.
+
+Non-confirmed reports may request evidence and propose tests. They may not prescribe a production code change.
+
+Reports always separate:
+
+- `incident_cause`: the actual incident mechanism, including an external service, network, data, or infrastructure failure;
+- `code_diagnosis`: a project defect, a resilience gap, `no_defect`, or `not_found`.
+
+An `InvestigationCodeFinding` with `confirmed` or `hypothesis` must reference an immutable `source_file` artifact and exactly match its repository ID, full SHA, role, path, symbol, and line bounds. It explains faulty behavior, why it violates a contract, expected behavior, trigger, propagation, incident evidence, supporting evidence, counter-evidence, missing validation, and a test scenario.
+
+For `confirmed`, the revision must be the deployed incident revision and the location must be linked by stack, runtime/dependency evidence, or the archived alert contract. The independent verifier must prove the branch, trigger, and propagation. Source from the default branch is always `hypothesis` and the UI must say that the incident version is unverified.
+
+External causes can be represented accurately while code diagnosis separately reports no project defect or an exact timeout, retry, validation, fallback, or error-preservation weakness.
+
+## API And Events
+
+`GET /investigations/{id}` returns only V1 fields: `input`, `report`, ordered `steps`, `decisions`, `operations`, `evidence`, and `code_findings`.
+
+`GET /investigations/{id}/audit` returns separately paginated operation and AI-call summaries. The audit UI must expose the full masked operation purpose, input, progress, result, timing, failure, metrics, events, and evidence references rather than a recent-event slice.
+
+SSE event names are:
+
+- `step.updated`
+- `operation.started`
+- `operation.progress`
+- `operation.finished`
+- `decision.recorded`
+- `code_finding.updated`
+- `report.updated`
+- `investigation.finished`
+
+Operation event rows have monotonically increasing sequence values and support replay. Clients treat SSE as an invalidation/event channel and reload canonical state from the detail API.
+
+## Database
+
+`alembic/versions/0001_initial.py` is the only schema definition. V1 requires a new PostgreSQL database; do not add data migration, backfill, payload translation, parallel schema, or old endpoint adapter code.
+
+The investigation-owned tables are inputs, steps, decisions, operations, operation events, evidence collections/artifacts/links, source revisions, findings/edges, code findings, AI invocations, reports, jobs, and connectors. Evidence content is immutable after archival. Connector secrets must be references or encrypted values and are masked in events and API output.
+
+When models change, update `0001_initial.py` directly and verify against a newly created database:
+
+```bash
+LODE_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lode_v1_test \
+LODE_SECRET_KEY=test-secret \
+uv run alembic upgrade head
+```
+
+Alembic autogeneration against that database must produce no schema difference.
+
+## Frontend Contract
+
+The investigation workbench displays the incident cause first and code diagnosis second. The code viewer is read-only and highlights the exact finding range alongside where it is wrong, why, trigger, propagation, expected behavior, missing validation, and test.
+
+Execution uses a vertical serial track. Every operation exposes its purpose, masked input, progress events, actual result, duration, failure, metrics, and evidence links. Waiting and running states have stable dimensions on desktop, tablet, and mobile. Unverified default-branch findings must never use confirmed styling.
+
+Do not restore a second investigation UI or translate historical response shapes.
+
+## Development And Verification
+
+Backend:
+
+```bash
+uv sync --extra dev
+uv run python -m compileall -q src scripts alembic tests
+uv run pytest -q
+```
+
+Web:
+
+```bash
+cd apps/web
+pnpm install
+pnpm typecheck
+pnpm build
+```
+
+For investigation changes, tests must cover strict alert parsing, full error preservation, exact stack/source range, candidate rejection, incident revision gates, independent semantic downgrade, external cause separation, serial non-overlap, cross-investigation concurrency, scoped lease recovery, idempotent resume, operation detail, SSE replay, audit pagination, permissions, masking, and fresh-schema creation.
+
+Before declaring work complete, assess architecture, dependency, and development-workflow impact. Update this file immediately when any of those contracts change, then verify the documented commands and behavior match the implementation.

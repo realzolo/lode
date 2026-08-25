@@ -9,19 +9,13 @@ restrictive: its effective grants must match a small allow-list before use.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Protocol
 
-from lode.config import settings
 from lode.crypto import decrypt_secret
-from lode.db.models.integration import ApplicationIntegration
-from lode.db.models.intake import AuditEvent
-from lode.db.models.investigation import EvidenceArtifact
 from lode.engine.evidence.secret_mask import mask_secrets
 from lode.integration_policy import (
     IntegrationPolicyError,
@@ -302,12 +296,10 @@ class ClickHouseConnector:
 
     async def collect_snapshot(self, config: dict[str, Any], credential: str) -> Snapshot:
         config = _normalized_config("clickhouse", config)
-        replicas, queue, errors, metrics = await asyncio.gather(
-            self._query(config, credential, self._REPLICAS),
-            self._query(config, credential, self._QUEUE),
-            self._query(config, credential, self._ERRORS),
-            self._query(config, credential, self._METRICS),
-        )
+        replicas = await self._query(config, credential, self._REPLICAS)
+        queue = await self._query(config, credential, self._QUEUE)
+        errors = await self._query(config, credential, self._ERRORS)
+        metrics = await self._query(config, credential, self._METRICS)
         return Snapshot(
             "clickhouse://system",
             "ClickHouse replicas, replication queue, system errors, and metrics inspected",
@@ -323,70 +315,3 @@ def connector_for(kind: str) -> IntegrationConnector:
         return _CONNECTORS[kind]
     except KeyError as exc:
         raise IntegrationError(f"unsupported integration kind '{kind}'") from exc
-
-
-def _snapshot_hash(payload: dict[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-
-
-async def collect_service_evidence(session, application_id: int, analysis_id: int) -> list[dict[str, Any]]:
-    """Collect bounded, analysis-time observations without blocking other evidence."""
-    from sqlalchemy import select
-
-    rows = (await session.execute(
-        select(ApplicationIntegration).where(ApplicationIntegration.application_id == application_id).where(ApplicationIntegration.state == "active")
-    )).scalars().all()
-    collected: list[dict[str, Any]] = []
-    for integration in rows:
-        started_at = datetime.now(UTC)
-        try:
-            config = normalize_integration_config(integration.kind, dict(integration.config or {}))
-            credential = resolve_integration_secret(integration.secret_ref)
-            connector = connector_for(integration.kind)
-            await asyncio.wait_for(connector.verify_readonly(config, credential), timeout=settings.integration_collect_timeout_seconds)
-            integration.readonly_verified_at = datetime.now(UTC)
-            snapshot = await asyncio.wait_for(connector.collect_snapshot(config, credential), timeout=settings.integration_collect_timeout_seconds)
-        except (ReadOnlyVerificationError, IntegrationPolicyError, ValueError) as exc:
-            integration.state = "disabled"
-            integration.last_error = f"policy verification failed: {exc}"[:1000]
-            session.add(AuditEvent(
-                action="integration.disable", target_type="integration", target_id=str(integration.id), application_id=application_id,
-                result="error", detail={"reason": integration.last_error, "analysis_id": analysis_id},
-            ))
-            continue
-        except (IntegrationError, asyncio.TimeoutError) as exc:
-            integration.last_error = f"collection unavailable: {exc}"[:1000]
-            continue
-        except Exception as exc:  # fail closed for this artifact, not the incident workflow
-            integration.last_error = f"collector failure: {type(exc).__name__}"[:1000]
-            continue
-
-        finished_at = datetime.now(UTC)
-        payload = _redacted_payload(snapshot.payload)
-        excerpt = json.dumps(payload, default=str, ensure_ascii=False, sort_keys=True)[:_MAX_EXCERPT_CHARS]
-        retention = None
-        if settings.evidence_retention_days > 0:
-            from datetime import timedelta
-            retention = finished_at + timedelta(days=settings.evidence_retention_days)
-        config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
-        artifact = EvidenceArtifact(
-            analysis_id=analysis_id, artifact_type="service_snapshot", source_kind=integration.kind, source_id=integration.id,
-            locator=f"{snapshot.locator}/integration/{integration.id}", content_hash=_snapshot_hash(payload), redacted_excerpt=excerpt,
-            metadata_={
-                "integration_name": integration.name, "summary": snapshot.summary, "collector_version": _COLLECTOR_VERSION,
-                "config_hash": config_hash, "permission_verification": "passed",
-                "observed_started_at": started_at.isoformat(), "observed_finished_at": finished_at.isoformat(),
-                "time_scope": "analysis_time_observation", "source_position": snapshot.source_position,
-            }, retention_until=retention,
-        )
-        session.add(artifact)
-        await session.flush()
-        integration.last_collected_at = finished_at
-        integration.last_error = None
-        collected.append({
-            "artifact_id": artifact.id, "kind": integration.kind, "locator": artifact.locator, "summary": snapshot.summary,
-            "excerpt": excerpt, "observed_started_at": started_at.isoformat(), "observed_finished_at": finished_at.isoformat(),
-            "time_scope": "analysis_time_observation",
-        })
-    await session.flush()
-    return collected

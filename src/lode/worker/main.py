@@ -13,11 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.config import settings
 from lode.db.models.application import Application
-from lode.db.models.intake import Incident
 from lode.db.models.investigation import Investigation, InvestigationJob
 from lode.db.session import AsyncSessionLocal
 from lode.engine.investigation_runner import run_investigation
-from lode.metrics import ANALYSES, ENGINE_IN_FLIGHT
+from lode.metrics import ENGINE_IN_FLIGHT, INVESTIGATIONS
 
 logger = logging.getLogger("lode.worker")
 WORKER_ID = f"{platform.node()}:{uuid.uuid4().hex[:8]}"
@@ -32,26 +31,40 @@ def _retryable(exc: Exception) -> bool:
 
 
 async def reclaim_expired_leases(session: AsyncSession) -> int:
+    expired_ids = list(
+        (
+            await session.execute(
+                select(InvestigationJob.investigation_id)
+                .where(InvestigationJob.status == "running")
+                .where(InvestigationJob.lease_expires_at < _now())
+            )
+        ).scalars()
+    )
+    if not expired_ids:
+        return 0
     result = await session.execute(
         update(InvestigationJob)
         .where(InvestigationJob.status == "running")
         .where(InvestigationJob.lease_expires_at < _now())
         .values(status="queued", lease_owner=None, lease_expires_at=None)
     )
-    await session.execute(update(Investigation).where(Investigation.status == "running").values(status="queued"))
-    if result.rowcount:
-        await session.commit()
+    await session.execute(
+        update(Investigation)
+        .where(Investigation.id.in_(expired_ids))
+        .where(Investigation.status == "running")
+        .values(status="queued")
+    )
+    await session.commit()
     return result.rowcount or 0
 
 
 def _claimable_jobs_query():
     return (
         select(InvestigationJob)
-        .join(Incident, Incident.id == InvestigationJob.incident_id)
-        .join(Application, Application.id == Incident.application_id)
+        .join(Investigation, Investigation.id == InvestigationJob.investigation_id)
+        .join(Application, Application.id == Investigation.application_id)
         .where(InvestigationJob.status.in_(["queued", "retry_wait"]))
         .where(InvestigationJob.available_at <= _now())
-        .where(Application.ingestion_state == "active")
         .order_by(InvestigationJob.priority.desc(), InvestigationJob.created_at)
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -106,7 +119,7 @@ async def run_job(job_id: int) -> None:
                 job.finished_at = _now()
                 job.lease_owner = None
                 job.lease_expires_at = None
-                ANALYSES.labels(result=investigation.status).inc()
+                INVESTIGATIONS.labels(result=investigation.status).inc()
                 await session.commit()
             except Exception as exc:  # persist terminal evidence of orchestration failures
                 logger.exception("investigation %s failed", investigation.public_id)

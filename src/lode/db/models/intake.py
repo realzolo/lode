@@ -4,10 +4,10 @@ These tables implement the production intake/execution contract:
 
 * ``ingestion_events`` makes Kafka's at-least-once delivery idempotent: the
   unique ``(topic, partition, offset)`` triple guarantees a redelivered record
-  can never create a second alert/analysis.
+  can never create a second alert/investigation.
 * ``incidents`` collapse repeated alerts that share an application-scoped
   ``dedupe_key`` into one operational unit.
-* ``analysis_jobs`` are the durable, claimable unit of work. The consumer only
+* ``investigation_jobs`` are the durable, claimable unit of work. The consumer only
   *creates* them; a separate worker *claims* (``SKIP LOCKED``) and executes
   them. A partial unique index allows at most one active job per incident, which
   is what prevents the same error event from being analyzed repeatedly.
@@ -30,7 +30,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Text,
-    text,
+    text as sql_text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -57,10 +57,10 @@ class IngestionEvent(Base):
         Text, nullable=False, server_default="accepted"
     )
     received_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
 
     __table_args__ = (
@@ -106,17 +106,11 @@ class Incident(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    reanalysis_requested_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    reanalysis_requested_by: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
 
     __table_args__ = (
@@ -153,7 +147,7 @@ class AuditEvent(Base):
     result: Mapped[str] = mapped_column(Text, nullable=False, server_default="ok")
     detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
 
     __table_args__ = (
@@ -178,11 +172,11 @@ class DeadLetter(Base):
     partition: Mapped[int | None] = mapped_column(Integer)
     offset: Mapped[int | None] = mapped_column(BigInteger)
     replayed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default="now()")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default="now()")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
 
     __table_args__ = (
         Index("ix_dead_letters_kind", "kind"),
         Index("ix_dead_letters_created_at", "created_at"),
-        Index("uq_dead_letters_source", "topic", "partition", "offset", "kind", unique=True, postgresql_where=text('partition IS NOT NULL AND "offset" IS NOT NULL')),
+        Index("uq_dead_letters_source", "topic", "partition", "offset", "kind", unique=True, postgresql_where=sql_text('partition IS NOT NULL AND "offset" IS NOT NULL')),
     )

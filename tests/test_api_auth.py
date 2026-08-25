@@ -63,7 +63,7 @@ async def test_login_rejects_wrong_password(test_user):
 
 async def test_protected_route_requires_token(test_user):
     async with _client() as client:
-        resp = await client.get("/analyses")
+        resp = await client.get("/investigations")
         assert resp.status_code == 401
 
 
@@ -79,7 +79,7 @@ async def test_login_and_token_grants_access(test_user):
         token = body["token"]
 
         # Protected route works with the token.
-        resp2 = await client.get("/analyses", headers={"Authorization": f"Bearer {token}"})
+        resp2 = await client.get("/investigations", headers={"Authorization": f"Bearer {token}"})
         assert resp2.status_code == 200
 
         # /auth/me reflects the authenticated principal.
@@ -89,12 +89,12 @@ async def test_login_and_token_grants_access(test_user):
 
         # A malformed token is rejected.
         resp4 = await client.get(
-            "/analyses", headers={"Authorization": "Bearer garbage.signature.token"}
+            "/investigations", headers={"Authorization": "Bearer garbage.signature.token"}
         )
         assert resp4.status_code == 401
 
         # Missing scheme is rejected.
-        resp5 = await client.get("/analyses", headers={"Authorization": token})
+        resp5 = await client.get("/investigations", headers={"Authorization": token})
         assert resp5.status_code == 401
 
 

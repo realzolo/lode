@@ -12,41 +12,10 @@ from sqlalchemy import (
     Identity,
     Index,
     Text,
+    text as sql_text,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import select
-
-from lode.crypto import decrypt_secret, encrypt_secret
 from lode.db.base import Base
-
-
-async def reencrypt_plaintext_keys(session: AsyncSession) -> int:
-    """One-time migration: encrypt any legacy plaintext literal keys at rest.
-
-    Literal (non-``env://``) ``api_key_ref`` values created before encryption
-    was introduced are stored as plaintext. This re-encrypts them in place so
-    the read path (``resolve_api_key``) can decrypt strictly without a plaintext
-    fallback. ``env://`` references and already-encrypted tokens are left
-    untouched. Returns the number of rows re-encrypted. Idempotent.
-    """
-    rows = (
-        await session.execute(select(AiModelConfig))
-    ).scalars().all()
-    reencrypted = 0
-    for row in rows:
-        ref = row.api_key_ref
-        if not ref or ref.startswith("env://"):
-            continue
-        try:
-            decrypt_secret(ref)  # already an encrypted token
-            continue
-        except Exception:
-            row.api_key_ref = encrypt_secret(ref) or ""
-            reencrypted += 1
-    if reencrypted:
-        await session.commit()
-    return reencrypted
 
 
 class AiModelConfig(Base):
@@ -63,10 +32,10 @@ class AiModelConfig(Base):
         Boolean, nullable=False, server_default="false"
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default="now()"
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
 
     __table_args__ = (

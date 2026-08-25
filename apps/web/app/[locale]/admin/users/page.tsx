@@ -316,7 +316,7 @@ export default function UsersPage() {
       </Dialog>
 
       {!loading && !error && users.length === 0 ? (
-        <div className="experience-state"><p className="muted">{tc('empty')}</p></div>
+        <div className="dashboard-empty"><p className="muted">{tc('empty')}</p></div>
       ) : users.length > 0 ? (
         <div className="operational-table">
           <div className="table-wrap">

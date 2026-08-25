@@ -1,18 +1,6 @@
-// Shared view-layer types. These mirror the backend SQLAlchemy models
-// (alerts / analyses / application_* / experiences) so the UI can be wired to
-// real API responses later without changing component contracts.
+// Shared view-layer types for application, identity, and administrative APIs.
 
 export type Level = 'CRITICAL' | 'WARNING';
-
-export type AnalysisStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'needs_review'
-  | 'failed'
-  | 'needs_human';
-
-export type StepStatus = 'done' | 'running' | 'pending' | 'degraded' | 'failed' | 'skipped';
 
 export interface Application {
   id: string;
@@ -25,69 +13,6 @@ export interface Application {
   ingestionStartPosition: 'earliest' | 'latest' | null;
   myPerm: string | null;
   createdAt: string;
-}
-
-export interface Analysis {
-  id: string;
-  dedupeKey: string;
-  applicationId: string;
-  applicationName: string;
-  title: string;
-  level: Level;
-  status: AnalysisStatus;
-  confidence: number | null;
-  conclusion: string | null;
-  /** Caller's permission on this analysis's application (undefined for admins). */
-  myPerm?: string;
-}
-
-export interface AnalysisStep {
-  nodeType:
-    | 'receive'
-    | 'git_sync'
-    | 'context'
-    | 'service_snapshot'
-    | 'ai_analysis'
-    | 'experience'
-    | 'conclusion';
-  status: StepStatus;
-  summary?: string;
-  detail?: string;
-  startedAt?: string;
-  finishedAt?: string;
-}
-
-export interface AnalysisRecommendation {
-  id: number;
-  summary: string;
-  risk_level: 'low' | 'medium' | 'high' | 'critical';
-  basis: 'evidence_backed' | 'safety_fallback';
-  evidence_refs: number[];
-  preconditions: string[];
-  steps: { action: string; expected_result: string }[];
-  verification: string[];
-  rollback: string[];
-  owner_role: string | null;
-  prompt_markdown: string;
-  engine_version: string | null;
-  created_at: string;
-}
-
-export interface AnalysisFeedbackSummary {
-  remediation_useful: number;
-  remediation_not_useful: number;
-  agent_prompt_useful: number;
-  agent_prompt_not_useful: number;
-  my_remediation: 'useful' | 'not_useful' | null;
-  my_agent_prompt: 'useful' | 'not_useful' | null;
-}
-
-export interface Experience {
-  id: string;
-  applicationName?: string;
-  triggerSignature: string;
-  content: string;
-  valid: boolean;
 }
 
 export interface CurrentUser {

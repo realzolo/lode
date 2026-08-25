@@ -1,4 +1,4 @@
-"""Dynamic, evidence-first investigation API."""
+"""V1 API for sequential, evidence-backed investigations."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
-from typing import AsyncIterator, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -15,33 +14,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.ai_output import AI_OUTPUT_LANGUAGE_SETTING_KEY, normalize_ai_output_language
 from lode.api.deps import assert_app_perm, permitted_app_ids, require_user
-from lode.api.schemas import InvestigationFollowUpIn
-from lode.config import settings
-from lode.db.models.alert import Alert
+from lode.api.schemas import InvestigationCreateIn
 from lode.db.models.application import Application
 from lode.db.models.investigation import (
     EvidenceArtifact,
-    Hypothesis,
     Investigation,
     InvestigationAiInvocation,
+    InvestigationCodeFinding,
+    InvestigationDecision,
     InvestigationEvidenceLink,
-    InvestigationFinding,
-    InvestigationFindingEdge,
-    InvestigationExecutionEvent,
-    InvestigationJob,
-    InvestigationPlanNode,
-    InvestigationPlanNodeDependency,
-    InvestigationPlanRevision,
-    InvestigationStage,
-    RemediationPlan,
-    SourceRevision,
+    InvestigationInput,
+    InvestigationOperation,
+    InvestigationOperationEvent,
+    InvestigationReport,
+    InvestigationStep,
 )
 from lode.db.models.platform_setting import PlatformSetting
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
 from lode.engine.evidence.secret_mask import mask_secrets
-from lode.engine.investigation_events import append_execution_event
-
+from lode.engine.investigation_intake import create_investigation
 
 router = APIRouter(prefix="/investigations", tags=["investigations"])
 
@@ -52,129 +44,23 @@ async def get_session() -> AsyncSession:
 
 
 async def _run(session: AsyncSession, public_id: str) -> Investigation:
-    row = (await session.execute(select(Investigation).where(Investigation.public_id == public_id))).scalars().first()
+    row = (
+        await session.execute(select(Investigation).where(Investigation.public_id == public_id))
+    ).scalars().first()
     if row is None:
         raise HTTPException(status_code=404, detail="investigation not found")
     return row
 
 
-def _diff_view(patch: str) -> dict:
-    """Turn archived, redacted unified diff text into read-only editor inputs."""
-    before: list[str] = []
-    after: list[str] = []
-    for line in patch.splitlines():
-        if line.startswith(("diff --git ", "index ", "--- ", "+++ ", "@@ ")):
-            continue
-        if line.startswith("-"):
-            before.append(line[1:])
-        elif line.startswith("+"):
-            after.append(line[1:])
-        else:
-            value = line[1:] if line.startswith(" ") else line
-            before.append(value)
-            after.append(value)
-    return {"mode": "diff", "language": "plaintext", "before": "\n".join(before), "after": "\n".join(after)}
-
-
-def _localized(language: str, chinese: str, english: str) -> str:
-    return chinese if language == "zh" else english
-
-
-def _event_display(row: InvestigationExecutionEvent, language: str) -> dict:
-    """Build the safe event copy used by the visible live workbench."""
-    detail = row.detail or {}
-    phase = row.phase
-    tone = "active" if phase in {"started", "progress"} else "success" if phase == "succeeded" else "danger" if phase == "failed" else "warning" if phase in {"partial", "blocked", "not_configured", "canceled"} else "neutral"
-    labels = {
-        "repository_discovery": ("检查已绑定仓库", "Checking bound repositories"),
-        "search_terms": ("整理故障检索词", "Preparing incident search terms"),
-        "git_clone": ("读取只读仓库", "Reading the read-only repository"),
-        "git_fetch": ("获取指定版本", "Fetching the requested revision"),
-        "git_checkout": ("定位固定版本", "Checking out the fixed revision"),
-        "context_discovery": ("发现项目上下文", "Finding project context"),
-        "context_read": ("读取项目上下文", "Reading project context"),
-        "source_search": ("检索相关源码", "Searching relevant source"),
-        "source_archive": ("归档源码片段", "Archiving source snippets"),
-        "source_diff": ("比较源码版本", "Comparing source revisions"),
-        "connector_collection": ("采集受控运行时证据", "Collecting bounded runtime evidence"),
-        "evidence_freeze": ("整理可引用证据", "Preparing citable evidence"),
-        "reasoning_updated": ("更新调查研判", "Updating investigation assessment"),
-        "conclusion_updated": ("更新当前结论", "Updating the current conclusion"),
-        "plan_changed": ("更新调查计划", "Updating the investigation plan"),
-        "ai_usage_updated": ("AI 证据归纳", "AI evidence synthesis"),
-        "ai_source_focus": ("AI 正在收敛源码线索", "AI is narrowing source-code leads"),
-        "intake_validation": ("校验事故输入", "Validating incident input"),
-        "scope_resolution": ("确认调查范围", "Resolving investigation scope"),
-        "alert_archive": ("归档告警证据", "Archiving alert evidence"),
-        "job_enqueue": ("提交调查任务", "Queueing investigation work"),
-        "follow_up_intake": ("接收补充证据", "Receiving follow-up evidence"),
-        "terminal": ("调查执行结束", "Investigation execution finished"),
-    }
-    if row.event_type == "node_changed":
-        capability = str(detail.get("capability") or "调查节点")
-        completed = {"succeeded": "完成", "partial": "收敛", "blocked": "阻塞", "failed": "失败", "canceled": "取消"}.get(phase, "更新")
-        headline = _localized(language, f"{capability}正在执行" if phase in {"started", "progress"} else f"{capability}已{completed}", f"{capability} is running" if phase in {"started", "progress"} else f"{capability} {phase}")
-        outcome = detail.get("outcome") if isinstance(detail.get("outcome"), dict) else {}
-        message = str(detail.get("message") or detail.get("objective") or outcome.get("summary") or outcome.get("conclusion") or "")
-    elif row.event_type == "plan_changed":
-        headline = _localized(language, "调查计划已更新", "Investigation plan updated")
-        message = str(detail.get("rationale") or "")
-    elif row.event_type == "reasoning_updated":
-        headline = _localized(language, "AI 已根据证据更新研判", "AI updated the assessment from evidence")
-        message = str(detail.get("conclusion") or "")
-    elif row.event_type == "conclusion_updated":
-        headline = _localized(language, "当前结论已更新", "Current conclusion updated")
-        message = str(detail.get("conclusion") or "")
-    elif row.event_type == "ai_usage_updated":
-        headline = _localized(language, "AI 已完成本轮证据归纳", "AI completed this evidence synthesis")
-        message = str(detail.get("summary") or "")
-    elif row.event_type == "ai_source_focus":
-        headline = _localized(language, "AI 正在收敛与故障相关的源码", "AI is narrowing source code related to the incident")
-        message = str(detail.get("summary") or _localized(language, f"已从 {detail.get('candidate_count', 0)} 个候选中保留 {detail.get('selected_count', 0)} 个可验证代码线索。", f"Kept {detail.get('selected_count', 0)} verifiable code leads from {detail.get('candidate_count', 0)} candidates."))
-    elif row.event_type == "source_search":
-        headline = _localized(language, "检索与故障信号匹配的代码", "Searching code that matches the incident signals")
-        message = _localized(language, f"发现 {detail.get('candidate_count', detail.get('matches', 0))} 个候选，等待 AI 按相关性收敛。", f"Found {detail.get('candidate_count', detail.get('matches', 0))} candidates for AI relevance review.")
-    elif row.event_type == "source_archive":
-        headline = _localized(language, "已归档经筛选的源码证据", "Archived the selected source evidence")
-        message = _localized(language, f"保留 {detail.get('source_matches', 0)} 个代码片段和 {detail.get('context_files', 0)} 个项目上下文文件。", f"Kept {detail.get('source_matches', 0)} code snippets and {detail.get('context_files', 0)} project-context files.")
-    else:
-        headline = _localized(language, *labels.get(row.event_type, ("记录调查操作", "Recording investigation operation")))
-        message = str(detail.get("message") or "")
-    message, _ = mask_secrets(message)
-    model_backed = detail.get("status") not in {"fallback", "failed"} and detail.get("engine") != "deterministic_failure_boundary"
-    actor = "ai" if row.event_type in {"ai_usage_updated", "ai_source_focus", "reasoning_updated"} and model_backed else "collector" if row.event_type in {"connector_collection", "repository_discovery", "git_clone", "git_fetch", "git_checkout", "context_discovery", "context_read", "source_search", "source_archive", "source_diff"} else "engine"
-    return {"actor": actor, "headline": headline, "message": message[:500], "tone": tone, "evidence_refs": [item for item in (row.artifact_refs or []) if isinstance(item, int)]}
-
-
-def _event_payload(row: InvestigationExecutionEvent, node_public_id: str | None, language: str) -> dict:
-    return {
-        "sequence": row.sequence,
-        "type": row.event_type,
-        "phase": row.phase,
-        "node_id": node_public_id,
-        "operation_id": row.operation_id,
-        "display": _event_display(row, language),
-        "detail": row.detail,
-        "artifact_refs": row.artifact_refs,
-        "occurred_at": row.occurred_at,
-    }
-
-
-def _current_activity(events: list[InvestigationExecutionEvent], node_public_ids: dict[int, str], language: str) -> dict | None:
-    if not events:
+def _duration_ms(started_at: datetime | None, finished_at: datetime | None) -> int | None:
+    if not started_at:
         return None
-    terminal = {"succeeded", "partial", "blocked", "failed", "not_configured", "canceled"}
-    latest_by_operation: dict[str, InvestigationExecutionEvent] = {}
-    for event in events:
-        latest_by_operation[event.operation_id] = event
-    active = [event for event in latest_by_operation.values() if event.phase not in terminal]
-    event = max(active or events, key=lambda item: item.sequence)
-    return {**_event_payload(event, node_public_ids.get(event.node_id), language), "is_running": event.phase not in terminal}
+    return max(0, int(((finished_at or datetime.now(UTC)) - started_at).total_seconds() * 1_000))
 
 
 def _artifact(row: EvidenceArtifact) -> dict:
     metadata = row.metadata_ or {}
-    payload = {
+    result = {
         "id": row.id,
         "type": row.artifact_type,
         "source": row.source_kind,
@@ -184,122 +70,345 @@ def _artifact(row: EvidenceArtifact) -> dict:
         "metadata": metadata,
         "collected_at": row.collected_at,
     }
-    if row.artifact_type == "source_file":
-        match_line = metadata.get("line")
-        snippet_start = metadata.get("snippet_start_line")
-        snippet_end = metadata.get("snippet_end_line")
-        if all((isinstance(metadata.get("path"), str), isinstance(metadata.get("sha"), str), isinstance(match_line, int), isinstance(snippet_start, int), isinstance(snippet_end, int))):
-            payload["code"] = {
-                "mode": "source",
-                "language": str(metadata.get("language") or "plaintext"),
-                "content": row.redacted_excerpt,
-                "highlight_line": match_line - snippet_start + 1,
-                "anchor": {
-                    "path": metadata["path"],
-                    "revision": metadata["sha"],
-                    "snippet_start_line": snippet_start,
-                    "snippet_end_line": snippet_end,
-                    "match_line": match_line,
-                },
-            }
-    elif row.artifact_type == "source_diff":
-        incident_sha = metadata.get("incident_sha")
-        latest_sha = metadata.get("latest_sha")
-        if isinstance(incident_sha, str) and isinstance(latest_sha, str):
-            payload["code"] = {
-                **_diff_view(row.redacted_excerpt),
-                "revisions": {"incident": incident_sha, "latest": latest_sha},
-            }
-    return payload
+    if row.artifact_type == "source_file" and all(
+        isinstance(metadata.get(key), expected)
+        for key, expected in (("path", str), ("revision", str), ("start_line", int), ("end_line", int))
+    ):
+        highlight = metadata.get("highlight_line")
+        result["code"] = {
+            "language": metadata.get("language", "plaintext"),
+            "content": row.redacted_excerpt,
+            "anchor": {
+                "repo_id": metadata.get("repo_id"),
+                "path": metadata["path"],
+                "revision": metadata["revision"],
+                "revision_role": metadata.get("revision_role"),
+                "symbol": metadata.get("symbol"),
+                "start_line": metadata["start_line"],
+                "end_line": metadata["end_line"],
+            },
+            "highlight_start": max(1, int(highlight or metadata["start_line"]) - metadata["start_line"] + 1),
+            "highlight_end": max(1, int(highlight or metadata["start_line"]) - metadata["start_line"] + 1),
+        }
+    return result
 
 
-def _group_operations(events: list[InvestigationExecutionEvent], key_for: Callable[[InvestigationExecutionEvent], int | None], *, language: str = "zh") -> dict[int, list[dict]]:
-    grouped: dict[int, dict[str, dict]] = {}
-    for event in events:
-        key = key_for(event)
-        if key is None:
-            continue
-        bucket = grouped.setdefault(key, {})
-        operation = bucket.setdefault(event.operation_id, {"id": event.operation_id, "type": event.event_type, "status": "running", "collection_id": event.collection_id, "started_at": None, "finished_at": None, "detail": {}, "artifact_refs": [], "sequence": event.sequence, "display": _event_display(event, language)})
-        operation["detail"] = {**operation["detail"], **(event.detail or {})}
-        operation["artifact_refs"] = list(dict.fromkeys([*operation["artifact_refs"], *(event.artifact_refs or [])]))
-        operation["display"] = _event_display(event, language)
-        if event.phase == "started":
-            operation["started_at"] = event.occurred_at
-        elif event.phase != "progress":
-            operation["status"] = event.phase
-            operation["finished_at"] = event.occurred_at
-            operation["sequence"] = event.sequence
-    return {group_id: sorted(rows.values(), key=lambda row: row["sequence"]) for group_id, rows in grouped.items()}
-
-
-def _operations(events: list[InvestigationExecutionEvent]) -> dict[int, list[dict]]:
-    """Legacy test helper: group append-only facts by their collector stage."""
-    return _group_operations(events, lambda event: event.stage_id)
-
-
-def _ai_usage(rows: list[InvestigationAiInvocation]) -> dict:
-    provider = [row for row in rows if row.token_source == "provider"]
-    estimated = [row for row in rows if row.token_source == "estimated"]
-    actual_calls = [row for row in rows if row.error_code not in {"model_not_configured", "api_key_unavailable"}]
-
-    def total(name: str) -> int:
-        return sum(int(getattr(row, name) or 0) for row in rows)
-
+def _operation(row: InvestigationOperation, events: list[InvestigationOperationEvent]) -> dict:
     return {
-        "participating_node_count": len({row.node_id for row in rows if row.status == "succeeded" and row.node_id is not None}),
-        "call_count": len(actual_calls),
-        "total_latency_ms": total("latency_ms"),
-        "input_tokens": total("input_tokens"),
-        "output_tokens": total("output_tokens"),
-        "total_tokens": total("total_tokens"),
-        "token_breakdown": {
-            "provider_exact": {"calls": len(provider), "input_tokens": sum(int(row.input_tokens or 0) for row in provider), "output_tokens": sum(int(row.output_tokens or 0) for row in provider), "total_tokens": sum(int(row.total_tokens or 0) for row in provider)},
-            "local_estimated": {"calls": len(estimated), "input_tokens": sum(int(row.input_tokens or 0) for row in estimated), "output_tokens": sum(int(row.output_tokens or 0) for row in estimated), "total_tokens": sum(int(row.total_tokens or 0) for row in estimated)},
-        },
-        "calls": [
+        "id": row.public_id,
+        "step_id": row.step_id,
+        "ordinal": row.ordinal,
+        "kind": row.kind,
+        "actor": row.actor,
+        "title": row.title,
+        "purpose": row.purpose,
+        "input": row.input_summary,
+        "status": row.status,
+        "result": row.result_summary,
+        "metrics": row.metrics,
+        "evidence_refs": row.evidence_refs,
+        "failure": {"code": row.failure_code, "detail": row.failure_detail} if row.failure_code else None,
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+        "duration_ms": _duration_ms(row.started_at, row.finished_at),
+        "events": [
             {
-                "purpose": row.purpose,
-                "provider": row.provider,
-                "model": row.model,
-                "status": row.status,
-                "latency_ms": row.latency_ms,
-                "input_tokens": row.input_tokens,
-                "output_tokens": row.output_tokens,
-                "total_tokens": row.total_tokens,
-                "token_source": row.token_source,
-                "error_code": row.error_code,
-                "summary": row.summary,
-                "evidence_refs": row.evidence_refs,
+                "sequence": event.sequence,
+                "kind": event.kind,
+                "message": event.message,
+                "detail": event.detail,
+                "evidence_refs": event.evidence_refs,
+                "occurred_at": event.occurred_at,
             }
-            for row in rows
+            for event in events
         ],
     }
 
 
-def _investigation_brief(nodes: list[InvestigationPlanNode]) -> dict | None:
-    """Return the persisted new-workbench presentation layer only."""
-    for node in reversed(nodes):
-        if node.capability in {"reasoning", "planning"} and isinstance((node.outcome or {}).get("brief"), dict):
-            return node.outcome["brief"]
-    return None
+async def _detail(session: AsyncSession, run: Investigation) -> dict:
+    application = await session.get(Application, run.application_id)
+    incident_input = await session.get(InvestigationInput, run.id)
+    report = await session.get(InvestigationReport, run.id)
+    steps = (
+        await session.execute(
+            select(InvestigationStep).where(InvestigationStep.investigation_id == run.id).order_by(InvestigationStep.ordinal)
+        )
+    ).scalars().all()
+    decisions = (
+        await session.execute(
+            select(InvestigationDecision).where(InvestigationDecision.investigation_id == run.id).order_by(InvestigationDecision.ordinal)
+        )
+    ).scalars().all()
+    operations = (
+        await session.execute(
+            select(InvestigationOperation).where(InvestigationOperation.investigation_id == run.id).order_by(InvestigationOperation.ordinal)
+        )
+    ).scalars().all()
+    events = (
+        await session.execute(
+            select(InvestigationOperationEvent).where(InvestigationOperationEvent.investigation_id == run.id).order_by(InvestigationOperationEvent.sequence)
+        )
+    ).scalars().all()
+    evidence = (
+        await session.execute(
+            select(EvidenceArtifact).where(EvidenceArtifact.investigation_id == run.id).order_by(EvidenceArtifact.id)
+        )
+    ).scalars().all()
+    code_findings = (
+        await session.execute(
+            select(InvestigationCodeFinding).where(InvestigationCodeFinding.investigation_id == run.id).order_by(InvestigationCodeFinding.id)
+        )
+    ).scalars().all()
+    by_operation: dict[int, list[InvestigationOperationEvent]] = {}
+    for event in events:
+        by_operation.setdefault(event.operation_id, []).append(event)
+    return {
+        "id": run.public_id,
+        "application_id": run.application_id,
+        "application_name": application.name if application else "",
+        "status": run.status,
+        "result_state": run.result_state,
+        "output_language": run.output_language,
+        "scope": {**(run.scope or {}), "window_started_at": run.window_started_at, "window_finished_at": run.window_finished_at},
+        "review_required": run.review_required,
+        "review_reasons": run.review_reasons,
+        "engine_version": run.engine_version,
+        "created_at": run.created_at,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "input": {
+            "source_type": incident_input.source_type,
+            "title": incident_input.title,
+            "severity": incident_input.severity,
+            "occurred_at": incident_input.occurred_at,
+            "error": {
+                "name": incident_input.error_name,
+                "message": incident_input.error_message,
+                "stack": incident_input.error_stack,
+                "cause": incident_input.error_cause,
+                "properties": incident_input.error_properties,
+            },
+            "fields": incident_input.fields,
+        } if incident_input else None,
+        "report": {
+            "result_state": report.result_state,
+            "headline": report.headline,
+            "summary": report.summary,
+            "incident_cause": report.incident_cause,
+            "code_diagnosis": report.code_diagnosis,
+            "confirmed_facts": report.confirmed_facts,
+            "counter_evidence": report.counter_evidence,
+            "evidence_gaps": report.evidence_gaps,
+            "next_step": report.next_step,
+            "evidence_refs": report.evidence_refs,
+        } if report else None,
+        "steps": [
+            {
+                "id": row.public_id,
+                "db_id": row.id,
+                "ordinal": row.ordinal,
+                "kind": row.kind,
+                "title": row.title,
+                "objective": row.objective,
+                "selection_reason": row.selection_reason,
+                "expected_evidence": row.expected_evidence,
+                "tool_name": row.tool_name,
+                "tool_input": row.tool_input,
+                "status": row.status,
+                "input_refs": row.input_refs,
+                "output_refs": row.output_refs,
+                "result": row.result_summary,
+                "failure": {"code": row.failure_code, "detail": row.failure_detail} if row.failure_code else None,
+                "started_at": row.started_at,
+                "finished_at": row.finished_at,
+                "duration_ms": _duration_ms(row.started_at, row.finished_at),
+            }
+            for row in steps
+        ],
+        "decisions": [
+            {"id": row.id, "ordinal": row.ordinal, "after_step_id": row.after_step_id, "action": row.action, "selected_tool": row.selected_tool, "rationale": row.rationale_summary, "hypothesis": row.hypothesis_snapshot, "evidence_refs": row.evidence_refs, "created_at": row.created_at}
+            for row in decisions
+        ],
+        "operations": [_operation(row, by_operation.get(row.id, [])) for row in operations],
+        "evidence": [_artifact(row) for row in evidence],
+        "code_findings": [
+            {column.name: getattr(row, column.name) for column in InvestigationCodeFinding.__table__.columns if column.name not in {"investigation_id"}}
+            for row in code_findings
+        ],
+        "event_cursor": run.event_cursor,
+    }
 
 
-def _is_workbench_v2_brief(brief: object) -> bool:
-    """Reject incomplete historical briefs instead of adapting them in the UI."""
-    if not isinstance(brief, dict) or not isinstance(brief.get("headline"), str) or not isinstance(brief.get("summary"), str):
-        return False
-
-    def item(value: object) -> bool:
-        return isinstance(value, dict) and isinstance(value.get("text"), str) and isinstance(value.get("evidence_refs"), list) and all(isinstance(ref, int) for ref in value["evidence_refs"])
-
-    direct_cause = brief.get("direct_cause")
-    return (
-        item(direct_cause)
-        and direct_cause.get("status") in {"confirmed", "not_proven"}
-        and all(isinstance(brief.get(key), list) and all(item(entry) for entry in brief[key]) for key in ("confirmed", "impact", "uncertain"))
-        and item(brief.get("next_step"))
+@router.get("")
+async def list_investigations(user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)) -> list[dict]:
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    app_ids = await permitted_app_ids(session, user_id, user.role)
+    query = (
+        select(Investigation, InvestigationInput, Application.name)
+        .join(InvestigationInput, InvestigationInput.investigation_id == Investigation.id)
+        .join(Application, Application.id == Investigation.application_id)
+        .order_by(Investigation.created_at.desc())
     )
+    if app_ids is not None:
+        query = query.where(Investigation.application_id.in_(app_ids))
+    return [
+        {"id": run.public_id, "application_id": run.application_id, "application_name": app_name, "title": value.title, "level": value.severity, "status": run.status, "result_state": run.result_state, "review_required": run.review_required, "created_at": run.created_at}
+        for run, value, app_name in (await session.execute(query)).all()
+    ]
+
+
+@router.post("", status_code=202)
+async def create_manual_investigation(body: InvestigationCreateIn, user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)) -> dict:
+    user = await session.get(User, user_id)
+    application = await session.get(Application, body.application_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    if application is None:
+        raise HTTPException(status_code=404, detail="application not found")
+    await assert_app_perm(session, user, application.id, "analyze")
+    setting = await session.get(PlatformSetting, AI_OUTPUT_LANGUAGE_SETTING_KEY)
+    language = normalize_ai_output_language(setting.value if setting else None)
+    signature_source = "\n".join([body.error.name, body.error.message, *(body.error.stack or "").splitlines()[:3]])
+    trigger_signature = hashlib.sha256(signature_source.encode()).hexdigest()
+    run, job = await create_investigation(
+        session,
+        application_id=application.id,
+        trigger_signature=trigger_signature,
+        source_type="manual",
+        title=body.title,
+        severity=body.severity,
+        occurred_at=body.occurred_at,
+        output_language=language,
+        error_name=body.error.name,
+        error_message=body.error.message,
+        error_stack=body.error.stack,
+        error_cause=body.error.cause,
+        error_properties=body.error.properties,
+        fields={**body.fields, "attachments": [item.model_dump() for item in body.attachments]},
+        service_name=body.service_name,
+        environment=body.environment,
+        trace_id=body.trace_id,
+        deployment_sha=body.deployment_sha,
+        source_metadata={"submitted_by": user_id, "attachment_count": len(body.attachments)},
+        scope_sources={"service": "manual", "environment": "manual", "trace_id": "manual", "deployment_sha": "manual"},
+        created_by=user_id,
+    )
+    for attachment in body.attachments:
+        redacted, categories = mask_secrets(attachment.content)
+        artifact_type = attachment.kind if attachment.kind in {"log", "trace", "dependency"} else "operator_input"
+        artifact = EvidenceArtifact(
+            investigation_id=run.id,
+            artifact_type=artifact_type,
+            source_kind="manual",
+            source_id=user_id,
+            locator=attachment.label,
+            content_hash=hashlib.sha256(attachment.content.encode()).hexdigest(),
+            redacted_excerpt=redacted,
+            metadata_={"time_scope": "operator_supplied", "secret_categories": categories},
+        )
+        session.add(artifact)
+        await session.flush()
+        session.add(InvestigationEvidenceLink(investigation_id=run.id, artifact_id=artifact.id, relation="manual"))
+    await session.commit()
+    return {"id": run.public_id, "job_id": job.public_id, "status": "queued"}
+
+
+@router.get("/{investigation_id}")
+async def get_investigation(investigation_id: str, user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)) -> dict:
+    run = await _run(session, investigation_id)
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    await assert_app_perm(session, user, run.application_id, "read")
+    return await _detail(session, run)
+
+
+@router.get("/{investigation_id}/events")
+async def get_events(
+    investigation_id: str,
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    run = await _run(session, investigation_id)
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    await assert_app_perm(session, user, run.application_id, "read")
+    rows = (
+        await session.execute(
+            select(InvestigationOperationEvent)
+            .where(InvestigationOperationEvent.investigation_id == run.id, InvestigationOperationEvent.sequence > after)
+            .order_by(InvestigationOperationEvent.sequence)
+            .limit(limit + 1)
+        )
+    ).scalars().all()
+    page = rows[:limit]
+    return {
+        "items": [{"sequence": row.sequence, "type": f"operation.{row.kind}", "step_id": row.step_id, "operation_id": row.operation_id, "message": row.message, "detail": row.detail, "evidence_refs": row.evidence_refs, "occurred_at": row.occurred_at} for row in page],
+        "next_cursor": page[-1].sequence if len(rows) > limit else None,
+    }
+
+
+@router.get("/{investigation_id}/audit")
+async def get_audit(
+    investigation_id: str,
+    operation_cursor: int = Query(default=0, ge=0),
+    ai_cursor: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    run = await _run(session, investigation_id)
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    await assert_app_perm(session, user, run.application_id, "read")
+    operation_rows = (
+        await session.execute(
+            select(InvestigationOperation)
+            .where(
+                InvestigationOperation.investigation_id == run.id,
+                InvestigationOperation.id > operation_cursor,
+            )
+            .order_by(InvestigationOperation.id)
+            .limit(limit + 1)
+        )
+    ).scalars().all()
+    operation_page = operation_rows[:limit]
+    operation_ids = [row.id for row in operation_page]
+    operation_events = (
+        await session.execute(
+            select(InvestigationOperationEvent)
+            .where(InvestigationOperationEvent.operation_id.in_(operation_ids))
+            .order_by(InvestigationOperationEvent.sequence)
+        )
+    ).scalars().all() if operation_ids else []
+    events_by_operation: dict[int, list[InvestigationOperationEvent]] = {}
+    for event in operation_events:
+        events_by_operation.setdefault(event.operation_id, []).append(event)
+    ai_rows = (
+        await session.execute(
+            select(InvestigationAiInvocation)
+            .where(InvestigationAiInvocation.investigation_id == run.id, InvestigationAiInvocation.id > ai_cursor)
+            .order_by(InvestigationAiInvocation.id)
+            .limit(limit + 1)
+        )
+    ).scalars().all()
+    ai_page = ai_rows[:limit]
+    return {
+        "operations": {
+            "items": [_operation(row, events_by_operation.get(row.id, [])) for row in operation_page],
+            "next_cursor": operation_page[-1].id if len(operation_rows) > limit else None,
+        },
+        "ai_calls": {
+            "items": [{"id": row.id, "step_id": row.step_id, "purpose": row.purpose, "provider": row.provider, "model": row.model, "status": row.status, "prompt_template_version": row.prompt_template_version, "input_hash": row.input_hash, "output_hash": row.output_hash, "latency_ms": row.latency_ms, "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "total_tokens": row.total_tokens, "token_source": row.token_source, "error_code": row.error_code, "summary": row.summary, "evidence_refs": row.evidence_refs, "created_at": row.created_at} for row in ai_page],
+            "next_cursor": ai_page[-1].id if len(ai_rows) > limit else None,
+        },
+    }
 
 
 def _sse(event: str, payload: dict, event_id: int | None = None) -> str:
@@ -310,39 +419,6 @@ def _sse(event: str, payload: dict, event_id: int | None = None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-async def _stream_events(session: AsyncSession, investigation_id: int, after: int) -> list[dict]:
-    rows = (
-        await session.execute(
-            select(InvestigationExecutionEvent)
-            .where(InvestigationExecutionEvent.investigation_id == investigation_id)
-            .where(InvestigationExecutionEvent.sequence > after)
-            .order_by(InvestigationExecutionEvent.sequence)
-        )
-    ).scalars().all()
-    node_ids = {row.node_id for row in rows if row.node_id is not None}
-    public_ids: dict[int, str] = {}
-    if node_ids:
-        public_ids = {
-            row.id: row.public_id
-            for row in (
-                await session.execute(select(InvestigationPlanNode).where(InvestigationPlanNode.id.in_(node_ids)))
-            ).scalars().all()
-        }
-    run = await session.get(Investigation, investigation_id)
-    language = run.output_language if run is not None else "zh"
-    return [_event_payload(row, public_ids.get(row.node_id), language) for row in rows]
-
-
-@router.get("")
-async def list_investigations(user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)) -> list[dict]:
-    user = await session.get(User, user_id)
-    app_ids = await permitted_app_ids(session, user_id, user.role)
-    query = select(Investigation, Application.name, Alert.title, Alert.level).join(Application, Application.id == Investigation.application_id).outerjoin(Alert, Alert.id == Investigation.alert_id).order_by(Investigation.created_at.desc())
-    if app_ids is not None:
-        query = query.where(Investigation.application_id.in_(app_ids))
-    return [{"id": run.public_id, "application_id": run.application_id, "application_name": app_name, "title": title or "", "level": level or "WARNING", "status": run.status, "result_state": run.result_state, "review_required": run.review_required, "confidence": float(run.confidence) if run.confidence is not None else None, "conclusion": run.conclusion, "created_at": run.created_at} for run, app_name, title, level in (await session.execute(query)).all()]
-
-
 @router.get("/{investigation_id}/stream")
 async def stream_investigation(
     investigation_id: str,
@@ -351,239 +427,65 @@ async def stream_investigation(
     user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
-    """Replay durable investigation events then keep the stream live.
-
-    The UI opens this with fetch rather than native EventSource so the existing
-    bearer-token auth contract remains intact across the cross-origin API.
-    """
     run = await _run(session, investigation_id)
     user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="user not found")
     await assert_app_perm(session, user, run.application_id, "read")
-    try:
-        last_event_id = int(request.headers.get("last-event-id", "0"))
-    except ValueError:
-        last_event_id = 0
-    cursor = max(after, last_event_id)
     run_id = run.id
-    # The generator uses short-lived sessions for every replay poll. Release
-    # the request-scoped auth session before keeping a browser connection open.
+    try:
+        header_cursor = int(request.headers.get("last-event-id", "0"))
+    except ValueError:
+        header_cursor = 0
+    initial_cursor = max(after, header_cursor)
     await session.close()
 
-    async def generate() -> AsyncIterator[str]:
-        nonlocal cursor
-        heartbeat = 0
-        async with AsyncSessionLocal() as stream_session:
-            snapshot_run = await stream_session.get(Investigation, run_id)
-            latest = (
-                await stream_session.execute(
-                    select(InvestigationExecutionEvent.sequence)
-                    .where(InvestigationExecutionEvent.investigation_id == run_id)
-                    .order_by(InvestigationExecutionEvent.sequence.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none() or 0
-            yield _sse("snapshot", {
-                "sequence": latest,
-                "status": snapshot_run.status if snapshot_run else "failed",
-                "result_state": snapshot_run.result_state if snapshot_run else "unavailable",
-                "conclusion": snapshot_run.conclusion if snapshot_run else None,
-                "conclusion_version": snapshot_run.conclusion_version if snapshot_run else 0,
-            }, latest)
+    async def generate():
+        cursor = initial_cursor
+        sent_decisions: set[int] = set()
+        terminal_sent = False
         while True:
             if await request.is_disconnected():
                 return
             async with AsyncSessionLocal() as stream_session:
-                events = await _stream_events(stream_session, run_id, cursor)
-                live_run = await stream_session.get(Investigation, run_id)
-            if events:
-                for event in events:
-                    cursor = event["sequence"]
-                    yield _sse("investigation_event", event, cursor)
-                heartbeat = 0
-                continue
-            if live_run is None or live_run.status in {"completed", "failed"}:
-                yield _sse("terminal", {"sequence": cursor, "status": live_run.status if live_run else "failed"}, cursor)
+                events = (
+                    await stream_session.execute(
+                        select(InvestigationOperationEvent)
+                        .where(InvestigationOperationEvent.investigation_id == run_id, InvestigationOperationEvent.sequence > cursor)
+                        .order_by(InvestigationOperationEvent.sequence)
+                    )
+                ).scalars().all()
+                decisions = (
+                    await stream_session.execute(
+                        select(InvestigationDecision).where(InvestigationDecision.investigation_id == run_id).order_by(InvestigationDecision.ordinal)
+                    )
+                ).scalars().all()
+                live = await stream_session.get(Investigation, run_id)
+                report = await stream_session.get(InvestigationReport, run_id)
+                findings = (
+                    await stream_session.execute(select(InvestigationCodeFinding).where(InvestigationCodeFinding.investigation_id == run_id))
+                ).scalars().all()
+            for decision in decisions:
+                if decision.id not in sent_decisions:
+                    sent_decisions.add(decision.id)
+                    yield _sse("decision.recorded", {"id": decision.id, "action": decision.action, "selected_tool": decision.selected_tool, "rationale": decision.rationale_summary})
+            for event in events:
+                cursor = event.sequence
+                payload = {"sequence": event.sequence, "step_id": event.step_id, "operation_id": event.operation_id, "message": event.message, "detail": event.detail, "evidence_refs": event.evidence_refs, "occurred_at": event.occurred_at}
+                yield _sse(f"operation.{event.kind}", payload, event.sequence)
+                if event.kind == "finished":
+                    yield _sse("step.updated", {"step_id": event.step_id, "sequence": event.sequence}, event.sequence)
+            if live is None or live.status in {"completed", "failed"}:
+                if not terminal_sent:
+                    if report:
+                        yield _sse("report.updated", {"result_state": report.result_state, "headline": report.headline})
+                    for finding in findings:
+                        yield _sse("code_finding.updated", {"id": finding.id, "status": finding.status, "path": finding.path, "start_line": finding.start_line, "end_line": finding.end_line})
+                    yield _sse("investigation.finished", {"status": live.status if live else "failed", "result_state": live.result_state if live else "unavailable"}, cursor)
+                    terminal_sent = True
                 return
-            heartbeat += 1
-            if heartbeat >= 15:
+            if not events:
                 yield ": keepalive\n\n"
-                heartbeat = 0
             await asyncio.sleep(1)
 
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
-    )
-
-
-@router.get("/{investigation_id}")
-async def get_investigation(investigation_id: str, user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)) -> dict:
-    run = await _run(session, investigation_id)
-    user = await session.get(User, user_id)
-    await assert_app_perm(session, user, run.application_id, "read")
-    app = await session.get(Application, run.application_id)
-    alert = await session.get(Alert, run.alert_id)
-    nodes = (await session.execute(select(InvestigationPlanNode).where(InvestigationPlanNode.investigation_id == run.id).order_by(InvestigationPlanNode.id))).scalars().all()
-    revisions = (await session.execute(select(InvestigationPlanRevision).where(InvestigationPlanRevision.investigation_id == run.id).order_by(InvestigationPlanRevision.revision))).scalars().all()
-    dependencies = (await session.execute(select(InvestigationPlanNodeDependency).join(InvestigationPlanNode, InvestigationPlanNode.id == InvestigationPlanNodeDependency.node_id).where(InvestigationPlanNode.investigation_id == run.id))).scalars().all()
-    events = (await session.execute(select(InvestigationExecutionEvent).where(InvestigationExecutionEvent.investigation_id == run.id).order_by(InvestigationExecutionEvent.sequence))).scalars().all()
-    artifacts = (await session.execute(select(EvidenceArtifact).join(InvestigationEvidenceLink, InvestigationEvidenceLink.artifact_id == EvidenceArtifact.id).where(InvestigationEvidenceLink.investigation_id == run.id).order_by(EvidenceArtifact.id))).scalars().all()
-    links = (await session.execute(select(InvestigationEvidenceLink).where(InvestigationEvidenceLink.investigation_id == run.id))).scalars().all()
-    source_revisions = (await session.execute(select(SourceRevision).where(SourceRevision.investigation_id == run.id).order_by(SourceRevision.id))).scalars().all()
-    hypotheses = (await session.execute(select(Hypothesis).where(Hypothesis.investigation_id == run.id).order_by(Hypothesis.rank))).scalars().all()
-    findings = (await session.execute(select(InvestigationFinding).where(InvestigationFinding.investigation_id == run.id).order_by(InvestigationFinding.ordinal))).scalars().all()
-    finding_edges = (await session.execute(select(InvestigationFindingEdge).where(InvestigationFindingEdge.investigation_id == run.id).order_by(InvestigationFindingEdge.id))).scalars().all()
-    invocations = (await session.execute(select(InvestigationAiInvocation).where(InvestigationAiInvocation.investigation_id == run.id).order_by(InvestigationAiInvocation.id))).scalars().all()
-    remediation = (await session.execute(select(RemediationPlan).where(RemediationPlan.investigation_id == run.id))).scalars().first()
-    job = (await session.execute(select(InvestigationJob).where(InvestigationJob.investigation_id == run.id).order_by(InvestigationJob.id.desc()).limit(1))).scalars().first()
-    node_by_stage = {row.stage_id: row.id for row in nodes if row.stage_id is not None}
-    node_operations = _group_operations(events, lambda event: event.node_id or node_by_stage.get(event.stage_id), language=run.output_language)
-    dependencies_by_node: dict[int, list[int]] = {}
-    for row in dependencies:
-        dependencies_by_node.setdefault(row.node_id, []).append(row.depends_on_node_id)
-    invocations_by_node: dict[int, list[InvestigationAiInvocation]] = {}
-    for row in invocations:
-        if row.node_id is not None:
-            invocations_by_node.setdefault(row.node_id, []).append(row)
-    latest_catalog = revisions[-1].capability_catalog if revisions else {}
-    evidence_counts: dict[str, int] = {}
-    for artifact in artifacts:
-        evidence_counts[artifact.artifact_type] = evidence_counts.get(artifact.artifact_type, 0) + 1
-    scope = dict(run.scope or {})
-    scope_sources = scope.pop("scope_sources", {})
-    parent = await session.get(Investigation, run.parent_investigation_id) if run.parent_investigation_id else None
-    successor = await session.get(Investigation, run.superseded_by_investigation_id) if run.superseded_by_investigation_id else None
-    node_public_ids = {row.id: row.public_id for row in nodes}
-    revision_numbers = {row.id: row.revision for row in revisions}
-    brief = _investigation_brief(nodes)
-    if brief is not None and not _is_workbench_v2_brief(brief):
-        raise HTTPException(status_code=409, detail="investigation does not satisfy the Workbench 2.0 display contract; reinvestigate it")
-    return {
-        "id": run.public_id,
-        "application": {"id": run.application_id, "name": app.name if app else ""},
-        "alert": {"title": alert.title, "level": alert.level, "topic": alert.topic, "error_message": alert.error_message} if alert else None,
-        "status": run.status,
-        "result_state": run.result_state,
-        "review_required": run.review_required,
-        "review_reasons": run.review_reasons,
-        "audit_status": run.audit_status,
-        "engine_version": run.engine_version,
-        "output_language": run.output_language,
-        "scope": {"service": run.service_name, "environment": run.environment, "trace_id": run.trace_id, "deployment_sha": run.deployment_sha, "window_started_at": run.window_started_at, "window_finished_at": run.window_finished_at, "sources": scope_sources, "context": scope},
-        "conclusion": run.conclusion,
-        "brief": brief,
-        "confidence": float(run.confidence) if run.confidence is not None else None,
-        "conclusion_version": run.conclusion_version,
-        "superseded_by_investigation_id": successor.public_id if successor else None,
-        "capability_catalog": latest_catalog,
-        "plan_history": [{"revision": row.revision, "decision": row.decision, "wave": row.wave, "trigger_node_id": node_public_ids.get(row.trigger_node_id), "rationale": row.rationale, "change_set": row.change_set, "evidence_refs": row.evidence_refs, "created_at": row.created_at} for row in revisions],
-        "nodes": [
-            {
-                "id": row.public_id,
-                "capability": row.capability,
-                "plan_revision": revision_numbers.get(row.plan_revision_id, row.plan_revision_id),
-                "title": row.title,
-                "objective": row.objective,
-                "selection_reason": row.selection_reason,
-                "expected_evidence": row.expected_evidence,
-                "decision_rule": row.decision_rule,
-                "budget": row.budget,
-                "stop_condition": row.stop_condition,
-                "tool_input": row.tool_input,
-                "status": row.status,
-                "input_refs": row.input_refs,
-                "output_refs": row.output_refs,
-                "outcome": row.outcome,
-                "failure_code": row.failure_code,
-                "failure_detail": row.failure_detail,
-                "started_at": row.started_at,
-                "finished_at": row.finished_at,
-                "dependencies": [node_public_ids[item] for item in dependencies_by_node.get(row.id, []) if item in node_public_ids],
-                "operations": node_operations.get(row.id, []),
-                "ai_participated": row.ai_participated,
-                "ai_usage": _ai_usage(invocations_by_node.get(row.id, [])),
-            }
-            for row in nodes
-        ],
-        "source_revisions": [{"role": row.role, "requested_ref": row.requested_ref, "resolved_sha": row.resolved_sha, "resolution_basis": row.resolution_basis, "origin_url": row.origin_url, "status": row.status, "failure_detail": row.failure_detail} for row in source_revisions],
-        "evidence": [_artifact(row) for row in artifacts],
-        "evidence_coverage": {"artifact_count": len(artifacts), "by_type": evidence_counts, "open_requirements": [{"text": row.text, "rationale": row.rationale} for row in findings if row.kind == "evidence_gap" and row.status == "required"]},
-        "reasoning_path": [{"id": row.id, "kind": row.kind, "status": row.status, "text": row.text, "rationale": row.rationale, "confidence": float(row.confidence) if row.confidence is not None else None, "evidence_refs": row.evidence_refs} for row in findings],
-        "reasoning_edges": [{"from": row.from_finding_id, "to": row.to_finding_id, "relation": row.relation, "evidence_refs": row.evidence_refs} for row in finding_edges],
-        "ai_usage": _ai_usage(invocations),
-        "inheritance": {"parent_investigation_id": parent.public_id if parent else None, "superseded_by_investigation_id": successor.public_id if successor else None, "evidence_members": [{"artifact_id": row.artifact_id, "relation": row.relation} for row in links]},
-        "hypotheses": [{"rank": row.rank, "status": row.status, "text": row.text, "confidence": float(row.confidence), "evidence_refs": row.evidence_refs} for row in hypotheses],
-        "remediation": None if remediation is None else {"summary": remediation.summary, "risk_level": remediation.risk_level, "evidence_refs": remediation.evidence_refs, "preconditions": remediation.preconditions, "steps": remediation.steps, "verification": remediation.verification, "rollback": remediation.rollback, "agent_prompt": remediation.agent_prompt},
-        "job": None if job is None else {"status": job.status, "attempt": job.attempt, "max_attempts": job.max_attempts, "last_error_code": job.last_error_code, "last_error_detail": job.last_error_detail},
-        "execution": {"current_activity": _current_activity(events, node_public_ids, run.output_language), "operation_count": len({event.operation_id for event in events})},
-        "live_timeline": [
-            _event_payload(row, node_public_ids.get(row.node_id), run.output_language)
-            for row in events[-80:]
-        ],
-        "event_cursor": events[-1].sequence if events else 0,
-        "started_at": run.started_at,
-        "finished_at": run.finished_at,
-        "created_at": run.created_at,
-    }
-
-
-async def _create_inherited_investigation(session: AsyncSession, *, prior: Investigation, user_id: int, body: InvestigationFollowUpIn, trigger: str) -> Investigation:
-    active = (await session.execute(select(Investigation).where(Investigation.incident_id == prior.incident_id).where(Investigation.status.in_(["queued", "running"])).limit(1))).scalars().first()
-    if active is not None:
-        raise HTTPException(status_code=409, detail="an investigation is already active for this incident")
-    setting = await session.get(PlatformSetting, AI_OUTPUT_LANGUAGE_SETTING_KEY)
-    language = normalize_ai_output_language(setting.value if setting is not None else None)
-    patch = body.scope_patch.model_dump(exclude_none=True) if body.scope_patch else {}
-    scope = dict(prior.scope or {})
-    sources = dict(scope.get("scope_sources") or {})
-    for key in patch:
-        sources[key] = f"follow_up.user.{user_id}"
-    scope.update({"trigger": trigger, "requested_by": user_id, "scope_sources": sources, "parent_investigation": prior.public_id})
-    run = Investigation(application_id=prior.application_id, alert_id=prior.alert_id, incident_id=prior.incident_id, parent_investigation_id=prior.id, trigger_signature=prior.trigger_signature, status="queued", output_language=language, service_name=patch.get("service_name", prior.service_name), environment=patch.get("environment", prior.environment), trace_id=patch.get("trace_id", prior.trace_id), deployment_sha=patch.get("deployment_sha", prior.deployment_sha), window_started_at=prior.window_started_at, window_finished_at=prior.window_finished_at, scope=scope)
-    session.add(run)
-    await session.flush()
-    stage = InvestigationStage(investigation_id=run.id, stage_type="ingest", status="running", order_index=0, input={"trigger": trigger, "parent": prior.public_id}, output={}, started_at=datetime.now(UTC))
-    session.add(stage)
-    await session.flush()
-    operation = await append_execution_event(session, investigation_id=run.id, stage_id=stage.id, event_type="follow_up_intake", phase="started", detail={"parent_investigation": prior.public_id, "evidence_count": len(body.evidence), "scope_patch": list(patch)})
-    inherited_ids = (await session.execute(select(InvestigationEvidenceLink.artifact_id).where(InvestigationEvidenceLink.investigation_id == prior.id))).scalars().all()
-    if not inherited_ids:
-        inherited_ids = (await session.execute(select(EvidenceArtifact.id).where(EvidenceArtifact.investigation_id == prior.id))).scalars().all()
-    for artifact_id in inherited_ids:
-        session.add(InvestigationEvidenceLink(investigation_id=run.id, artifact_id=artifact_id, relation="inherited"))
-    new_refs: list[int] = []
-    for item in body.evidence:
-        excerpt, categories = mask_secrets(item.content)
-        artifact = EvidenceArtifact(investigation_id=run.id, collection_id=None, artifact_type="operator_input", source_kind="operator", source_id=user_id, locator=item.locator or f"follow-up://{run.public_id}/{item.kind}", content_hash=hashlib.sha256(item.content.encode()).hexdigest(), redacted_excerpt=excerpt[:20_000], metadata_={"declared_kind": item.kind, "submitted_by": user_id, "time_scope": "operator_follow_up", "secret_categories": categories})
-        session.add(artifact)
-        await session.flush()
-        new_refs.append(artifact.id)
-        session.add(InvestigationEvidenceLink(investigation_id=run.id, artifact_id=artifact.id, relation="manual"))
-    job = InvestigationJob(incident_id=run.incident_id, investigation_id=run.id, status="queued", max_attempts=settings.job_max_attempts)
-    session.add(job)
-    await session.flush()
-    await append_execution_event(session, investigation_id=run.id, stage_id=stage.id, event_type="follow_up_intake", phase="succeeded", operation_id=operation, detail={"inherited_artifact_count": len(inherited_ids), "manual_artifact_count": len(new_refs), "scope_patch": list(patch)}, artifact_refs=new_refs)
-    stage.status = "succeeded"
-    stage.finished_at = datetime.now(UTC)
-    stage.output = {"summary": "Inherited evidence and bounded operator input were archived.", "inherited_artifact_count": len(inherited_ids), "manual_artifact_count": len(new_refs)}
-    await session.commit()
-    return run
-
-
-@router.post("/{investigation_id}/follow-ups", status_code=201)
-async def create_follow_up(investigation_id: str, body: InvestigationFollowUpIn, user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)) -> dict:
-    prior = await _run(session, investigation_id)
-    user = await session.get(User, user_id)
-    await assert_app_perm(session, user, prior.application_id, "analyze")
-    run = await _create_inherited_investigation(session, prior=prior, user_id=user_id, body=body, trigger="manual_follow_up")
-    return {"id": run.public_id, "status": run.status, "parent_investigation_id": prior.public_id}
-
-
-@router.post("/{investigation_id}/reanalyze", status_code=201)
-async def reinvestigate(investigation_id: str, user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)) -> dict:
-    prior = await _run(session, investigation_id)
-    user = await session.get(User, user_id)
-    await assert_app_perm(session, user, prior.application_id, "analyze")
-    run = await _create_inherited_investigation(session, prior=prior, user_id=user_id, body=InvestigationFollowUpIn(), trigger="manual_reanalysis")
-    return {"id": run.public_id, "status": run.status, "parent_investigation_id": prior.public_id}
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})

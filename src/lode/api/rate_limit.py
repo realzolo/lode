@@ -47,7 +47,7 @@ SECURITY_HEADERS: dict[str, str] = {
 
 
 class RateLimiter:
-    """In-experience fixed-window counter.
+    """In-process fixed-window counter.
 
     ``store`` is injectable for tests; it maps ``key -> {"window": float,
     "count": int}``. ``now`` is injectable so tests can drive the clock without
@@ -67,7 +67,7 @@ class RateLimiter:
         self._window = 60.0
 
     def _prune_expired(self, now: float) -> None:
-        """Drop entries whose window has fully elapsed (bounds experience growth)."""
+        """Drop entries whose window has fully elapsed to bound memory growth."""
         deadline = now - self._window
         stale = [k for k, v in self._store.items() if v["window"] < deadline]
         for k in stale:

@@ -94,7 +94,7 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # Durable analysis executor. The consumer only *queues* jobs; this worker
+  # Durable investigation executor. The consumer only *queues* jobs; this worker
   # *claims* (SKIP LOCKED) and runs them, so a crash loses no work.
   worker:
     build:

@@ -5,8 +5,8 @@ endpoints. The endpoint, model, and key come from the ``ai_model_configs``
 table (global default or per-application override).
 
 If no model is configured, or the request fails for any reason, this module
-returns ``None`` so the runner falls back to a deterministic, offline
-heuristic. That keeps the product fully runnable without external API keys.
+returns an unavailable result. The investigation reports that semantic
+attribution could not run instead of manufacturing a root cause.
 """
 
 from __future__ import annotations
@@ -61,11 +61,9 @@ def resolve_api_key(api_key_ref: str) -> str:
       decrypted back to the plaintext key. Literal keys are stored encrypted at
       rest so the plaintext never lands in the database row.
 
-    Any existing plaintext literal rows are re-encrypted once at startup (see
-    ``lode.api.main``), so this path always receives an encrypted value and has
-    no plaintext fallback. Returns an empty string when an ``env://`` reference
-    points at an unset variable, so the caller gracefully falls back to the
-    heuristic engine.
+    Literal values must already be encrypted. There is no plaintext fallback.
+    An unset ``env://`` reference returns an empty string so the caller reports
+    model unavailability.
     """
     if api_key_ref.startswith("env://"):
         name = api_key_ref[len("env://") :]
@@ -83,7 +81,7 @@ def _is_retryable(exc: Exception) -> bool:
     * Network errors (DNS, refused, reset) and timeouts are transient.
     * HTTP 5xx from the provider (overload, gateway) are transient.
     * HTTP 4xx are client errors (bad key, bad request) — retrying cannot fix
-      them, so we fail closed to the heuristic immediately.
+      them, so we fail closed immediately.
     """
     if isinstance(exc, urllib.error.HTTPError):
         return 500 <= getattr(exc, "code", 0) <= 599
@@ -99,9 +97,8 @@ async def complete(
 
     The call is executed in a worker thread because ``urllib`` is blocking.
     Transient failures (network blips, provider 5xx) are retried with bounded
-    exponential backoff; after exhausting retries the engine degrades to the
-    deterministic offline heuristic so the product never hard-fails on an LLM
-    outage.
+    exponential backoff; after exhausting retries the engine returns an
+    unavailable result and does not synthesize a diagnosis.
     """
     return (await complete_with_usage(system_prompt, user_prompt, config)).text
 
@@ -138,7 +135,7 @@ async def complete_with_usage(
         return CompletionResult(None, 0, None, None, None, "unavailable", "model_not_configured")
 
     # Resolve the reference form (env://NAME) to the real secret before any
-    # network call. If it resolves empty, degrade to the offline heuristic.
+    # network call. If it resolves empty, report model unavailability.
     api_key = resolve_api_key(config.api_key_ref)
     if not api_key:
         return CompletionResult(None, int((time.monotonic() - started) * 1000), None, None, None, "unavailable", "api_key_unavailable")
@@ -183,8 +180,8 @@ async def complete_with_usage(
 
     elapsed = time.monotonic() - started
     LLM_LATENCY.observe(elapsed)
-    LLM_CALLS.labels(outcome="fallback").inc()
-    logger.warning("LLM call failed after %d attempt(s), using heuristic fallback: %s",
+    LLM_CALLS.labels(outcome="unavailable").inc()
+    logger.warning("LLM call failed after %d attempt(s), reporting unavailable: %s",
                    max_retries, last_exc)
     error_code = "provider_error"
     if isinstance(last_exc, urllib.error.HTTPError):

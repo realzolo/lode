@@ -17,13 +17,11 @@ import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import update
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from lode.api.deps import require_user
@@ -39,8 +37,6 @@ from lode.api.routes.metrics import router as metrics_router
 from lode.api.routes.settings import router as settings_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
-from lode.db.models.ai_model import reencrypt_plaintext_keys
-from lode.db.session import AsyncSessionLocal
 from lode.migrations import run_migrations
 from lode.api.audit import _request_id
 
@@ -68,19 +64,9 @@ logger = logging.getLogger("lode.api")
 async def lifespan(app: FastAPI) -> None:
     # Auto-execute database migrations before accepting traffic.
     await asyncio.get_running_loop().run_in_executor(None, run_migrations)
-    # Re-encrypt any legacy plaintext AI-model keys at rest so the key resolver
-    # can decrypt strictly (no plaintext fallback). Idempotent.
-    async with AsyncSessionLocal() as session:
-        try:
-            count = await reencrypt_plaintext_keys(session)
-            if count:
-                logger.info("re-encrypted %d legacy AI-model key(s)", count)
-        except Exception:
-            logger.exception("failed to re-encrypt legacy AI-model keys")
-
     # Job recovery (expired leases, stranded queued work) is owned by the
     # worker process, which reclaims them on startup. The API must NOT mutate
-    # ``running`` analyses here: a job legitimately in flight under the worker
+    # ``running`` investigations here: a job legitimately in flight under the worker
     # would otherwise be wrongly marked failed.
 
     yield

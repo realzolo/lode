@@ -4,8 +4,8 @@ Single-process exposition on the default registry. For multi-worker / gunicorn
 deployments enable prometheus-client multiprocess mode (set
 ``PROMETHEUS_MULTIPROC_DIR`` and switch to a per-worker ``CollectorRegistry``)
 before scaling horizontally — see the prometheus_client docs. The instruments
-below are the production minimum for an incident-analysis service: Kafka intake
-volume, dead-letter pressure, analysis throughput, engine-fallback rate, and
+below are the production minimum for an incident-investigation service: Kafka intake
+volume, dead-letter pressure, investigation throughput, model availability, and
 LLM latency.
 """
 
@@ -38,23 +38,23 @@ DEAD_LETTERS = Counter(
     ["kind"],
 )
 
-# --- Analysis engine --------------------------------------------------------
-# result: scheduled | completed | failed | heuristic
-ANALYSES = Counter(
-    "lode_analyses_total",
-    "Analysis runs, labelled by result",
+# --- Investigation engine --------------------------------------------------
+# result: scheduled | completed | failed
+INVESTIGATIONS = Counter(
+    "lode_investigations_total",
+    "Investigation runs, labelled by result",
     ["result"],
 )
 
-# Current in-flight analyses inside this worker (the Semaphore-bound runners).
+# Current in-flight investigations inside this worker.
 # A gauge, not a counter, because it goes up and down with concurrency.
 ENGINE_IN_FLIGHT = Gauge(
-    "lode_analyses_in_flight",
-    "Analyses currently executing inside this worker",
+    "lode_investigations_in_flight",
+    "Investigations currently executing inside this worker",
 )
 
 # --- LLM --------------------------------------------------------------------
-# outcome: success | fallback
+# outcome: success | unavailable
 LLM_CALLS = Counter(
     "lode_llm_calls_total",
     "LLM completion attempts, labelled by outcome",
