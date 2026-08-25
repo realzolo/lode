@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
-import { ChevronRight } from 'lucide-react';
+import { CheckCircle2, ChevronRight, CircleAlert } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -58,6 +58,7 @@ export default function DashboardPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [startTarget, setStartTarget] = useState<Application | null>(null);
   const [startPosition, setStartPosition] = useState<'latest' | 'earliest'>('latest');
+  const [startError, setStartError] = useState<string | null>(null);
   const [actionAppId, setActionAppId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // Polling may overlap with a lifecycle mutation. A response that started
@@ -125,7 +126,7 @@ export default function DashboardPage() {
   async function handleStart() {
     if (!startTarget) return;
     setActionAppId(startTarget.id);
-    setActionError(null);
+    setStartError(null);
     try {
       const status = await startApplicationIngestion(startTarget.id, startPosition);
       updateIngestion(
@@ -136,7 +137,7 @@ export default function DashboardPage() {
       );
       setStartTarget(null);
     } catch (e) {
-      setActionError(String(e));
+      setStartError(String(e));
     } finally {
       setActionAppId(null);
     }
@@ -279,6 +280,7 @@ export default function DashboardPage() {
                       size="sm"
                       onClick={() => {
                         setActionError(null);
+                        setStartError(null);
                         setStartPosition('latest');
                         setStartTarget(app);
                       }}
@@ -321,7 +323,10 @@ export default function DashboardPage() {
       <Dialog
         open={startTarget !== null}
         onOpenChange={(open) => {
-          if (!open && !actionAppId) setStartTarget(null);
+          if (!open && !actionAppId) {
+            setStartTarget(null);
+            setStartError(null);
+          }
         }}
       >
         <DialogContent>
@@ -331,6 +336,29 @@ export default function DashboardPage() {
               {t('startIngestionDesc', { name: startTarget?.name ?? '' })}
             </DialogDescription>
           </DialogHeader>
+          <div className="space-y-2" aria-label={t('startRequirements')}>
+            {[
+              { ready: (startTarget?.repoCount ?? 0) > 0, label: t('repositoryRequired') },
+              { ready: Boolean(startTarget?.topic), label: t('topicRequired') },
+              { ready: Boolean(startTarget?.modelConfigured), label: t('modelRequired') },
+            ].map((requirement) => (
+              <div
+                key={requirement.label}
+                className="flex items-center gap-2 text-sm text-foreground"
+              >
+                {requirement.ready ? (
+                  <CheckCircle2
+                    className="h-4 w-4 shrink-0"
+                    style={{ color: 'var(--success)' }}
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <CircleAlert className="h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
+                )}
+                <span>{requirement.label}</span>
+              </div>
+            ))}
+          </div>
           <label className="form-field text-sm font-medium text-foreground">
             {t('startPosition')}
             <Select
@@ -343,11 +371,29 @@ export default function DashboardPage() {
               <option value="earliest">{t('startEarliest')}</option>
             </Select>
           </label>
+          {startError && <p className="text-sm text-destructive">{startError}</p>}
           <DialogFooter>
-            <Button variant="default" onClick={() => setStartTarget(null)} disabled={actionAppId !== null}>
+            <Button
+              variant="default"
+              onClick={() => {
+                setStartTarget(null);
+                setStartError(null);
+              }}
+              disabled={actionAppId !== null}
+            >
               {tc('cancel')}
             </Button>
-            <Button variant="primary" onClick={() => void handleStart()} disabled={actionAppId !== null}>
+            <Button
+              variant="primary"
+              onClick={() => void handleStart()}
+              disabled={
+                actionAppId !== null
+                || !startTarget
+                || startTarget.repoCount < 1
+                || !startTarget.topic
+                || !startTarget.modelConfigured
+              }
+            >
               {t('startIngestion')}
             </Button>
           </DialogFooter>

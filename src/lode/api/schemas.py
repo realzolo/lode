@@ -22,6 +22,7 @@ class ApplicationOut(BaseModel):
     topic: str | None
     latest_level: str
     repo_count: int
+    model_configured: bool
     ingestion_state: Literal["draft", "active", "paused"]
     ingestion_observed_state: Literal["draft", "starting", "listening", "paused", "error"]
     ingestion_start_position: Literal["earliest", "latest"] | None = None

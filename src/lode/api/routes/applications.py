@@ -181,6 +181,40 @@ async def _validate_kafka_topic(topic: str) -> None:
         raise HTTPException(status_code=422, detail=f"Kafka topic '{topic}' has no partitions")
 
 
+async def _require_ingestion_readiness(
+    session: AsyncSession,
+    app: Application,
+) -> str:
+    """Fail closed unless every application-level ingestion prerequisite exists."""
+    topic = await session.scalar(
+        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == app.id)
+    )
+    repo_count = await session.scalar(
+        select(func.count(ApplicationRepo.id)).where(ApplicationRepo.application_id == app.id)
+    )
+    model_configured = app.model_config_id is not None and await session.get(
+        AiModelConfig, app.model_config_id
+    ) is not None
+
+    missing: list[str] = []
+    if not repo_count:
+        missing.append("repositories")
+    if topic is None or not topic.strip():
+        missing.append("topic")
+    if not model_configured:
+        missing.append("model")
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "application_not_ready",
+                "message": "Complete all required application settings before starting ingestion.",
+                "missing": missing,
+            },
+        )
+    return topic
+
+
 @router.get("", response_model=list[ApplicationOut])
 async def list_applications(
     user_id: int = Depends(require_user),
@@ -243,6 +277,7 @@ async def list_applications(
                 topic=topic,
                 latest_level=level,
                 repo_count=repo_count or 0,
+                model_configured=app.model_config_id is not None,
                 ingestion_state=app.ingestion_state,
                 ingestion_observed_state=_runtime_status(app, runtimes.get(app.id)),
                 ingestion_start_position=app.ingestion_start_position,
@@ -392,6 +427,7 @@ async def create_application(
         topic=None,
         latest_level="WARNING",
         repo_count=0,
+        model_configured=False,
         ingestion_state=app.ingestion_state,
         ingestion_observed_state="draft",
         ingestion_start_position=None,
@@ -521,17 +557,13 @@ async def start_application_ingestion(
     app = await session.get(Application, application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
-    topic = await session.scalar(
-        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == application_id)
-    )
-    if topic is None:
-        raise HTTPException(status_code=409, detail="bind a Kafka topic before starting ingestion")
     if app.ingestion_state not in {"draft", "paused"} or app.ingestion_start_position is not None:
         raise HTTPException(
             status_code=409,
             detail="only a draft or migrated paused application can be started",
         )
 
+    topic = await _require_ingestion_readiness(session, app)
     await _validate_kafka_topic(topic)
 
     app.ingestion_state = "active"
@@ -605,13 +637,9 @@ async def resume_application_ingestion(
     app = await session.get(Application, application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
-    topic = await session.scalar(
-        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == application_id)
-    )
-    if topic is None:
-        raise HTTPException(status_code=409, detail="bind a Kafka topic before resuming ingestion")
     if app.ingestion_state != "paused":
         raise HTTPException(status_code=409, detail="only a paused application can be resumed")
+    topic = await _require_ingestion_readiness(session, app)
     app.ingestion_state = "active"
     app.ingestion_paused_at = None
     runtime = await _ensure_runtime(session, app)

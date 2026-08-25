@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from lode.api.main import app
 from lode.api.routes import applications as application_routes
+from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.application import (
     Application,
     ApplicationDescription,
@@ -257,6 +258,141 @@ async def test_admin_set_topic_missing_app(admin: int) -> None:
             json={"topic": "x"},
         )
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Ingestion activation readiness
+# ---------------------------------------------------------------------------
+
+
+async def test_start_requires_repository_topic_and_model(
+    fresh_app: int,
+    admin: int,
+    monkeypatch,
+) -> None:
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    headers = {"Authorization": f"Bearer {token}"}
+    repo_id = await _make_git_repo()
+    model_id: int | None = None
+    validated_topics: list[str] = []
+
+    async def validate_topic(topic: str) -> None:
+        validated_topics.append(topic)
+
+    monkeypatch.setattr(application_routes, "_validate_kafka_topic", validate_topic)
+    topic = f"ready-{uuid.uuid4().hex}"
+    try:
+        async with _client() as client:
+            response = await client.post(
+                f"/applications/{fresh_app}/ingestion/start",
+                headers=headers,
+                json={"start_position": "latest"},
+            )
+            assert response.status_code == 409
+            assert response.json()["error"] == {
+                "code": "application_not_ready",
+                "message": "Complete all required application settings before starting ingestion.",
+                "details": {"missing": ["repositories", "topic", "model"]},
+            }
+            assert validated_topics == []
+
+            async with AsyncSessionLocal() as session:
+                session.add(ApplicationRepo(application_id=fresh_app, repo_id=repo_id))
+                await session.commit()
+            response = await client.post(
+                f"/applications/{fresh_app}/ingestion/start",
+                headers=headers,
+                json={"start_position": "latest"},
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["details"]["missing"] == ["topic", "model"]
+
+            async with AsyncSessionLocal() as session:
+                session.add(ApplicationKafka(application_id=fresh_app, topic=topic))
+                await session.commit()
+            response = await client.post(
+                f"/applications/{fresh_app}/ingestion/start",
+                headers=headers,
+                json={"start_position": "latest"},
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["details"]["missing"] == ["model"]
+
+            async with AsyncSessionLocal() as session:
+                model = AiModelConfig(
+                    provider="openai",
+                    base_url="https://api.openai.com/v1",
+                    api_key_ref="env://LODE_TEST_MODEL_KEY",
+                    model="test-model",
+                    is_default=False,
+                )
+                session.add(model)
+                await session.flush()
+                application = await session.get(Application, fresh_app)
+                assert application is not None
+                application.model_config_id = model.id
+                model_id = model.id
+                await session.commit()
+
+            listed = await client.get("/applications", headers=headers)
+            assert listed.status_code == 200
+            listed_app = next(row for row in listed.json() if row["id"] == fresh_app)
+            assert listed_app["repo_count"] == 1
+            assert listed_app["model_configured"] is True
+
+            response = await client.post(
+                f"/applications/{fresh_app}/ingestion/start",
+                headers=headers,
+                json={"start_position": "latest"},
+            )
+            assert response.status_code == 202, response.text
+            assert response.json()["desired_state"] == "active"
+            assert validated_topics == [topic]
+    finally:
+        async with AsyncSessionLocal() as session:
+            application = await session.get(Application, fresh_app)
+            if application is not None:
+                application.model_config_id = None
+            binding = await session.scalar(
+                select(ApplicationRepo).where(
+                    ApplicationRepo.application_id == fresh_app,
+                    ApplicationRepo.repo_id == repo_id,
+                )
+            )
+            if binding is not None:
+                await session.delete(binding)
+            await session.flush()
+            if model_id is not None:
+                model = await session.get(AiModelConfig, model_id)
+                if model is not None:
+                    await session.delete(model)
+            await session.commit()
+        await _cleanup_git_repo(repo_id)
+
+
+async def test_resume_rechecks_required_configuration(
+    fresh_app: int,
+    admin: int,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        application = await session.get(Application, fresh_app)
+        assert application is not None
+        application.ingestion_state = "paused"
+        application.ingestion_start_position = "latest"
+        await session.commit()
+
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    async with _client() as client:
+        response = await client.post(
+            f"/applications/{fresh_app}/ingestion/resume",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 409
+    assert response.json()["error"]["details"]["missing"] == [
+        "repositories",
+        "topic",
+        "model",
+    ]
 
 
 # ---------------------------------------------------------------------------

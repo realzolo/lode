@@ -66,6 +66,10 @@
     "resumeIngestion": "恢复",
     "configureTopic": "配置 Topic",
     "startIngestionDesc": "为 {name} 选择首次消费位置。选择后将开始监听并创建分析任务。",
+    "startRequirements": "启动必填项",
+    "repositoryRequired": "至少绑定一个仓库",
+    "topicRequired": "已配置 Kafka Topic",
+    "modelRequired": "已配置 AI 模型",
     "startPosition": "首次消费位置",
     "startLatest": "仅消费新消息",
     "startEarliest": "回放保留消息"

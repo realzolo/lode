@@ -86,6 +86,12 @@ async function responseErrorMessage(response: Response, fallback: string): Promi
       .filter((item): item is string => Boolean(item));
     if (messages.length) return messages.join('; ');
   }
+  if (payload.detail && typeof payload.detail === 'object') {
+    const detail = payload.detail as { message?: unknown; missing?: unknown };
+    if (typeof detail.message === 'string' && detail.message.trim()) {
+      return detail.message;
+    }
+  }
   return fallback;
 }
 
@@ -153,6 +159,7 @@ interface ApiApplication {
   topic: string | null;
   latest_level: string;
   repo_count: number;
+  model_configured: boolean;
   ingestion_state: 'draft' | 'active' | 'paused';
   ingestion_observed_state: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
   ingestion_start_position: 'earliest' | 'latest' | null;
@@ -244,6 +251,7 @@ export async function fetchApplications(): Promise<Application[]> {
     topic: r.topic ?? '',
     level: (r.latest_level as Level) ?? 'WARNING',
     repoCount: r.repo_count,
+    modelConfigured: r.model_configured,
     ingestionState: r.ingestion_state,
     ingestionObservedState: r.ingestion_observed_state,
     ingestionStartPosition: r.ingestion_start_position,
@@ -594,6 +602,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     topic: row.topic ?? '',
     level: (row.latest_level as Level) ?? 'WARNING',
     repoCount: row.repo_count,
+    modelConfigured: row.model_configured,
     ingestionState: row.ingestion_state,
     ingestionObservedState: row.ingestion_observed_state,
     ingestionStartPosition: row.ingestion_start_position,

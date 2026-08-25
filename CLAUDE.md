@@ -14,7 +14,29 @@ Lode is an evidence-backed production incident investigation service. The V1 arc
 - `src/lode/engine/investigation_events.py`: durable step, operation, progress, failure, timing, and evidence events.
 - `apps/web`: Next.js workbench with manual intake, serial execution track, exact code viewer, evidence browser, and paginated audit drawer.
 
-PostgreSQL is the source of truth. Kafka consumers only validate and enqueue; workers execute investigations. Model configuration is selected from the application binding first, then the global default.
+PostgreSQL is the source of truth. Kafka consumers only validate and enqueue; workers execute investigations. Model configuration is selected from the application binding first, then the global default. The global default does not satisfy the application activation requirement described below.
+
+## Application Activation
+
+Every transition into active Kafka ingestion fails closed unless the application has all three required bindings:
+
+1. at least one `ApplicationRepo`;
+2. one non-empty `ApplicationKafka.topic`;
+3. one existing application-level `model_config_id`.
+
+Both initial start and resume call the same backend readiness gate. Initial start validates broker visibility only after the three configuration checks pass. Missing configuration returns HTTP 409 using the canonical business-error envelope:
+
+```json
+{
+  "error": {
+    "code": "application_not_ready",
+    "message": "Complete all required application settings before starting ingestion.",
+    "details": {"missing": ["repositories", "topic", "model"]}
+  }
+}
+```
+
+`GET /applications` exposes `repo_count` and computed `model_configured`; the Web start dialog displays all three requirements and cannot submit while its current application snapshot is incomplete. The backend gate remains authoritative for stale clients and direct API callers.
 
 ## Investigation Execution
 
@@ -91,6 +113,8 @@ For `confirmed`, the revision must be the deployed incident revision and the loc
 External causes can be represented accurately while code diagnosis separately reports no project defect or an exact timeout, retry, validation, fallback, or error-preservation weakness.
 
 ## API And Events
+
+HTTP errors use one envelope: `error.code`, a string or HTTP status code; `error.message`, always a string; and optional structured `error.details`. Do not place structured objects in `error.message`.
 
 `GET /investigations/{id}` returns only V1 fields: `input`, `report`, ordered `steps`, `decisions`, `operations`, `evidence`, and `code_findings`.
 

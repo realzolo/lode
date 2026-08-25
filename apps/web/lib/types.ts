@@ -8,6 +8,7 @@ export interface Application {
   topic: string;
   level: Level;
   repoCount: number;
+  modelConfigured: boolean;
   ingestionState: 'draft' | 'active' | 'paused';
   ingestionObservedState: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
   ingestionStartPosition: 'earliest' | 'latest' | null;

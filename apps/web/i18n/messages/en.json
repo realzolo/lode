@@ -66,6 +66,10 @@
     "resumeIngestion": "Resume",
     "configureTopic": "Configure topic",
     "startIngestionDesc": "Choose the initial consumption position for {name}. Listening and analysis task creation begin after activation.",
+    "startRequirements": "Startup requirements",
+    "repositoryRequired": "At least one repository",
+    "topicRequired": "Kafka topic configured",
+    "modelRequired": "AI model configured",
     "startPosition": "Initial consumption position",
     "startLatest": "New messages only",
     "startEarliest": "Replay retained messages"

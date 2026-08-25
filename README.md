@@ -38,6 +38,12 @@ A source file is only a candidate. A code finding must identify an immutable art
 
 External failures remain valid incident causes. Code diagnosis independently reports `no_defect`, `not_found`, or an exact resilience finding such as missing timeout, retry, validation, or error preservation.
 
+## Application Startup
+
+An application can start or resume Kafka ingestion only when it has at least one bound repository, a configured Kafka topic, and an explicitly selected AI model. The backend checks all three in one fail-closed gate and returns HTTP 409 with `error.code = "application_not_ready"` plus `error.details.missing` when configuration is incomplete. A global default model does not replace the required application model selection.
+
+The application dashboard shows the three startup requirements before activation and disables submission while its current application snapshot is incomplete. The API repeats the checks on every start and resume, so stale UI state and direct API calls cannot bypass them.
+
 ## Kafka `alert.v1`
 
 Messages are strict and reject unknown top-level fields. `version` and `git_commit` are top-level deployment fields. The complete `error_log.stack`, recursive `cause`, `properties`, business `fields`, trace context, version, revision, and time window are normalized and archived after secret masking.

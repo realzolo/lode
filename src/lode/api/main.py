@@ -106,9 +106,25 @@ async def request_context(request: Request, call_next):
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if isinstance(exc.detail, dict):
+        business_code = exc.detail.get("code", exc.status_code)
+        message = exc.detail.get("message", "request failed")
+        details = {
+            key: value
+            for key, value in exc.detail.items()
+            if key not in {"code", "message"}
+        }
+        error: dict[str, object] = {
+            "code": business_code,
+            "message": message,
+        }
+        if details:
+            error["details"] = details
+    else:
+        error = {"code": exc.status_code, "message": exc.detail}
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": {"code": exc.status_code, "message": exc.detail}},
+        content={"error": error},
     )
 
 
