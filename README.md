@@ -21,7 +21,7 @@ Actions within one investigation never overlap. Workers may process different in
 - `confirmed`: an incident-version code finding passed structural and independent semantic verification.
 - `hypothesis`: one leading mechanism has supporting evidence but still needs validation.
 - `insufficient`: the available evidence cannot support a single cause.
-- `unavailable`: required analysis capability, normally the configured model, was unavailable.
+- `unavailable`: a required analysis capability was unavailable, or both strict structured-output attempts failed validation. Output-contract failure is explicitly distinguished from insufficient evidence.
 
 Lode does not expose a model-generated confidence score. Non-confirmed reports contain evidence requests and test suggestions, not production code change instructions.
 
@@ -34,13 +34,13 @@ A source file is only a candidate. A code finding must identify an immutable art
 - incident, supporting, and counter-evidence references;
 - missing validation, a minimal fix direction, and a verification test.
 
-`confirmed` additionally requires the deployed revision plus a stack, runtime, dependency, or alert-contract link to the incident. An independent model pass must verify the branch, trigger, and propagation. Default-branch source is always shown as an unverified `hypothesis`. Documentation and lexical matches can provide context but cannot prove a defect.
+`confirmed` additionally requires an immutable incident baseline plus a stack, runtime, dependency, or alert-contract link to the incident. Lode resolves the baseline independently for every bound repository: it first tries the alert deployment revision, then freezes that repository's default branch HEAD if the revision does not belong to that repository. With no deployment revision, the default branch is used directly. The selected basis is recorded in operation and evidence metadata. An independent model pass must still verify the branch, trigger, and propagation. Documentation and lexical matches can provide context but cannot prove a defect.
 
 External failures remain valid incident causes. Code diagnosis independently reports `no_defect`, `not_found`, or an exact resilience finding such as missing timeout, retry, validation, or error preservation.
 
 ## Application Startup
 
-An application can start or resume Kafka ingestion only when it has at least one bound repository, a configured Kafka topic, and an explicitly selected AI model. The backend checks all three in one fail-closed gate and returns HTTP 409 with `error.code = "application_not_ready"` plus `error.details.missing` when configuration is incomplete. A global default model does not replace the required application model selection.
+An application can start or resume Kafka ingestion only when it has at least one bound repository, a configured Kafka topic, and an explicitly selected AI model that passed a live protocol test. Binding a model tests it before saving; model settings also provide an explicit retest action. The backend checks these requirements in one fail-closed gate and returns HTTP 409 with `error.code = "application_not_ready"` plus `error.details.missing` when configuration is incomplete. A global default model does not replace the required application model selection.
 
 The application dashboard shows the three startup requirements before activation and disables submission while its current application snapshot is incomplete. The API repeats the checks on every start and resume, so stale UI state and direct API calls cannot bypass them.
 
@@ -91,6 +91,8 @@ When an error is serialized as an object, Lode promotes the structured `properti
 - `GET /investigations/{id}/events`: durable operation event history.
 - `GET /investigations/{id}/audit`: separately paginated operation and AI-call audit streams.
 - `GET /investigations/{id}/stream`: live SSE updates.
+- `POST /investigations/{id}/retry`: create a new run from a terminal run's immutable input after a live model test.
+- `POST /investigations/{id}/archive`: permanently make a terminal run read-only.
 
 SSE event names are `step.updated`, `operation.started`, `operation.progress`, `operation.finished`, `decision.recorded`, `code_finding.updated`, `report.updated`, and `investigation.finished`.
 
@@ -98,9 +100,9 @@ Kafka and manual intake call the same normalization, evidence archiving, and job
 
 ## Data Model
 
-The V1 database has one schema snapshot: `alembic/versions/0001_initial.py`. It contains inputs, ordered steps, decisions, operations and events, evidence, findings and edges, code findings, AI audit, reports, jobs, connectors, and application configuration.
+`alembic/versions/0001_initial.py` is the frozen V1 baseline. `0002_model_health_retry_archive.py` upgrades an existing V1 database with model health results, AI retry attempt audit, investigation retry lineage, and irreversible archive state.
 
-Create a fresh PostgreSQL database for V1. There is no historical payload conversion, dual schema, or adapter. Partial unique indexes enforce at most one running step and one running operation per investigation.
+There is no historical payload conversion, dual schema, or API adapter. Partial unique indexes enforce at most one running step and one running operation per investigation. Server startup applies pending migrations automatically.
 
 ```bash
 uv sync --extra dev
@@ -145,3 +147,7 @@ cd apps/web && pnpm typecheck && pnpm build
 ```
 
 Schema verification must run `alembic upgrade head` against a newly created PostgreSQL database. Source evidence collection needs read access to the repositories configured for the application. All connector inputs are server-controlled and read-only; model output cannot introduce commands, SQL, URLs, paths, or credentials.
+
+OpenAI-compatible base URLs are resolved to `/v1/chat/completions`, and Anthropic base URLs to `/v1/messages`. Evidence-rich model calls use provider-enforced strict JSON Schemas, an 8192-token output bound, and a configurable 120-second per-attempt timeout; health probes use 30 seconds. OpenAI-compatible providers use JSON Schema response format and Anthropic uses a forced schema-bound tool result. Transient failures (network, timeout, HTTP 429, and HTTP 5xx) retry with visible progress, while deterministic authentication, request, or non-JSON protocol failures stop immediately. The report and AI audit show the precise failure and actual attempt count instead of a generic unavailable label. Two invalid structured outputs make that run unavailable and explicitly do not imply that its evidence was insufficient.
+
+The workbench only renders code attached to final validated code findings. Intermediate source candidates remain audit metadata, the Monaco viewer follows the dashboard theme, and stable skeletons plus non-blocking SSE reconnect state prevent full-page flicker during live updates.

@@ -34,12 +34,14 @@ from lode.api.schemas import (
     GitRepoIn,
     GitRepoOut,
     GitRepoUpdateIn,
+    ModelAvailabilityOut,
 )
 from lode.crypto import encrypt_secret
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.git import GitCredential, GitRepo
 from lode.db.models.platform_setting import PlatformSetting
 from lode.db.session import AsyncSessionLocal
+from lode.engine.model_health import ModelHealth, probe_model, record_model_health
 from sqlalchemy import select
 
 
@@ -108,6 +110,11 @@ async def get_settings() -> dict:
                 "model": m.model,
                 "is_default": m.is_default,
                 "has_key": bool(m.api_key_ref),
+                "last_test_status": m.last_test_status,
+                "last_tested_at": m.last_tested_at,
+                "last_test_latency_ms": m.last_test_latency_ms,
+                "last_test_error_code": m.last_test_error_code,
+                "last_test_error_detail": m.last_test_error_detail,
             }
             for m in models
         ],
@@ -150,6 +157,21 @@ def _row_to_out(m: AiModelConfig) -> AiModelConfigOut:
         model=m.model,
         is_default=m.is_default,
         has_key=bool(m.api_key_ref),
+        last_test_status=m.last_test_status,
+        last_tested_at=m.last_tested_at,
+        last_test_latency_ms=m.last_test_latency_ms,
+        last_test_error_code=m.last_test_error_code,
+        last_test_error_detail=m.last_test_error_detail,
+    )
+
+
+def _health_out(health: ModelHealth) -> ModelAvailabilityOut:
+    return ModelAvailabilityOut(
+        available=health.available,
+        endpoint=health.endpoint,
+        latency_ms=health.latency_ms,
+        error_code=health.error_code,
+        error_detail=health.error_detail,
     )
 
 
@@ -247,6 +269,11 @@ async def update_ai_model(
         if payload.api_key_ref:
             model.api_key_ref = _store_key_ref(payload.api_key_ref)
         model.model = payload.model
+        model.last_test_status = "untested"
+        model.last_tested_at = None
+        model.last_test_latency_ms = None
+        model.last_test_error_code = None
+        model.last_test_error_detail = None
 
         if payload.is_default:
             # Demote other defaults first (flush), then promote this row.
@@ -269,6 +296,33 @@ async def update_ai_model(
             target_id=str(model_id),
         )
         return _row_to_out(model)
+
+
+@router.post("/ai-models/{model_id}/test", response_model=ModelAvailabilityOut)
+async def test_ai_model(
+    model_id: int,
+    _admin: int = Depends(require_admin),
+) -> ModelAvailabilityOut:
+    async with AsyncSessionLocal() as session:
+        model = await session.get(AiModelConfig, model_id)
+        if model is None:
+            raise HTTPException(status_code=404, detail="model config not found")
+        health = await probe_model(model)
+        record_model_health(model, health)
+        await session.commit()
+        await audit_action(
+            action="ai_model.test",
+            actor_id=_admin,
+            target_type="ai_model",
+            target_id=str(model_id),
+            result="ok" if health.available else "error",
+            detail={
+                "endpoint": health.endpoint,
+                "latency_ms": health.latency_ms,
+                "error_code": health.error_code,
+            },
+        )
+        return _health_out(health)
 
 
 @router.delete("/ai-models/{model_id}", status_code=204)

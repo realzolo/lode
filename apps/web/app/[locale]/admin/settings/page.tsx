@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { Activity } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -27,6 +28,7 @@ import {
   deleteGitCredential,
   deleteGitRepo,
   fetchSettings,
+  testAiModel,
   updateAiOutputLanguage,
   updateAiModel,
   updateGitCredential,
@@ -292,6 +294,7 @@ function AiModelManager({
   const [isDefault, setIsDefault] = useState(true);
   const [busy, setBusy] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [testingId, setTestingId] = useState<number | null>(null);
 
   function resetForm() {
     setEditingId(null);
@@ -346,6 +349,20 @@ function AiModelManager({
     } catch (e) {
       onError(String(e));
       throw e;
+    }
+  }
+
+  async function handleTest(id: number) {
+    setTestingId(id);
+    onError(null);
+    try {
+      const result = await testAiModel(id);
+      if (!result.available) onError(result.error_detail || result.error_code || t('modelUnavailable'));
+      await onChanged();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setTestingId(null);
     }
   }
 
@@ -408,12 +425,19 @@ function AiModelManager({
 
       <div className="stack" style={{ marginTop: 12 }}>
         {settings.ai_model_configs.map((m) => (
-          <div key={m.id} className="row-between" style={{ borderTop: '1px solid var(--color-4)', paddingTop: 8 }}>
-            <span className="mono" style={{ fontSize: 12 }}>
-              #{m.id} {m.provider} · {m.model}
-              {m.is_default ? ' · default' : ''}
-            </span>
+          <div key={m.id} className="row-between" style={{ borderTop: '1px solid var(--color-4)', paddingTop: 10 }}>
+            <div className="stack" style={{ gap: 4 }}>
+              <span className="mono" style={{ fontSize: 13 }}>#{m.id} {m.provider} · {m.model}{m.is_default ? ' · default' : ''}</span>
+              <span className="muted" style={{ fontSize: 12 }}>{m.base_url}</span>
+              {m.last_test_error_detail && <span className="muted" style={{ color: 'var(--danger)', fontSize: 12 }}>{m.last_test_error_detail}</span>}
+            </div>
             <div className="row" style={{ gap: 6 }}>
+              <Badge variant={m.last_test_status === 'available' ? 'success' : m.last_test_status === 'unavailable' ? 'danger' : 'default'}>
+                {t(m.last_test_status === 'available' ? 'modelAvailable' : m.last_test_status === 'unavailable' ? 'modelUnavailable' : 'modelUntested')}
+              </Badge>
+              <Button size="sm" onClick={() => void handleTest(m.id)} disabled={testingId !== null}>
+                <Activity size={14} /> {testingId === m.id ? t('testingModel') : t('testModel')}
+              </Button>
               <Button size="sm" onClick={() => startEdit(m)}><IconEdit2 size={14} /> {tc('save')}</Button>
               <Button size="sm" variant="destructive" onClick={() => setDeleteId(m.id)}><IconTrash2 size={14} /> {tu('delete')}</Button>
             </div>

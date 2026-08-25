@@ -1020,6 +1020,7 @@ export function ModelSection({
   const [selectedId, setSelectedId] = useState<string>(data.model_config_id ? String(data.model_config_id) : '');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function reload() {
@@ -1049,8 +1050,12 @@ export function ModelSection({
   async function handleSave() {
     setBusy(true);
     setError(null);
+    setSuccess(null);
     try {
-      await setApplicationModel(appId, selectedId ? Number(selectedId) : null);
+      const result = await setApplicationModel(appId, selectedId ? Number(selectedId) : null);
+      if (result.model_test?.available) {
+        setSuccess(tAdmin('modelBindingSuccess', { ms: result.model_test.latency_ms }));
+      }
       onRefresh();
     } catch (e) {
       setError(String(e));
@@ -1067,6 +1072,7 @@ export function ModelSection({
           {error}
         </p>
       )}
+      {success && <p className="muted" style={{ color: 'var(--success)', fontSize: 13 }}>{success}</p>}
       {!isAdmin ? (
         <p className="muted" style={{ fontSize: 13 }}>
           {tAdmin('modelSelectionReadOnly')}
@@ -1084,10 +1090,10 @@ export function ModelSection({
             onChange={(e) => setSelectedId(e.target.value)}
             disabled={busy}
           >
-            <option value="">{tAdmin('useDefaultModel')}</option>
+            <option value="" disabled>{tAdmin('useDefaultModel')}</option>
             {rows.map((m) => (
               <option key={m.id} value={String(m.id)}>
-                #{m.id} {m.provider} · {m.model}{m.is_default ? ' · default' : ''}
+                #{m.id} {m.provider} · {m.model} · {m.last_test_status}
               </option>
             ))}
           </Select>
@@ -1096,9 +1102,9 @@ export function ModelSection({
               size="sm"
               variant="primary"
               onClick={handleSave}
-              disabled={busy || selectedId === (data.model_config_id ? String(data.model_config_id) : '')}
+              disabled={busy || !selectedId || selectedId === (data.model_config_id ? String(data.model_config_id) : '')}
             >
-              {tc('save')}
+              {busy ? tAdmin('testingModel') : tc('save')}
             </Button>
           </div>
         </div>

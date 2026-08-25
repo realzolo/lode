@@ -88,6 +88,7 @@ from lode.engine.db_proxy import (
     verify_postgres_readonly_account,
 )
 from lode.engine.integrations import IntegrationError, connector_for, resolve_integration_secret
+from lode.engine.model_health import probe_model, record_model_health
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 
@@ -192,17 +193,19 @@ async def _require_ingestion_readiness(
     repo_count = await session.scalar(
         select(func.count(ApplicationRepo.id)).where(ApplicationRepo.application_id == app.id)
     )
-    model_configured = app.model_config_id is not None and await session.get(
+    model = await session.get(
         AiModelConfig, app.model_config_id
-    ) is not None
+    ) if app.model_config_id is not None else None
 
     missing: list[str] = []
     if not repo_count:
         missing.append("repositories")
     if topic is None or not topic.strip():
         missing.append("topic")
-    if not model_configured:
+    if model is None:
         missing.append("model")
+    elif model.last_test_status != "available":
+        missing.append("model_availability")
     if missing:
         raise HTTPException(
             status_code=409,
@@ -227,10 +230,12 @@ async def list_applications(
             Application,
             ApplicationKafka.topic,
             func.count(ApplicationRepo.id).label("repo_count"),
+            AiModelConfig.last_test_status,
         )
         .outerjoin(ApplicationKafka, ApplicationKafka.application_id == Application.id)
         .outerjoin(ApplicationRepo, ApplicationRepo.application_id == Application.id)
-        .group_by(Application.id, ApplicationKafka.topic)
+        .outerjoin(AiModelConfig, AiModelConfig.id == Application.model_config_id)
+        .group_by(Application.id, ApplicationKafka.topic, AiModelConfig.last_test_status)
         .order_by(Application.created_at.desc())
     )
     if app_ids is not None:
@@ -255,14 +260,14 @@ async def list_applications(
         for runtime in (
             await session.execute(
                 select(ApplicationIngestionRuntime).where(
-                    ApplicationIngestionRuntime.application_id.in_([app.id for app, _, _ in rows])
+                    ApplicationIngestionRuntime.application_id.in_([app.id for app, _, _, _ in rows])
                 )
             )
         ).scalars()
     } if rows else {}
 
     out: list[ApplicationOut] = []
-    for app, topic, repo_count in rows:
+    for app, topic, repo_count, model_test_status in rows:
         latest_level = await session.execute(
             select(Alert.level)
             .where(Alert.application_id == app.id)
@@ -278,6 +283,7 @@ async def list_applications(
                 latest_level=level,
                 repo_count=repo_count or 0,
                 model_configured=app.model_config_id is not None,
+                model_available=model_test_status == "available",
                 ingestion_state=app.ingestion_state,
                 ingestion_observed_state=_runtime_status(app, runtimes.get(app.id)),
                 ingestion_start_position=app.ingestion_start_position,
@@ -428,6 +434,7 @@ async def create_application(
         latest_level="WARNING",
         repo_count=0,
         model_configured=False,
+        model_available=False,
         ingestion_state=app.ingestion_state,
         ingestion_observed_state="draft",
         ingestion_start_position=None,
@@ -674,10 +681,30 @@ async def set_application_model(
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
 
+    model_test = None
     if payload.model_config_id is not None:
         model = await session.get(AiModelConfig, payload.model_config_id)
         if model is None:
             raise HTTPException(status_code=404, detail="model config not found")
+        health = await probe_model(model)
+        record_model_health(model, health)
+        model_test = {
+            "available": health.available,
+            "endpoint": health.endpoint,
+            "latency_ms": health.latency_ms,
+            "error_code": health.error_code,
+            "error_detail": health.error_detail,
+        }
+        if not health.available:
+            await session.commit()
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "model_unavailable",
+                    "message": f"Model availability test failed: {health.error_detail or health.error_code or 'unknown provider error'}",
+                    "model_test": model_test,
+                },
+            )
 
     app.model_config_id = payload.model_config_id
     await session.commit()
@@ -692,6 +719,7 @@ async def set_application_model(
     return ApplicationModelOut(
         application_id=application_id,
         model_config_id=app.model_config_id,
+        model_test=model_test,
     )
 
 

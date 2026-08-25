@@ -1,3 +1,4 @@
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from lode.db.base import Base
 from lode.db.models.investigation import RESULT_STATES
 from lode.engine.evidence.git import derive_query_terms, extract_stack_frames, related_symbol_hits, search_tree, stack_hits
 from lode.engine.investigation_engine import validate_code_finding
+from lode.engine import investigation_evidence
 
 
 def _source_artifact(*, role: str = "incident", selection: str = "stack_frame") -> SimpleNamespace:
@@ -144,16 +146,42 @@ def test_confirmed_code_finding_requires_exact_incident_revision_and_stack_link(
     assert finding["start_line"] == 10
 
 
-def test_default_branch_code_can_never_be_confirmed() -> None:
-    artifact = _source_artifact(role="latest")
-    candidate = _candidate(role="latest")
+def test_default_branch_is_the_incident_baseline_when_deployment_version_is_missing() -> None:
+    artifact = _source_artifact(role="incident")
+    candidate = _candidate(role="incident")
     investigation = SimpleNamespace(deployment_sha=None)
-    revision = SimpleNamespace(role="latest", status="resolved", resolved_sha="a" * 40, repo_id=3)
+    revision = SimpleNamespace(role="incident", status="resolved", resolved_sha="a" * 40, repo_id=3)
     finding, error = validate_code_finding(candidate, artifacts=[artifact], investigation=investigation, revisions=[revision])
     assert error is None
     assert finding is not None
-    assert finding["status"] == "hypothesis"
-    assert "未验证事故版本" in finding["missing_validation"][-1]
+    assert finding["status"] == "confirmed"
+
+
+def test_repository_missing_alert_sha_falls_back_to_immutable_default_branch(tmp_path: Path, monkeypatch) -> None:
+    requested_sha = "6c36658895cb220b66f89f17718a001f3f9f02e4"
+    resolved_sha = "a" * 40
+    repo = SimpleNamespace(id=2, repo_url="https://example.test/payment-gateway.git", default_branch="main")
+    commands: list[list[str]] = []
+
+    def fake_git(command: list[str], **_kwargs) -> str:
+        commands.append(command)
+        if command[:5] == ["fetch", "--depth", "1", "origin", requested_sha]:
+            raise subprocess.CalledProcessError(128, command)
+        if command == ["rev-parse", "HEAD"]:
+            return resolved_sha
+        return ""
+
+    monkeypatch.setattr(investigation_evidence, "_git", fake_git)
+    _checkout, sha, resolved_ref, used_fallback = investigation_evidence._clone_with_default_fallback(
+        repo,
+        requested_sha,
+        tmp_path,
+    )
+
+    assert sha == resolved_sha
+    assert resolved_ref == "main"
+    assert used_fallback is True
+    assert ["fetch", "--depth", "1", "origin", "main"] in commands
 
 
 def test_unverified_code_semantics_downgrade_a_confirmed_finding() -> None:
@@ -263,8 +291,8 @@ def test_fresh_schema_contains_only_v1_investigation_tables() -> None:
     tables = set(Base.metadata.tables)
     assert {"investigation_inputs", "investigation_steps", "investigation_decisions", "investigation_operations", "investigation_operation_events", "investigation_code_findings", "investigation_reports"} <= tables
     assert not {"analyses", "analysis_steps", "investigation_stages", "investigation_plan_nodes", "investigation_plan_revisions"} & tables
-    migrations = list(Path("alembic/versions").glob("*.py"))
-    assert [item.name for item in migrations] == ["0001_initial.py"]
+    migrations = sorted(item.name for item in Path("alembic/versions").glob("*.py"))
+    assert migrations == ["0001_initial.py", "0002_model_health_retry_archive.py"]
 
 
 def test_sse_uses_v1_named_events() -> None:

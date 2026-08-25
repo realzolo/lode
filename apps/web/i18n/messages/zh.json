@@ -69,7 +69,7 @@
     "startRequirements": "启动必填项",
     "repositoryRequired": "至少绑定一个仓库",
     "topicRequired": "已配置 Kafka Topic",
-    "modelRequired": "已配置 AI 模型",
+    "modelRequired": "AI 模型已配置且验证可用",
     "startPosition": "首次消费位置",
     "startLatest": "仅消费新消息",
     "startEarliest": "回放保留消息"
@@ -109,6 +109,11 @@
     "simplifiedChinese": "简体中文",
     "aiModel": "AI 模型",
     "aiModelDesc": "全局支持的模型列表，应用只能从这里选择。",
+    "testModel": "测试",
+    "testingModel": "测试中...",
+    "modelAvailable": "可用",
+    "modelUnavailable": "不可用",
+    "modelUntested": "未测试",
     "addModel": "添加模型",
     "createModel": "新建模型",
     "delete": "删除",
@@ -209,9 +214,11 @@
     "editDbSource": "编辑数据源",
     "deleteDbSourceTitle": "删除数据源？",
     "deleteDbSourceDesc": "移除 {name}。分析引擎将停止使用它。",
-    "modelSelectionReadOnly": "当前应用使用已选择的全局模型；未选择时使用全局默认模型。",
+    "modelSelectionReadOnly": "当前应用必须使用已选择且通过可用性验证的全局模型。",
     "noGlobalModels": "尚未配置全局 AI 模型。请先到全局设置添加。",
-    "useDefaultModel": "使用全局默认模型"
+    "useDefaultModel": "选择必填模型",
+    "testingModel": "正在检测模型可用性...",
+    "modelBindingSuccess": "可用性检测通过并已绑定（{ms} ms）。"
   },
   "account": {
     "title": "账号",

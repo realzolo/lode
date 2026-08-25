@@ -23,6 +23,7 @@ class ApplicationOut(BaseModel):
     latest_level: str
     repo_count: int
     model_configured: bool
+    model_available: bool
     ingestion_state: Literal["draft", "active", "paused"]
     ingestion_observed_state: Literal["draft", "starting", "listening", "paused", "error"]
     ingestion_start_position: Literal["earliest", "latest"] | None = None
@@ -117,9 +118,18 @@ class SetApplicationModelIn(BaseModel):
     model_config_id: int | None = Field(default=None, gt=0)
 
 
+class ModelAvailabilityOut(BaseModel):
+    available: bool
+    endpoint: str
+    latency_ms: int
+    error_code: str | None = None
+    error_detail: str | None = None
+
+
 class ApplicationModelOut(BaseModel):
     application_id: int
     model_config_id: int | None
+    model_test: ModelAvailabilityOut | None = None
 
 
 class CreateDbSourceIn(BaseModel):
@@ -492,6 +502,11 @@ class AiModelConfigOut(BaseModel):
     model: str
     is_default: bool
     has_key: bool
+    last_test_status: Literal["untested", "available", "unavailable"]
+    last_tested_at: datetime | None
+    last_test_latency_ms: int | None
+    last_test_error_code: str | None
+    last_test_error_detail: str | None
 
 
 class AiOutputLanguageIn(BaseModel):

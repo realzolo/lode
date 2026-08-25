@@ -69,7 +69,7 @@
     "startRequirements": "Startup requirements",
     "repositoryRequired": "At least one repository",
     "topicRequired": "Kafka topic configured",
-    "modelRequired": "AI model configured",
+    "modelRequired": "AI model configured and verified available",
     "startPosition": "Initial consumption position",
     "startLatest": "New messages only",
     "startEarliest": "Replay retained messages"
@@ -109,6 +109,11 @@
     "simplifiedChinese": "Simplified Chinese",
     "aiModel": "AI model",
     "aiModelDesc": "Globally supported models. Applications can only select from this list.",
+    "testModel": "Test",
+    "testingModel": "Testing...",
+    "modelAvailable": "Available",
+    "modelUnavailable": "Unavailable",
+    "modelUntested": "Untested",
     "addModel": "Add model",
     "createModel": "Create model",
     "delete": "Delete",
@@ -209,9 +214,11 @@
     "editDbSource": "Edit data source",
     "deleteDbSourceTitle": "Delete data source?",
     "deleteDbSourceDesc": "Remove {name}. The analysis engine will stop using it.",
-    "modelSelectionReadOnly": "This application uses its selected global model, or the global default when none is selected.",
+    "modelSelectionReadOnly": "This application must use an explicitly selected global model that passed availability testing.",
     "noGlobalModels": "No global AI models configured yet. Add one in Global Settings first.",
-    "useDefaultModel": "Use global default model"
+    "useDefaultModel": "Select a required model",
+    "testingModel": "Testing model availability...",
+    "modelBindingSuccess": "Availability test passed and model bound ({ms} ms)."
   },
   "account": {
     "title": "Account",

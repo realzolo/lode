@@ -31,6 +31,15 @@ class AiModelConfig(Base):
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    last_test_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="untested"
+    )
+    last_tested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_test_latency_ms: Mapped[int | None] = mapped_column(nullable=True)
+    last_test_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_test_error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
@@ -41,6 +50,10 @@ class AiModelConfig(Base):
     __table_args__ = (
         CheckConstraint(
             "provider IN ('openai', 'anthropic')", name="provider"
+        ),
+        CheckConstraint(
+            "last_test_status IN ('untested', 'available', 'unavailable')",
+            name="last_test_status",
         ),
         # Exactly one global default.
         Index(

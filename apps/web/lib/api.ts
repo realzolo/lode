@@ -160,6 +160,7 @@ interface ApiApplication {
   latest_level: string;
   repo_count: number;
   model_configured: boolean;
+  model_available: boolean;
   ingestion_state: 'draft' | 'active' | 'paused';
   ingestion_observed_state: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
   ingestion_start_position: 'earliest' | 'latest' | null;
@@ -174,22 +175,24 @@ interface ApiApplication {
 export type InvestigationStatus = 'queued' | 'running' | 'completed' | 'failed';
 export type InvestigationResultState = 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
 export type InvestigationStepStatus = 'queued' | 'running' | 'succeeded' | 'partial' | 'blocked' | 'failed' | 'canceled';
-export interface InvestigationSummary { id: string; application_id: number; application_name: string; title: string; level: string; status: InvestigationStatus; result_state: InvestigationResultState; review_required: boolean; created_at: string; }
+export interface InvestigationSummary { id: string; application_id: number; application_name: string; title: string; level: string; status: InvestigationStatus; result_state: InvestigationResultState; review_required: boolean; archived_at: string | null; retry_of: number | null; created_at: string; }
 export interface InvestigationEvidence { id: number; type: string; source: string; locator: string | null; content_hash: string; excerpt: string; metadata: Record<string, unknown>; collected_at: string; code?: { language: string; content: string; highlight_start: number; highlight_end: number; anchor: { repo_id: number | null; path: string; revision: string; revision_role: 'incident' | 'latest'; symbol: string | null; start_line: number; end_line: number } }; }
 export interface InvestigationOperationEvent { sequence: number; kind: 'started' | 'progress' | 'finished'; message: string; detail: Record<string, unknown>; evidence_refs: number[]; occurred_at: string; }
 export interface InvestigationOperation { id: string; step_id: number; ordinal: number; kind: string; actor: 'engine' | 'ai' | 'collector'; title: string; purpose: string; input: Record<string, unknown>; status: InvestigationStepStatus; result: string; metrics: Record<string, unknown>; evidence_refs: number[]; failure: { code: string; detail: string | null } | null; started_at: string | null; finished_at: string | null; duration_ms: number | null; events: InvestigationOperationEvent[]; }
 export interface InvestigationStep { id: string; db_id: number; ordinal: number; kind: string; title: string; objective: string; selection_reason: string; expected_evidence: string; tool_name: string | null; tool_input: Record<string, unknown>; status: InvestigationStepStatus; input_refs: number[]; output_refs: number[]; result: string; failure: { code: string; detail: string | null } | null; started_at: string | null; finished_at: string | null; duration_ms: number | null; }
 export interface InvestigationCodeFinding { id: number; artifact_id: number | null; status: 'confirmed' | 'hypothesis' | 'no_defect' | 'not_found'; repo_id: number | null; revision: string | null; revision_role: 'incident' | 'latest' | null; path: string | null; symbol: string | null; start_line: number | null; end_line: number | null; issue_type: string | null; faulty_behavior: string; why_wrong: string; expected_behavior: string; trigger_condition: string; causal_chain: string[]; incident_evidence_refs: number[]; supporting_evidence_refs: number[]; counter_evidence_refs: number[]; missing_validation: string[]; fix_direction: string; test_scenario: string; created_at: string; }
 export interface InvestigationReport { result_state: Exclude<InvestigationResultState, 'pending'>; headline: string; summary: string; incident_cause: { status: string; mechanism: string; why: string; causal_chain: string[]; evidence_refs: number[] }; code_diagnosis: { status: string; summary: string; findings: unknown[] }; confirmed_facts: { text: string; evidence_refs: number[] }[]; counter_evidence: ({ text: string; evidence_refs: number[] } | string)[]; evidence_gaps: string[]; next_step: { type?: string; text?: string }; evidence_refs: number[]; }
-export interface InvestigationDetail { id: string; application_id: number; application_name: string; status: InvestigationStatus; result_state: InvestigationResultState; output_language: 'en' | 'zh'; scope: { service: string | null; environment: string | null; trace_id: string | null; deployment_sha: string | null; sources: Record<string, string | null>; window_started_at: string; window_finished_at: string }; review_required: boolean; review_reasons: string[]; engine_version: string | null; created_at: string; started_at: string | null; finished_at: string | null; input: { source_type: string; title: string; severity: string; occurred_at: string; error: { name: string; message: string; stack: string | null; cause: unknown; properties: Record<string, unknown> }; fields: Record<string, unknown> } | null; report: InvestigationReport | null; steps: InvestigationStep[]; decisions: { id: number; ordinal: number; after_step_id: number | null; action: string; selected_tool: string | null; rationale: string; hypothesis: Record<string, unknown>; evidence_refs: number[]; created_at: string }[]; operations: InvestigationOperation[]; evidence: InvestigationEvidence[]; code_findings: InvestigationCodeFinding[]; event_cursor: number; }
+export interface InvestigationDetail { id: string; application_id: number; application_name: string; status: InvestigationStatus; result_state: InvestigationResultState; output_language: 'en' | 'zh'; scope: { service: string | null; environment: string | null; trace_id: string | null; deployment_sha: string | null; sources: Record<string, string | null>; window_started_at: string; window_finished_at: string }; review_required: boolean; review_reasons: string[]; engine_version: string | null; created_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null; archived_at: string | null; archived_by: number | null; input: { source_type: string; title: string; severity: string; occurred_at: string; error: { name: string; message: string; stack: string | null; cause: unknown; properties: Record<string, unknown> }; fields: Record<string, unknown> } | null; report: InvestigationReport | null; steps: InvestigationStep[]; decisions: { id: number; ordinal: number; after_step_id: number | null; action: string; selected_tool: string | null; rationale: string; hypothesis: Record<string, unknown>; evidence_refs: number[]; created_at: string }[]; operations: InvestigationOperation[]; evidence: InvestigationEvidence[]; code_findings: InvestigationCodeFinding[]; event_cursor: number; }
 export interface InvestigationLiveEvent { type: string; sequence?: number; payload: Record<string, unknown>; }
 export interface InvestigationCreateInput { application_id: number; title: string; severity: 'CRITICAL' | 'WARNING'; occurred_at: string; error: { name: string; message: string; stack?: string; cause?: unknown; properties?: Record<string, unknown> }; service_name?: string; environment?: string; trace_id?: string; deployment_sha?: string; fields?: Record<string, unknown>; attachments?: { kind: 'log' | 'trace' | 'dependency' | 'gateway_response'; label: string; content: string }[]; }
-export interface InvestigationAuditCall { id: number; step_id: number | null; purpose: string; provider: string | null; model: string | null; status: string; prompt_template_version: string; input_hash: string; output_hash: string | null; latency_ms: number; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; token_source: string; error_code: string | null; summary: string; evidence_refs: number[]; created_at: string; }
+export interface InvestigationAuditCall { id: number; step_id: number | null; purpose: string; provider: string | null; model: string | null; status: string; prompt_template_version: string; input_hash: string; output_hash: string | null; latency_ms: number; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; token_source: string; error_code: string | null; error_detail: string | null; attempt_count: number; summary: string; evidence_refs: number[]; created_at: string; }
 export interface InvestigationAuditPage { operations: { items: InvestigationOperation[]; next_cursor: number | null }; ai_calls: { items: InvestigationAuditCall[]; next_cursor: number | null }; }
 
 export async function fetchInvestigations(): Promise<InvestigationSummary[]> { return getJson('/investigations'); }
 export async function fetchInvestigation(id: string): Promise<InvestigationDetail> { return getJson('/investigations/' + encodeURIComponent(id)); }
 export async function createInvestigation(body: InvestigationCreateInput): Promise<{ id: string; job_id: string; status: 'queued' }> { return postJson('/investigations', body); }
+export async function retryInvestigation(id: string): Promise<{ id: string; job_id: string; status: 'queued'; retry_of: string }> { return postJson(`/investigations/${encodeURIComponent(id)}/retry`, {}); }
+export async function archiveInvestigation(id: string): Promise<{ id: string; archived_at: string; read_only: true }> { return postJson(`/investigations/${encodeURIComponent(id)}/archive`, {}); }
 export async function fetchInvestigationAudit(id: string, operationCursor = 0, aiCursor = 0): Promise<InvestigationAuditPage> { return getJson(`/investigations/${encodeURIComponent(id)}/audit?operation_cursor=${operationCursor}&ai_cursor=${aiCursor}&limit=50`); }
 
 export function openInvestigationStream(id: string, after: number, handlers: { onEvent: (event: InvestigationLiveEvent) => void; onClose: () => void; onError: (message: string) => void }): () => void {
@@ -252,6 +255,7 @@ export async function fetchApplications(): Promise<Application[]> {
     level: (r.latest_level as Level) ?? 'WARNING',
     repoCount: r.repo_count,
     modelConfigured: r.model_configured,
+    modelAvailable: r.model_available,
     ingestionState: r.ingestion_state,
     ingestionObservedState: r.ingestion_observed_state,
     ingestionStartPosition: r.ingestion_start_position,
@@ -551,7 +555,7 @@ export async function executeQuery(
 export async function setApplicationModel(
   applicationId: string | number,
   modelConfigId: number | null
-): Promise<{ application_id: number; model_config_id: number | null }> {
+): Promise<{ application_id: number; model_config_id: number | null; model_test: ModelAvailability | null }> {
   return putJson(`/applications/${applicationId}/model`, {
     model_config_id: modelConfigId,
   });
@@ -603,6 +607,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     level: (row.latest_level as Level) ?? 'WARNING',
     repoCount: row.repo_count,
     modelConfigured: row.model_configured,
+    modelAvailable: row.model_available,
     ingestionState: row.ingestion_state,
     ingestionObservedState: row.ingestion_observed_state,
     ingestionStartPosition: row.ingestion_start_position,
@@ -679,6 +684,11 @@ export interface GlobalSettings {
     model: string;
     is_default: boolean;
     has_key: boolean;
+    last_test_status: 'untested' | 'available' | 'unavailable';
+    last_tested_at: string | null;
+    last_test_latency_ms: number | null;
+    last_test_error_code: string | null;
+    last_test_error_detail: string | null;
   }[];
 }
 
@@ -700,12 +710,24 @@ export interface AiModelInput {
   is_default: boolean;
 }
 
+export interface ModelAvailability {
+  available: boolean;
+  endpoint: string;
+  latency_ms: number;
+  error_code: string | null;
+  error_detail: string | null;
+}
+
 export async function createAiModel(input: AiModelInput): Promise<AiModelConfig> {
   return postJson<AiModelConfig>('/settings/ai-models', input);
 }
 
 export async function fetchAiModelConfigs(): Promise<AiModelConfig[]> {
   return getJson<AiModelConfig[]>('/settings/ai-models');
+}
+
+export async function testAiModel(id: number): Promise<ModelAvailability> {
+  return postJson<ModelAvailability>(`/settings/ai-models/${id}/test`, {});
 }
 
 export async function updateAiModel(id: number, input: AiModelInput): Promise<AiModelConfig> {

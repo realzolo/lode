@@ -10,6 +10,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { createInvestigation, fetchApplications, fetchInvestigations, type InvestigationSummary } from '@/lib/api';
 import { Link, useRouter } from '@/lib/navigation';
 
+const RESULT_STATE_LABELS: Record<InvestigationSummary['result_state'], string> = {
+  pending: '调查中',
+  confirmed: '已确认',
+  hypothesis: '待验证假设',
+  insufficient: '证据不足',
+  unavailable: '分析不可用',
+};
+
 function statusVariant(item: InvestigationSummary) {
   if (item.status === 'completed' && (item.review_required || item.result_state !== 'confirmed')) return 'warning';
   if (item.status === 'completed') return 'success';
@@ -59,7 +67,7 @@ export default function InvestigationsPage() {
     {error && <div className="dashboard-error"><p className="muted" style={{ color: 'var(--danger)' }}>{error}</p><Button variant="outline" size="sm" onClick={() => setReload((value) => value + 1)}>重试</Button></div>}
     {!loading && !error && !investigations.length && <p className="muted dashboard-empty">尚无调查记录。</p>}
     {!loading && !error && investigations.length > 0 && !filtered.length && <p className="muted dashboard-empty">没有匹配的调查。</p>}
-    {!loading && !error && filtered.length > 0 && <div className="analysis-record-list" role="list" aria-label="调查列表">{filtered.map((item) => <div key={item.id} role="listitem"><Link className="analysis-record" href={`/workbench/investigation/${item.id}`} aria-label={`查看调查 ${item.title || item.id}`}><span className="analysis-record-title">{item.title || item.id}</span><span className={`table-status table-status-${statusVariant(item)}`}><i />{item.result_state === 'hypothesis' ? '待验证假设' : item.result_state}</span><span className={`analysis-environment analysis-environment-${item.level === 'CRITICAL' ? 'critical' : 'warning'}`}>{item.level}</span><span className="analysis-record-application">{item.application_name}</span><span className="analysis-record-key mono">{item.id}</span><IconArrowUpRight className="analysis-record-arrow" size={15} /></Link></div>)}</div>}
+    {!loading && !error && filtered.length > 0 && <div className="analysis-record-list" role="list" aria-label="调查列表">{filtered.map((item) => <div key={item.id} role="listitem"><Link className="analysis-record" href={`/workbench/investigation/${item.id}`} aria-label={`查看调查 ${item.title || item.id}`}><span className="analysis-record-title">{item.title || item.id}</span><span className={`table-status table-status-${statusVariant(item)}`}><i />{RESULT_STATE_LABELS[item.result_state]}</span><span className={`analysis-environment analysis-environment-${item.level === 'CRITICAL' ? 'critical' : 'warning'}`}>{item.level}</span><span className="analysis-record-application">{item.application_name}</span><span className="analysis-record-key mono">{item.id}</span><IconArrowUpRight className="analysis-record-arrow" size={15} /></Link></div>)}</div>}
     {createOpen && <CreateInvestigationDialog onClose={() => setCreateOpen(false)} onCreated={(id) => router.push(`/workbench/investigation/${id}`)} />}
   </div>;
 }

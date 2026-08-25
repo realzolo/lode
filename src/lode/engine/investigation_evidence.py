@@ -76,23 +76,48 @@ def _git(command: list[str], *, timeout: int, cwd: Path | None = None) -> str:
     return result.stdout.strip()
 
 
-def _clone_exact(repo: GitRepo, requested_ref: str, root: Path) -> tuple[Path, str]:
+def _clone_with_default_fallback(
+    repo: GitRepo,
+    requested_ref: str,
+    root: Path,
+) -> tuple[Path, str, str, bool]:
+    """Resolve one repository to an immutable SHA.
+
+    An alert-level deployment SHA normally belongs to the application that
+    emitted the alert, not necessarily every repository bound to that
+    application. If that SHA is absent from this repository, product policy
+    treats the repository's default branch as its current incident baseline.
+    Clone or default-branch failures still propagate as collection failures.
+    """
     root.mkdir(parents=True, exist_ok=True)
     checkout = root / f"repo-{repo.id}"
     _git(
         ["clone", "--filter=blob:none", "--no-checkout", repo.repo_url, str(checkout)],
         timeout=settings.evidence_git_clone_timeout_seconds,
     )
-    _git(
-        ["fetch", "--depth", "1", "origin", requested_ref],
-        timeout=settings.evidence_git_clone_timeout_seconds,
-        cwd=checkout,
-    )
+    resolved_ref = requested_ref
+    used_fallback = False
+    try:
+        _git(
+            ["fetch", "--depth", "1", "origin", requested_ref],
+            timeout=settings.evidence_git_clone_timeout_seconds,
+            cwd=checkout,
+        )
+    except subprocess.CalledProcessError:
+        if requested_ref == repo.default_branch:
+            raise
+        resolved_ref = repo.default_branch
+        used_fallback = True
+        _git(
+            ["fetch", "--depth", "1", "origin", resolved_ref],
+            timeout=settings.evidence_git_clone_timeout_seconds,
+            cwd=checkout,
+        )
     _git(["checkout", "--force", "FETCH_HEAD"], timeout=settings.evidence_git_clone_timeout_seconds, cwd=checkout)
     sha = _git(["rev-parse", "HEAD"], timeout=settings.evidence_git_clone_timeout_seconds, cwd=checkout)
-    if not __import__("re").fullmatch(r"[0-9a-f]{40}", sha):
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise RuntimeError("Git did not resolve an immutable 40-character revision")
-    return checkout, sha
+    return checkout, sha, resolved_ref, used_fallback
 
 
 async def _collection(
@@ -174,7 +199,10 @@ async def collect_source_evidence(
     if not repos:
         return []
 
-    requested_role = "incident" if investigation.deployment_sha else "latest"
+    # The effective incident baseline is always immutable. Prefer the deployed
+    # ref; when it is absent, product policy treats the repository default
+    # branch HEAD as the current incident version.
+    requested_role = "incident"
     terms = derive_query_terms(incident_input)
     contract_terms = {
         term
@@ -231,7 +259,7 @@ async def collect_source_evidence(
                     repo_id=repo.id,
                     role=requested_role,
                     requested_ref=requested_ref,
-                    resolution_basis="incident_deployment" if investigation.deployment_sha else "default_branch_reference",
+                    resolution_basis="incident_deployment" if investigation.deployment_sha else "default_branch_assumed_current",
                     origin_url=repo.repo_url,
                     status="queued",
                 )
@@ -246,7 +274,12 @@ async def collect_source_evidence(
                 step_id=step.id,
                 kind="git",
                 connector_id=repo.id,
-                selector={"repo_id": repo.id, "revision_role": requested_role, "requested_ref": requested_ref},
+                selector={
+                    "repo_id": repo.id,
+                    "revision_role": requested_role,
+                    "requested_ref": requested_ref,
+                    "fallback_ref": repo.default_branch,
+                },
                 config={"repo_url": repo.repo_url, "default_branch": repo.default_branch},
             )
             operation = await start_operation(
@@ -257,21 +290,61 @@ async def collect_source_evidence(
                 actor="collector",
                 title=f"检出 {repo.name}",
                 purpose="解析并固定不可变源码版本，供后续代码范围校验",
-                input_summary={"repo_id": repo.id, "revision_role": requested_role, "requested_ref": requested_ref},
+                input_summary={
+                    "repo_id": repo.id,
+                    "revision_role": requested_role,
+                    "requested_ref": requested_ref,
+                    "fallback_ref": repo.default_branch,
+                },
                 message=f"正在解析 {repo.name} 的源码版本",
                 commit=True,
             )
             try:
-                checkout, sha = await asyncio.to_thread(_clone_exact, repo, requested_ref, sandbox / str(repo.id))
+                checkout, sha, resolved_ref, used_fallback = await asyncio.to_thread(
+                    _clone_with_default_fallback,
+                    repo,
+                    requested_ref,
+                    sandbox / str(repo.id),
+                )
                 revision.resolved_sha = sha
                 revision.status = "resolved"
+                revision.resolution_basis = (
+                    "default_branch_after_unresolved_deployment"
+                    if used_fallback
+                    else "incident_deployment"
+                    if investigation.deployment_sha
+                    else "default_branch_assumed_current"
+                )
+                if used_fallback:
+                    await progress_operation(
+                        session,
+                        operation,
+                        message=f"请求版本不属于 {repo.name}，已按策略使用默认分支 {resolved_ref}",
+                        detail={
+                            "requested_ref": requested_ref,
+                            "resolved_ref": resolved_ref,
+                            "resolution_basis": revision.resolution_basis,
+                        },
+                        commit=True,
+                    )
                 await finish_operation(
                     session,
                     operation,
                     status="succeeded",
-                    result_summary=f"已固定源码版本 {sha}",
+                    result_summary=(
+                        f"请求版本不属于此仓库，已将默认分支 {resolved_ref} 固定为 {sha}"
+                        if used_fallback
+                        else f"已固定源码版本 {sha}"
+                    ),
                     message="不可变源码版本已就绪",
-                    metrics={"resolved_sha": sha, "revision_role": requested_role},
+                    metrics={
+                        "requested_ref": requested_ref,
+                        "resolved_ref": resolved_ref,
+                        "resolved_sha": sha,
+                        "revision_role": requested_role,
+                        "resolution_basis": revision.resolution_basis,
+                        "fallback_used": used_fallback,
+                    },
                     commit=True,
                 )
             except Exception as exc:
@@ -364,6 +437,7 @@ async def collect_source_evidence(
                     metadata_={
                         "revision_role": requested_role,
                         "revision": sha,
+                        "resolution_basis": revision.resolution_basis,
                         "repo_id": repo.id,
                         "path": hit["path"],
                         "symbol": hit.get("symbol"),
@@ -404,7 +478,7 @@ async def collect_source_evidence(
                     locator=f"{repo.repo_url}@{sha}:{relative}:1",
                     content_hash=_hash(raw),
                     redacted_excerpt=masked,
-                    metadata_={"revision_role": requested_role, "revision": sha, "repo_id": repo.id, "path": relative, "start_line": 1, "end_line": max(1, len(raw.splitlines())), "language": _language(relative), "selection_basis": "repository_context", "secret_categories": categories},
+                    metadata_={"revision_role": requested_role, "revision": sha, "resolution_basis": revision.resolution_basis, "repo_id": repo.id, "path": relative, "start_line": 1, "end_line": max(1, len(raw.splitlines())), "language": _language(relative), "selection_basis": "repository_context", "secret_categories": categories},
                 )
                 session.add(context)
                 await session.flush()
@@ -414,7 +488,7 @@ async def collect_source_evidence(
                     break
             collection.status = "succeeded"
             collection.artifact_count = len(repo_artifacts) + context_count
-            collection.metadata_ = {"resolved_sha": sha, "revision_role": requested_role, "stack_hits": len(exact_hits), "lexical_candidates": len(lexical_hits), "related_symbols": len(relationship_hits)}
+            collection.metadata_ = {"resolved_sha": sha, "resolved_ref": resolved_ref, "resolution_basis": revision.resolution_basis, "revision_role": requested_role, "stack_hits": len(exact_hits), "lexical_candidates": len(lexical_hits), "related_symbols": len(relationship_hits)}
             collection.finished_at = datetime.now(UTC)
             await finish_operation(
                 session,

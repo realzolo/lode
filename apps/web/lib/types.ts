@@ -9,6 +9,7 @@ export interface Application {
   level: Level;
   repoCount: number;
   modelConfigured: boolean;
+  modelAvailable: boolean;
   ingestionState: 'draft' | 'active' | 'paused';
   ingestionObservedState: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
   ingestionStartPosition: 'earliest' | 'latest' | null;
@@ -32,6 +33,11 @@ export interface AiModelConfig {
   model: string;
   is_default: boolean;
   has_key: boolean;
+  last_test_status: 'untested' | 'available' | 'unavailable';
+  last_tested_at: string | null;
+  last_test_latency_ms: number | null;
+  last_test_error_code: string | null;
+  last_test_error_detail: string | null;
 }
 
 export interface Invite {

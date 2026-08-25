@@ -13,9 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.ai_output import AI_OUTPUT_LANGUAGE_SETTING_KEY, normalize_ai_output_language
+from lode.api.audit import audit_action
 from lode.api.deps import assert_app_perm, permitted_app_ids, require_user
 from lode.api.schemas import InvestigationCreateIn
 from lode.db.models.application import Application
+from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.investigation import (
     EvidenceArtifact,
     Investigation,
@@ -24,6 +26,7 @@ from lode.db.models.investigation import (
     InvestigationDecision,
     InvestigationEvidenceLink,
     InvestigationInput,
+    InvestigationJob,
     InvestigationOperation,
     InvestigationOperationEvent,
     InvestigationReport,
@@ -34,6 +37,7 @@ from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
 from lode.engine.evidence.secret_mask import mask_secrets
 from lode.engine.investigation_intake import create_investigation
+from lode.engine.model_health import probe_model, record_model_health
 
 router = APIRouter(prefix="/investigations", tags=["investigations"])
 
@@ -50,6 +54,39 @@ async def _run(session: AsyncSession, public_id: str) -> Investigation:
     if row is None:
         raise HTTPException(status_code=404, detail="investigation not found")
     return row
+
+
+async def _run_for_update(session: AsyncSession, public_id: str) -> Investigation:
+    row = (
+        await session.execute(
+            select(Investigation)
+            .where(Investigation.public_id == public_id)
+            .with_for_update()
+        )
+    ).scalars().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="investigation not found")
+    return row
+
+
+def _assert_retryable(run: Investigation) -> None:
+    if run.archived_at is not None:
+        raise HTTPException(status_code=409, detail="archived investigations are read-only")
+    if run.status not in {"completed", "failed"}:
+        raise HTTPException(status_code=409, detail="only a terminal investigation can be retried")
+
+
+async def _has_active_retry(session: AsyncSession, run_id: int) -> bool:
+    active_retry = await session.scalar(
+        select(InvestigationJob.id)
+        .join(Investigation, Investigation.id == InvestigationJob.investigation_id)
+        .where(
+            Investigation.retry_of_id == run_id,
+            InvestigationJob.status.in_({"queued", "running", "retry_wait"}),
+        )
+        .limit(1)
+    )
+    return active_retry is not None
 
 
 def _duration_ms(started_at: datetime | None, finished_at: datetime | None) -> int | None:
@@ -159,6 +196,7 @@ async def _detail(session: AsyncSession, run: Investigation) -> dict:
             select(InvestigationCodeFinding).where(InvestigationCodeFinding.investigation_id == run.id).order_by(InvestigationCodeFinding.id)
         )
     ).scalars().all()
+    retry_of = await session.get(Investigation, run.retry_of_id) if run.retry_of_id else None
     by_operation: dict[int, list[InvestigationOperationEvent]] = {}
     for event in events:
         by_operation.setdefault(event.operation_id, []).append(event)
@@ -176,6 +214,9 @@ async def _detail(session: AsyncSession, run: Investigation) -> dict:
         "created_at": run.created_at,
         "started_at": run.started_at,
         "finished_at": run.finished_at,
+        "retry_of": retry_of.public_id if retry_of else None,
+        "archived_at": run.archived_at,
+        "archived_by": run.archived_by,
         "input": {
             "source_type": incident_input.source_type,
             "title": incident_input.title,
@@ -254,7 +295,7 @@ async def list_investigations(user_id: int = Depends(require_user), session: Asy
     if app_ids is not None:
         query = query.where(Investigation.application_id.in_(app_ids))
     return [
-        {"id": run.public_id, "application_id": run.application_id, "application_name": app_name, "title": value.title, "level": value.severity, "status": run.status, "result_state": run.result_state, "review_required": run.review_required, "created_at": run.created_at}
+        {"id": run.public_id, "application_id": run.application_id, "application_name": app_name, "title": value.title, "level": value.severity, "status": run.status, "result_state": run.result_state, "review_required": run.review_required, "archived_at": run.archived_at, "retry_of": run.retry_of_id, "created_at": run.created_at}
         for run, value, app_name in (await session.execute(query)).all()
     ]
 
@@ -323,6 +364,131 @@ async def get_investigation(investigation_id: str, user_id: int = Depends(requir
         raise HTTPException(status_code=401, detail="user not found")
     await assert_app_perm(session, user, run.application_id, "read")
     return await _detail(session, run)
+
+
+@router.post("/{investigation_id}/retry", status_code=202)
+async def retry_investigation(
+    investigation_id: str,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    run = await _run(session, investigation_id)
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    await assert_app_perm(session, user, run.application_id, "analyze")
+    _assert_retryable(run)
+    if await _has_active_retry(session, run.id):
+        raise HTTPException(status_code=409, detail="an active retry already exists")
+
+    application = await session.get(Application, run.application_id)
+    model = await session.get(AiModelConfig, application.model_config_id) if application and application.model_config_id else None
+    if model is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "model_not_configured",
+                "message": "Select an application model before retrying the investigation.",
+            },
+        )
+    health = await probe_model(model)
+    record_model_health(model, health)
+    if not health.available:
+        await session.commit()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "model_unavailable",
+                "message": f"Model availability test failed: {health.error_detail or health.error_code or 'unknown provider error'}",
+                "model_test": {
+                    "endpoint": health.endpoint,
+                    "latency_ms": health.latency_ms,
+                    "error_code": health.error_code,
+                },
+            },
+        )
+
+    # Never hold a database row lock while waiting for a remote model probe.
+    # Persist health first, then lock and re-check all mutable lifecycle state.
+    await session.commit()
+    run = await _run_for_update(session, investigation_id)
+    _assert_retryable(run)
+    if await _has_active_retry(session, run.id):
+        raise HTTPException(status_code=409, detail="an active retry already exists")
+
+    incident_input = await session.get(InvestigationInput, run.id)
+    if incident_input is None:
+        raise HTTPException(status_code=409, detail="investigation input is unavailable")
+    scope = run.scope or {}
+    retried, job = await create_investigation(
+        session,
+        application_id=run.application_id,
+        trigger_signature=run.trigger_signature,
+        source_type=incident_input.source_type,
+        title=incident_input.title,
+        severity=incident_input.severity,
+        occurred_at=incident_input.occurred_at,
+        output_language=run.output_language,
+        error_name=incident_input.error_name,
+        error_message=incident_input.error_message,
+        error_stack=incident_input.error_stack,
+        error_cause=incident_input.error_cause,
+        error_properties=incident_input.error_properties,
+        fields=incident_input.fields,
+        service_name=run.service_name,
+        environment=run.environment,
+        trace_id=run.trace_id,
+        deployment_sha=run.deployment_sha,
+        application_version=scope.get("application_version"),
+        source_metadata={
+            "retry_of": run.public_id,
+            "requested_by": user_id,
+            "original": scope.get("source", {}),
+        },
+        scope_sources=scope.get("sources", {}),
+        alert_id=run.alert_id,
+        incident_id=run.incident_id,
+        created_by=user_id,
+    )
+    retried.retry_of_id = run.id
+    await session.commit()
+    await audit_action(
+        action="investigation.retry",
+        actor_id=user_id,
+        target_type="investigation",
+        target_id=run.public_id,
+        application_id=run.application_id,
+        detail={"retry_id": retried.public_id, "job_id": job.public_id},
+    )
+    return {"id": retried.public_id, "job_id": job.public_id, "status": "queued", "retry_of": run.public_id}
+
+
+@router.post("/{investigation_id}/archive")
+async def archive_investigation(
+    investigation_id: str,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    run = await _run_for_update(session, investigation_id)
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    await assert_app_perm(session, user, run.application_id, "analyze")
+    if run.archived_at is not None:
+        raise HTTPException(status_code=409, detail="investigation is already archived and read-only")
+    if run.status not in {"completed", "failed"}:
+        raise HTTPException(status_code=409, detail="only a terminal investigation can be archived")
+    run.archived_at = datetime.now(UTC)
+    run.archived_by = user_id
+    await session.commit()
+    await audit_action(
+        action="investigation.archive",
+        actor_id=user_id,
+        target_type="investigation",
+        target_id=run.public_id,
+        application_id=run.application_id,
+    )
+    return {"id": run.public_id, "archived_at": run.archived_at, "read_only": True}
 
 
 @router.get("/{investigation_id}/events")
@@ -405,7 +571,7 @@ async def get_audit(
             "next_cursor": operation_page[-1].id if len(operation_rows) > limit else None,
         },
         "ai_calls": {
-            "items": [{"id": row.id, "step_id": row.step_id, "purpose": row.purpose, "provider": row.provider, "model": row.model, "status": row.status, "prompt_template_version": row.prompt_template_version, "input_hash": row.input_hash, "output_hash": row.output_hash, "latency_ms": row.latency_ms, "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "total_tokens": row.total_tokens, "token_source": row.token_source, "error_code": row.error_code, "summary": row.summary, "evidence_refs": row.evidence_refs, "created_at": row.created_at} for row in ai_page],
+            "items": [{"id": row.id, "step_id": row.step_id, "purpose": row.purpose, "provider": row.provider, "model": row.model, "status": row.status, "prompt_template_version": row.prompt_template_version, "input_hash": row.input_hash, "output_hash": row.output_hash, "latency_ms": row.latency_ms, "input_tokens": row.input_tokens, "output_tokens": row.output_tokens, "total_tokens": row.total_tokens, "token_source": row.token_source, "error_code": row.error_code, "error_detail": row.error_detail, "attempt_count": row.attempt_count, "summary": row.summary, "evidence_refs": row.evidence_refs, "created_at": row.created_at} for row in ai_page],
             "next_cursor": ai_page[-1].id if len(ai_rows) > limit else None,
         },
     }

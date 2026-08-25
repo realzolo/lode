@@ -46,6 +46,13 @@ class Investigation(Base):
     engine_version: Mapped[str | None] = mapped_column(Text)
     report_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     event_cursor: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    retry_of_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="SET NULL"), nullable=True
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
@@ -58,6 +65,7 @@ class Investigation(Base):
         CheckConstraint("audit_status IN ('auditable', 'unverifiable', 'violated')", name="audit_status"),
         Index("ix_investigations_application_created", "application_id", "created_at"),
         Index("ix_investigations_incident", "incident_id"),
+        Index("ix_investigations_retry_of", "retry_of_id"),
     )
 
 
@@ -211,6 +219,8 @@ class InvestigationAiInvocation(Base):
     total_tokens: Mapped[int | None] = mapped_column(Integer)
     token_source: Mapped[str] = mapped_column(Text, nullable=False, server_default="unavailable")
     error_code: Mapped[str | None] = mapped_column(Text)
+    error_detail: Mapped[str | None] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     summary: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))

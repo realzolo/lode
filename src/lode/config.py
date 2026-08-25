@@ -140,6 +140,12 @@ class Settings(BaseSettings):
     # are exhausted, the investigation records an unavailable result.
     llm_max_retries: int = 3
     llm_retry_base_delay: float = 0.5
+    # Final synthesis is materially slower than a health probe. Keep transport
+    # timeouts distinct so a healthy reasoning model is not rejected by the
+    # probe path or cut off by the former hard-coded 30-second request limit.
+    llm_request_timeout_seconds: float = 120.0
+    llm_probe_timeout_seconds: float = 30.0
+    llm_max_output_tokens: int = 8_192
 
 @lru_cache
 def get_settings() -> Settings:

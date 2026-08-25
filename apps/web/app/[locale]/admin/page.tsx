@@ -340,7 +340,7 @@ export default function DashboardPage() {
             {[
               { ready: (startTarget?.repoCount ?? 0) > 0, label: t('repositoryRequired') },
               { ready: Boolean(startTarget?.topic), label: t('topicRequired') },
-              { ready: Boolean(startTarget?.modelConfigured), label: t('modelRequired') },
+              { ready: Boolean(startTarget?.modelAvailable), label: t('modelRequired') },
             ].map((requirement) => (
               <div
                 key={requirement.label}
@@ -391,7 +391,7 @@ export default function DashboardPage() {
                 || !startTarget
                 || startTarget.repoCount < 1
                 || !startTarget.topic
-                || !startTarget.modelConfigured
+                || !startTarget.modelAvailable
               }
             >
               {t('startIngestion')}

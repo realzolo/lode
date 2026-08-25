@@ -15,6 +15,7 @@ tests) is created per test, so the suite is order-independent.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -22,6 +23,7 @@ from sqlalchemy import select
 
 from lode.api.main import app
 from lode.api.routes import applications as application_routes
+from lode.api.routes import investigations as investigation_routes
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.application import (
     Application,
@@ -31,8 +33,11 @@ from lode.db.models.application import (
     DbSource,
 )
 from lode.db.models.git import GitRepo
+from lode.db.models.investigation import Investigation
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
+from lode.engine.model_health import ModelHealth
+from lode.engine.investigation_intake import create_investigation
 from lode.security import hash_password
 
 ADMIN_EMAIL = f"app-admin-{uuid.uuid4().hex}@lode.local"
@@ -265,6 +270,76 @@ async def test_admin_set_topic_missing_app(admin: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def test_model_binding_probes_protocol_before_persisting(
+    fresh_app: int,
+    admin: int,
+    monkeypatch,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        model = AiModelConfig(
+            provider="openai",
+            base_url="https://model.example",
+            api_key_ref="env://LODE_TEST_MODEL_KEY",
+            model="test-model",
+            is_default=False,
+        )
+        session.add(model)
+        await session.commit()
+        await session.refresh(model)
+        model_id = model.id
+
+    async def unavailable(_model: AiModelConfig) -> ModelHealth:
+        return ModelHealth(False, "https://model.example/v1/chat/completions", 21, "http_401", "Provider rejected the API key.")
+
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        monkeypatch.setattr(application_routes, "probe_model", unavailable)
+        async with _client() as client:
+            response = await client.put(
+                f"/applications/{fresh_app}/model",
+                headers=headers,
+                json={"model_config_id": model_id},
+            )
+            assert response.status_code == 422
+            assert response.json()["error"]["code"] == "model_unavailable"
+
+        async with AsyncSessionLocal() as session:
+            application = await session.get(Application, fresh_app)
+            checked_model = await session.get(AiModelConfig, model_id)
+            assert application is not None and application.model_config_id is None
+            assert checked_model is not None and checked_model.last_test_status == "unavailable"
+
+        async def available(_model: AiModelConfig) -> ModelHealth:
+            return ModelHealth(True, "https://model.example/v1/chat/completions", 18, None, None)
+
+        monkeypatch.setattr(application_routes, "probe_model", available)
+        async with _client() as client:
+            response = await client.put(
+                f"/applications/{fresh_app}/model",
+                headers=headers,
+                json={"model_config_id": model_id},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["model_test"]["available"] is True
+
+        async with AsyncSessionLocal() as session:
+            application = await session.get(Application, fresh_app)
+            checked_model = await session.get(AiModelConfig, model_id)
+            assert application is not None and application.model_config_id == model_id
+            assert checked_model is not None and checked_model.last_test_status == "available"
+    finally:
+        async with AsyncSessionLocal() as session:
+            application = await session.get(Application, fresh_app)
+            if application is not None:
+                application.model_config_id = None
+            await session.flush()
+            model = await session.get(AiModelConfig, model_id)
+            if model is not None:
+                await session.delete(model)
+            await session.commit()
+
+
 async def test_start_requires_repository_topic_and_model(
     fresh_app: int,
     admin: int,
@@ -339,6 +414,21 @@ async def test_start_requires_repository_topic_and_model(
             listed_app = next(row for row in listed.json() if row["id"] == fresh_app)
             assert listed_app["repo_count"] == 1
             assert listed_app["model_configured"] is True
+            assert listed_app["model_available"] is False
+
+            response = await client.post(
+                f"/applications/{fresh_app}/ingestion/start",
+                headers=headers,
+                json={"start_position": "latest"},
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["details"]["missing"] == ["model_availability"]
+
+            async with AsyncSessionLocal() as session:
+                model = await session.get(AiModelConfig, model_id)
+                assert model is not None
+                model.last_test_status = "available"
+                await session.commit()
 
             response = await client.post(
                 f"/applications/{fresh_app}/ingestion/start",
@@ -393,6 +483,91 @@ async def test_resume_rechecks_required_configuration(
         "topic",
         "model",
     ]
+
+
+async def test_terminal_investigation_can_retry_then_become_permanently_read_only(
+    fresh_app: int,
+    admin: int,
+    monkeypatch,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        model = AiModelConfig(
+            provider="openai",
+            base_url="https://model.example",
+            api_key_ref="env://LODE_TEST_MODEL_KEY",
+            model="test-model",
+            is_default=False,
+            last_test_status="available",
+        )
+        session.add(model)
+        await session.flush()
+        application = await session.get(Application, fresh_app)
+        assert application is not None
+        application.model_config_id = model.id
+        original, original_job = await create_investigation(
+            session,
+            application_id=fresh_app,
+            trigger_signature=uuid.uuid4().hex,
+            source_type="manual",
+            title="retry lifecycle",
+            severity="CRITICAL",
+            occurred_at=datetime.now(UTC),
+            output_language="zh",
+            error_name="GatewayError",
+            error_message="payment failed",
+            fields={"code": "PAYMENT_FAILED"},
+            created_by=admin,
+        )
+        original.status = "completed"
+        original.result_state = "unavailable"
+        original.finished_at = datetime.now(UTC)
+        original_job.status = "succeeded"
+        original_job.finished_at = datetime.now(UTC)
+        await session.commit()
+        original_id = original.public_id
+        model_id = model.id
+
+    async def available(_model: AiModelConfig) -> ModelHealth:
+        return ModelHealth(True, "https://model.example/v1/chat/completions", 12, None, None)
+
+    monkeypatch.setattr(investigation_routes, "probe_model", available)
+    token = await _login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with _client() as client:
+            retried = await client.post(f"/investigations/{original_id}/retry", headers=headers)
+            assert retried.status_code == 202, retried.text
+            assert retried.json()["retry_of"] == original_id
+            retry_id = retried.json()["id"]
+
+            retry_detail = await client.get(f"/investigations/{retry_id}", headers=headers)
+            assert retry_detail.status_code == 200
+            assert retry_detail.json()["retry_of"] == original_id
+
+            archived = await client.post(f"/investigations/{original_id}/archive", headers=headers)
+            assert archived.status_code == 200
+            assert archived.json()["read_only"] is True
+
+            rejected = await client.post(f"/investigations/{original_id}/retry", headers=headers)
+            assert rejected.status_code == 409
+            assert "read-only" in rejected.json()["error"]["message"]
+
+        async with AsyncSessionLocal() as session:
+            original = (
+                await session.execute(select(Investigation).where(Investigation.public_id == original_id))
+            ).scalars().one()
+            assert original.archived_at is not None
+            assert original.archived_by == admin
+    finally:
+        async with AsyncSessionLocal() as session:
+            application = await session.get(Application, fresh_app)
+            if application is not None:
+                application.model_config_id = None
+            await session.flush()
+            model = await session.get(AiModelConfig, model_id)
+            if model is not None:
+                await session.delete(model)
+            await session.commit()
 
 
 # ---------------------------------------------------------------------------
