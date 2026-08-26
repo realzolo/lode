@@ -235,6 +235,9 @@ class InvestigationConnectorSnapshot(CreatedAtMixin, Base):
     connector_kind_version: Mapped[int] = mapped_column(Integer, nullable=False)
     instance_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     access_scope_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    verification_status: Mapped[str] = mapped_column(Text, nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_introspected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     capabilities: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     allowed_languages: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     config_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -251,6 +254,7 @@ class InvestigationConnectorSnapshot(CreatedAtMixin, Base):
         CheckConstraint("connector_kind_version > 0", name="kind_version_positive"),
         CheckConstraint("instance_revision > 0", name="instance_revision_positive"),
         CheckConstraint("access_scope_revision > 0", name="scope_revision_positive"),
+        CheckConstraint("verification_status = 'healthy'", name="verification_healthy"),
         CheckConstraint("cardinality(capabilities) > 0", name="capabilities_nonempty"),
         CheckConstraint("cardinality(allowed_languages) > 0", name="languages_nonempty"),
         CheckConstraint(

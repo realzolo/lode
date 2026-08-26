@@ -1,4 +1,4 @@
-"""Durable worker for canonical investigation jobs."""
+"""Durable investigation worker using the current job and lease contracts."""
 
 from __future__ import annotations
 
@@ -6,160 +6,94 @@ import asyncio
 import logging
 import platform
 import uuid
-from datetime import UTC, datetime, timedelta
-
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from collections.abc import Awaitable, Callable
 
 from lode.config import settings
-from lode.db.models.application import Application
-from lode.db.models.investigation import Investigation, InvestigationJob
 from lode.db.session import AsyncSessionLocal
-from lode.engine.investigation_runner import run_investigation
+from lode.infrastructure.investigation_leases import (
+    ClaimedInvestigationJob,
+    InvestigationLeaseStore,
+)
 from lode.metrics import ENGINE_IN_FLIGHT, INVESTIGATIONS
 
 logger = logging.getLogger("lode.worker")
 WORKER_ID = f"{platform.node()}:{uuid.uuid4().hex[:8]}"
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+InvestigationHandler = Callable[[int], Awaitable[None]]
 
 
 def _retryable(exc: Exception) -> bool:
-    return isinstance(exc, (TimeoutError, ConnectionError, OSError)) or any(token in str(exc).lower() for token in ("timeout", "connection", "502", "503", "reset"))
+    return isinstance(exc, (TimeoutError, ConnectionError, OSError))
 
 
-async def reclaim_expired_leases(session: AsyncSession) -> int:
-    expired_ids = list(
-        (
-            await session.execute(
-                select(InvestigationJob.investigation_id)
-                .where(InvestigationJob.status == "running")
-                .where(InvestigationJob.lease_expires_at < _now())
-            )
-        ).scalars()
-    )
-    if not expired_ids:
-        return 0
-    result = await session.execute(
-        update(InvestigationJob)
-        .where(InvestigationJob.status == "running")
-        .where(InvestigationJob.lease_expires_at < _now())
-        .values(status="queued", lease_owner=None, lease_expires_at=None)
-    )
-    await session.execute(
-        update(Investigation)
-        .where(Investigation.id.in_(expired_ids))
-        .where(Investigation.status == "running")
-        .values(status="queued")
-    )
-    await session.commit()
-    return result.rowcount or 0
-
-
-def _claimable_jobs_query():
-    return (
-        select(InvestigationJob)
-        .join(Investigation, Investigation.id == InvestigationJob.investigation_id)
-        .join(Application, Application.id == Investigation.application_id)
-        .where(InvestigationJob.status.in_(["queued", "retry_wait"]))
-        .where(InvestigationJob.available_at <= _now())
-        .order_by(InvestigationJob.priority.desc(), InvestigationJob.created_at)
-        .limit(1)
-        .with_for_update(skip_locked=True)
+def lease_store() -> InvestigationLeaseStore:
+    return InvestigationLeaseStore(
+        AsyncSessionLocal,
+        owner=WORKER_ID,
+        lease_ttl_seconds=settings.worker_lease_ttl_seconds,
     )
 
 
-async def claim_job(session: AsyncSession) -> InvestigationJob | None:
-    job = (await session.execute(_claimable_jobs_query())).scalars().first()
-    if job is None:
-        return None
-    job.status = "running"
-    job.attempt += 1
-    job.lease_owner = WORKER_ID
-    job.lease_expires_at = _now() + timedelta(seconds=settings.worker_lease_ttl_seconds)
-    job.started_at = job.started_at or _now()
-    await session.commit()
-    return job
-
-
-async def _heartbeat(job_id: int) -> None:
+async def _heartbeat(store: InvestigationLeaseStore, job_id: int) -> None:
     interval = max(1.0, settings.worker_lease_ttl_seconds / 3)
     while True:
         await asyncio.sleep(interval)
-        async with AsyncSessionLocal() as session:
-            await session.execute(
-                update(InvestigationJob)
-                .where(InvestigationJob.id == job_id)
-                .where(InvestigationJob.status == "running")
-                .where(InvestigationJob.lease_owner == WORKER_ID)
-                .values(lease_expires_at=_now() + timedelta(seconds=settings.worker_lease_ttl_seconds))
-            )
-            await session.commit()
+        if not await store.heartbeat(job_id):
+            raise RuntimeError("investigation lease ownership was lost")
 
 
-async def run_job(job_id: int) -> None:
-    async with AsyncSessionLocal() as session:
-        ENGINE_IN_FLIGHT.inc()
+async def run_job(
+    job: ClaimedInvestigationJob,
+    handler: InvestigationHandler,
+    *,
+    store: InvestigationLeaseStore | None = None,
+) -> None:
+    durable = store or lease_store()
+    ENGINE_IN_FLIGHT.inc()
+    heartbeat = asyncio.create_task(_heartbeat(durable, job.job_id))
+    try:
+        await handler(job.investigation_id)
+        await durable.complete(job.job_id)
+        INVESTIGATIONS.labels(result="completed").inc()
+    except Exception as exc:
+        logger.exception("investigation %s failed", job.investigation_id)
+        outcome = await durable.fail(
+            job.job_id,
+            exc,
+            retryable=_retryable(exc),
+            max_attempts=settings.job_max_attempts,
+            base_delay_seconds=settings.job_base_retry_delay,
+        )
+        INVESTIGATIONS.labels(result=outcome).inc()
+    finally:
+        heartbeat.cancel()
         try:
-            job = await session.get(InvestigationJob, job_id)
-            if job is None:
-                return
-            investigation = await session.get(Investigation, job.investigation_id)
-            if investigation is None:
-                job.status = "dead"
-                job.last_error_code = "MissingInvestigation"
-                await session.commit()
-                return
-            heartbeat = asyncio.create_task(_heartbeat(job.id))
-            try:
-                await run_investigation(investigation.id, session)
-                job.status = "succeeded"
-                job.finished_at = _now()
-                job.lease_owner = None
-                job.lease_expires_at = None
-                INVESTIGATIONS.labels(result=investigation.status).inc()
-                await session.commit()
-            except Exception as exc:  # persist terminal evidence of orchestration failures
-                logger.exception("investigation %s failed", investigation.public_id)
-                job.last_error_code = type(exc).__name__
-                job.last_error_detail = str(exc)[:1000]
-                job.lease_owner = None
-                job.lease_expires_at = None
-                if _retryable(exc) and job.attempt < job.max_attempts:
-                    job.status = "retry_wait"
-                    job.available_at = _now() + timedelta(seconds=settings.job_base_retry_delay * (2 ** max(0, job.attempt - 1)))
-                    investigation.status = "queued"
-                else:
-                    job.status = "dead"
-                    job.finished_at = _now()
-                    investigation.status = "failed"
-                    investigation.finished_at = _now()
-                await session.commit()
-            finally:
-                heartbeat.cancel()
-                try:
-                    await heartbeat
-                except asyncio.CancelledError:
-                    pass
-        finally:
-            ENGINE_IN_FLIGHT.dec()
+            await heartbeat
+        except asyncio.CancelledError:
+            pass
+        ENGINE_IN_FLIGHT.dec()
 
 
-async def main() -> None:
+async def main(handler: InvestigationHandler | None = None) -> None:
+    if handler is None:
+        raise RuntimeError("an InvestigationHandler must be composed before starting the worker")
+    durable = lease_store()
+    await durable.reclaim_expired()
     semaphore = asyncio.Semaphore(settings.engine_concurrency)
-    async with AsyncSessionLocal() as session:
-        await reclaim_expired_leases(session)
+    running: set[asyncio.Task[None]] = set()
     while True:
-        async with AsyncSessionLocal() as session:
-            job = await claim_job(session)
+        job = await durable.claim()
         if job is None:
             await asyncio.sleep(settings.worker_poll_interval_seconds)
             continue
         await semaphore.acquire()
-        task = asyncio.create_task(run_job(job.id))
-        task.add_done_callback(lambda _task: semaphore.release())
+        task = asyncio.create_task(run_job(job, handler, store=durable))
+        running.add(task)
+
+        def release(completed: asyncio.Task[None]) -> None:
+            running.discard(completed)
+            semaphore.release()
+
+        task.add_done_callback(release)
 
 
 if __name__ == "__main__":

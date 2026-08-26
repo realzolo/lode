@@ -51,6 +51,10 @@ class EvidenceConnector(TimestampMixin, Base):
             "verification_status IN ('untested', 'healthy', 'unavailable')",
             name="verification_status",
         ),
+        CheckConstraint(
+            "verification_status <> 'healthy' OR verified_at IS NOT NULL",
+            name="healthy_has_verified_at",
+        ),
         CheckConstraint("cardinality(capabilities) > 0", name="capabilities_nonempty"),
     )
 

@@ -57,6 +57,16 @@ def test_wave_operation_ordinal_enforces_four_operation_ceiling() -> None:
     assert ("investigation_id", "fingerprint") in unique_columns
 
 
+def test_connector_snapshot_freezes_health_and_freshness() -> None:
+    table = Base.metadata.tables["investigation_connector_snapshots"]
+    sql = _check_sql("investigation_connector_snapshots")
+
+    assert {"verification_status", "verified_at", "last_introspected_at"}.issubset(
+        table.c.keys()
+    )
+    assert "verification_status = 'healthy'" in sql
+
+
 def test_decision_contract_enforces_finish_zero_and_continue_one_to_four() -> None:
     sql = _check_sql("investigation_decisions")
 

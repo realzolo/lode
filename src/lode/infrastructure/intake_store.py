@@ -366,6 +366,9 @@ class PostgresIntakeStore:
             execution_budget={
                 "max_evidence_steps": settings.investigation_max_evidence_steps,
                 "max_model_calls": settings.investigation_max_model_calls,
+                "max_native_reads": settings.investigation_max_native_reads,
+                "max_output_bytes": settings.investigation_max_output_bytes,
+                "max_cost": settings.investigation_max_cost,
                 "timeout_seconds": settings.investigation_timeout_seconds,
                 "max_parallel_operations": 4,
             },

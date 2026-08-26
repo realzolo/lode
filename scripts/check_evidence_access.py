@@ -20,6 +20,7 @@ from lode.db.models import (
     ContextPolicyRevision,
     EvidenceAccessDecision,
     EvidenceAccessScope,
+    EvidenceArtifact,
     EvidenceConnector,
     EvidenceReadAttempt,
     Investigation,
@@ -38,6 +39,7 @@ from lode.db.models import (
     WorkspaceModelBinding,
 )
 from lode.db.session import AsyncSessionLocal, engine
+from lode.domain.investigation import PlannedOperation
 from lode.evidence_access.authorizer import EvidenceAccessAuthorizer
 from lode.evidence_access.candidate import NativeReadCandidateInput
 from lode.evidence_access.kill_switch import EvidenceKillSwitch
@@ -47,7 +49,9 @@ from lode.evidence_access.tokens import AuthorizationTokenError, verify_token
 from lode.evidence_access.types import AccessContext
 from lode.evidence_connectors.registry import build_native_policy_registry
 from lode.evidence_connectors.types import ProviderExecutionError
+from lode.infrastructure.evidence_archive import PostgresEvidenceResultArchiver
 from lode.infrastructure.intake_store import PostgresIntakeStore
+from lode.infrastructure.native_read_executor import NativeReadOperationExecutor
 
 SENTINEL = "__LODE_VALUE_REF_INCIDENT_TRACE__"
 RAW_TRACE = ' trace/值?x=1&quoted="yes"\nnext '
@@ -74,10 +78,19 @@ def _candidate(
         )
     else:
         query = {"term": {"trace.id": SENTINEL}}
-        if variant == "provider_failure":
+        if variant in {"provider_failure", "bridge"}:
             query = {
                 "bool": {
-                    "filter": [query, {"term": {"level": "error"}}],
+                    "filter": [
+                        query,
+                        {
+                            "term": {
+                                "level": "error"
+                                if variant == "provider_failure"
+                                else "warning"
+                            }
+                        },
+                    ],
                 }
             }
         payload = {
@@ -121,6 +134,14 @@ class RateLimitedAdapter(MockEvidenceAdapter):
     async def execute(self, permit):
         permit.assert_valid()
         raise ProviderExecutionError("rate_limited", "fixture provider rate limit")
+
+
+class StaticAdapterResolver:
+    def __init__(self, calls: list[dict]) -> None:
+        self.calls = calls
+
+    async def resolve(self, _session, _snapshot):
+        return SlowCaptureAdapter(self.calls)
 
 
 def _find_trace_value(value):
@@ -302,6 +323,7 @@ async def _create_fixture(session):
         secret_ciphertext=encrypt_value("connector-secret"),
         instance_revision=1,
         verification_status="healthy",
+        verified_at=datetime.now(UTC),
         capabilities=["query"],
     )
     session.add(connector)
@@ -370,6 +392,9 @@ async def _create_fixture(session):
         connector_kind_version=1,
         instance_revision=1,
         access_scope_revision=1,
+        verification_status="healthy",
+        verified_at=datetime.now(UTC),
+        last_introspected_at=datetime.now(UTC),
         capabilities=["query"],
         allowed_languages=scope.allowed_languages,
         config_masked=connector.config,
@@ -525,6 +550,78 @@ async def _create_fixture(session):
     await session.flush()
     operations.append(failure_operation)
     invocations.append(failure_invocation)
+
+    second_step.status = "succeeded"
+    second_step.finished_at = datetime.now(UTC)
+    bridge_step = InvestigationStep(
+        investigation_id=investigation.id,
+        ordinal=3,
+        objective="Test durable native operation bridge",
+        status="running",
+        hypothesis_snapshot={"id": "h3"},
+        input_evidence_refs=[],
+        output_evidence_refs=[],
+    )
+    session.add(bridge_step)
+    await session.flush()
+    bridge_decision = InvestigationDecision(
+        investigation_id=investigation.id,
+        step_id=bridge_step.id,
+        ordinal=3,
+        decision="continue",
+        hypotheses=[{"id": "h3"}],
+        operation_plan=[{"action_id": "evidence.check.6"}],
+        policy_outcome="allow",
+        policy_decisions=[],
+        selected_operation_count=1,
+        decision_hash=_hash("investigation-decision-3"),
+    )
+    session.add(bridge_decision)
+    await session.flush()
+    bridge_operation = InvestigationOperation(
+        investigation_id=investigation.id,
+        step_id=bridge_step.id,
+        decision_id=bridge_decision.id,
+        ordinal=6,
+        wave_ordinal=1,
+        action_id="evidence.check.6",
+        operation_kind="native_read",
+        purpose="Test durable native operation bridge",
+        expected_evidence="Archived provider result",
+        evidence_anchors=["incident.trace_id"],
+        selection_reason="test",
+        stop_condition="result archived",
+        input_masked={},
+        fingerprint=_hash("operation-6"),
+    )
+    session.add(bridge_operation)
+    await session.flush()
+    bridge_invocation = AIInvocation(
+        investigation_id=investigation.id,
+        operation_id=bridge_operation.id,
+        routing_decision_id=routing.id,
+        context_bundle_revision_id=bundle.id,
+        role="native_query",
+        provider_account_id=provider.id,
+        model_deployment_id=deployment.id,
+        provider_account_revision=1,
+        model_deployment_revision=1,
+        execution_class="latency_optimized",
+        prompt_revision="test",
+        schema_revision="native-read-candidate.v1",
+        context_hash=bundle.context_hash,
+        request_hash=_hash("request-6"),
+        response_hash=_hash("response-6"),
+        status="succeeded",
+        attempt_count=1,
+        latency_ms=1,
+        output_masked={"candidate": 6},
+    )
+    session.add(bridge_invocation)
+    await session.flush()
+    bridge_decision.model_invocation_id = bridge_invocation.id
+    operations.append(bridge_operation)
+    invocations.append(bridge_invocation)
     await session.commit()
     return workspace, investigation, connector, connector_snapshot, operations, invocations
 
@@ -609,8 +706,12 @@ async def main() -> None:
     calls: list[dict] = []
     async with AsyncSessionLocal() as first_session, AsyncSessionLocal() as second_session:
         outcomes = await asyncio.gather(
-            EvidenceReadOrchestrator(first_session).execute(allow.token, SlowCaptureAdapter(calls)),
-            EvidenceReadOrchestrator(second_session).execute(
+            EvidenceReadOrchestrator(
+                first_session, PostgresEvidenceResultArchiver(first_session)
+            ).execute(allow.token, SlowCaptureAdapter(calls)),
+            EvidenceReadOrchestrator(
+                second_session, PostgresEvidenceResultArchiver(second_session)
+            ).execute(
                 allow.token, SlowCaptureAdapter(calls)
             ),
             return_exceptions=True,
@@ -621,11 +722,41 @@ async def main() -> None:
     assert _find_trace_value(calls[0]) == RAW_TRACE
 
     async with AsyncSessionLocal() as failure_session:
-        failed = await EvidenceReadOrchestrator(failure_session).execute(
+        failed = await EvidenceReadOrchestrator(
+            failure_session, PostgresEvidenceResultArchiver(failure_session)
+        ).execute(
             provider_failure.token,
             RateLimitedAdapter(),
         )
     assert failed.status == "failed" and failed.failure_code == "rate_limited"
+
+    bridge_calls: list[dict] = []
+    bridge_candidate = _candidate(
+        action_id=operations[5].action_id,
+        connector_id=connector.id,
+        variant="bridge",
+    )
+    bridge_result = await NativeReadOperationExecutor(
+        AsyncSessionLocal, StaticAdapterResolver(bridge_calls)
+    ).execute(
+        operations[5].id,
+        PlannedOperation(
+            action_id=operations[5].action_id,
+            purpose=bridge_candidate.purpose,
+            expected_evidence=bridge_candidate.expected_evidence,
+            evidence_anchors=tuple(bridge_candidate.evidence_anchors),
+            supports_hypotheses=("h3",),
+            refutes_hypotheses=(),
+            selection_reason="Exercise the durable native operation bridge",
+            stop_condition="Stop after the result is archived",
+            estimated_cost=0.0,
+            native_candidate=bridge_candidate.model_dump(mode="json"),
+        ),
+    )
+    assert bridge_result.status == "succeeded"
+    assert len(bridge_result.evidence_refs) == 1
+    assert len(bridge_calls) == 1
+    assert _find_trace_value(bridge_calls[0]) == RAW_TRACE
 
     bad_permit = ExecutionPermit(1, 1, {}, "a" * 64, object())
     try:
@@ -650,6 +781,18 @@ async def main() -> None:
         ).scalar_one()
         assert failure_attempt.status == "failed"
         assert failure_attempt.failure_code == "rate_limited"
+        success_attempt = (
+            await session.execute(
+                select(EvidenceReadAttempt).where(
+                    EvidenceReadAttempt.authorized_read_id == allow.authorized_read_id
+                )
+            )
+        ).scalar_one()
+        assert success_attempt.status == "succeeded"
+        assert len(success_attempt.result_artifact_refs) == 1
+        assert await session.get(
+            EvidenceArtifact, success_attempt.result_artifact_refs[0]
+        ) is not None
         counts = {
             "authorized_reads": (
                 await session.execute(
@@ -686,6 +829,7 @@ async def main() -> None:
                     **counts,
                     "allow": allow.outcome,
                     "bound_trace_round_trip": _find_trace_value(calls[0]) == RAW_TRACE,
+                    "durable_bridge_archived": len(bridge_result.evidence_refs) == 1,
                     "concurrent_adapter_calls": len(calls),
                     "duplicate_fingerprint": duplicate.rejection_code,
                     "kill_switch": killed.rejection_code,

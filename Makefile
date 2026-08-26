@@ -3,7 +3,7 @@
 # which uses the project .venv created by `make install` (uv sync). `make` itself
 # does NOT read .env — only the Python app does via pydantic-settings.
 
-.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check
+.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check investigation-check
 
 # uv binary to use. Override from the shell if it is not on PATH, e.g.
 #   make serve UV=/Users/lixm/.local/bin/uv
@@ -50,11 +50,11 @@ verify:
 test:
 	$(UV) run pytest -q
 
-# Validate and fingerprint the frozen V1 contracts and release-test corpus.
+# Validate and fingerprint the frozen current contracts and release-test corpus.
 contracts:
 	$(UV) run python scripts/check_contracts.py
 
-# Verify an already-migrated PostgreSQL database against the V1 invariant contract.
+# Verify an already-migrated PostgreSQL database against the current invariant contract.
 schema-check:
 	$(UV) run python scripts/check_schema.py
 	$(UV) run python scripts/check_database_behavior.py
@@ -78,6 +78,11 @@ log-connectors-check:
 # Run the complete native parser/connector/isolated-runner security contract suite.
 native-connectors-check:
 	$(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py tests/unit/test_sql_evidence_policy.py tests/unit/test_sql_evidence_connectors.py tests/unit/test_https_evidence.py tests/unit/test_command_evidence_policy.py tests/unit/test_command_runner.py
+
+# Exercise connector snapshots, durable waves, Evidence Graph, and lease recovery.
+investigation-check:
+	$(UV) run pytest -q tests/unit/test_decision_policy.py tests/unit/test_evidence_graph.py tests/unit/test_investigation_orchestration.py
+	$(UV) run python scripts/check_investigation_orchestration.py
 
 # Build and run the full stack (postgres, kafka, api, web) via Docker.
 up:

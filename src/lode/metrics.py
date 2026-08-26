@@ -53,6 +53,25 @@ ENGINE_IN_FLIGHT = Gauge(
     "Investigations currently executing inside this worker",
 )
 
+DECISION_POLICY = Counter(
+    "lode_decision_policy_total",
+    "Investigation decision policy outcomes and stable decision codes",
+    ["outcome", "code"],
+)
+
+CONNECTOR_SELECTION = Counter(
+    "lode_connector_selection_total",
+    "Native connector selections and planner decisions requiring zero external calls",
+    ["outcome"],
+)
+
+OPERATION_DURATION = Histogram(
+    "lode_investigation_operation_duration_seconds",
+    "Investigation operation duration by server operation kind and terminal status",
+    ["operation_kind", "status"],
+    buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0),
+)
+
 # --- LLM --------------------------------------------------------------------
 # outcome: success | unavailable
 LLM_CALLS = Counter(

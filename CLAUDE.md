@@ -2,8 +2,8 @@
 
 ## Final Rebuild Status
 
-The final V1 replacement is being implemented from
-`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-6 are
+The final replacement is being implemented from
+`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-7 are
 the current completed implementation baseline:
 
 - `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
@@ -18,11 +18,12 @@ the current completed implementation baseline:
 - `lode.contracts` provides the shared fixture validator and removed-contract
   scanner used by tests and command-line checks.
 - `src/lode/domain` contains immutable,
-  standard-library-only V1 domain records for Workspaces, model portfolios,
+  standard-library-only domain records for Workspaces, model portfolios,
   repository/build/component identity, ResourceGraph evidence, connector
   scopes, investigation snapshots, context bundles, model routing decisions,
   the four-part native-read audit chain, evidence artifacts, and observed
-  relations. Domain tests enforce canonical repository paths, independent
+  relations, dynamic investigation decisions, server budgets, and operation
+  results. Domain tests enforce canonical repository paths, independent
   provenance for verified identity, closed model/native-language roles,
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
@@ -103,7 +104,10 @@ the current completed implementation baseline:
   attempts. Stable provider authentication, rate-limit, timeout, availability,
   partial-response, cost, invalid-response, and egress failures remain distinct
   execution failure codes in the immutable attempt instead of being relabeled
-  as policy rejection.
+  as policy rejection. A successful normalized result is masked and archived
+  as an `EvidenceCollection` and `EvidenceArtifact` in the same transaction
+  before the immutable attempt can reference it; an archive savepoint prevents
+  partial evidence from surviving a failed archive.
 - `src/lode/evidence_connectors` is the native provider execution plane. Its
   provider-neutral registry activates independent Loki, Elasticsearch,
   OpenSearch, PostgreSQL, MySQL, generic safe-read HTTPS, and isolated command
@@ -167,6 +171,20 @@ the current completed implementation baseline:
   Version literals remain only where an external wire or persisted schema
   contract requires them, such as `incident.alert.v1` and migration revision
   `0001_initial`.
+- `src/lode/application/capabilities.py`, `decision_policy.py`,
+  `evidence_graph.py`, and `investigation.py` implement the credential-free
+  capability catalog, deterministic decision policy, evidence-backed graph
+  projection, and serial dynamic decision waves. The service may trim or
+  reject model-selected operations but never adds an unselected action.
+- `src/lode/infrastructure/investigation_snapshots.py`,
+  `investigation_store.py`, `investigation_leases.py`,
+  `evidence_graph_store.py`, `evidence_archive.py`, and
+  `native_read_executor.py` own frozen healthy connector capabilities,
+  independent operation commits, replay reuse, scoped lease recovery,
+  idempotent graph persistence, result archival, and the authorized native-read
+  execution bridge. Connector credentials are hashed without decryption while
+  snapshots are frozen; later control-plane edits cannot change an existing
+  investigation.
 
 Run `make contracts` (or `uv run python scripts/check_contracts.py`) whenever
 a frozen contract or evaluation fixture changes. Run
@@ -187,6 +205,10 @@ normalization, masking, or provider failure classification changes.
 Run `make native-connectors-check` whenever any native parser/policy, SQL or
 HTTPS adapter, command runner protocol/sandbox, connector registry, or native
 deployment boundary changes.
+Run `make investigation-check` whenever capability construction, decision
+policy, dynamic waves, connector snapshots, graph projection/persistence,
+operation replay, or worker leases change. Database checks that claim the
+global job queue must run serially or against isolated databases.
 Run
 `uv run python scripts/check_forbidden_contracts.py` as the full-repository V1
 removal gate; it is expected to become clean as the replacement phases delete
@@ -194,7 +216,7 @@ the currently implemented pre-final runtime contracts. Do not add an allowlist
 or compatibility adapter to make this gate pass.
 
 The sections below include final contracts for later implementation phases.
-Phases 1-6 changed the database/control-plane identity architecture, the
+Phases 1-7 changed the database/control-plane identity architecture, the
 migration/seed verification workflow, Kafka/manual intake, automatic resource
 understanding, and the currently assembled API routes. Phase 3 added the direct
 `PyYAML` dependency and the `resource-check` workflow. Phase 4 added an
@@ -207,11 +229,18 @@ the `log-connectors-check` workflow. Phase 6 added the fixed SQLGlot runtime
 dependency, SQL/HTTPS/command policies and adapters, the isolated command-runner
 image and private Compose network, independent runner key/kill switch, and the
 runner-specific `deploy/command-runner-seccomp.json` syscall profile, and the
-`native-connectors-check` workflow. Pre-final engine,
-remaining API, and Web modules are not a supported execution path while their
+`native-connectors-check` workflow. Phase 7 added no dependency; it added the
+dynamic investigation application layer, health-bearing connector snapshots,
+Evidence Graph persistence, durable lease/replay behavior, native result
+archival, three Prometheus instruments, and the `investigation-check` workflow.
+Pre-final source/model/report, remaining API, and Web modules are not a
+supported execution path while their
 owning phases replace them; they must be rewritten without adapters.
 
-Lode is an evidence-backed production incident investigation service. A V1 investigation advances through serial decision waves; independent operations inside one wave may run concurrently with a hard limit of four. There are no historical protocol or execution-path adapters.
+Lode is an evidence-backed production incident investigation service. An
+investigation advances through serial decision waves; independent operations
+inside one wave may run concurrently with a hard limit of four. There are no
+historical protocol or execution-path adapters.
 
 ## Runtime Components
 
@@ -243,13 +272,19 @@ Lode is an evidence-backed production incident investigation service. A V1 inves
 - `src/lode/command_runner`: replay-protected protocol, fixed executor, and minimal FastAPI process.
 - `src/lode/evidence_connectors/transport.py`: redirect-free, DNS-pinned/CIDR-checked, byte-bounded HTTPS transport.
 - `tools/logql_parser/parser.mjs`: credential-free Grafana Lezer LogQL CST helper.
-- `src/lode/engine/investigation_engine.py`: one-action-at-a-time adaptive decision loop and terminal synthesis.
-- `src/lode/engine/structured_outputs.py`: provider-neutral strict JSON Schemas for decisions, reports, and causal verification.
+- `src/lode/application/capabilities.py`: minimal frozen capability catalog and credential-free model view.
+- `src/lode/application/decision_policy.py`: deterministic relevance, dependency, duplicate, resource, counter-evidence, and budget gates.
+- `src/lode/application/investigation.py`: provider-neutral serial-wave orchestration ports and four-operation sibling isolation.
+- `src/lode/application/evidence_graph.py`: deterministic timeline, entity matching, observations, and evidence-backed causal projection.
+- `src/lode/infrastructure/investigation_snapshots.py`: immutable active/healthy connector capability freezing.
+- `src/lode/infrastructure/investigation_store.py`: decision, step, operation, event, budget, and replay persistence.
+- `src/lode/infrastructure/investigation_leases.py`: skip-locked job claims, heartbeat, retry, and expired-owner recovery.
+- `src/lode/infrastructure/evidence_graph_store.py`: ownership-checked idempotent graph persistence.
+- `src/lode/infrastructure/evidence_archive.py`: normalized native-result collection/artifact archival.
+- `src/lode/infrastructure/native_read_executor.py`: dynamic operation to Evidence Access authorization/execution bridge.
 - `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, UI form metadata, and egress policy.
 - `src/lode/engine/integrations.py`: provider adapters for verification and bounded snapshots.
-- `src/lode/engine/investigation_evidence.py`: bounded Git and unified integration evidence collection.
 - `src/lode/engine/evidence/git.py`: stack parsing, exact revision lookup, symbol range extraction, lexical candidates, and related-symbol expansion.
-- `src/lode/engine/investigation_events.py`: durable step, operation, progress, failure, timing, and evidence events.
 - `apps/web`: Next.js workbench with manual intake, wave/operation execution track, final-finding code viewer, and paginated audit drawer.
 
 PostgreSQL is the source of truth. Kafka consumers only validate and enqueue;
@@ -298,13 +333,24 @@ An investigation owns exactly one active decision wave:
 
 1. Canonicalize and mask the complete error input.
 2. Parse stack frames and the structured error contract.
-3. Build or update the leading mechanism.
-4. Select one action ID from the server-generated catalog.
-5. Execute that action as one wave. A log-search or Git wave may launch up to four independent operations concurrently.
-6. Persist every operation result and evidence artifact independently; one failed operation does not cancel its siblings.
-7. Start the next decision only from evidence committed by the prior wave.
-8. Archive evidence, facts, counter-evidence, and validation gaps.
-9. Synthesize separate incident and code results and persist one terminal report.
+3. Reload committed evidence, hypotheses, completed fingerprints, and remaining
+   server budget.
+4. Freeze active, healthy Connector capabilities once and build a minimal,
+   credential-free server action catalog.
+5. Ask the planner to finish or select one to four independent actions. An
+   external action may include a provider-native candidate, while a decision
+   may select zero external connectors.
+6. Apply deterministic relevance, ValueRef provenance, dependency, duplicate,
+   resource-conflict, counter-evidence, and server-budget policy. One structured
+   repair is allowed after rejection.
+7. Persist operation IDs and execute the allowed wave with at most four sibling
+   operations.
+8. Persist every operation result and evidence artifact independently; one
+   failed operation does not cancel its siblings.
+9. Project standard events, entities, relations, observations, and a stable
+   timeline only from archived evidence. Shared trace membership alone never
+   creates direction.
+10. Start the next decision only from evidence committed by the prior wave.
 
 Parallelism is allowed only inside an explicit wave and must remain at or below four operations. Allocate operation IDs/ordinals before launching work, use `return_exceptions=True`, and persist each result separately. Do not overlap decision waves. `engine_concurrency` separately controls how many investigations workers may run.
 
@@ -312,11 +358,20 @@ Limits are configured by:
 
 - `investigation_max_evidence_steps`, default 12;
 - `investigation_max_model_calls`, default 10;
+- `investigation_max_native_reads`, default 8;
+- `investigation_max_output_bytes`, default 8 MiB;
+- `investigation_max_cost`, default 100;
 - `investigation_timeout_seconds`, default 600.
 
 Every action uses a server-generated fingerprint and may run once. Connector evidence reuse uses the complete immutable query fingerprint, including connector, endpoint, generated query, time window, direction and limit. Steps and operations commit independently. PostgreSQL permits one running step/decision wave while multiple operations in that wave may run. On worker recovery, completed evidence is reused and the first unfinished durable action resumes. Lease cleanup only changes jobs whose own leases expired.
 
-Model output may select catalog IDs and cite archived evidence IDs. It may never create LogQL, SQL, commands, service names, URLs, time windows, repository paths, connector configuration, or credentials.
+Model output may select catalog IDs, cite archived evidence IDs, and propose
+LogQL, Elasticsearch/OpenSearch Query DSL, SQL, safe HTTPS, or fixed command
+candidates using only cataloged resources and ValueRefs. Every candidate still
+passes the complete Evidence Access parser, ownership, relevance, budget,
+ValueRef, authorization, preflight, execution, masking, and archive chain. The
+model may never create credentials, connector configuration, access scope, or
+repository authorization.
 
 OpenAI-compatible base URLs are normalized to `/v1/chat/completions`; Anthropic base URLs are normalized to `/v1/messages`. Investigation requests use a configurable 120-second per-attempt timeout, provider-enforced strict JSON Schemas, and an 8192-token output bound; health probes keep a separate 30-second timeout. OpenAI-compatible providers use `response_format.json_schema`, while Anthropic uses a forced schema-bound tool result. Calls automatically retry only transient network failures, timeouts, HTTP 429, and HTTP 5xx with bounded exponential backoff. Authentication, request validation, and non-JSON protocol responses fail immediately. Each retry emits operation progress, and AI audit rows retain the actionable error classification and actual attempt count. Do not collapse a timeout or protocol error into a generic "model unavailable" message. If both the initial structured response and the single repair fail validation, report the analysis as unavailable with the exact contract error; never relabel output-format failure as insufficient evidence.
 
@@ -587,6 +642,7 @@ make resource-check
 make evidence-access-check
 make log-connectors-check
 make native-connectors-check
+make investigation-check
 uv run python -m compileall -q src scripts alembic tests
 uv run pytest -q
 ```
@@ -644,5 +700,14 @@ escape, signed protocol replay, exact-file read-only mounts, empty environment,
 private network and secret ownership, process kill switch, output truncation,
 high-risk secret hashing, and infrastructure behavior when policy input is
 forged.
+
+Dynamic investigation changes must additionally cover credential-free
+capability catalogs, zero unselected connector calls, changing connector choice
+after newly committed evidence, dependency/resource conflict trimming,
+counter-evidence and budget gates, one repair only, four-operation concurrency,
+partial sibling failure, terminal replay reuse without budget growth, frozen
+connector health/scope, artifact-before-attempt archival, graph causal rules,
+unknown/ambiguous entities, idempotent graph persistence, skip-locked claims,
+heartbeats, and expired-lease recovery.
 
 Before declaring work complete, assess architecture, dependency, and development-workflow impact. Update this file immediately when any of those contracts change, then verify the documented commands and behavior match the implementation.

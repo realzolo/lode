@@ -40,17 +40,28 @@ class EvidenceExecutionAdapter(Protocol):
     async def execute(self, permit: ExecutionPermit) -> Mapping[str, Any]: ...
 
 
+class EvidenceResultArchiver(Protocol):
+    async def archive(
+        self,
+        authorized: AuthorizedEvidenceRead,
+        decision: EvidenceAccessDecision,
+        result: Mapping[str, Any],
+    ) -> tuple[int, ...]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionResult:
     status: str
     attempt: int
     result: Mapping[str, Any] | None
     failure_code: str | None
+    artifact_refs: tuple[int, ...]
 
 
 class EvidenceReadOrchestrator:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, archiver: EvidenceResultArchiver) -> None:
         self.session = session
+        self.archiver = archiver
 
     async def execute(
         self,
@@ -109,6 +120,12 @@ class EvidenceReadOrchestrator:
             output_limit = int(decision.effective_budget["output_bytes"])
             if result_bytes > output_limit:
                 raise ValueError("evidence result exceeds authorized output byte limit")
+            async with self.session.begin_nested():
+                artifact_refs = await self.archiver.archive(
+                    authorized, decision, result
+                )
+                if not artifact_refs or any(value < 1 for value in artifact_refs):
+                    raise TypeError("evidence archiver returned invalid artifact references")
             finished_at = datetime.now(UTC)
             self.session.add(
                 EvidenceReadAttempt(
@@ -119,12 +136,12 @@ class EvidenceReadOrchestrator:
                     preflight=dict(preflight),
                     started_at=started_at,
                     finished_at=finished_at,
-                    result_artifact_refs=[],
+                    result_artifact_refs=list(artifact_refs),
                     metrics={"result_bytes": result_bytes},
                 )
             )
             await self.session.commit()
-            return ExecutionResult("succeeded", 1, result, None)
+            return ExecutionResult("succeeded", 1, result, None, artifact_refs)
         except asyncio.CancelledError:
             finished_at = datetime.now(UTC)
             self.session.add(
@@ -174,7 +191,7 @@ class EvidenceReadOrchestrator:
                 )
             )
             await self.session.commit()
-            return ExecutionResult("failed", 1, None, failure_code)
+            return ExecutionResult("failed", 1, None, failure_code, ())
 
     @staticmethod
     def _verify_claims(

@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     engine_concurrency: int = 5
     investigation_max_evidence_steps: int = 12
     investigation_max_model_calls: int = 10
+    investigation_max_native_reads: int = 8
+    investigation_max_output_bytes: int = 8 * 1024 * 1024
+    investigation_max_cost: float = 100.0
     investigation_timeout_seconds: int = 600
 
     # Worker lease: how long a claimed job is reserved before another worker may
