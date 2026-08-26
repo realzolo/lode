@@ -26,7 +26,7 @@ class AiModelConfig(Base):
     )
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
-    api_key_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(Text, nullable=False)
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"

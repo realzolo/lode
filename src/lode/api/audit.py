@@ -3,7 +3,7 @@
 ``audit_events`` is the immutable record of security- and data-sensitive
 operations (DLQ replay, read-only query execution against a production replica,
 analysis triggers, data-source / user / model mutations, …). Every such action
-records who did it, on what, from where (request/trace id), and whether it
+records who did it, on what, from which request, and whether it
 succeeded.
 
 The table is *append-only* by design: records are never updated or deleted by the
@@ -33,10 +33,10 @@ from lode.db.session import AsyncSessionLocal
 logger = logging.getLogger("lode.api.audit")
 
 # Per-request id, shared with the logger via ``RequestIdFilter`` (see api/main.py).
-_request_id: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("request_id", default=None)
 
 
-def get_request_id() -> str:
+def get_request_id() -> str | None:
     return _request_id.get()
 
 
@@ -51,7 +51,6 @@ async def record_audit_event(
     application_id: int | None = None,
     result: str = "ok",
     detail: dict | None = None,
-    trace_id: str | None = None,
 ) -> AuditEvent:
     """Append an audit record to the given ``session`` (flush only).
 
@@ -68,7 +67,6 @@ async def record_audit_event(
         target_id=target_id,
         application_id=application_id,
         request_id=get_request_id(),
-        trace_id=trace_id,
         result=result,
         detail=detail,
     )

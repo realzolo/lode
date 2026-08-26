@@ -83,7 +83,7 @@ async def test_non_admin_cannot_create_ai_model(user):
             json={
                 "provider": "openai",
                 "base_url": "https://api.openai.com/v1",
-                "api_key_ref": "env://OPENAI_API_KEY",
+                "api_key": "test-openai-key",
                 "model": "gpt-4o-mini",
                 "is_default": True,
             },
@@ -156,7 +156,7 @@ async def test_admin_crud_ai_model(admin):
             json={
                 "provider": "openai",
                 "base_url": "https://api.openai.com/v1",
-                "api_key_ref": "env://OPENAI_API_KEY",
+                "api_key": "test-openai-key",
                 "model": "gpt-4o-mini",
                 "is_default": True,
             },
@@ -174,7 +174,7 @@ async def test_admin_crud_ai_model(admin):
             json={
                 "provider": "openai",
                 "base_url": "https://api.openai.com/v1",
-                "api_key_ref": "",
+                "api_key": "",
                 "model": "gpt-4o",
                 "is_default": True,
             },
@@ -200,7 +200,7 @@ async def test_non_admin_cannot_manage_git(user):
         resp = await client.post(
             "/settings/git-credentials",
             headers={"Authorization": f"Bearer {token}"},
-            json={"auth_type": "ssh", "username": "x", "secret_ref": "env://X", "readonly": True, "note": ""},
+            json={"auth_type": "ssh", "username": "x", "secret": "test-secret", "readonly": True, "note": ""},
         )
         assert resp.status_code == 403
         resp = await client.post(
@@ -217,11 +217,11 @@ async def test_admin_crud_git_credential(admin):
     async with _client() as client:
         headers = {"Authorization": f"Bearer {token}"}
 
-        # create with an ``env://`` reference -> stored verbatim.
+        # Create stores only encrypted ciphertext.
         resp = await client.post(
             "/settings/git-credentials",
             headers=headers,
-            json={"auth_type": "ssh", "username": "deploy", "secret_ref": "env://GH_DEPLOY", "readonly": True, "note": "ci key"},
+            json={"auth_type": "ssh", "username": "deploy", "secret": "deploy-key", "readonly": True, "note": "ci key"},
         )
         assert resp.status_code == 201, resp.text
         cid = resp.json()["id"]
@@ -230,51 +230,51 @@ async def test_admin_crud_git_credential(admin):
         # the env ref is kept as-is in the DB row.
         async with AsyncSessionLocal() as session:
             row = await session.get(GitCredential, cid)
-            assert row.secret_ref == "env://GH_DEPLOY"
+            assert decrypt_secret(row.secret_ciphertext) == "deploy-key"
 
         # create with a literal secret -> encrypted at rest (not stored as plaintext).
         resp = await client.post(
             "/settings/git-credentials",
             headers=headers,
-            json={"auth_type": "https", "username": "robot", "secret_ref": "ghp_literalabc123", "readonly": False, "note": ""},
+            json={"auth_type": "https", "username": "robot", "secret": "ghp_literalabc123", "readonly": False, "note": ""},
         )
         assert resp.status_code == 201, resp.text
         cid2 = resp.json()["id"]
         async with AsyncSessionLocal() as session:
             row = await session.get(GitCredential, cid2)
-            assert row.secret_ref != "ghp_literalabc123"
+            assert row.secret_ciphertext != "ghp_literalabc123"
             # and it decrypts back to the original literal.
-            assert decrypt_secret(row.secret_ref) == "ghp_literalabc123"
+            assert decrypt_secret(row.secret_ciphertext) == "ghp_literalabc123"
 
         # update without re-supplying the secret -> existing secret preserved.
         resp = await client.put(
             f"/settings/git-credentials/{cid2}",
             headers=headers,
-            json={"auth_type": "https", "username": "robot", "secret_ref": "", "readonly": True, "note": "rotated meta"},
+            json={"auth_type": "https", "username": "robot", "secret": "", "readonly": True, "note": "rotated meta"},
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["readonly"] is True
         assert resp.json()["note"] == "rotated meta"
         async with AsyncSessionLocal() as session:
             row = await session.get(GitCredential, cid2)
-            assert decrypt_secret(row.secret_ref) == "ghp_literalabc123"
+            assert decrypt_secret(row.secret_ciphertext) == "ghp_literalabc123"
 
         # update supplying a new env ref -> stored verbatim.
         resp = await client.put(
             f"/settings/git-credentials/{cid2}",
             headers=headers,
-            json={"auth_type": "https", "username": "robot", "secret_ref": "env://GH_ROBOT", "readonly": True, "note": "rotated meta"},
+            json={"auth_type": "https", "username": "robot", "secret": "rotated-secret", "readonly": True, "note": "rotated meta"},
         )
         assert resp.status_code == 200, resp.text
         async with AsyncSessionLocal() as session:
             row = await session.get(GitCredential, cid2)
-            assert row.secret_ref == "env://GH_ROBOT"
+            assert decrypt_secret(row.secret_ciphertext) == "rotated-secret"
 
         # 404 on missing credential.
         resp = await client.put(
             "/settings/git-credentials/999999",
             headers=headers,
-            json={"auth_type": "ssh", "username": "x", "secret_ref": "", "readonly": True, "note": ""},
+            json={"auth_type": "ssh", "username": "x", "secret": "", "readonly": True, "note": ""},
         )
         assert resp.status_code == 404
 
@@ -342,7 +342,7 @@ async def test_delete_git_credential_clears_repo_fk(admin):
         cred = (await client.post(
             "/settings/git-credentials",
             headers=headers,
-            json={"auth_type": "ssh", "username": "deploy", "secret_ref": "env://GH_DEPLOY", "readonly": True, "note": ""},
+            json={"auth_type": "ssh", "username": "deploy", "secret": "deploy-key", "readonly": True, "note": ""},
         )).json()
         repo = (await client.post(
             "/settings/git-repos",
@@ -433,12 +433,12 @@ async def test_deleting_default_promotes_newest_global_model(admin):
 
         first = (await client.post("/settings/ai-models", headers=headers, json={
             "provider": "openai", "base_url": "https://api.openai.com/v1",
-            "api_key_ref": "env://OPENAI_API_KEY", "model": "gpt-4o", "is_default": True,
+            "api_key": "openai-key", "model": "gpt-4o", "is_default": True,
         })).json()
         assert first["is_default"] is True
         second = (await client.post("/settings/ai-models", headers=headers, json={
             "provider": "anthropic", "base_url": "https://api.anthropic.com",
-            "api_key_ref": "env://ANTHROPIC_API_KEY", "model": "claude", "is_default": False,
+            "api_key": "anthropic-key", "model": "claude", "is_default": False,
         })).json()
 
         resp = await client.delete(f"/settings/ai-models/{first['id']}", headers=headers)

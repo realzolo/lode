@@ -16,7 +16,6 @@ from sqlalchemy import (
     UniqueConstraint,
     text as sql_text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
@@ -29,6 +28,7 @@ class Application(Base):
         BigInteger, Identity(always=True), primary_key=True
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    ingestion_topic: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     created_by: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="SET NULL")
     )
@@ -66,20 +66,59 @@ class Application(Base):
     )
 
 
-class ApplicationKafka(Base):
-    __tablename__ = "application_kafka"
+class Service(Base):
+    """Globally unique runtime service mapped to exactly one source repository."""
+
+    __tablename__ = "services"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=True), primary_key=True
+    )
+    service_name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    repo_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_repos.id", ondelete="RESTRICT"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
+    )
+
+    __table_args__ = (
+        CheckConstraint("state IN ('active', 'disabled')", name="state"),
+    )
+
+
+class ApplicationServiceBinding(Base):
+    """Many-to-many application access boundary for shared services."""
+
+    __tablename__ = "application_service_bindings"
 
     application_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("applications.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    topic: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    service_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("services.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
+
+    __table_args__ = (
+        CheckConstraint("role IN ('primary', 'shared')", name="role"),
+        Index(
+            "uq_application_service_primary",
+            "application_id",
+            unique=True,
+            postgresql_where=sql_text("role = 'primary'"),
+        ),
     )
 
 
@@ -182,17 +221,14 @@ class ApplicationRepo(Base):
     )
 
 
-class ApplicationDescription(Base):
-    __tablename__ = "application_descriptions"
+class ApplicationArchitectureContext(Base):
+    __tablename__ = "application_architecture_contexts"
 
     id: Mapped[int] = mapped_column(
         BigInteger, Identity(always=True), primary_key=True
     )
     application_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
-    )
-    description_type: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="deploy"
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -200,64 +236,4 @@ class ApplicationDescription(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "description_type IN ('deploy', 'other')",
-            name="description_type",
-        ),
-    )
-
-
-class DbSource(Base):
-    __tablename__ = "db_sources"
-
-    id: Mapped[int] = mapped_column(
-        BigInteger, Identity(always=True), primary_key=True
-    )
-    application_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
-    )
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    # Connection can be supplied two ways (mutually exclusive in practice):
-    #  * structured fields below (host/port/database/username/password) — the
-    #    DSN is built at query time; OR
-    #  * conn_secret_ref — an env:// reference resolved at query time so real
-    #    credentials never have to live in this row.
-    # At least one of the two must be provided (enforced in the schema layer).
-    conn_secret_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
-    host: Mapped[str | None] = mapped_column(Text, nullable=True)
-    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    database: Mapped[str | None] = mapped_column(Text, nullable=True)
-    username: Mapped[str | None] = mapped_column(Text, nullable=True)
-    password: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # All resolved DSNs must use ``verify-full``. This stored value supplies it
-    # for structured sources; env-backed DSNs must carry it themselves.
-    sslmode: Mapped[str | None] = mapped_column(Text, nullable=True)
-    allowed_tables: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default="[]"
-    )
-    # Per-source extra column names to mask on top of the built-in heuristic
-    # hints. Lets an operator desensitize application-specific PII columns that
-    # the generic name-matcher would otherwise let through.
-    sensitive_columns: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default="[]"
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "(conn_secret_ref IS NOT NULL AND conn_secret_ref ~ '^env://[A-Za-z_][A-Za-z0-9_]*$' "
-            "AND host IS NULL AND port IS NULL AND database IS NULL AND username IS NULL "
-            "AND password IS NULL AND sslmode IS NULL) OR (conn_secret_ref IS NULL "
-            "AND host IS NOT NULL AND database IS NOT NULL AND sslmode = 'verify-full')",
-            name="secure_connection",
-        ),
     )

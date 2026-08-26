@@ -7,21 +7,25 @@ keep internal columns (ids, secrets, raw payloads in full) out of the wire.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from lode.integration_policy import normalize_integration_config
+from lode.integration_policy import (
+    integration_kind,
+    normalize_integration_config,
+    normalize_integration_secrets,
+)
 
 
 class ApplicationOut(BaseModel):
     id: int
     name: str
-    topic: str | None
+    ingestion_topic: str
     latest_level: str
-    repo_count: int
+    service_count: int
+    primary_service_configured: bool
     model_configured: bool
     model_available: bool
     ingestion_state: Literal["draft", "active", "paused"]
@@ -34,41 +38,52 @@ class ApplicationOut(BaseModel):
 class ApplicationDetailOut(BaseModel):
     id: int
     name: str
-    topic: str | None
+    ingestion_topic: str
     model_config_id: int | None
     ingestion_state: Literal["draft", "active", "paused"]
     created_at: datetime
     repos: list[dict]
-    descriptions: list[dict]
-    db_sources: list[DbSourceListItem]
+    architecture_contexts: list[dict]
     integrations: list["ApplicationIntegrationOut"] = Field(default_factory=list)
     my_perm: str | None = None
 
 
 class CreateApplicationIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    ingestion_topic: str = Field(min_length=1, max_length=500)
+
+    @field_validator("name", "ingestion_topic")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
 
 
 # --- Application configuration (admin only) ----------------------------
 #
-# These power the per-application edit forms: Kafka topic binding, repository
-# binding, read-only data sources, descriptions. The on-the-wire shapes are
+# These power the per-application edit forms: Kafka ingestion, repository
+# binding, integrations, model selection, and architecture context. The shapes are
 # intentionally minimal — only what the Settings tabs need to read back into
-# their forms. Server-side this is enforced via ``require_admin``.
+# their forms. Application-owned writes use ``require_app_perm`` with the
+# ``admin`` scope; global admins satisfy that scope automatically.
 
 class SetApplicationTopicIn(BaseModel):
-    topic: str | None = Field(default=None, min_length=1, max_length=500)
-    """Set / clear the Kafka topic for an application.
+    ingestion_topic: str = Field(min_length=1, max_length=500)
 
-    Sending ``null`` (or omitting) detaches any current binding. Topics are
-    globally unique across applications (DB constraint), so the operation is
-    upsert-or-delete at the row level.
-    """
+    @field_validator("ingestion_topic")
+    @classmethod
+    def strip_topic(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("ingestion_topic must not be blank")
+        return value
 
 
 class ApplicationTopicOut(BaseModel):
     application_id: int
-    topic: str | None
+    ingestion_topic: str
 
 
 class StartApplicationIngestionIn(BaseModel):
@@ -77,7 +92,7 @@ class StartApplicationIngestionIn(BaseModel):
 
 class ApplicationIngestionStatusOut(BaseModel):
     application_id: int
-    topic: str | None
+    ingestion_topic: str
     desired_state: Literal["draft", "active", "paused"]
     observed_state: Literal["draft", "starting", "listening", "paused", "error"]
     ingestion_version: int
@@ -132,112 +147,21 @@ class ApplicationModelOut(BaseModel):
     model_test: ModelAvailabilityOut | None = None
 
 
-class CreateDbSourceIn(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    description: str = Field(default="", max_length=2000)
-    # Mode 1 (structured): enter connection fields directly. The DSN is built
-    # at query time and the password lives in this DB row (acceptable for a
-    # self-hosted admin console; prefer env:// for stricter deployments).
-    host: str | None = Field(default=None, max_length=500)
-    port: int | None = Field(default=None, ge=1, le=65535)
-    database: str | None = Field(default=None, max_length=200)
-    username: str | None = Field(default=None, max_length=200)
-    password: str | None = Field(default=None, max_length=2000)
-    # Mode 2 (secret ref): conn_secret_ref keeps real credentials out of the
-    # row. Either this OR (host + database) must be supplied.
-    conn_secret_ref: str | None = Field(default=None, max_length=1000)
-    # All production data-source links verify the server certificate and name.
-    sslmode: Literal["verify-full"] | None = None
-    allowed_tables: list[str] = Field(min_length=1, max_length=100)
-    # Operator-supplied extra column names to mask in results, on top of the
-    # built-in heuristic hints.
-    sensitive_columns: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def _require_connection(self) -> "CreateDbSourceIn":
-        structured = bool(self.host) and bool(self.database)
-        if not self.conn_secret_ref and not structured:
-            raise ValueError(
-                "provide either conn_secret_ref or both host and database"
-            )
-        if self.conn_secret_ref and structured:
-            raise ValueError("conn_secret_ref and structured connection fields are mutually exclusive")
-        if self.host and not self.database:
-            raise ValueError("database is required when host is set")
-        if self.database and not self.host:
-            raise ValueError("host is required when database is set")
-        if structured and self.sslmode != "verify-full":
-            raise ValueError("structured data sources require sslmode=verify-full")
-        return self
-
-    @field_validator("conn_secret_ref")
-    @classmethod
-    def _require_environment_secret_reference(cls, value: str | None) -> str | None:
-        if value is not None and not re.fullmatch(r"env://[A-Za-z_][A-Za-z0-9_]*", value):
-            raise ValueError("conn_secret_ref must be an env://NAME reference")
-        return value
-
-    @field_validator("allowed_tables")
-    @classmethod
-    def _require_qualified_base_tables(cls, value: list[str]) -> list[str]:
-        if any(table.count(".") != 1 for table in value):
-            raise ValueError("approved tables must be schema-qualified base table names")
-        return value
-
-
-class DbSourceListItem(BaseModel):
-    """Read shape for a data source as returned inside an application detail.
-
-    A strict, explicit projection (not a loose ``dict``) so the frontend can
-    rely on every field being present or explicitly ``None``. The raw password
-    is never included; ``has_password`` is the only signal about its presence.
-    """
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    application_id: int
-    name: str
-    description: str
-    conn_secret_ref: str | None
-    host: str | None
-    port: int | None
-    database: str | None
-    username: str | None
-    has_password: bool
-    sslmode: str | None
-    allowed_tables: list[str]
-    sensitive_columns: list[str]
-
-
-class DbSourceOut(BaseModel):
-    id: int
-    application_id: int
-    name: str
-    description: str
-    conn_secret_ref: str | None
-    host: str | None
-    port: int | None
-    database: str | None
-    username: str | None
-    # Whether a password is configured. We never echo the raw password back.
-    has_password: bool
-    sslmode: str | None
-    allowed_tables: list[str]
-    sensitive_columns: list[str]
-
-
 class ApplicationIntegrationIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=200)
-    kind: Literal["redis", "kafka", "clickhouse"]
+    kind: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_-]*$")
     config: dict[str, Any]
-    secret_ref: str = Field(min_length=1, max_length=4000)
+    secrets: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_config(self) -> "ApplicationIntegrationIn":
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("name must not be blank")
         self.config = normalize_integration_config(self.kind, self.config)
+        self.secrets = normalize_integration_secrets(self.kind, self.secrets)
         return self
 
 
@@ -246,8 +170,18 @@ class ApplicationIntegrationUpdateIn(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
     config: dict[str, Any] | None = None
-    secret_ref: str | None = Field(default=None, min_length=1, max_length=4000)
+    secrets: dict[str, str] | None = None
     state: str | None = Field(default=None, pattern="^(active|disabled)$")
+
+    @field_validator("name")
+    @classmethod
+    def strip_optional_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be blank")
+        return value
 
 
 class ApplicationIntegrationOut(BaseModel):
@@ -255,10 +189,14 @@ class ApplicationIntegrationOut(BaseModel):
     application_id: int
     name: str
     kind: str
+    kind_version: int
+    revision: int
     state: str
-    readonly_verified_at: datetime | None
+    verification_status: str
+    verified_at: datetime | None
     last_collected_at: datetime | None
     last_error: str | None
+    configured_secret_fields: list[str]
 
 
 class ApplicationIntegrationConfigurationOut(ApplicationIntegrationOut):
@@ -267,34 +205,12 @@ class ApplicationIntegrationConfigurationOut(ApplicationIntegrationOut):
     config: dict[str, Any]
 
 
-class UpdateDbSourceIn(BaseModel):
-    """Partial update for an existing data source.
-
-    Every field is optional. ``password`` is only overwritten when a non-empty
-    value is supplied, so an operator can rotate metadata without re-pasting the
-    secret. Supplying neither a structured connection nor a secret ref leaves
-    the existing connection mode untouched (you cannot blank out the only way to
-    reach the source).
-    """
-
-    name: str | None = Field(default=None, min_length=1, max_length=200)
-    description: str | None = Field(default=None, max_length=2000)
-    host: str | None = Field(default=None, max_length=500)
-    port: int | None = Field(default=None, ge=1, le=65535)
-    database: str | None = Field(default=None, max_length=200)
-    username: str | None = Field(default=None, max_length=200)
-    password: str | None = Field(default=None, max_length=2000)
-    conn_secret_ref: str | None = Field(default=None, max_length=1000)
-    sslmode: Literal["verify-full"] | None = None
-
-    @field_validator("conn_secret_ref")
-    @classmethod
-    def _require_environment_secret_reference(cls, value: str | None) -> str | None:
-        if value is not None and not re.fullmatch(r"env://[A-Za-z_][A-Za-z0-9_]*", value):
-            raise ValueError("conn_secret_ref must be an env://NAME reference")
-        return value
-    allowed_tables: list[str] | None = Field(default=None, min_length=1, max_length=100)
-    sensitive_columns: list[str] | None = None
+class IntegrationKindOut(BaseModel):
+    kind: str
+    version: int
+    label: str
+    capabilities: list[str]
+    form: list[dict[str, Any]]
 
 
 class RunApprovedQueryIn(BaseModel):
@@ -302,20 +218,17 @@ class RunApprovedQueryIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_id: int = Field(gt=0)
     table: str = Field(min_length=1, max_length=300)
     operation: Literal["sample", "count"]
 
 
-class CreateApplicationDescriptionIn(BaseModel):
-    description_type: str = Field(default="deploy", pattern="^(deploy|other)$")
+class CreateApplicationArchitectureContextIn(BaseModel):
     content: str = Field(min_length=1, max_length=10000)
 
 
-class ApplicationDescriptionOut(BaseModel):
+class ApplicationArchitectureContextOut(BaseModel):
     id: int
     application_id: int
-    description_type: str
     content: str
 
 
@@ -369,7 +282,6 @@ class AuditEventOut(BaseModel):
     target_id: str | None
     application_id: int | None
     request_id: str | None
-    trace_id: str | None
     result: str
     detail: dict | None
     created_at: datetime
@@ -407,16 +319,13 @@ class UserOut(BaseModel):
 #
 # Global, read-only Git accounts (``git_credentials``) and the repository
 # registry (``git_repos``) that applications bind to. Both are admin-only
-# write surfaces. The ``secret_ref`` is encrypted at rest via ``_store_key_ref``
-# (same pattern as AI-model keys); on update it is optional so an operator can
+# write surfaces. Secrets are encrypted at rest; on update they are optional so an operator can
 # rotate metadata without re-pasting the secret.
 
 class GitCredentialIn(BaseModel):
     auth_type: str = Field(pattern="^(ssh|https)$")
     username: str = Field(default="", max_length=200)
-    # Supports ``env://NAME`` (preferred) or a literal secret. Required on
-    # create; optional on update.
-    secret_ref: str = Field(min_length=1, max_length=2000)
+    secret: str = Field(min_length=1, max_length=2000)
     readonly: bool = True
     note: str = Field(default="", max_length=2000)
 
@@ -424,14 +333,14 @@ class GitCredentialIn(BaseModel):
 class GitCredentialUpdateIn(BaseModel):
     """Partial update for an existing Git credential.
 
-    Every field is optional. ``secret_ref`` is only overwritten when a
+    Every field is optional. ``secret`` is only overwritten when a
     non-empty value is supplied, so metadata can be rotated without re-pasting
     the secret. Supplying nothing leaves the existing credential untouched.
     """
 
     auth_type: str | None = Field(default=None, pattern="^(ssh|https)$")
     username: str | None = Field(default=None, max_length=200)
-    secret_ref: str | None = Field(default=None, max_length=2000)
+    secret: str | None = Field(default=None, max_length=2000)
     readonly: bool | None = None
     note: str | None = Field(default=None, max_length=2000)
 
@@ -487,10 +396,9 @@ class GitRepoOut(BaseModel):
 class AiModelConfigIn(BaseModel):
     provider: str = Field(pattern="^(openai|anthropic)$")
     base_url: str = Field(min_length=1, max_length=1000)
-    # Supports `env://NAME` (preferred, secret stays in env) or a literal key.
-    # Optional on update: when omitted/empty the existing reference is kept, so
+    # Optional on update: when omitted/empty the existing encrypted key is kept, so
     # operators can edit metadata without re-pasting the secret.
-    api_key_ref: str | None = Field(default=None, max_length=1000)
+    api_key: str | None = Field(default=None, max_length=1000)
     model: str = Field(min_length=1, max_length=200)
     is_default: bool = False
 
@@ -519,41 +427,31 @@ class AiOutputLanguageOut(BaseModel):
     language: Literal["en", "zh"]
 
 
-class EvidenceConnectorIn(BaseModel):
-    """Administrator-owned, capability-limited evidence connector."""
-
+class ServiceIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=200)
-    kind: Literal["loki", "prometheus", "tempo", "postgres", "redis", "kafka", "clickhouse"]
-    config: dict[str, Any] = Field(default_factory=dict)
-    secret_ref: str | None = Field(default=None, max_length=4000)
-    diagnostic_profile: dict[str, Any] = Field(default_factory=dict)
-    collection_budget_seconds: int = Field(default=15, ge=1, le=60)
+    service_name: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
+    repo_id: int = Field(gt=0)
     state: Literal["active", "disabled"] = "active"
 
 
-class EvidenceConnectorUpdateIn(BaseModel):
+class ServiceOut(BaseModel):
+    id: int
+    service_name: str
+    repo_id: int
+    state: Literal["active", "disabled"]
+
+
+class ApplicationServiceBindingIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str | None = Field(default=None, min_length=1, max_length=200)
-    config: dict[str, Any] | None = None
-    secret_ref: str | None = Field(default=None, max_length=4000)
-    diagnostic_profile: dict[str, Any] | None = None
-    collection_budget_seconds: int | None = Field(default=None, ge=1, le=60)
-    state: Literal["active", "disabled"] | None = None
+    service_id: int = Field(gt=0)
+    role: Literal["primary", "shared"]
 
 
-class EvidenceConnectorOut(BaseModel):
-    id: int
+class ApplicationServiceBindingOut(ServiceOut):
     application_id: int
-    name: str
-    kind: str
-    state: str
-    config: dict[str, Any]
-    diagnostic_profile: dict[str, Any]
-    collection_budget_seconds: int
-    has_secret: bool
+    role: Literal["primary", "shared"]
 
 
 # --- User management (admin) --------------------------------------------
@@ -628,9 +526,14 @@ class InvestigationCreateIn(BaseModel):
     severity: Literal["CRITICAL", "WARNING"] = "WARNING"
     occurred_at: datetime
     error: InvestigationErrorIn
-    service_name: str | None = Field(default=None, max_length=300)
+    service_name: str = Field(
+        pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$"
+    )
     environment: str | None = Field(default=None, max_length=300)
-    trace_id: str | None = Field(default=None, max_length=1_000)
+    request_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    )
     deployment_sha: str | None = Field(default=None, max_length=300)
     fields: dict[str, Any] = Field(default_factory=dict)
     attachments: list[InvestigationAttachmentIn] = Field(default_factory=list, max_length=10)

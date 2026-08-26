@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { createInvestigation, fetchApplications, fetchInvestigations, type InvestigationSummary } from '@/lib/api';
+import { createInvestigation, fetchApplicationServices, fetchApplications, fetchInvestigations, type InvestigationSummary } from '@/lib/api';
 import { Link, useRouter } from '@/lib/navigation';
 
 const RESULT_STATE_LABELS: Record<InvestigationSummary['result_state'], string> = {
@@ -79,20 +79,29 @@ function CreateInvestigationDialog({ onClose, onCreated }: { onClose: () => void
   const [name, setName] = useState('Error');
   const [message, setMessage] = useState('');
   const [stack, setStack] = useState('');
+  const [services, setServices] = useState<{ service_name: string; role: 'primary' | 'shared' }[]>([]);
+  const [serviceName, setServiceName] = useState('');
+  const [environment, setEnvironment] = useState('prod');
   const [deployment, setDeployment] = useState('');
-  const [trace, setTrace] = useState('');
+  const [requestId, setRequestId] = useState('');
   const [severity, setSeverity] = useState<'CRITICAL' | 'WARNING'>('WARNING');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { fetchApplications().then((rows) => { const allowed = rows.filter((row) => ['analyze', 'admin'].includes(row.myPerm || '') || row.myPerm === null); setApplications(allowed); setApplicationId(String(allowed[0]?.id || '')); }).catch((cause) => setError(String(cause))); }, []);
+  useEffect(() => {
+    if (!applicationId) { setServices([]); setServiceName(''); return; }
+    fetchApplicationServices(applicationId)
+      .then((rows) => { setServices(rows); setServiceName(rows.find((row) => row.role === 'primary')?.service_name || rows[0]?.service_name || ''); })
+      .catch((cause) => { setServices([]); setServiceName(''); setError(cause instanceof Error ? cause.message : String(cause)); });
+  }, [applicationId]);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const result = await createInvestigation({ application_id: Number(applicationId), title, severity, occurred_at: new Date().toISOString(), error: { name, message, stack: stack || undefined, properties: {} }, deployment_sha: deployment || undefined, trace_id: trace || undefined });
+      const result = await createInvestigation({ application_id: Number(applicationId), title, severity, occurred_at: new Date().toISOString(), error: { name, message, stack: stack || undefined, properties: {} }, service_name: serviceName, environment: environment || undefined, deployment_sha: deployment || undefined, request_id: requestId || undefined });
       onCreated(result.id);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setBusy(false); }
   }
-  return <div className="audit-backdrop manual-intake-backdrop" onMouseDown={onClose}><form className="manual-intake" onSubmit={(event) => void submit(event)} onMouseDown={(event) => event.stopPropagation()}><header><div><span>手工入口</span><h2>新建错误调查</h2></div><Button type="button" size="icon" variant="ghost" onClick={onClose} aria-label="关闭"><X size={16} /></Button></header><label>应用<Select value={applicationId} onChange={(event) => setApplicationId(event.target.value)}><option value="">选择应用</option>{applications.map((app) => <option key={app.id} value={app.id}>{app.name}</option>)}</Select></label><div className="manual-intake-row"><label>严重级别<Select value={severity} onChange={(event) => setSeverity(event.target.value as 'CRITICAL' | 'WARNING')}><option value="WARNING">WARNING</option><option value="CRITICAL">CRITICAL</option></Select></label><label>错误类型<Input required value={name} onChange={(event) => setName(event.target.value)} /></label></div><label>标题<Input required value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>错误消息<textarea required value={message} onChange={(event) => setMessage(event.target.value)} /></label><label>完整堆栈<textarea className="mono" value={stack} onChange={(event) => setStack(event.target.value)} /></label><div className="manual-intake-row"><label>部署 revision<Input className="mono" value={deployment} onChange={(event) => setDeployment(event.target.value)} /></label><label>Trace ID<Input className="mono" value={trace} onChange={(event) => setTrace(event.target.value)} /></label></div>{error && <p className="manual-intake-error">{error}</p>}<footer><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button type="submit" variant="primary" disabled={busy || !applicationId}>{busy ? '提交中...' : '开始调查'}</Button></footer></form></div>;
+  return <div className="audit-backdrop manual-intake-backdrop" onMouseDown={onClose}><form className="manual-intake" onSubmit={(event) => void submit(event)} onMouseDown={(event) => event.stopPropagation()}><header><div><span>手工入口</span><h2>新建错误调查</h2></div><Button type="button" size="icon" variant="ghost" onClick={onClose} aria-label="关闭"><X size={16} /></Button></header><label>应用<Select value={applicationId} onChange={(event) => setApplicationId(event.target.value)}><option value="">选择应用</option>{applications.map((app) => <option key={app.id} value={app.id}>{app.name}</option>)}</Select></label><div className="manual-intake-row"><label>源服务<Select value={serviceName} onChange={(event) => setServiceName(event.target.value)}><option value="">选择服务</option>{services.map((service) => <option key={service.service_name} value={service.service_name}>{service.service_name}</option>)}</Select></label><label>环境<Input required value={environment} onChange={(event) => setEnvironment(event.target.value)} /></label></div><div className="manual-intake-row"><label>严重级别<Select value={severity} onChange={(event) => setSeverity(event.target.value as 'CRITICAL' | 'WARNING')}><option value="WARNING">WARNING</option><option value="CRITICAL">CRITICAL</option></Select></label><label>错误类型<Input required value={name} onChange={(event) => setName(event.target.value)} /></label></div><label>标题<Input required value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>错误消息<textarea required value={message} onChange={(event) => setMessage(event.target.value)} /></label><label>完整堆栈<textarea className="mono" value={stack} onChange={(event) => setStack(event.target.value)} /></label><div className="manual-intake-row"><label>部署 revision<Input className="mono" value={deployment} onChange={(event) => setDeployment(event.target.value)} /></label><label>Request ID<Input className="mono" value={requestId} onChange={(event) => setRequestId(event.target.value)} /></label></div>{error && <p className="manual-intake-error">{error}</p>}<footer><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button type="submit" variant="primary" disabled={busy || !applicationId || !serviceName}>{busy ? '提交中...' : '开始调查'}</Button></footer></form></div>;
 }

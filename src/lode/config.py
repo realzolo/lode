@@ -112,20 +112,16 @@ class Settings(BaseSettings):
     # Security / auth
     # Required (no default): a missing signing key must fail fast rather than
     # silently fall back to a known placeholder that would forge verifiable tokens.
-    # This key signs JWTs (the *auth* signing key). Data-source credential
-    # encryption uses a separate key — see ``data_encryption_key_ref``.
+    # This key signs JWTs. Integration and other stored credentials use the
+    # independent data-encryption key below.
     secret_key: str
     # Comma-separated list of allowed CORS origins (browser fetch sources).
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     jwt_ttl_seconds: int = 86400
-    # Data-encryption key for at-rest secrets (data-source passwords). Separation
-    # of duties: the auth signing key (``secret_key``) MUST NOT also encrypt
-    # data, so a JWT-signing key leak cannot decrypt stored credentials. This is
-    # strictly an ``env://NAME`` reference (never a plaintext literal); the
-    # referenced value is derived into a Fernet key. When empty, encryption
-    # derives the key from ``secret_key`` for backward compatibility with data
-    # already encrypted under the legacy scheme — new deployments should set this.
-    data_encryption_key_ref: str = ""
+    # Pydantic Settings reads this directly from LODE_DATA_ENCRYPTION_KEY. There
+    # is intentionally no second-stage secret indirection and no signing-key
+    # fallback. Secret operations fail closed when it is not configured.
+    data_encryption_key: str = ""
 
     # Rate limiting (M6 hardening)
     # In-process fixed-window limiter applied to every non-exempt route. The

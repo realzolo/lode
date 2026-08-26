@@ -16,7 +16,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const isAppAdminRoute = pathname === '/admin'
-    || /^\/admin\/applications\/[^/]+(?:\/members)?\/?$/.test(pathname);
+    || /^\/admin\/applications\/[^/]+(?:\/(?:members|integrations|repos|model))?\/?$/.test(pathname);
 
   useEffect(() => {
     if (!loading && !isAdmin && !isAppAdminRoute) {

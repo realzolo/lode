@@ -7,7 +7,7 @@ from lode.db.models.application import Application, ApplicationIngestionRuntime
 
 
 def _app(state: str, version: int = 1) -> Application:
-    app = Application(name="test")
+    app = Application(name="test", ingestion_topic="alerts-test")
     app.ingestion_state = state
     app.ingestion_version = version
     return app

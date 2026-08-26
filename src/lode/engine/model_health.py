@@ -23,7 +23,7 @@ async def probe_model(model: AiModelConfig) -> ModelHealth:
     config = ModelConfig(
         provider=model.provider,
         base_url=model.base_url,
-        api_key_ref=model.api_key_ref,
+        api_key_ciphertext=model.api_key_ciphertext,
         model=model.model,
     )
     result = await complete_with_usage(

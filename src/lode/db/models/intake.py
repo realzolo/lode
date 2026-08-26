@@ -52,7 +52,7 @@ class IngestionEvent(Base):
     offset: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     producer_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
-    trace_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="accepted"
     )
@@ -142,8 +142,7 @@ class AuditEvent(Base):
     application_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("applications.id", ondelete="SET NULL"), nullable=True
     )
-    request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    trace_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     result: Mapped[str] = mapped_column(Text, nullable=False, server_default="ok")
     detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

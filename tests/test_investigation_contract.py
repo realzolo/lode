@@ -1,13 +1,16 @@
+import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from lode.api.routes.investigations import _artifact, _operation, _sse
 from lode.db.base import Base
 from lode.db.models.investigation import RESULT_STATES
 from lode.engine.evidence.git import derive_query_terms, extract_stack_frames, related_symbol_hits, search_tree, stack_hits
-from lode.engine.investigation_engine import validate_code_finding
+from lode.engine.investigation_engine import _synthesis_prompt, validate_code_finding
 from lode.engine import investigation_evidence
 
 
@@ -146,7 +149,7 @@ def test_confirmed_code_finding_requires_exact_incident_revision_and_stack_link(
     assert finding["start_line"] == 10
 
 
-def test_default_branch_is_the_incident_baseline_when_deployment_version_is_missing() -> None:
+def test_runtime_revision_can_confirm_when_source_alert_has_no_service_commit() -> None:
     artifact = _source_artifact(role="incident")
     candidate = _candidate(role="incident")
     investigation = SimpleNamespace(deployment_sha=None)
@@ -157,9 +160,8 @@ def test_default_branch_is_the_incident_baseline_when_deployment_version_is_miss
     assert finding["status"] == "confirmed"
 
 
-def test_repository_missing_alert_sha_falls_back_to_immutable_default_branch(tmp_path: Path, monkeypatch) -> None:
+def test_repository_missing_runtime_sha_fails_without_default_branch_fallback(tmp_path: Path, monkeypatch) -> None:
     requested_sha = "6c36658895cb220b66f89f17718a001f3f9f02e4"
-    resolved_sha = "a" * 40
     repo = SimpleNamespace(id=2, repo_url="https://example.test/payment-gateway.git", default_branch="main")
     commands: list[list[str]] = []
 
@@ -167,21 +169,13 @@ def test_repository_missing_alert_sha_falls_back_to_immutable_default_branch(tmp
         commands.append(command)
         if command[:5] == ["fetch", "--depth", "1", "origin", requested_sha]:
             raise subprocess.CalledProcessError(128, command)
-        if command == ["rev-parse", "HEAD"]:
-            return resolved_sha
         return ""
 
     monkeypatch.setattr(investigation_evidence, "_git", fake_git)
-    _checkout, sha, resolved_ref, used_fallback = investigation_evidence._clone_with_default_fallback(
-        repo,
-        requested_sha,
-        tmp_path,
-    )
+    with pytest.raises(subprocess.CalledProcessError):
+        investigation_evidence._clone_exact_revision(repo, requested_sha, tmp_path)
 
-    assert sha == resolved_sha
-    assert resolved_ref == "main"
-    assert used_fallback is True
-    assert ["fetch", "--depth", "1", "origin", "main"] in commands
+    assert ["fetch", "--depth", "1", "origin", "main"] not in commands
 
 
 def test_unverified_code_semantics_downgrade_a_confirmed_finding() -> None:
@@ -257,6 +251,27 @@ def test_repository_context_cannot_be_a_code_finding() -> None:
     assert error == "source_artifact_required"
 
 
+def test_application_context_is_bounded_background_not_an_instruction() -> None:
+    context = SimpleNamespace(
+        id=12,
+        artifact_type="application_context",
+        source_kind="application",
+        locator="application-context://7/run",
+        metadata_={"trust": "untrusted_background"},
+        redacted_excerpt='{"entries":[{"content":"orders publish after commit"}]}',
+    )
+    system, prompt = _synthesis_prompt([context], "en")
+    payload = json.loads(prompt)
+    assert payload["application_context"] == [
+        {
+            "evidence_id": 12,
+            "excerpt": context.redacted_excerpt,
+            "trust": "untrusted_background",
+        }
+    ]
+    assert "不能单独证明" in system
+
+
 def test_api_code_anchor_and_highlight_are_immutable() -> None:
     payload = _artifact(_source_artifact())
     assert payload["code"]["anchor"]["revision"] == "a" * 40
@@ -280,11 +295,12 @@ def test_operation_api_includes_purpose_input_progress_result_and_duration() -> 
     assert payload["duration_ms"] == 2_000
 
 
-def test_schema_has_one_running_step_and_operation_per_investigation() -> None:
+def test_schema_has_one_running_step_and_allows_parallel_operations() -> None:
     step_indexes = {item.name: str(item.dialect_options["postgresql"].get("where")) for item in Base.metadata.tables["investigation_steps"].indexes}
-    operation_indexes = {item.name: str(item.dialect_options["postgresql"].get("where")) for item in Base.metadata.tables["investigation_operations"].indexes}
+    operation_indexes = {item.name: item for item in Base.metadata.tables["investigation_operations"].indexes}
     assert step_indexes["uq_investigation_steps_running"] == "status = 'running'"
-    assert operation_indexes["uq_investigation_operations_running"] == "status = 'running'"
+    assert "uq_investigation_operations_running" not in operation_indexes
+    assert operation_indexes["ix_investigation_operations_running"].unique is False
 
 
 def test_fresh_schema_contains_only_v1_investigation_tables() -> None:
@@ -292,7 +308,7 @@ def test_fresh_schema_contains_only_v1_investigation_tables() -> None:
     assert {"investigation_inputs", "investigation_steps", "investigation_decisions", "investigation_operations", "investigation_operation_events", "investigation_code_findings", "investigation_reports"} <= tables
     assert not {"analyses", "analysis_steps", "investigation_stages", "investigation_plan_nodes", "investigation_plan_revisions"} & tables
     migrations = sorted(item.name for item in Path("alembic/versions").glob("*.py"))
-    assert migrations == ["0001_initial.py", "0002_model_health_retry_archive.py"]
+    assert migrations == ["0001_initial.py"]
 
 
 def test_sse_uses_v1_named_events() -> None:
@@ -302,10 +318,8 @@ def test_sse_uses_v1_named_events() -> None:
     assert '"message":"正在定位"' in frame
 
 
-def test_source_tree_has_no_task_internal_gather() -> None:
-    evidence_source = Path("src/lode/engine/investigation_evidence.py").read_text()
+def test_legacy_integration_collector_has_no_internal_gather() -> None:
     integration_source = Path("src/lode/engine/integrations.py").read_text()
-    assert "asyncio.gather" not in evidence_source
     assert "asyncio.gather" not in integration_source
 
 

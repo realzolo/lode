@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import asyncio
 import io
 import json
@@ -10,16 +9,6 @@ import urllib.error
 
 from lode.crypto import CryptoError, decrypt_secret, encrypt_secret
 from lode.engine.llm import ModelConfig, ResponseSchema, _usage, complete_with_usage, model_endpoint, resolve_api_key
-
-
-def test_resolve_api_key_env(monkeypatch):
-    monkeypatch.setenv("LODE_TEST_LLM_KEY", "secret-from-env")
-    assert resolve_api_key("env://LODE_TEST_LLM_KEY") == "secret-from-env"
-
-
-def test_resolve_api_key_env_missing_returns_empty():
-    os.environ.pop("LODE_TEST_LLM_MISSING", None)
-    assert resolve_api_key("env://LODE_TEST_LLM_MISSING") == ""
 
 
 def test_resolve_api_key_decrypts_encrypted_literal():
@@ -31,8 +20,7 @@ def test_resolve_api_key_decrypts_encrypted_literal():
 
 
 def test_resolve_api_key_plaintext_literal_raises():
-    # No plaintext fallback: a value that is not a Fernet token (and not an
-    # env:// reference) must fail closed rather than silently returning raw.
+    # No plaintext or indirect-reference fallback is accepted.
     with __import__("pytest").raises(CryptoError):
         resolve_api_key("sk-plaintext-not-encrypted")
 
@@ -80,7 +68,7 @@ def _config() -> ModelConfig:
     return ModelConfig(
         provider="openai",
         base_url="https://model.example",
-        api_key_ref=encrypt_secret("test-key"),
+        api_key_ciphertext=encrypt_secret("test-key"),
         model="test-model",
     )
 

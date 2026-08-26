@@ -1,21 +1,9 @@
-"""Reversible encryption for at-rest secrets (data-source passwords).
-
-Data-source credentials are stored on the ``db_sources`` row so the admin UI
-can supply a connection directly. To avoid keeping plaintext passwords in the
-database we encrypt them with Fernet (AES-128-CBC + HMAC-SHA256) using a key
-derived from ``settings.secret_key``.
-
-The same ``secret_key`` is used for JWT signing, so no new environment variable
-is required. Rotating ``secret_key`` will invalidate already-encrypted
-passwords — admins simply re-enter them. There is no plaintext fallback: if a
-value cannot be decrypted it is treated as a config error (see ``CryptoError``).
-"""
+"""Reversible encryption for all user-managed secrets stored by Lode."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
-import os
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -31,33 +19,10 @@ class CryptoError(Exception):
 
 
 def _resolve_data_encryption_key() -> bytes:
-    """Resolve the Fernet key used to encrypt at-rest data-source secrets.
-
-    Separation of duties: the auth signing key (``settings.secret_key``) MUST NOT
-    also encrypt data, so a JWT-signing-key leak cannot decrypt stored
-    credentials. The dedicated key is supplied via ``data_encryption_key_ref``,
-    which is strictly an ``env://NAME`` reference (never a plaintext literal) —
-    the referenced value is derived into a 32-byte url-safe base64 Fernet key.
-
-    When ``data_encryption_key_ref`` is empty we fall back to deriving the key
-    from ``secret_key``. This preserves the ability to decrypt data already
-    encrypted under the legacy single-key scheme; it is the documented default,
-    not a compatibility shim layered on top of the new path.
-    """
-    ref = settings.data_encryption_key_ref
-    if ref:
-        if not ref.startswith("env://"):
-            raise CryptoError(
-                "DATA_ENCRYPTION_KEY_REF must be an env:// reference, never a "
-                "plaintext literal"
-            )
-        name = ref[len("env://") :]
-        value = os.environ.get(name)
-        if not value:
-            raise CryptoError(f"environment variable '{name}' is not set")
-        digest = hashlib.sha256(value.encode("utf-8")).digest()
-        return base64.urlsafe_b64encode(digest)
-    digest = hashlib.sha256(settings.secret_key.encode("utf-8")).digest()
+    """Derive a Fernet key from the dedicated runtime setting."""
+    if not settings.data_encryption_key:
+        raise CryptoError("LODE_DATA_ENCRYPTION_KEY is required for secret operations")
+    digest = hashlib.sha256(settings.data_encryption_key.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest)
 
 
@@ -97,7 +62,7 @@ def decrypt_secret(ciphertext: str | None) -> str | None:
         return _get_fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
     except InvalidToken as exc:
         raise CryptoError(
-            "could not decrypt data source secret (secret_key may have changed)"
+            "could not decrypt stored secret (data encryption key may have changed)"
         ) from exc
     except Exception as exc:  # pragma: no cover - defensive
         raise CryptoError(f"failed to decrypt secret: {exc}") from exc

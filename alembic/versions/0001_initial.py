@@ -1,4 +1,4 @@
-"""Frozen V1 schema for sequential, evidence-backed investigations.
+"""Frozen V1 schema for bounded-wave, evidence-backed investigations.
 
 Revision ID: 0001_initial
 Revises:
@@ -25,12 +25,18 @@ def upgrade() -> None:
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('provider', sa.Text(), nullable=False),
     sa.Column('base_url', sa.Text(), nullable=False),
-    sa.Column('api_key_ref', sa.Text(), nullable=False),
+    sa.Column('api_key_ciphertext', sa.Text(), nullable=False),
     sa.Column('model', sa.Text(), nullable=False),
     sa.Column('is_default', sa.Boolean(), server_default='false', nullable=False),
+    sa.Column('last_test_status', sa.Text(), server_default='untested', nullable=False),
+    sa.Column('last_tested_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('last_test_latency_ms', sa.Integer(), nullable=True),
+    sa.Column('last_test_error_code', sa.Text(), nullable=True),
+    sa.Column('last_test_error_detail', sa.Text(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("provider IN ('openai', 'anthropic')", name=op.f('ck_ai_model_configs_provider')),
+    sa.CheckConstraint("last_test_status IN ('untested', 'available', 'unavailable')", name=op.f('ck_ai_model_configs_last_test_status')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_ai_model_configs'))
     )
     op.create_index('ux_ai_model_configs_default', 'ai_model_configs', ['is_default'], unique=True, postgresql_where='is_default')
@@ -38,7 +44,7 @@ def upgrade() -> None:
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('auth_type', sa.Text(), server_default='ssh', nullable=False),
     sa.Column('username', sa.Text(), server_default='', nullable=False),
-    sa.Column('secret_ref', sa.Text(), nullable=False),
+    sa.Column('secret_ciphertext', sa.Text(), nullable=False),
     sa.Column('readonly', sa.Boolean(), server_default='true', nullable=False),
     sa.Column('note', sa.Text(), server_default='', nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -71,6 +77,7 @@ def upgrade() -> None:
     op.create_table('applications',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('name', sa.Text(), nullable=False),
+    sa.Column('ingestion_topic', sa.Text(), nullable=False),
     sa.Column('created_by', sa.BigInteger(), nullable=True),
     sa.Column('model_config_id', sa.BigInteger(), nullable=True),
     sa.Column('ingestion_state', sa.Text(), server_default='draft', nullable=False),
@@ -84,7 +91,8 @@ def upgrade() -> None:
     sa.CheckConstraint("ingestion_state IN ('draft', 'active', 'paused')", name=op.f('ck_applications_ingestion_state')),
     sa.ForeignKeyConstraint(['created_by'], ['users.id'], name=op.f('fk_applications_created_by_users'), ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['model_config_id'], ['ai_model_configs.id'], name=op.f('fk_applications_model_config_id_ai_model_configs'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_applications'))
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_applications')),
+    sa.UniqueConstraint('ingestion_topic', name=op.f('uq_applications_ingestion_topic'))
     )
     op.create_table('invites',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
@@ -122,16 +130,14 @@ def upgrade() -> None:
     op.create_index('ix_alerts_application_id', 'alerts', ['application_id'], unique=False)
     op.create_index('ix_alerts_dedupe_key', 'alerts', ['dedupe_key'], unique=False)
     op.create_index('ix_alerts_fields', 'alerts', ['fields'], unique=False, postgresql_using='gin', postgresql_ops={'fields': 'jsonb_path_ops'})
-    op.create_table('application_descriptions',
+    op.create_table('application_architecture_contexts',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('application_id', sa.BigInteger(), nullable=False),
-    sa.Column('description_type', sa.Text(), server_default='deploy', nullable=False),
     sa.Column('content', sa.Text(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint("description_type IN ('deploy', 'other')", name=op.f('ck_application_descriptions_description_type')),
-    sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_application_descriptions_application_id_applications'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_application_descriptions'))
+    sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_application_architecture_contexts_application_id_applications'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_application_architecture_contexts'))
     )
     op.create_table('application_ingestion_offsets',
     sa.Column('application_id', sa.BigInteger(), nullable=False),
@@ -167,29 +173,26 @@ def upgrade() -> None:
     sa.Column('application_id', sa.BigInteger(), nullable=False),
     sa.Column('name', sa.Text(), nullable=False),
     sa.Column('kind', sa.Text(), nullable=False),
+    sa.Column('kind_version', sa.Integer(), server_default='1', nullable=False),
     sa.Column('config', postgresql.JSONB(astext_type=sa.Text()), server_default='{}', nullable=False),
-    sa.Column('secret_ref', sa.Text(), nullable=False),
+    sa.Column('secrets_ciphertext', sa.Text(), nullable=False),
     sa.Column('state', sa.Text(), server_default='active', nullable=False),
-    sa.Column('readonly_verified_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('revision', sa.Integer(), server_default='1', nullable=False),
+    sa.Column('verification_status', sa.Text(), server_default='verified', nullable=False),
+    sa.Column('verified_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_collected_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_error', sa.Text(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint("kind IN ('redis', 'kafka', 'clickhouse')", name=op.f('ck_application_integrations_kind')),
+    sa.CheckConstraint('kind_version > 0', name=op.f('ck_application_integrations_kind_version_positive')),
+    sa.CheckConstraint('revision > 0', name=op.f('ck_application_integrations_revision_positive')),
     sa.CheckConstraint("state IN ('active', 'disabled')", name=op.f('ck_application_integrations_state')),
+    sa.CheckConstraint("verification_status IN ('verified', 'failed')", name=op.f('ck_application_integrations_verification_status')),
     sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_application_integrations_application_id_applications'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_application_integrations'))
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_application_integrations')),
+    sa.UniqueConstraint('application_id', 'name', name='uq_application_integration_name')
     )
-    op.create_index('ix_application_integrations_application_id', 'application_integrations', ['application_id'], unique=False)
-    op.create_table('application_kafka',
-    sa.Column('application_id', sa.BigInteger(), nullable=False),
-    sa.Column('topic', sa.Text(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_application_kafka_application_id_applications'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('application_id', name=op.f('pk_application_kafka')),
-    sa.UniqueConstraint('topic', name=op.f('uq_application_kafka_topic'))
-    )
+    op.create_index('ix_application_integrations_application_state', 'application_integrations', ['application_id', 'state'], unique=False)
     op.create_table('audit_events',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('actor_id', sa.BigInteger(), nullable=True),
@@ -198,8 +201,7 @@ def upgrade() -> None:
     sa.Column('target_type', sa.Text(), nullable=True),
     sa.Column('target_id', sa.Text(), nullable=True),
     sa.Column('application_id', sa.BigInteger(), nullable=True),
-    sa.Column('request_id', sa.Text(), nullable=True),
-    sa.Column('trace_id', sa.Text(), nullable=True),
+    sa.Column('request_id', postgresql.UUID(as_uuid=False), nullable=True),
     sa.Column('result', sa.Text(), server_default='ok', nullable=False),
     sa.Column('detail', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -210,26 +212,6 @@ def upgrade() -> None:
     op.create_index('ix_audit_events_action', 'audit_events', ['action'], unique=False)
     op.create_index('ix_audit_events_actor_id', 'audit_events', ['actor_id'], unique=False)
     op.create_index('ix_audit_events_created_at', 'audit_events', ['created_at'], unique=False)
-    op.create_table('db_sources',
-    sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
-    sa.Column('application_id', sa.BigInteger(), nullable=False),
-    sa.Column('name', sa.Text(), nullable=False),
-    sa.Column('description', sa.Text(), server_default='', nullable=False),
-    sa.Column('conn_secret_ref', sa.Text(), nullable=True),
-    sa.Column('host', sa.Text(), nullable=True),
-    sa.Column('port', sa.Integer(), nullable=True),
-    sa.Column('database', sa.Text(), nullable=True),
-    sa.Column('username', sa.Text(), nullable=True),
-    sa.Column('password', sa.Text(), nullable=True),
-    sa.Column('sslmode', sa.Text(), nullable=True),
-    sa.Column('allowed_tables', postgresql.JSONB(astext_type=sa.Text()), server_default='[]', nullable=False),
-    sa.Column('sensitive_columns', postgresql.JSONB(astext_type=sa.Text()), server_default='[]', nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint("(conn_secret_ref IS NOT NULL AND conn_secret_ref ~ '^env://[A-Za-z_][A-Za-z0-9_]*$' AND host IS NULL AND port IS NULL AND database IS NULL AND username IS NULL AND password IS NULL AND sslmode IS NULL) OR (conn_secret_ref IS NULL AND host IS NOT NULL AND database IS NOT NULL AND sslmode = 'verify-full')", name=op.f('ck_db_sources_secure_connection')),
-    sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_db_sources_application_id_applications'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_db_sources'))
-    )
     op.create_table('dead_letters',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('kind', sa.Text(), nullable=False),
@@ -249,25 +231,6 @@ def upgrade() -> None:
     op.create_index('ix_dead_letters_created_at', 'dead_letters', ['created_at'], unique=False)
     op.create_index('ix_dead_letters_kind', 'dead_letters', ['kind'], unique=False)
     op.create_index('uq_dead_letters_source', 'dead_letters', ['topic', 'partition', 'offset', 'kind'], unique=True, postgresql_where=sa.text('partition IS NOT NULL AND "offset" IS NOT NULL'))
-    op.create_table('evidence_connectors',
-    sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
-    sa.Column('application_id', sa.BigInteger(), nullable=False),
-    sa.Column('name', sa.Text(), nullable=False),
-    sa.Column('kind', sa.Text(), nullable=False),
-    sa.Column('state', sa.Text(), server_default='active', nullable=False),
-    sa.Column('config', postgresql.JSONB(astext_type=sa.Text()), server_default='{}', nullable=False),
-    sa.Column('secret_ref', sa.Text(), nullable=True),
-    sa.Column('diagnostic_profile', postgresql.JSONB(astext_type=sa.Text()), server_default='{}', nullable=False),
-    sa.Column('collection_budget_seconds', sa.Integer(), server_default='15', nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint("kind IN ('loki', 'prometheus', 'tempo', 'postgres', 'redis', 'kafka', 'clickhouse')", name=op.f('ck_evidence_connectors_kind')),
-    sa.CheckConstraint("state IN ('active', 'disabled')", name=op.f('ck_evidence_connectors_state')),
-    sa.CheckConstraint('collection_budget_seconds BETWEEN 1 AND 60', name=op.f('ck_evidence_connectors_budget')),
-    sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_evidence_connectors_application_id_applications'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_evidence_connectors'))
-    )
-    op.create_index('ix_evidence_connectors_application', 'evidence_connectors', ['application_id', 'state'], unique=False)
     op.create_table('git_repos',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('name', sa.Text(), nullable=False),
@@ -287,6 +250,29 @@ def upgrade() -> None:
     )
     op.create_index('ux_git_repos_app_repo_url', 'git_repos', ['application_id', 'repo_url'], unique=True, postgresql_where="scope = 'application'")
     op.create_index('ux_git_repos_global_repo_url', 'git_repos', ['repo_url'], unique=True, postgresql_where="scope = 'global'")
+    op.create_table('services',
+    sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
+    sa.Column('service_name', sa.Text(), nullable=False),
+    sa.Column('repo_id', sa.BigInteger(), nullable=False),
+    sa.Column('state', sa.Text(), server_default='active', nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("state IN ('active', 'disabled')", name=op.f('ck_services_state')),
+    sa.ForeignKeyConstraint(['repo_id'], ['git_repos.id'], name=op.f('fk_services_repo_id_git_repos'), ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_services')),
+    sa.UniqueConstraint('service_name', name=op.f('uq_services_service_name'))
+    )
+    op.create_table('application_service_bindings',
+    sa.Column('application_id', sa.BigInteger(), nullable=False),
+    sa.Column('service_id', sa.BigInteger(), nullable=False),
+    sa.Column('role', sa.Text(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("role IN ('primary', 'shared')", name=op.f('ck_application_service_bindings_role')),
+    sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_application_service_bindings_application'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['service_id'], ['services.id'], name=op.f('fk_application_service_bindings_service'), ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('application_id', 'service_id', name=op.f('pk_application_service_bindings'))
+    )
+    op.create_index('uq_application_service_primary', 'application_service_bindings', ['application_id'], unique=True, postgresql_where=sa.text("role = 'primary'"))
     op.create_table('ingestion_events',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('application_id', sa.BigInteger(), nullable=True),
@@ -295,7 +281,7 @@ def upgrade() -> None:
     sa.Column('offset', sa.BigInteger(), nullable=True),
     sa.Column('producer_event_id', sa.Text(), nullable=True),
     sa.Column('payload_hash', sa.Text(), nullable=True),
-    sa.Column('trace_id', sa.Text(), nullable=True),
+    sa.Column('request_id', postgresql.UUID(as_uuid=False), nullable=True),
     sa.Column('status', sa.Text(), server_default='accepted', nullable=False),
     sa.Column('received_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -360,7 +346,7 @@ def upgrade() -> None:
     sa.Column('output_language', sa.Text(), nullable=False),
     sa.Column('service_name', sa.Text(), nullable=True),
     sa.Column('environment', sa.Text(), nullable=True),
-    sa.Column('trace_id', sa.Text(), nullable=True),
+    sa.Column('request_id', postgresql.UUID(as_uuid=False), nullable=True),
     sa.Column('deployment_sha', sa.Text(), nullable=True),
     sa.Column('window_started_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('window_finished_at', sa.DateTime(timezone=True), nullable=False),
@@ -371,6 +357,9 @@ def upgrade() -> None:
     sa.Column('engine_version', sa.Text(), nullable=True),
     sa.Column('report_version', sa.Integer(), server_default='0', nullable=False),
     sa.Column('event_cursor', sa.Integer(), server_default='0', nullable=False),
+    sa.Column('retry_of_id', sa.BigInteger(), nullable=True),
+    sa.Column('archived_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('archived_by', sa.BigInteger(), nullable=True),
     sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -382,11 +371,28 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['alert_id'], ['alerts.id'], name=op.f('fk_investigations_alert_id_alerts'), ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_investigations_application_id_applications'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['incident_id'], ['incidents.id'], name=op.f('fk_investigations_incident_id_incidents'), ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['retry_of_id'], ['investigations.id'], name=op.f('fk_investigations_retry_of_id_investigations'), ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['archived_by'], ['users.id'], name=op.f('fk_investigations_archived_by_users'), ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_investigations')),
     sa.UniqueConstraint('public_id', name=op.f('uq_investigations_public_id'))
     )
     op.create_index('ix_investigations_application_created', 'investigations', ['application_id', 'created_at'], unique=False)
     op.create_index('ix_investigations_incident', 'investigations', ['incident_id'], unique=False)
+    op.create_index('ix_investigations_retry_of', 'investigations', ['retry_of_id'], unique=False)
+    op.create_table('investigation_service_snapshots',
+    sa.Column('investigation_id', sa.BigInteger(), nullable=False),
+    sa.Column('service_id', sa.BigInteger(), nullable=False),
+    sa.Column('service_name', sa.Text(), nullable=False),
+    sa.Column('repo_id', sa.BigInteger(), nullable=False),
+    sa.Column('role', sa.Text(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("role IN ('primary', 'shared')", name=op.f('ck_investigation_service_snapshots_role')),
+    sa.ForeignKeyConstraint(['investigation_id'], ['investigations.id'], name='fk_inv_service_snapshot_inv', ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['service_id'], ['services.id'], name='fk_inv_service_snapshot_service', ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['repo_id'], ['git_repos.id'], name='fk_inv_service_snapshot_repo', ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('investigation_id', 'service_id', name=op.f('pk_investigation_service_snapshots'))
+    )
+    op.create_index('ix_investigation_service_snapshots_service', 'investigation_service_snapshots', ['service_id'], unique=False)
     op.create_table('investigation_findings',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('investigation_id', sa.BigInteger(), nullable=False),
@@ -500,6 +506,7 @@ def upgrade() -> None:
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('investigation_id', sa.BigInteger(), nullable=False),
     sa.Column('repo_id', sa.BigInteger(), nullable=True),
+    sa.Column('service_id', sa.BigInteger(), nullable=True),
     sa.Column('role', sa.Text(), nullable=False),
     sa.Column('requested_ref', sa.Text(), nullable=True),
     sa.Column('resolved_sha', sa.Text(), nullable=True),
@@ -512,9 +519,10 @@ def upgrade() -> None:
     sa.CheckConstraint("status IN ('queued', 'resolved', 'unresolved', 'failed')", name=op.f('ck_source_revisions_status')),
     sa.ForeignKeyConstraint(['investigation_id'], ['investigations.id'], name=op.f('fk_source_revisions_investigation_id_investigations'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['repo_id'], ['git_repos.id'], name=op.f('fk_source_revisions_repo_id_git_repos'), ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['service_id'], ['services.id'], name=op.f('fk_source_revisions_service_id_services'), ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_source_revisions'))
     )
-    op.create_index('uq_source_revisions_run_repo_role', 'source_revisions', ['investigation_id', 'repo_id', 'role'], unique=True)
+    op.create_index('uq_source_revisions_run_service_ref', 'source_revisions', ['investigation_id', 'service_id', 'requested_ref'], unique=True)
     op.create_table('evidence_collections',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('investigation_id', sa.BigInteger(), nullable=False),
@@ -554,6 +562,8 @@ def upgrade() -> None:
     sa.Column('total_tokens', sa.Integer(), nullable=True),
     sa.Column('token_source', sa.Text(), server_default='unavailable', nullable=False),
     sa.Column('error_code', sa.Text(), nullable=True),
+    sa.Column('error_detail', sa.Text(), nullable=True),
+    sa.Column('attempt_count', sa.Integer(), server_default='1', nullable=False),
     sa.Column('summary', sa.Text(), server_default='', nullable=False),
     sa.Column('evidence_refs', postgresql.JSONB(astext_type=sa.Text()), server_default='[]', nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -626,7 +636,7 @@ def upgrade() -> None:
     )
     op.create_index('ix_investigation_operations_step', 'investigation_operations', ['step_id', 'ordinal'], unique=False)
     op.create_index('uq_investigation_operations_ordinal', 'investigation_operations', ['investigation_id', 'ordinal'], unique=True)
-    op.create_index('uq_investigation_operations_running', 'investigation_operations', ['investigation_id'], unique=True, postgresql_where=sa.text("status = 'running'"))
+    op.create_index('ix_investigation_operations_running', 'investigation_operations', ['investigation_id'], unique=False, postgresql_where=sa.text("status = 'running'"))
     op.create_table('evidence_artifacts',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=True), nullable=False),
     sa.Column('investigation_id', sa.BigInteger(), nullable=False),
@@ -639,7 +649,7 @@ def upgrade() -> None:
     sa.Column('redacted_excerpt', sa.Text(), nullable=False),
     sa.Column('metadata', postgresql.JSONB(astext_type=sa.Text()), server_default='{}', nullable=False),
     sa.Column('collected_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint("artifact_type IN ('incident_input', 'source_file', 'source_diff', 'log', 'metric', 'trace', 'dependency', 'database', 'operator_input')", name=op.f('ck_evidence_artifacts_type')),
+    sa.CheckConstraint("artifact_type IN ('incident_input', 'application_context', 'source_file', 'source_diff', 'log', 'metric', 'trace', 'dependency', 'database', 'operator_input')", name=op.f('ck_evidence_artifacts_type')),
     sa.ForeignKeyConstraint(['collection_id'], ['evidence_collections.id'], name=op.f('fk_evidence_artifacts_collection_id_evidence_collections'), ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['investigation_id'], ['investigations.id'], name=op.f('fk_evidence_artifacts_investigation_id_investigations'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_evidence_artifacts'))
@@ -723,12 +733,12 @@ def upgrade() -> None:
         DECLARE table_name text;
         BEGIN
             FOREACH table_name IN ARRAY ARRAY[
-                'ai_model_configs', 'applications', 'application_kafka',
+                'ai_model_configs', 'applications',
                 'application_ingestion_runtime', 'application_repos',
-                'application_descriptions', 'db_sources', 'git_credentials',
-                'git_repos', 'incidents', 'dead_letters',
+                'application_architecture_contexts', 'git_credentials',
+                'git_repos', 'services', 'incidents', 'dead_letters',
                 'application_integrations', 'investigations',
-                'evidence_connectors', 'user_application_perms',
+                'user_application_perms',
                 'platform_settings', 'users', 'invites'
             ] LOOP
                 EXECUTE format(
@@ -766,12 +776,11 @@ def upgrade() -> None:
         END;
         $$ LANGUAGE plpgsql
     """))
-    for table_name in ("application_integrations", "evidence_connectors"):
-        op.execute(sa.text(f"""
-            CREATE TRIGGER trg_{table_name}_secret_free_config
-            BEFORE INSERT OR UPDATE OF config ON {table_name}
-            FOR EACH ROW EXECUTE FUNCTION reject_secret_bearing_config()
-        """))
+    op.execute(sa.text("""
+        CREATE TRIGGER trg_application_integrations_secret_free_config
+        BEFORE INSERT OR UPDATE OF config ON application_integrations
+        FOR EACH ROW EXECUTE FUNCTION reject_secret_bearing_config()
+    """))
     # ### end Alembic commands ###
 
 
@@ -789,7 +798,7 @@ def downgrade() -> None:
     op.drop_table('investigation_operation_events')
     op.drop_index('ix_evidence_artifacts_investigation', table_name='evidence_artifacts')
     op.drop_table('evidence_artifacts')
-    op.drop_index('uq_investigation_operations_running', table_name='investigation_operations', postgresql_where=sa.text("status = 'running'"))
+    op.drop_index('ix_investigation_operations_running', table_name='investigation_operations', postgresql_where=sa.text("status = 'running'"))
     op.drop_index('uq_investigation_operations_ordinal', table_name='investigation_operations')
     op.drop_index('ix_investigation_operations_step', table_name='investigation_operations')
     op.drop_table('investigation_operations')
@@ -802,7 +811,7 @@ def downgrade() -> None:
     op.drop_table('investigation_ai_invocations')
     op.drop_index('ix_evidence_collections_investigation', table_name='evidence_collections')
     op.drop_table('evidence_collections')
-    op.drop_index('uq_source_revisions_run_repo_role', table_name='source_revisions')
+    op.drop_index('uq_source_revisions_run_service_ref', table_name='source_revisions')
     op.drop_table('source_revisions')
     op.drop_index('uq_investigation_steps_running', table_name='investigation_steps', postgresql_where=sa.text("status = 'running'"))
     op.drop_index('uq_investigation_steps_ordinal', table_name='investigation_steps')
@@ -814,6 +823,9 @@ def downgrade() -> None:
     op.drop_table('investigation_inputs')
     op.drop_index('uq_investigation_findings_ordinal', table_name='investigation_findings')
     op.drop_table('investigation_findings')
+    op.drop_index('ix_investigation_service_snapshots_service', table_name='investigation_service_snapshots')
+    op.drop_table('investigation_service_snapshots')
+    op.drop_index('ix_investigations_retry_of', table_name='investigations')
     op.drop_index('ix_investigations_incident', table_name='investigations')
     op.drop_index('ix_investigations_application_created', table_name='investigations')
     op.drop_table('investigations')
@@ -823,27 +835,26 @@ def downgrade() -> None:
     op.drop_table('user_application_perms')
     op.drop_index('uq_ingestion_events_topic_partition_offset', table_name='ingestion_events')
     op.drop_table('ingestion_events')
+    op.drop_index('uq_application_service_primary', table_name='application_service_bindings', postgresql_where=sa.text("role = 'primary'"))
+    op.drop_table('application_service_bindings')
+    op.drop_table('services')
     op.drop_index('ux_git_repos_global_repo_url', table_name='git_repos', postgresql_where="scope = 'global'")
     op.drop_index('ux_git_repos_app_repo_url', table_name='git_repos', postgresql_where="scope = 'application'")
     op.drop_table('git_repos')
-    op.drop_index('ix_evidence_connectors_application', table_name='evidence_connectors')
-    op.drop_table('evidence_connectors')
     op.drop_index('uq_dead_letters_source', table_name='dead_letters', postgresql_where=sa.text('partition IS NOT NULL AND "offset" IS NOT NULL'))
     op.drop_index('ix_dead_letters_kind', table_name='dead_letters')
     op.drop_index('ix_dead_letters_created_at', table_name='dead_letters')
     op.drop_table('dead_letters')
-    op.drop_table('db_sources')
     op.drop_index('ix_audit_events_created_at', table_name='audit_events')
     op.drop_index('ix_audit_events_actor_id', table_name='audit_events')
     op.drop_index('ix_audit_events_action', table_name='audit_events')
     op.drop_table('audit_events')
-    op.drop_table('application_kafka')
-    op.drop_index('ix_application_integrations_application_id', table_name='application_integrations')
+    op.drop_index('ix_application_integrations_application_state', table_name='application_integrations')
     op.drop_table('application_integrations')
     op.drop_table('application_ingestion_runtime')
     op.drop_index('ix_application_ingestion_offsets_topic', table_name='application_ingestion_offsets')
     op.drop_table('application_ingestion_offsets')
-    op.drop_table('application_descriptions')
+    op.drop_table('application_architecture_contexts')
     op.drop_index('ix_alerts_fields', table_name='alerts', postgresql_using='gin', postgresql_ops={'fields': 'jsonb_path_ops'})
     op.drop_index('ix_alerts_dedupe_key', table_name='alerts')
     op.drop_index('ix_alerts_application_id', table_name='alerts')

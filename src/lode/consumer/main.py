@@ -2,8 +2,8 @@
 
 Reliability contract (production-grade):
 
-* Routing is purely topic-based: the topic maps to an application via
-  ``application_kafka``. Messages that fail validation go to the dead-letter
+* Routing is purely topic-based: the required application ingestion topic is
+  globally unique. Messages that fail validation go to the dead-letter
   topic; messages whose topic is not mapped to any application go to the
   unassigned topic.
 * A message is **idempotent** at the Kafka level: ``ingestion_events`` has a
@@ -46,9 +46,10 @@ from lode.consumer.alert_schema import AlertMessage, normalize_alert_error
 from lode.db.models.alert import Alert
 from lode.db.models.application import (
     Application,
+    ApplicationServiceBinding,
     ApplicationIngestionOffset,
     ApplicationIngestionRuntime,
-    ApplicationKafka,
+    Service,
 )
 from lode.db.models.intake import DeadLetter, Incident, IngestionEvent
 from lode.db.models.investigation import Investigation
@@ -101,12 +102,11 @@ async def load_active_bindings() -> dict[str, ActiveBinding]:
         rows = (
             await session.execute(
                 select(
-                    ApplicationKafka.application_id,
-                    ApplicationKafka.topic,
+                    Application.id,
+                    Application.ingestion_topic,
                     Application.ingestion_version,
                     Application.ingestion_start_position,
                 )
-                .join(Application, Application.id == ApplicationKafka.application_id)
                 .where(Application.ingestion_state == "active")
             )
         ).all()
@@ -255,12 +255,9 @@ async def _record_dead_letter(
 async def resolve_application_id(
     session: AsyncSession, topic: str, *, active_only: bool = False
 ) -> int | None:
-    stmt = select(ApplicationKafka.application_id).where(ApplicationKafka.topic == topic)
+    stmt = select(Application.id).where(Application.ingestion_topic == topic)
     if active_only:
-        stmt = (
-            stmt.join(Application, Application.id == ApplicationKafka.application_id)
-            .where(Application.ingestion_state == "active")
-        )
+        stmt = stmt.where(Application.ingestion_state == "active")
     result = await session.execute(
         stmt
     )
@@ -292,7 +289,7 @@ async def _persist(
     alert: Alert,
     producer_event_id: str | None,
     payload_hash: str | None,
-    trace_id: str | None,
+    request_id: str | None,
 ) -> tuple[int, int]:
     """Atomically record the ingestion event, alert, investigation and queued job.
 
@@ -310,7 +307,7 @@ async def _persist(
         producer_event_id=producer_event_id,
         payload_hash=payload_hash,
         status="accepted",
-        trace_id=trace_id,
+        request_id=request_id,
     )
     db.add(ie)
     await db.flush()  # enforces (topic, partition, offset) uniqueness
@@ -347,25 +344,9 @@ async def _persist(
 
     setting = await db.get(PlatformSetting, AI_OUTPUT_LANGUAGE_SETTING_KEY)
     output_language = normalize_ai_output_language(setting.value if setting is not None else None)
-    fields = alert.fields or {}
     envelope = alert.raw_payload or {}
-    def scope_value(keys: tuple[str, ...]) -> tuple[str | None, str | None]:
-        for key in keys:
-            if fields.get(key) not in (None, ""):
-                return str(fields[key]), f"alert.fields.{key}"
-        return None, None
-
-    deployment_sha = envelope.get("git_commit")
-    deployment_source = "alert.git_commit" if deployment_sha not in (None, "", "unknown") else None
-    deployment_sha = str(deployment_sha) if deployment_source else None
-    application_version = envelope.get("version")
-    service_name, service_source = scope_value(("service", "service_name"))
-    environment, environment_source = scope_value(("environment", "env"))
-    if trace_id is None:
-        trace_id, trace_source = scope_value(("trace_id", "traceId"))
-    else:
-        trace_source = "kafka.header.trace_id"
-    normalized_error = normalize_alert_error(AlertMessage.model_validate(envelope))
+    message = AlertMessage.model_validate(envelope)
+    normalized_error = normalize_alert_error(message)
     investigation, job = await create_investigation(
         db,
         application_id=application_id,
@@ -381,22 +362,21 @@ async def _persist(
         error_cause=normalized_error.cause,
         error_properties=normalized_error.properties,
         fields=alert.fields or {},
-        service_name=service_name,
-        environment=environment,
-        trace_id=trace_id,
-        deployment_sha=deployment_sha,
-        application_version=str(application_version) if application_version is not None else None,
+        service_name=message.service_name,
+        environment=message.environment,
+        request_id=str(message.request_id),
+        deployment_sha=message.git_commit,
+        application_version=None,
         source_metadata={
             "schema_version": envelope.get("schema_version"),
             "alert_id": envelope.get("alert_id"),
-            "event_type": envelope.get("event_type"),
-            "dedupe_key": envelope.get("dedupe_key"),
+            "event": envelope.get("event"),
         },
         scope_sources={
-            "service": service_source,
-            "environment": environment_source,
-            "deployment_sha": deployment_source,
-            "trace_id": trace_source,
+            "service": "alert.service_name",
+            "environment": "alert.environment",
+            "deployment_sha": "alert.git_commit",
+            "request_id": "alert.request_id",
             "topic": topic,
             "partition": str(partition) if partition is not None else None,
             "offset": str(offset) if offset is not None else None,
@@ -452,7 +432,6 @@ async def process_message(
     partition: int | None = None,
     offset: int | None = None,
     session: AsyncSession | None = None,
-    trace_id: str | None = None,
     require_active_binding: bool = False,
 ) -> str:
     """Validate, route, dedupe, persist a queued job, and return a status.
@@ -488,19 +467,19 @@ async def process_message(
         )
         return "dlq"
 
-    # The producer computes the dedupe key via lark-alert.ts buildAlertKey and
-    # carries it verbatim on the wire — we trust it directly (no recompute).
-    dedupe_key = msg.dedupe_key
+    dedupe_key = hashlib.sha256(
+        f"{msg.service_name}:{msg.event}:{msg.request_id}".encode()
+    ).hexdigest()
 
     if session is not None:
         return await _process_with_session(
-            session, producer, topic, dedupe_key, msg, data, partition, offset, trace_id,
+            session, producer, topic, dedupe_key, msg, data, partition, offset,
             require_active_binding,
         )
 
     async with AsyncSessionLocal() as db:
         return await _process_with_session(
-            db, producer, topic, dedupe_key, msg, data, partition, offset, trace_id,
+            db, producer, topic, dedupe_key, msg, data, partition, offset,
             require_active_binding,
         )
 
@@ -514,7 +493,6 @@ async def _process_with_session(
     data: dict[str, Any],
     partition: int | None,
     offset: int | None,
-    trace_id: str | None,
     require_active_binding: bool,
 ) -> str:
     app_id = (
@@ -536,19 +514,49 @@ async def _process_with_session(
         )
         return "unassigned"
 
+    source_service = (
+        await session.execute(
+            select(Service.id)
+            .join(
+                ApplicationServiceBinding,
+                ApplicationServiceBinding.service_id == Service.id,
+            )
+            .where(
+                ApplicationServiceBinding.application_id == app_id,
+                Service.service_name == msg.service_name,
+                Service.state == "active",
+            )
+        )
+    ).scalar_one_or_none()
+    if source_service is None:
+        MESSAGES_RECEIVED.labels(outcome="dlq").inc()
+        await _route_failure(
+            producer,
+            session,
+            topic=topic,
+            kind="dlq",
+            reason="alert source service is not bound to the application",
+            payload=data,
+            dedupe_key=dedupe_key,
+            application_id=app_id,
+            partition=partition,
+            offset=offset,
+        )
+        return "dlq"
+
     normalized_error = normalize_alert_error(msg)
     alert = Alert(
         dedupe_key=dedupe_key,
         application_id=app_id,
         topic=topic,
-        title=msg.title,
+        title=msg.event,
         level=msg.level_value,
         alert_id=msg.alert_id,
         occurred_at=msg.occurred_at,
-        dedupe_ttl_seconds=msg.dedupe_ttl_seconds,
-        error_log=msg.error_log.model_dump() if msg.error_log is not None else None,
+        dedupe_ttl_seconds=None,
+        error_log=msg.error.model_dump(),
         error_message=normalized_error.message[:ERROR_MAX_LENGTH],
-        fields=msg.fields,
+        fields=msg.correlation.model_dump(exclude_none=True),
         raw_payload=msg.model_dump(mode="json"),
     )
 
@@ -572,7 +580,7 @@ async def _process_with_session(
             alert=alert,
             producer_event_id=None,
             payload_hash=None,
-            trace_id=trace_id,
+            request_id=str(msg.request_id),
         )
     except IntegrityError:
         await session.rollback()

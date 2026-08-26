@@ -30,12 +30,12 @@ export default function ApplicationOverviewPage({ params }: { params: { id: stri
               {data.my_perm === 'admin' ? (
                 <TopicEditor
                   appId={params.id}
-                  initial={data.topic ?? ''}
+                  initial={data.ingestion_topic}
                   onSaved={onRefresh}
                 />
               ) : (
                 <Input
-                  value={data.topic ?? ''}
+                  value={data.ingestion_topic}
                   placeholder={tAdmin('topicPlaceholder')}
                   className="grow"
                   style={{ maxWidth: 360 }}
@@ -46,8 +46,8 @@ export default function ApplicationOverviewPage({ params }: { params: { id: stri
 
             {isAdmin && <div className="row" style={{ gap: 12, marginTop: 20, flexWrap: 'wrap' }}>
               <StatCard label={tn('repositories')} count={data.repos.length} href={`/admin/applications/${params.id}/repos`} />
-              <StatCard label={tn('descriptions')} count={data.descriptions.length} href={`/admin/applications/${params.id}/descriptions`} />
-              <StatCard label={tn('dataSources')} count={data.db_sources.length} href={`/admin/applications/${params.id}/db`} />
+              <StatCard label={tn('model')} count={data.architecture_contexts.length} href={`/admin/applications/${params.id}/model`} />
+              <StatCard label="集成服务" count={data.integrations.length} href={`/admin/applications/${params.id}/integrations`} />
             </div>}
           </>
         )}
@@ -57,7 +57,7 @@ export default function ApplicationOverviewPage({ params }: { params: { id: stri
 }
 
 // Admin-only Kafka topic editor. Mirrors the pattern in /settings → AI model:
-// type-to-edit, save commits, blank input clears the binding. ``onSaved`` is
+// type-to-edit; the topic is required and can only be replaced. ``onSaved`` is
 // called after the backend confirms so the parent loader re-fetches.
 function TopicEditor({
   appId,
@@ -97,7 +97,7 @@ function TopicEditor({
   }
 
   const dirty = value.trim() !== initial.trim();
-  const canSave = dirty && !busy;
+  const canSave = dirty && Boolean(value.trim()) && !busy;
 
   return (
     <div className="stack" style={{ gap: 6 }}>

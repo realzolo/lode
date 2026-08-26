@@ -156,9 +156,10 @@ async function getJson<T>(path: string): Promise<T> {
 interface ApiApplication {
   id: number;
   name: string;
-  topic: string | null;
+  ingestion_topic: string;
   latest_level: string;
-  repo_count: number;
+  service_count: number;
+  primary_service_configured: boolean;
   model_configured: boolean;
   model_available: boolean;
   ingestion_state: 'draft' | 'active' | 'paused';
@@ -182,15 +183,17 @@ export interface InvestigationOperation { id: string; step_id: number; ordinal: 
 export interface InvestigationStep { id: string; db_id: number; ordinal: number; kind: string; title: string; objective: string; selection_reason: string; expected_evidence: string; tool_name: string | null; tool_input: Record<string, unknown>; status: InvestigationStepStatus; input_refs: number[]; output_refs: number[]; result: string; failure: { code: string; detail: string | null } | null; started_at: string | null; finished_at: string | null; duration_ms: number | null; }
 export interface InvestigationCodeFinding { id: number; artifact_id: number | null; status: 'confirmed' | 'hypothesis' | 'no_defect' | 'not_found'; repo_id: number | null; revision: string | null; revision_role: 'incident' | 'latest' | null; path: string | null; symbol: string | null; start_line: number | null; end_line: number | null; issue_type: string | null; faulty_behavior: string; why_wrong: string; expected_behavior: string; trigger_condition: string; causal_chain: string[]; incident_evidence_refs: number[]; supporting_evidence_refs: number[]; counter_evidence_refs: number[]; missing_validation: string[]; fix_direction: string; test_scenario: string; created_at: string; }
 export interface InvestigationReport { result_state: Exclude<InvestigationResultState, 'pending'>; headline: string; summary: string; incident_cause: { status: string; mechanism: string; why: string; causal_chain: string[]; evidence_refs: number[] }; code_diagnosis: { status: string; summary: string; findings: unknown[] }; confirmed_facts: { text: string; evidence_refs: number[] }[]; counter_evidence: ({ text: string; evidence_refs: number[] } | string)[]; evidence_gaps: string[]; next_step: { type?: string; text?: string }; evidence_refs: number[]; }
-export interface InvestigationDetail { id: string; application_id: number; application_name: string; status: InvestigationStatus; result_state: InvestigationResultState; output_language: 'en' | 'zh'; scope: { service: string | null; environment: string | null; trace_id: string | null; deployment_sha: string | null; sources: Record<string, string | null>; window_started_at: string; window_finished_at: string }; review_required: boolean; review_reasons: string[]; engine_version: string | null; created_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null; archived_at: string | null; archived_by: number | null; input: { source_type: string; title: string; severity: string; occurred_at: string; error: { name: string; message: string; stack: string | null; cause: unknown; properties: Record<string, unknown> }; fields: Record<string, unknown> } | null; report: InvestigationReport | null; steps: InvestigationStep[]; decisions: { id: number; ordinal: number; after_step_id: number | null; action: string; selected_tool: string | null; rationale: string; hypothesis: Record<string, unknown>; evidence_refs: number[]; created_at: string }[]; operations: InvestigationOperation[]; evidence: InvestigationEvidence[]; code_findings: InvestigationCodeFinding[]; event_cursor: number; }
+export interface InvestigationDetail { id: string; application_id: number; application_name: string; status: InvestigationStatus; result_state: InvestigationResultState; output_language: 'en' | 'zh'; scope: { service: string | null; environment: string | null; request_id: string | null; deployment_sha: string | null; sources: Record<string, string | null>; window_started_at: string; window_finished_at: string }; review_required: boolean; review_reasons: string[]; engine_version: string | null; created_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null; archived_at: string | null; archived_by: number | null; input: { source_type: string; title: string; severity: string; occurred_at: string; error: { name: string; message: string; stack: string | null; cause: unknown; properties: Record<string, unknown> }; fields: Record<string, unknown> } | null; report: InvestigationReport | null; steps: InvestigationStep[]; decisions: { id: number; ordinal: number; after_step_id: number | null; action: string; selected_tool: string | null; rationale: string; hypothesis: Record<string, unknown>; evidence_refs: number[]; created_at: string }[]; operations: InvestigationOperation[]; evidence: InvestigationEvidence[]; code_findings: InvestigationCodeFinding[]; event_cursor: number; }
 export interface InvestigationLiveEvent { type: string; sequence?: number; payload: Record<string, unknown>; }
-export interface InvestigationCreateInput { application_id: number; title: string; severity: 'CRITICAL' | 'WARNING'; occurred_at: string; error: { name: string; message: string; stack?: string; cause?: unknown; properties?: Record<string, unknown> }; service_name?: string; environment?: string; trace_id?: string; deployment_sha?: string; fields?: Record<string, unknown>; attachments?: { kind: 'log' | 'trace' | 'dependency' | 'gateway_response'; label: string; content: string }[]; }
+export interface InvestigationCreateInput { application_id: number; title: string; severity: 'CRITICAL' | 'WARNING'; occurred_at: string; error: { name: string; message: string; stack?: string; cause?: unknown; properties?: Record<string, unknown> }; service_name: string; environment?: string; request_id?: string; deployment_sha?: string; fields?: Record<string, unknown>; attachments?: { kind: 'log' | 'trace' | 'dependency' | 'gateway_response'; label: string; content: string }[]; }
+export interface ApplicationServiceBinding { id: number; application_id: number; service_name: string; repo_id: number; state: 'active' | 'disabled'; role: 'primary' | 'shared'; }
 export interface InvestigationAuditCall { id: number; step_id: number | null; purpose: string; provider: string | null; model: string | null; status: string; prompt_template_version: string; input_hash: string; output_hash: string | null; latency_ms: number; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; token_source: string; error_code: string | null; error_detail: string | null; attempt_count: number; summary: string; evidence_refs: number[]; created_at: string; }
 export interface InvestigationAuditPage { operations: { items: InvestigationOperation[]; next_cursor: number | null }; ai_calls: { items: InvestigationAuditCall[]; next_cursor: number | null }; }
 
 export async function fetchInvestigations(): Promise<InvestigationSummary[]> { return getJson('/investigations'); }
 export async function fetchInvestigation(id: string): Promise<InvestigationDetail> { return getJson('/investigations/' + encodeURIComponent(id)); }
 export async function createInvestigation(body: InvestigationCreateInput): Promise<{ id: string; job_id: string; status: 'queued' }> { return postJson('/investigations', body); }
+export async function fetchApplicationServices(applicationId: string | number): Promise<ApplicationServiceBinding[]> { return getJson(`/applications/${applicationId}/services`); }
 export async function retryInvestigation(id: string): Promise<{ id: string; job_id: string; status: 'queued'; retry_of: string }> { return postJson(`/investigations/${encodeURIComponent(id)}/retry`, {}); }
 export async function archiveInvestigation(id: string): Promise<{ id: string; archived_at: string; read_only: true }> { return postJson(`/investigations/${encodeURIComponent(id)}/archive`, {}); }
 export async function fetchInvestigationAudit(id: string, operationCursor = 0, aiCursor = 0): Promise<InvestigationAuditPage> { return getJson(`/investigations/${encodeURIComponent(id)}/audit?operation_cursor=${operationCursor}&ai_cursor=${aiCursor}&limit=50`); }
@@ -251,9 +254,10 @@ export async function fetchApplications(): Promise<Application[]> {
   return rows.map((r) => ({
     id: String(r.id),
     name: r.name,
-    topic: r.topic ?? '',
+    ingestionTopic: r.ingestion_topic,
     level: (r.latest_level as Level) ?? 'WARNING',
-    repoCount: r.repo_count,
+    serviceCount: r.service_count,
+    primaryServiceConfigured: r.primary_service_configured,
     modelConfigured: r.model_configured,
     modelAvailable: r.model_available,
     ingestionState: r.ingestion_state,
@@ -267,7 +271,7 @@ export async function fetchApplications(): Promise<Application[]> {
 export async function fetchApplication(id: string): Promise<{
   id: number;
   name: string;
-  topic: string | null;
+  ingestion_topic: string;
   model_config_id: number | null;
   ingestion_state: 'draft' | 'active' | 'paused';
   my_perm: string | null;
@@ -281,8 +285,7 @@ export async function fetchApplication(id: string): Promise<{
     default_branch: string;
     description: string;
   }[];
-  descriptions: { id: number; description_type: string; content: string }[];
-  db_sources: DbSourceRow[];
+  architecture_contexts: { id: number; content: string }[];
   integrations: ApplicationIntegrationRow[];
 }> {
   return getJson(`/applications/${id}`);
@@ -290,7 +293,7 @@ export async function fetchApplication(id: string): Promise<{
 
 export interface IngestionStatus {
   application_id: number;
-  topic: string | null;
+  ingestion_topic: string;
   desired_state: 'draft' | 'active' | 'paused';
   observed_state: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
   ingestion_version: number;
@@ -324,17 +327,17 @@ export async function resumeApplicationIngestion(id: string | number): Promise<I
 // Per-application admin writes
 // ---------------------------------------------------------------------------
 //
-// These back the per-application Settings tabs (Kafka topic, repos, descriptions,
-// data sources). Every call requires the caller to be an admin; the backend
+// These back the per-application settings (Kafka topic, repositories, model
+// context, and integrations). Every call requires an application admin; the backend
 // enforces this with ``Depends(require_admin)`` and the 403 surfaces here as a
 // thrown ``Error``.
 
 export async function setApplicationTopic(
   applicationId: string | number,
-  topic: string | null
-): Promise<{ application_id: number; topic: string | null }> {
-  return putJson(`/applications/${applicationId}/topic`, {
-    topic: topic && topic.trim() ? topic.trim() : null,
+  ingestionTopic: string
+): Promise<{ application_id: number; ingestion_topic: string }> {
+  return putJson(`/applications/${applicationId}/ingestion-topic`, {
+    ingestion_topic: ingestionTopic.trim(),
   });
 }
 
@@ -395,69 +398,34 @@ export async function unbindRepo(
   }
 }
 
-export interface CreateDbSourceInput {
-  name: string;
-  description: string;
-  // Mode 1: structured connection fields (built into a DSN at query time).
-  host?: string;
-  port?: number;
-  database?: string;
-  username?: string;
-  password?: string;
-  // Mode 2: secret reference (env:// / bare DSN). Either this or the
-  // structured fields must be supplied.
-  conn_secret_ref?: string;
-  sslmode?: string | null;
-  allowed_tables: string[];
-  sensitive_columns: string[];
-}
-
-export interface UpdateDbSourceInput {
-  name?: string;
-  description?: string;
-  host?: string;
-  port?: number;
-  database?: string;
-  username?: string;
-  password?: string;
-  conn_secret_ref?: string;
-  sslmode?: string | null;
-  allowed_tables?: string[];
-  sensitive_columns?: string[];
-}
-
-export interface DbSourceRow {
-  id: number;
-  application_id: number;
-  name: string;
-  description: string;
-  conn_secret_ref: string | null;
-  host: string | null;
-  port: number | null;
-  database: string | null;
-  username: string | null;
-  has_password: boolean;
-  sslmode: string | null;
-  allowed_tables: string[];
-  sensitive_columns: string[];
-}
-
 export interface ApplicationIntegrationRow {
   id: number;
   application_id: number;
   name: string;
-  kind: 'redis' | 'kafka' | 'clickhouse';
-    state: 'active' | 'disabled';
-  readonly_verified_at: string | null;
+  kind: string;
+  kind_version: number;
+  revision: number;
+  state: 'active' | 'disabled';
+  verification_status: 'verified' | 'failed';
+  verified_at: string | null;
   last_collected_at: string | null;
   last_error: string | null;
+  configured_secret_fields: string[];
 }
 
 export interface ApplicationIntegrationInput {
     name: string;
-    kind: 'redis' | 'kafka' | 'clickhouse';
+    kind: string;
     config: Record<string, unknown>;
-    secret_ref: string;
+    secrets: Record<string, string>;
+}
+
+export interface IntegrationKind {
+  kind: string;
+  version: number;
+  label: string;
+  capabilities: string[];
+  form: { key: string; input: 'text' | 'number' | 'password' | 'select' | 'string-list'; required: boolean; secret?: boolean; options?: string[] }[];
 }
 
 export interface ApplicationIntegrationConfiguration extends ApplicationIntegrationRow {
@@ -488,40 +456,8 @@ export async function deleteApplicationIntegration(applicationId: string | numbe
   }
 }
 
-export async function createDbSource(
-  applicationId: string | number,
-  input: CreateDbSourceInput
-): Promise<DbSourceRow> {
-  return postJson(`/applications/${applicationId}/db-sources`, input);
-}
-
-export async function updateDbSource(
-  applicationId: string | number,
-  sourceId: number,
-  input: UpdateDbSourceInput
-): Promise<DbSourceRow> {
-  return putJson(`/applications/${applicationId}/db-sources/${sourceId}`, input);
-}
-
-export async function testDbSource(
-  applicationId: string | number,
-  input: CreateDbSourceInput
-): Promise<{ ok: boolean; latency_ms: number | null; error: string | null }> {
-  return postJson(`/applications/${applicationId}/db-sources/test`, input);
-}
-
-export async function deleteDbSource(
-  applicationId: string | number,
-  sourceId: number
-): Promise<void> {
-  const res = await apiFetch(
-    `/applications/${applicationId}/db-sources/${sourceId}`,
-    { method: 'DELETE', headers: authHeaders() }
-  );
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `delete data source failed: ${res.status}`));
-  }
+export async function fetchIntegrationKinds(): Promise<IntegrationKind[]> {
+  return getJson('/integration-kinds');
 }
 
 // ---------------------------------------------------------------------------
@@ -540,16 +476,16 @@ export interface QueryResult {
 }
 
 export interface RunQueryInput {
-  source_id: number;
   table: string;
   operation: 'sample' | 'count';
 }
 
 export async function executeQuery(
   applicationId: string | number,
+  integrationId: number,
   input: RunQueryInput
 ): Promise<QueryResult> {
-  return postJson<QueryResult>(`/applications/${applicationId}/query`, input);
+  return postJson<QueryResult>(`/applications/${applicationId}/integrations/${integrationId}/query`, input);
 }
 
 export async function setApplicationModel(
@@ -561,41 +497,40 @@ export async function setApplicationModel(
   });
 }
 
-export interface CreateApplicationDescriptionInput {
-  description_type: 'deploy' | 'other';
+export interface CreateApplicationArchitectureContextInput {
   content: string;
 }
 
-export interface ApplicationDescriptionRow {
+export interface ApplicationArchitectureContextRow {
   id: number;
   application_id: number;
-  description_type: string;
   content: string;
 }
 
-export async function createApplicationDescription(
+export async function createApplicationArchitectureContext(
   applicationId: string | number,
-  input: CreateApplicationDescriptionInput
-): Promise<ApplicationDescriptionRow> {
-  return postJson(`/applications/${applicationId}/descriptions`, input);
+  input: CreateApplicationArchitectureContextInput
+): Promise<ApplicationArchitectureContextRow> {
+  return postJson(`/applications/${applicationId}/architecture-contexts`, input);
 }
 
-export async function deleteApplicationDescription(
+export async function deleteApplicationArchitectureContext(
   applicationId: string | number,
-  descriptionId: number
+  contextId: number
 ): Promise<void> {
   const res = await apiFetch(
-    `/applications/${applicationId}/descriptions/${descriptionId}`,
+    `/applications/${applicationId}/architecture-contexts/${contextId}`,
     { method: 'DELETE', headers: authHeaders() }
   );
   assertAuthenticated(res);
   if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `delete description failed: ${res.status}`));
+    throw new Error(await responseErrorMessage(res, `delete architecture context failed: ${res.status}`));
   }
 }
 
 export interface CreateApplicationInput {
   name: string;
+  ingestion_topic: string;
 }
 
 export async function createApplication(input: CreateApplicationInput): Promise<Application> {
@@ -603,9 +538,10 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   return {
     id: String(row.id),
     name: row.name,
-    topic: row.topic ?? '',
+    ingestionTopic: row.ingestion_topic,
     level: (row.latest_level as Level) ?? 'WARNING',
-    repoCount: row.repo_count,
+    serviceCount: row.service_count,
+    primaryServiceConfigured: row.primary_service_configured,
     modelConfigured: row.model_configured,
     modelAvailable: row.model_available,
     ingestionState: row.ingestion_state,
@@ -705,7 +641,7 @@ export async function updateAiOutputLanguage(
 export interface AiModelInput {
   provider: string;
   base_url: string;
-  api_key_ref: string;
+  api_key: string;
   model: string;
   is_default: boolean;
 }
@@ -750,7 +686,7 @@ export async function deleteAiModel(id: number): Promise<void> {
 export interface GitCredentialInput {
   auth_type: string;
   username: string;
-  secret_ref: string;
+  secret: string;
   readonly: boolean;
   note: string;
 }

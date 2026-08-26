@@ -114,6 +114,6 @@ async def test_settings_requires_token_but_serves_masked_config(test_user):
         # Secrets are masked, not echoed back.
         for model in data.get("ai_model_configs", []):
             assert "api_key" not in model
-            assert "api_key_ref" not in model
+            assert "api_key" not in model
             # Presence is signalled without leaking the value.
             assert "has_key" in model

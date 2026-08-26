@@ -66,7 +66,7 @@ async def test_record_audit_event_writes_row():
     assert event.application_id == 3
     assert event.result == "ok"
     assert event.detail == {"tables": ["orders"]}
-    assert isinstance(event.request_id, str)
+    assert event.request_id is None
     assert session.added == [event]
 
 
@@ -99,7 +99,7 @@ async def test_audit_action_never_raises_on_commit_failure(monkeypatch):
     monkeypatch.setattr(audit, "AsyncSessionLocal", _fake_maker(session))
     # Must not propagate even when the underlying commit fails.
     await audit_action(action="x", actor_id=1)
-    assert get_request_id()  # contextvar is always available
+    assert get_request_id() is None
 
 
 @pytest.mark.asyncio
@@ -110,4 +110,4 @@ async def test_audit_action_never_raises_on_connect_failure(monkeypatch):
     monkeypatch.setattr(audit, "AsyncSessionLocal", _boom_maker)
     # A connection failure must be swallowed, never break the observed operation.
     await audit_action(action="y", actor_id=2)
-    assert get_request_id()
+    assert get_request_id() is None

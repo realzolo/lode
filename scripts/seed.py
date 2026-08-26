@@ -9,7 +9,8 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from lode.db.models.application import Application, ApplicationKafka
+from lode.db.models.application import Application, ApplicationServiceBinding, Service
+from lode.db.models.git import GitRepo
 from lode.db.models.investigation import Investigation
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
@@ -39,10 +40,25 @@ async def main() -> None:
             )
             session.add(user)
             await session.flush()
-            app = Application(name=APP_NAME, created_by=user.id)
+            app = Application(name=APP_NAME, ingestion_topic=TOPIC, created_by=user.id)
             session.add(app)
             await session.flush()
-            session.add(ApplicationKafka(application_id=app.id, topic=TOPIC))
+            repo = GitRepo(
+                name="checkout-service",
+                repo_url="https://example.com/checkout-service.git",
+                default_branch="main",
+                repo_type="other",
+            )
+            session.add(repo)
+            await session.flush()
+            service = Service(service_name="checkout-service", repo_id=repo.id)
+            session.add(service)
+            await session.flush()
+            session.add(
+                ApplicationServiceBinding(
+                    application_id=app.id, service_id=service.id, role="primary"
+                )
+            )
             await session.commit()
             logger.info("created application id=%s topic=%s", app.id, TOPIC)
 

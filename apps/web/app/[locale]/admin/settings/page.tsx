@@ -321,7 +321,7 @@ function AiModelManager({
     const payload: AiModelInput = {
       provider,
       base_url: baseUrl,
-      api_key_ref: apiKeyRef,
+      api_key: apiKeyRef,
       model,
       is_default: isDefault,
     };
@@ -389,7 +389,7 @@ function AiModelManager({
               onChange={(e) => setBaseUrl(e.target.value)}
             />
             <Input
-              placeholder="api_key_ref (env://OPENAI_API_KEY or literal)"
+              placeholder="API key"
               value={apiKeyRef}
               onChange={(e) => setApiKeyRef(e.target.value)}
             />
@@ -508,7 +508,7 @@ function GitCredentialManager({
   async function handleSubmit() {
     setBusy(true);
     onError(null);
-    // On edit, only send ``secret_ref`` when the operator actually typed one —
+    // On edit, only send ``secret`` when the operator actually typed one.
     // the backend keeps the existing secret otherwise.
     const payload: Partial<GitCredentialInput> = {
       auth_type: authType,
@@ -516,12 +516,12 @@ function GitCredentialManager({
       readonly,
       note,
     };
-    if (secretRef) payload.secret_ref = secretRef;
+    if (secretRef) payload.secret = secretRef;
     try {
       if (editingId != null) {
         await updateGitCredential(editingId, payload);
       } else {
-        await createGitCredential({ ...(payload as GitCredentialInput), secret_ref: secretRef });
+        await createGitCredential({ ...(payload as GitCredentialInput), secret: secretRef });
       }
       resetForm();
       setShowForm(false);

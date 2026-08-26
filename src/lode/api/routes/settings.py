@@ -5,11 +5,8 @@ configuration the Settings UI renders. The AI-model configuration write
 endpoints (``POST/PUT/DELETE /settings/ai-models``) are **admin only** and let
 operators register OpenAI-/Anthropic-compatible endpoints.
 
-Secrets (``api_key_ref``) are never returned to the client — only non-sensitive
-metadata. We support ``env://NAME`` references so the real credential stays in
-the deployment environment and never lands in the database row. A literal key
-supplied directly is encrypted at rest (Fernet, keyed off ``secret_key``) so the
-plaintext never persists in the ``ai_model_configs`` table.
+Secrets are never returned to the client. Submitted credentials are encrypted
+immediately and only ciphertext is persisted.
 """
 
 from __future__ import annotations
@@ -45,15 +42,11 @@ from lode.engine.model_health import ModelHealth, probe_model, record_model_heal
 from sqlalchemy import select
 
 
-def _store_key_ref(api_key_ref: str) -> str:
-    """Normalize an ``api_key_ref`` for storage.
-
-    ``env://NAME`` references are kept verbatim. A literal key is encrypted with
-    :func:`encrypt_secret` so the plaintext never lands in the database row.
-    """
-    if api_key_ref.startswith("env://"):
-        return api_key_ref
-    return encrypt_secret(api_key_ref) or ""
+def _store_secret(secret: str) -> str:
+    """Encrypt a submitted secret; indirect reference syntax is unsupported."""
+    if secret.strip().lower().startswith("env:/"):
+        raise HTTPException(status_code=422, detail="indirect environment secret references are not supported")
+    return encrypt_secret(secret) or ""
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -85,7 +78,7 @@ async def get_settings() -> dict:
                 "username": c.username,
                 "readonly": c.readonly,
                 "note": c.note,
-                "has_secret": bool(c.secret_ref),
+                "has_secret": bool(c.secret_ciphertext),
             }
             for c in creds
         ],
@@ -109,7 +102,7 @@ async def get_settings() -> dict:
                 "base_url": m.base_url,
                 "model": m.model,
                 "is_default": m.is_default,
-                "has_key": bool(m.api_key_ref),
+                "has_key": bool(m.api_key_ciphertext),
                 "last_test_status": m.last_test_status,
                 "last_tested_at": m.last_tested_at,
                 "last_test_latency_ms": m.last_test_latency_ms,
@@ -156,7 +149,7 @@ def _row_to_out(m: AiModelConfig) -> AiModelConfigOut:
         base_url=m.base_url,
         model=m.model,
         is_default=m.is_default,
-        has_key=bool(m.api_key_ref),
+        has_key=bool(m.api_key_ciphertext),
         last_test_status=m.last_test_status,
         last_tested_at=m.last_tested_at,
         last_test_latency_ms=m.last_test_latency_ms,
@@ -219,8 +212,8 @@ async def create_ai_model(
     payload: AiModelConfigIn, _admin: int = Depends(require_admin)
 ) -> AiModelConfigOut:
     async with AsyncSessionLocal() as session:
-        if not payload.api_key_ref:
-            raise HTTPException(status_code=422, detail="api_key_ref is required")
+        if not payload.api_key:
+            raise HTTPException(status_code=422, detail="api_key is required")
 
         # If this becomes the default, demote any existing default before the
         # insert so the one-default partial index is never violated
@@ -232,7 +225,7 @@ async def create_ai_model(
         model = AiModelConfig(
             provider=payload.provider,
             base_url=payload.base_url,
-            api_key_ref=_store_key_ref(payload.api_key_ref),
+            api_key_ciphertext=_store_secret(payload.api_key),
             model=payload.model,
             is_default=payload.is_default,
         )
@@ -263,11 +256,8 @@ async def update_ai_model(
 
         model.provider = payload.provider
         model.base_url = payload.base_url
-        # Only overwrite the secret when a non-empty value is supplied, so
-        # operators can update metadata without re-pasting the key. A literal
-        # value is re-encrypted at rest; an ``env://`` reference is kept as-is.
-        if payload.api_key_ref:
-            model.api_key_ref = _store_key_ref(payload.api_key_ref)
+        if payload.api_key:
+            model.api_key_ciphertext = _store_secret(payload.api_key)
         model.model = payload.model
         model.last_test_status = "untested"
         model.last_tested_at = None
@@ -358,7 +348,7 @@ def _cred_to_out(c: GitCredential) -> GitCredentialOut:
         username=c.username,
         readonly=c.readonly,
         note=c.note,
-        has_secret=bool(c.secret_ref),
+        has_secret=bool(c.secret_ciphertext),
     )
 
 
@@ -370,9 +360,7 @@ async def create_git_credential(
         cred = GitCredential(
             auth_type=payload.auth_type,
             username=payload.username,
-            # Encrypt a literal secret at rest; keep ``env://`` references
-            # verbatim so the real credential stays in the deployment env.
-            secret_ref=_store_key_ref(payload.secret_ref),
+            secret_ciphertext=_store_secret(payload.secret),
             readonly=payload.readonly,
             note=payload.note,
         )
@@ -402,8 +390,8 @@ async def update_git_credential(
             cred.username = payload.username
         # Only overwrite the secret when a non-empty value is supplied, so
         # operators can rotate metadata without re-pasting the credential.
-        if payload.secret_ref:
-            cred.secret_ref = _store_key_ref(payload.secret_ref)
+        if payload.secret:
+            cred.secret_ciphertext = _store_secret(payload.secret)
         if payload.readonly is not None:
             cred.readonly = payload.readonly
         if payload.note is not None:

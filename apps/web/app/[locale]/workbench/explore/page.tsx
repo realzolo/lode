@@ -6,18 +6,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import { Table, THead, TBody, Tr, Th, Td } from '@/components/ui/table';
-import { fetchApplications, fetchApplication, executeQuery, type QueryResult } from '@/lib/api';
+import { fetchApplications, fetchApplication, getApplicationIntegration, executeQuery, type QueryResult } from '@/lib/api';
 import type { Application } from '@/lib/types';
 
 interface SourceRow {
   id: number;
   name: string;
-  conn_secret_ref: string | null;
-  host: string | null;
-  port: number | null;
-  database: string | null;
-  username: string | null;
-  has_password: boolean;
   allowed_tables: string[];
 }
 
@@ -68,19 +62,13 @@ export default function ExplorePage() {
     setLoading(true);
     setError(null);
     fetchApplication(appId)
-      .then((data) => {
-        const ds: SourceRow[] = (data.db_sources || []).map((s) => ({
-          id: s.id,
-          name: s.name,
-          conn_secret_ref: s.conn_secret_ref,
-          host: s.host,
-          port: s.port,
-          database: s.database,
-          username: s.username,
-          has_password: s.has_password,
-          allowed_tables: Array.isArray(s.allowed_tables)
-            ? (s.allowed_tables as unknown[]).map(String)
-            : [],
+      .then(async (data) => {
+        const databaseIntegrations = data.integrations.filter((item) => item.kind === 'database' && item.state === 'active');
+        const configurations = await Promise.all(databaseIntegrations.map((item) => getApplicationIntegration(appId, item.id)));
+        const ds: SourceRow[] = configurations.map((item) => ({
+          id: item.id,
+          name: item.name,
+          allowed_tables: Array.isArray(item.config.allowed_tables) ? item.config.allowed_tables.map(String) : [],
         }));
         setSources(ds);
         const first = ds[0];
@@ -101,8 +89,7 @@ export default function ExplorePage() {
     setError(null);
     setResult(null);
     try {
-      const res = await executeQuery(appId, {
-        source_id: sourceId,
+      const res = await executeQuery(appId, sourceId, {
         table,
         operation,
       });

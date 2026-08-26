@@ -1,4 +1,4 @@
-"""Rich, append-only operation events for the sequential investigation engine."""
+"""Rich, append-only operation events for bounded-wave investigations."""
 
 from __future__ import annotations
 
@@ -106,6 +106,59 @@ async def start_operation(
     if commit:
         await session.commit()
     return operation
+
+
+async def start_operations(
+    session,
+    definitions: list[dict[str, Any]],
+    *,
+    commit: bool = False,
+) -> list[InvestigationOperation]:
+    """Allocate a wave's operation ordinals once before concurrent I/O starts."""
+    if not definitions:
+        return []
+    investigation_ids = {int(item["investigation_id"]) for item in definitions}
+    if len(investigation_ids) != 1:
+        raise ValueError("one operation wave must belong to one investigation")
+    investigation_id = investigation_ids.pop()
+    first_ordinal = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.max(InvestigationOperation.ordinal), 0)).where(
+                    InvestigationOperation.investigation_id == investigation_id
+                )
+            )
+        ).scalar_one()
+    ) + 1
+    operations: list[InvestigationOperation] = []
+    now = datetime.now(UTC)
+    for offset, definition in enumerate(definitions):
+        operation = InvestigationOperation(
+            investigation_id=investigation_id,
+            step_id=int(definition["step_id"]),
+            ordinal=first_ordinal + offset,
+            kind=str(definition["kind"]),
+            actor=str(definition["actor"]),
+            title=_safe(definition["title"], string_limit=200),
+            purpose=_safe(definition["purpose"], string_limit=1_000),
+            input_summary=_safe(definition.get("input_summary") or {}),
+            status="running",
+            started_at=now,
+        )
+        session.add(operation)
+        operations.append(operation)
+    await session.flush()
+    for operation, definition in zip(operations, definitions, strict=True):
+        await _append(
+            session,
+            operation,
+            kind="started",
+            message=str(definition["message"]),
+            detail={"input": operation.input_summary},
+        )
+    if commit:
+        await session.commit()
+    return operations
 
 
 async def progress_operation(

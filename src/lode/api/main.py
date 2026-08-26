@@ -33,8 +33,10 @@ from lode.api.routes.auth import router as auth_router
 from lode.api.routes.dead_letters import router as dead_letters_router
 from lode.api.routes.health import router as health_router
 from lode.api.routes.invites import router as invites_router
+from lode.api.routes.integration_kinds import router as integration_kinds_router
 from lode.api.routes.metrics import router as metrics_router
 from lode.api.routes.settings import router as settings_router
+from lode.api.routes.services import router as services_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
 from lode.migrations import run_migrations
@@ -46,7 +48,7 @@ from lode.api.audit import _request_id
 
 class RequestIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = _request_id.get()
+        record.request_id = _request_id.get() or "-"
         return True
 
 
@@ -93,7 +95,11 @@ app.add_middleware(
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):
-    rid = request.headers.get("x-request-id") or uuid.uuid4().hex
+    try:
+        incoming = uuid.UUID(request.headers.get("x-request-id", ""))
+        rid = str(incoming) if incoming.version == 4 else str(uuid.uuid4())
+    except ValueError:
+        rid = str(uuid.uuid4())
     request.state.request_id = rid
     token = _request_id.set(rid)
     try:
@@ -170,8 +176,10 @@ app.include_router(auth_router)
 _protected = [Depends(require_user)]
 app.include_router(investigations_router, dependencies=_protected)
 app.include_router(applications_router, dependencies=_protected)
+app.include_router(integration_kinds_router, dependencies=_protected)
 app.include_router(alerts_router, dependencies=_protected)
 app.include_router(settings_router, dependencies=_protected)
+app.include_router(services_router, dependencies=_protected)
 app.include_router(users_router, dependencies=_protected)
 
 # Invites: admin endpoints carry require_admin (which itself requires auth);

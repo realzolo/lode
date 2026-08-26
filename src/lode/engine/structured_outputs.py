@@ -1,4 +1,4 @@
-"""Strict model-output contracts for the sequential investigation engine."""
+"""Strict model-output contracts for the investigation engine."""
 
 from __future__ import annotations
 

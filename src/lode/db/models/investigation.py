@@ -1,4 +1,4 @@
-"""Canonical V1 models for sequential, evidence-backed investigations."""
+"""Canonical V1 models for bounded-wave, evidence-backed investigations."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Identity, Index, Integer, Text, text as sql_text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from typing import Any
 
@@ -35,7 +35,7 @@ class Investigation(Base):
     output_language: Mapped[str] = mapped_column(Text, nullable=False)
     service_name: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(Text)
-    trace_id: Mapped[str | None] = mapped_column(Text)
+    request_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
     deployment_sha: Mapped[str | None] = mapped_column(Text)
     window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     window_finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -174,7 +174,7 @@ class InvestigationOperation(Base):
         CheckConstraint("actor IN ('engine', 'ai', 'collector')", name="actor"),
         CheckConstraint("status IN ('queued', 'running', 'succeeded', 'partial', 'blocked', 'failed', 'canceled')", name="status"),
         Index("uq_investigation_operations_ordinal", "investigation_id", "ordinal", unique=True),
-        Index("uq_investigation_operations_running", "investigation_id", unique=True, postgresql_where=sql_text("status = 'running'")),
+        Index("ix_investigation_operations_running", "investigation_id", postgresql_where=sql_text("status = 'running'")),
         Index("ix_investigation_operations_step", "step_id", "ordinal"),
     )
 
@@ -380,7 +380,7 @@ class EvidenceArtifact(Base):
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
 
     __table_args__ = (
-        CheckConstraint("artifact_type IN ('incident_input', 'source_file', 'source_diff', 'log', 'metric', 'trace', 'dependency', 'database', 'operator_input')", name="type"),
+        CheckConstraint("artifact_type IN ('incident_input', 'application_context', 'source_file', 'source_diff', 'log', 'metric', 'trace', 'dependency', 'database', 'operator_input')", name="type"),
         Index("ix_evidence_artifacts_investigation", "investigation_id", "collection_id"),
     )
 
@@ -391,6 +391,7 @@ class SourceRevision(Base):
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
     repo_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("git_repos.id", ondelete="SET NULL"))
+    service_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("services.id", ondelete="SET NULL"))
     role: Mapped[str] = mapped_column(Text, nullable=False)
     requested_ref: Mapped[str | None] = mapped_column(Text)
     resolved_sha: Mapped[str | None] = mapped_column(Text)
@@ -403,7 +404,37 @@ class SourceRevision(Base):
     __table_args__ = (
         CheckConstraint("role IN ('incident', 'latest')", name="role"),
         CheckConstraint("status IN ('queued', 'resolved', 'unresolved', 'failed')", name="status"),
-        Index("uq_source_revisions_run_repo_role", "investigation_id", "repo_id", "role", unique=True),
+        Index("uq_source_revisions_run_service_ref", "investigation_id", "service_id", "requested_ref", unique=True),
+    )
+
+
+class InvestigationServiceSnapshot(Base):
+    """Immutable service access scope captured when an investigation is created."""
+
+    __tablename__ = "investigation_service_snapshots"
+
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    service_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("services.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    service_name: Mapped[str] = mapped_column(Text, nullable=False)
+    repo_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_repos.id", ondelete="RESTRICT"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
+    )
+
+    __table_args__ = (
+        CheckConstraint("role IN ('primary', 'shared')", name="role"),
+        Index("ix_investigation_service_snapshots_service", "service_id"),
     )
 
 
@@ -431,27 +462,4 @@ class InvestigationJob(Base):
         CheckConstraint("status IN ('queued', 'running', 'retry_wait', 'succeeded', 'dead')", name="status"),
         Index("ix_investigation_jobs_available", "status", "available_at", "priority", "created_at"),
         Index("uq_investigation_jobs_active_incident", "incident_id", unique=True, postgresql_where=sql_text("incident_id IS NOT NULL AND status IN ('queued', 'running', 'retry_wait')")),
-    )
-
-
-class EvidenceConnector(Base):
-    __tablename__ = "evidence_connectors"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    application_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("applications.id", ondelete="CASCADE"), nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    kind: Mapped[str] = mapped_column(Text, nullable=False)
-    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
-    config: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    secret_ref: Mapped[str | None] = mapped_column(Text)
-    diagnostic_profile: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    collection_budget_seconds: Mapped[int] = mapped_column(Integer, nullable=False, server_default="15")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("kind IN ('loki', 'prometheus', 'tempo', 'postgres', 'redis', 'kafka', 'clickhouse')", name="kind"),
-        CheckConstraint("state IN ('active', 'disabled')", name="state"),
-        CheckConstraint("collection_budget_seconds BETWEEN 1 AND 60", name="budget"),
-        Index("ix_evidence_connectors_application", "application_id", "state"),
     )

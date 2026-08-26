@@ -38,11 +38,19 @@ A source file is only a candidate. A code finding must identify an immutable art
 
 External failures remain valid incident causes. Code diagnosis independently reports `no_defect`, `not_found`, or an exact resilience finding such as missing timeout, retry, validation, or error preservation.
 
-## Application Startup
+## Applications And Integrations
 
-An application can start or resume Kafka ingestion only when it has at least one bound repository, a configured Kafka topic, and an explicitly selected AI model that passed a live protocol test. Binding a model tests it before saving; model settings also provide an explicit retest action. The backend checks these requirements in one fail-closed gate and returns HTTP 409 with `error.code = "application_not_ready"` plus `error.details.missing` when configuration is incomplete. A global default model does not replace the required application model selection.
+Creating an application atomically requires its name and globally unique Kafka ingestion topic. An application can start or resume Kafka ingestion only when it also has a primary service binding and an explicitly selected AI model that passed a live protocol test. Binding a model tests it before saving; model settings also provide an explicit retest action. The backend checks these requirements in one fail-closed gate and returns HTTP 409 with `error.code = "application_not_ready"` plus `error.details.missing` when configuration is incomplete. A global default model does not replace the required application model selection.
 
 The application dashboard shows the three startup requirements before activation and disables submission while its current application snapshot is incomplete. The API repeats the checks on every start and resume, so stale UI state and direct API calls cannot bypass them.
+
+Database, Kafka evidence, ClickHouse, Loki, and Prometheus connections are peer application integrations. Every kind supports multiple named instances. Kinds are registered in code with versioned config and secret contracts, capabilities, connection verification, evidence adapters, and dynamic form metadata; the database does not constrain the kind values. Redis is not supported.
+
+The investigation engine consumes capabilities such as `snapshot`, `query_catalog`, and `log_search`, not product names. Loki is one built-in log-search adapter and can be replaced by another registered product. PostgreSQL and MySQL database integrations expose only server-owned `sample` and `count` operations over administrator-allowlisted tables. Arbitrary SQL and model-generated external queries are never accepted.
+
+All submitted integration, model, and Git secrets are encrypted with an independent `LODE_DATA_ENCRYPTION_KEY` and are never returned. Indirect environment references are not accepted. Integration endpoints must use DNS names, TLS, and the deployment egress allowlist.
+
+Model selection and application architecture context live on one page. Architecture context is masked and snapshotted when an investigation is created, then supplied to every model phase as untrusted background. It can explain service boundaries and deployment design, but cannot override system rules or serve as incident proof by itself.
 
 ## Kafka `alert.v1`
 
@@ -100,13 +108,14 @@ Kafka and manual intake call the same normalization, evidence archiving, and job
 
 ## Data Model
 
-`alembic/versions/0001_initial.py` is the frozen V1 baseline. `0002_model_health_retry_archive.py` upgrades an existing V1 database with model health results, AI retry attempt audit, investigation retry lineage, and irreversible archive state.
+`alembic/versions/0001_initial.py` is the only unreleased V1 baseline. Development databases are recreated from it; there is no V2 migration or old-schema adapter.
 
 There is no historical payload conversion, dual schema, or API adapter. Partial unique indexes enforce at most one running step and one running operation per investigation. Server startup applies pending migrations automatically.
 
 ```bash
 uv sync --extra dev
 export LODE_SECRET_KEY='replace-with-a-random-secret'
+export LODE_DATA_ENCRYPTION_KEY='replace-with-a-different-random-secret'
 uv run alembic upgrade head
 uv run python scripts/seed.py
 ```
@@ -123,6 +132,7 @@ For the complete local stack:
 
 ```bash
 export LODE_SECRET_KEY='replace-with-a-random-secret'
+export LODE_DATA_ENCRYPTION_KEY='replace-with-a-different-random-secret'
 docker compose up --build
 ```
 
@@ -146,7 +156,7 @@ uv run python -m compileall -q src scripts alembic tests
 cd apps/web && pnpm typecheck && pnpm build
 ```
 
-Schema verification must run `alembic upgrade head` against a newly created PostgreSQL database. Source evidence collection needs read access to the repositories configured for the application. All connector inputs are server-controlled and read-only; model output cannot introduce commands, SQL, URLs, paths, or credentials.
+Schema verification must run `alembic upgrade head` and `alembic check` against a newly created PostgreSQL database. MySQL integration support uses the `asyncmy` runtime dependency. Source evidence collection needs read access to the repositories configured for the application. All connector inputs are server-controlled and read-only; model output cannot introduce commands, SQL, URLs, paths, or credentials.
 
 OpenAI-compatible base URLs are resolved to `/v1/chat/completions`, and Anthropic base URLs to `/v1/messages`. Evidence-rich model calls use provider-enforced strict JSON Schemas, an 8192-token output bound, and a configurable 120-second per-attempt timeout; health probes use 30 seconds. OpenAI-compatible providers use JSON Schema response format and Anthropic uses a forced schema-bound tool result. Transient failures (network, timeout, HTTP 429, and HTTP 5xx) retry with visible progress, while deterministic authentication, request, or non-JSON protocol failures stop immediately. The report and AI audit show the precise failure and actual attempt count instead of a generic unavailable label. Two invalid structured outputs make that run unavailable and explicitly do not imply that its evidence was insufficient.
 

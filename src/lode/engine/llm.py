@@ -15,7 +15,6 @@ import asyncio
 import http.client
 import json
 import logging
-import os
 import time
 import urllib.error
 import urllib.request
@@ -35,7 +34,7 @@ logger = logging.getLogger("lode.engine.llm")
 class ModelConfig:
     provider: str
     base_url: str
-    api_key_ref: str
+    api_key_ciphertext: str
     model: str
 
 
@@ -77,30 +76,9 @@ def model_endpoint(provider: str, base_url: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def resolve_api_key(api_key_ref: str) -> str:
-    """Resolve an ``api_key_ref`` to the actual secret value.
-
-    Two forms are supported:
-
-    * ``env://NAME`` — read the key from the environment variable ``NAME``.
-      This is the recommended form so real credentials never touch the
-      database and are injected per-deployment.
-    * an encrypted literal — a Fernet token produced by ``encrypt_secret``,
-      decrypted back to the plaintext key. Literal keys are stored encrypted at
-      rest so the plaintext never lands in the database row.
-
-    Literal values must already be encrypted. There is no plaintext fallback.
-    An unset ``env://`` reference returns an empty string so the caller reports
-    model unavailability.
-    """
-    if api_key_ref.startswith("env://"):
-        name = api_key_ref[len("env://") :]
-        value = os.environ.get(name)
-        if not value:
-            logger.warning("api_key_ref references unset environment variable %s", name)
-            return ""
-        return value
-    return decrypt_secret(api_key_ref) or ""
+def resolve_api_key(api_key_ciphertext: str) -> str:
+    """Decrypt a model credential stored by the control plane."""
+    return decrypt_secret(api_key_ciphertext) or ""
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -167,14 +145,12 @@ async def complete_with_usage(
 ) -> CompletionResult:
     """Run one bounded completion and retain provider usage when available."""
     started = time.monotonic()
-    if config is None or not config.api_key_ref:
+    if config is None or not config.api_key_ciphertext:
         return CompletionResult(None, 0, None, None, None, "unavailable", "model_not_configured", "No model configuration was selected.", 0)
 
-    # Resolve the reference form (env://NAME) to the real secret before any
-    # network call. If it resolves empty, report model unavailability.
-    api_key = resolve_api_key(config.api_key_ref)
+    api_key = resolve_api_key(config.api_key_ciphertext)
     if not api_key:
-        return CompletionResult(None, int((time.monotonic() - started) * 1000), None, None, None, "unavailable", "api_key_unavailable", "The configured API key reference could not be resolved.", 0)
+        return CompletionResult(None, int((time.monotonic() - started) * 1000), None, None, None, "unavailable", "api_key_unavailable", "The configured API key could not be decrypted.", 0)
 
     if config.provider == "anthropic":
         payload, headers = _anthropic_payload(

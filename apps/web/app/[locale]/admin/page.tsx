@@ -54,6 +54,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const [newOpen, setNewOpen] = useState(false);
   const [newName, setNewName] = useState('');
+  const [newTopic, setNewTopic] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [startTarget, setStartTarget] = useState<Application | null>(null);
@@ -92,15 +93,17 @@ export default function DashboardPage() {
 
   async function handleCreate() {
     const name = newName.trim();
-    if (!name || submitting) return;
+    const ingestionTopic = newTopic.trim();
+    if (!name || !ingestionTopic || submitting) return;
     setSubmitting(true);
     setFormError(null);
     try {
-      const created = await createApplication({ name });
+      const created = await createApplication({ name, ingestion_topic: ingestionTopic });
       applicationsRequestRef.current += 1;
       setApps((prev) => [created, ...prev]);
       setNewOpen(false);
       setNewName('');
+      setNewTopic('');
       router.push(`/admin/applications/${created.id}`);
     } catch (e) {
       setFormError(String(e));
@@ -254,13 +257,13 @@ export default function DashboardPage() {
                     </Badge>
                   </div>
                   <div className="mono mt-2 truncate text-[13px] text-muted-foreground">
-                    {app.topic || '—'}
+                    {app.ingestionTopic}
                   </div>
                 </div>
               </div>
               <div className="mt-3.5 flex items-center gap-1.5 text-[13px] text-muted-foreground">
                 <span>
-                  {app.repoCount} {app.repoCount === 1 ? 'repo' : 'repos'}
+                  {app.serviceCount} {app.serviceCount === 1 ? 'service' : 'services'}
                 </span>
                 <span aria-hidden="true" className="text-[var(--color-6)]">
                   ·
@@ -274,7 +277,7 @@ export default function DashboardPage() {
                   {t(`ingestionObserved.${app.ingestionObservedState}`)}
                 </Badge>
                 {canManage && needsFirstStart && (
-                  app.topic ? (
+                  app.ingestionTopic ? (
                     <Button
                       variant="primary"
                       size="sm"
@@ -338,8 +341,8 @@ export default function DashboardPage() {
           </DialogHeader>
           <div className="space-y-2" aria-label={t('startRequirements')}>
             {[
-              { ready: (startTarget?.repoCount ?? 0) > 0, label: t('repositoryRequired') },
-              { ready: Boolean(startTarget?.topic), label: t('topicRequired') },
+              { ready: Boolean(startTarget?.primaryServiceConfigured), label: t('primaryServiceRequired') },
+              { ready: Boolean(startTarget?.ingestionTopic), label: t('topicRequired') },
               { ready: Boolean(startTarget?.modelAvailable), label: t('modelRequired') },
             ].map((requirement) => (
               <div
@@ -389,8 +392,8 @@ export default function DashboardPage() {
               disabled={
                 actionAppId !== null
                 || !startTarget
-                || startTarget.repoCount < 1
-                || !startTarget.topic
+                || !startTarget.primaryServiceConfigured
+                || !startTarget.ingestionTopic
                 || !startTarget.modelAvailable
               }
             >
@@ -406,6 +409,7 @@ export default function DashboardPage() {
           setNewOpen(o);
           if (!o) {
             setNewName('');
+            setNewTopic('');
             setFormError(null);
           }
         }}
@@ -425,6 +429,13 @@ export default function DashboardPage() {
             }}
             disabled={submitting}
           />
+          <Input
+            value={newTopic}
+            placeholder={t('topicRequired')}
+            onChange={(e) => setNewTopic(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
+            disabled={submitting}
+          />
           {formError && (
             <p className="text-sm text-destructive">{formError}</p>
           )}
@@ -439,7 +450,7 @@ export default function DashboardPage() {
             <Button
               variant="primary"
               onClick={handleCreate}
-              disabled={submitting || !newName.trim()}
+              disabled={submitting || !newName.trim() || !newTopic.trim()}
             >
               {t('newApplication')}
             </Button>

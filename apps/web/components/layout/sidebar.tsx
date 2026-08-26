@@ -51,8 +51,7 @@ const WORKBENCH_NAV = [
 const ADMIN_APP_SUBNAV = [
   { key: 'overview', suffix: '' },
   { key: 'repositories', suffix: 'repos' },
-  { key: 'descriptions', suffix: 'descriptions' },
-  { key: 'dataSources', suffix: 'db' },
+  { key: 'integrations', suffix: 'integrations' },
   { key: 'model', suffix: 'model' },
   { key: 'members', suffix: 'members' },
 ] as const;

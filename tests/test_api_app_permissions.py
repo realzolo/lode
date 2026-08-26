@@ -111,7 +111,10 @@ async def owned_app(owner: int) -> int:
         resp = await client.post(
             "/applications",
             headers={"Authorization": f"Bearer {token}"},
-            json={"name": f"app-{uuid.uuid4().hex}"},
+                json={
+                    "name": f"app-{uuid.uuid4().hex}",
+                    "ingestion_topic": f"alerts-{uuid.uuid4().hex}",
+                },
         )
         assert resp.status_code == 201, resp.text
         app_id = resp.json()["id"]
@@ -190,9 +193,9 @@ async def test_owner_can_configure_own_topic(owned_app: int) -> None:
     token = await _login(APP_OWNER_EMAIL, APP_OWNER_PASSWORD)
     async with _client() as client:
         resp = await client.put(
-            f"/applications/{owned_app}/topic",
+            f"/applications/{owned_app}/ingestion-topic",
             headers={"Authorization": f"Bearer {token}"},
-            json={"topic": f"alerts-{uuid.uuid4().hex}"},
+            json={"ingestion_topic": f"alerts-{uuid.uuid4().hex}"},
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["application_id"] == owned_app
@@ -202,11 +205,49 @@ async def test_outsider_cannot_configure_topic(owned_app: int, outsider: int) ->
     token = await _login(OUTSIDER_EMAIL, OUTSIDER_PASSWORD)
     async with _client() as client:
         resp = await client.put(
-            f"/applications/{owned_app}/topic",
+            f"/applications/{owned_app}/ingestion-topic",
             headers={"Authorization": f"Bearer {token}"},
-            json={"topic": f"alerts-{uuid.uuid4().hex}"},
+            json={"ingestion_topic": f"alerts-{uuid.uuid4().hex}"},
         )
         assert resp.status_code == 403
+
+
+async def test_owner_can_manage_architecture_context(owned_app: int) -> None:
+    token = await _login(APP_OWNER_EMAIL, APP_OWNER_PASSWORD)
+    headers = {"Authorization": f"Bearer {token}"}
+    async with _client() as client:
+        created = await client.post(
+            f"/applications/{owned_app}/architecture-contexts",
+            headers=headers,
+            json={"content": "checkout-api publishes order.created after commit"},
+        )
+        assert created.status_code == 201, created.text
+        context_id = created.json()["id"]
+
+        detail = await client.get(f"/applications/{owned_app}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        assert [item["content"] for item in detail.json()["architecture_contexts"]] == [
+            "checkout-api publishes order.created after commit"
+        ]
+
+        deleted = await client.delete(
+            f"/applications/{owned_app}/architecture-contexts/{context_id}",
+            headers=headers,
+        )
+        assert deleted.status_code == 204
+
+
+async def test_outsider_cannot_manage_architecture_context(
+    owned_app: int, outsider: int
+) -> None:
+    token = await _login(OUTSIDER_EMAIL, OUTSIDER_PASSWORD)
+    async with _client() as client:
+        response = await client.post(
+            f"/applications/{owned_app}/architecture-contexts",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"content": "private topology"},
+        )
+        assert response.status_code == 403
 
 
 async def test_owner_can_list_member_candidates(

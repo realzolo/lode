@@ -3,12 +3,9 @@
 **Two privilege tiers:**
 
 - *Read* endpoints (list/get) require any authenticated user.
-- *Write* endpoints that mutate application configuration (Kafka topic,
-  bound repositories, descriptions, data sources, model selection) are
-  **admin only**.
-  All write endpoints delegate to ``require_admin``; the rest of the
-  request shape is validated by the pydantic ``*In`` schemas in
-  ``lode.api.schemas``.
+- *Write* endpoints that mutate application-owned configuration use the
+  application's ``admin`` permission; global admins always satisfy it.
+- Global catalogs and platform settings remain global-admin only.
 
 Applications can select one globally registered AI model config. Model configs
 themselves stay owned by ``/settings/ai-models``.
@@ -17,7 +14,9 @@ themselves stay owned by ``/settings/ai-models``.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
+from time import monotonic
 
 from aiokafka import AIOKafkaProducer
 from fastapi import APIRouter, Depends, HTTPException, Security
@@ -41,64 +40,51 @@ from lode.api.schemas import (
     ApplicationIntegrationOut,
     ApplicationIntegrationUpdateIn,
     ApplicationDetailOut,
-    ApplicationDescriptionOut,
+    ApplicationArchitectureContextOut,
     ApplicationIngestionStatusOut,
     ApplicationModelOut,
     ApplicationOut,
     ApplicationRepoOut,
+    ApplicationServiceBindingIn,
+    ApplicationServiceBindingOut,
     ApplicationTopicOut,
     BindRepoIn,
     CreateApplicationIn,
-    CreateApplicationDescriptionIn,
+    CreateApplicationArchitectureContextIn,
     CreateApplicationRepoIn,
-    CreateDbSourceIn,
-    DbSourceListItem,
-    DbSourceOut,
-    EvidenceConnectorIn,
-    EvidenceConnectorOut,
-    EvidenceConnectorUpdateIn,
+    RunApprovedQueryIn,
     SetApplicationModelIn,
     SetApplicationTopicIn,
     StartApplicationIngestionIn,
-    UpdateDbSourceIn,
     UserOut,
-    normalize_integration_config,
 )
 from lode.db.models.alert import Alert
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.application import (
     Application,
-    ApplicationDescription,
+    ApplicationArchitectureContext,
     ApplicationIngestionRuntime,
-    ApplicationKafka,
     ApplicationRepo,
-    DbSource,
+    ApplicationServiceBinding,
+    Service,
 )
 from lode.db.models.integration import ApplicationIntegration
-from lode.db.models.investigation import EvidenceConnector
 from lode.config import kafka_security_kwargs, settings
 from lode.db.models.git import GitCredential, GitRepo
 from lode.db.models.permission import UserApplicationPerm
-from lode.crypto import decrypt_secret, encrypt_secret
+from lode.crypto import encrypt_secret
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
-from lode.engine.db_proxy import (
-    assert_source_readiness,
-    test_connection,
-    verify_postgres_readonly_account,
-)
-from lode.engine.integrations import IntegrationError, connector_for, resolve_integration_secret
+from lode.engine.db_proxy import DbProxyError, execute_approved_query
+from lode.engine.integrations import IntegrationError, connector_for, resolve_integration_secrets
 from lode.engine.model_health import probe_model, record_model_health
+from lode.integration_policy import (
+    integration_kind,
+    normalize_integration_config,
+    normalize_integration_secrets,
+)
 
 router = APIRouter(prefix="/applications", tags=["applications"])
-
-
-def _evidence_connector_out(row: EvidenceConnector) -> EvidenceConnectorOut:
-    return EvidenceConnectorOut(
-        id=row.id, application_id=row.application_id, name=row.name, kind=row.kind,
-        state=row.state, config=row.config or {}, diagnostic_profile=row.diagnostic_profile or {},
-        collection_budget_seconds=row.collection_budget_seconds, has_secret=bool(row.secret_ref),
-    )
 
 
 async def get_session() -> AsyncSession:
@@ -125,12 +111,11 @@ def _runtime_status(
 
 def _ingestion_status_out(
     app: Application,
-    topic: str | None,
     runtime: ApplicationIngestionRuntime | None,
 ) -> ApplicationIngestionStatusOut:
     return ApplicationIngestionStatusOut(
         application_id=app.id,
-        topic=topic,
+        ingestion_topic=app.ingestion_topic,
         desired_state=app.ingestion_state,
         observed_state=_runtime_status(app, runtime),
         ingestion_version=app.ingestion_version,
@@ -187,21 +172,22 @@ async def _require_ingestion_readiness(
     app: Application,
 ) -> str:
     """Fail closed unless every application-level ingestion prerequisite exists."""
-    topic = await session.scalar(
-        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == app.id)
-    )
-    repo_count = await session.scalar(
-        select(func.count(ApplicationRepo.id)).where(ApplicationRepo.application_id == app.id)
+    primary_service_count = await session.scalar(
+        select(func.count(ApplicationServiceBinding.service_id))
+        .join(Service, Service.id == ApplicationServiceBinding.service_id)
+        .where(
+            ApplicationServiceBinding.application_id == app.id,
+            ApplicationServiceBinding.role == "primary",
+            Service.state == "active",
+        )
     )
     model = await session.get(
         AiModelConfig, app.model_config_id
     ) if app.model_config_id is not None else None
 
     missing: list[str] = []
-    if not repo_count:
-        missing.append("repositories")
-    if topic is None or not topic.strip():
-        missing.append("topic")
+    if not primary_service_count:
+        missing.append("primary_service")
     if model is None:
         missing.append("model")
     elif model.last_test_status != "available":
@@ -215,7 +201,7 @@ async def _require_ingestion_readiness(
                 "missing": missing,
             },
         )
-    return topic
+    return app.ingestion_topic
 
 
 @router.get("", response_model=list[ApplicationOut])
@@ -228,14 +214,18 @@ async def list_applications(
     stmt = (
         select(
             Application,
-            ApplicationKafka.topic,
-            func.count(ApplicationRepo.id).label("repo_count"),
+            func.count(func.distinct(ApplicationServiceBinding.service_id)).label("service_count"),
+            func.count(ApplicationServiceBinding.service_id)
+            .filter(ApplicationServiceBinding.role == "primary")
+            .label("primary_service_count"),
             AiModelConfig.last_test_status,
         )
-        .outerjoin(ApplicationKafka, ApplicationKafka.application_id == Application.id)
-        .outerjoin(ApplicationRepo, ApplicationRepo.application_id == Application.id)
+        .outerjoin(
+            ApplicationServiceBinding,
+            ApplicationServiceBinding.application_id == Application.id,
+        )
         .outerjoin(AiModelConfig, AiModelConfig.id == Application.model_config_id)
-        .group_by(Application.id, ApplicationKafka.topic, AiModelConfig.last_test_status)
+        .group_by(Application.id, AiModelConfig.last_test_status)
         .order_by(Application.created_at.desc())
     )
     if app_ids is not None:
@@ -260,14 +250,14 @@ async def list_applications(
         for runtime in (
             await session.execute(
                 select(ApplicationIngestionRuntime).where(
-                    ApplicationIngestionRuntime.application_id.in_([app.id for app, _, _, _ in rows])
+                    ApplicationIngestionRuntime.application_id.in_([app.id for app, *_ in rows])
                 )
             )
         ).scalars()
     } if rows else {}
 
     out: list[ApplicationOut] = []
-    for app, topic, repo_count, model_test_status in rows:
+    for app, service_count, primary_service_count, model_test_status in rows:
         latest_level = await session.execute(
             select(Alert.level)
             .where(Alert.application_id == app.id)
@@ -279,9 +269,10 @@ async def list_applications(
             ApplicationOut(
                 id=app.id,
                 name=app.name,
-                topic=topic,
+                ingestion_topic=app.ingestion_topic,
                 latest_level=level,
-                repo_count=repo_count or 0,
+                service_count=service_count or 0,
+                primary_service_configured=bool(primary_service_count),
                 model_configured=app.model_config_id is not None,
                 model_available=model_test_status == "available",
                 ingestion_state=app.ingestion_state,
@@ -306,12 +297,6 @@ async def get_application(
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
 
-    topic = (
-        await session.execute(
-            select(ApplicationKafka.topic).where(ApplicationKafka.application_id == application_id)
-        )
-    ).scalar_one_or_none()
-
     repos = (
         await session.execute(
             select(ApplicationRepo, GitRepo)
@@ -319,15 +304,12 @@ async def get_application(
             .where(ApplicationRepo.application_id == application_id)
         )
     ).all()
-    descriptions = (
+    architecture_contexts = (
         await session.execute(
-            select(ApplicationDescription).where(
-                ApplicationDescription.application_id == application_id
+            select(ApplicationArchitectureContext).where(
+                ApplicationArchitectureContext.application_id == application_id
             )
         )
-    ).scalars().all()
-    sources = (
-        await session.execute(select(DbSource).where(DbSource.application_id == application_id))
     ).scalars().all()
     integrations = (
         await session.execute(
@@ -347,7 +329,7 @@ async def get_application(
     return ApplicationDetailOut(
         id=app.id,
         name=app.name,
-        topic=topic,
+        ingestion_topic=app.ingestion_topic,
         model_config_id=app.model_config_id,
         ingestion_state=app.ingestion_state,
         created_at=app.created_at,
@@ -364,31 +346,12 @@ async def get_application(
             }
             for app_repo, repo in repos
         ],
-        descriptions=[
+        architecture_contexts=[
             {
                 "id": d.id,
-                "description_type": d.description_type,
                 "content": d.content,
             }
-            for d in descriptions
-        ],
-        db_sources=[
-            DbSourceListItem(
-                id=s.id,
-                application_id=s.application_id,
-                name=s.name,
-                description=s.description,
-                conn_secret_ref=s.conn_secret_ref if is_global_admin else None,
-                host=s.host if is_global_admin else None,
-                port=s.port if is_global_admin else None,
-                database=s.database if is_global_admin else None,
-                username=s.username if is_global_admin else None,
-                has_password=bool(s.password) if is_global_admin else False,
-                sslmode=s.sslmode if is_global_admin else None,
-                allowed_tables=list(s.allowed_tables or []),
-                sensitive_columns=list(s.sensitive_columns or []) if is_global_admin else [],
-            )
-            for s in sources
+            for d in architecture_contexts
         ],
         integrations=[_integration_out(item, include_error=is_global_admin) for item in integrations],
         my_perm=my_perm,
@@ -403,14 +366,24 @@ async def create_application(
 ) -> ApplicationOut:
     """Create a new application (isolation unit).
 
-    Only the name is required up-front; the Kafka topic, repos, descriptions,
-    data sources, and model selection are configured later via the per-app
-    settings tabs. ``created_by`` is stamped from the authenticated caller.
+    Name and ingestion topic are one atomic invariant. Other application
+    settings are configured later via the per-application settings pages.
     """
-    app = Application(name=payload.name, created_by=user_id)
+    app = Application(
+        name=payload.name,
+        ingestion_topic=payload.ingestion_topic,
+        created_by=user_id,
+    )
     session.add(app)
     # Flush so the generated application id is available for the perm row.
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"ingestion topic '{payload.ingestion_topic}' is already in use",
+        ) from exc
     # The creator becomes an application admin so they appear in the Members
     # list and can manage the application's membership from the start.
     session.add(
@@ -430,9 +403,10 @@ async def create_application(
     return ApplicationOut(
         id=app.id,
         name=app.name,
-        topic=None,
+        ingestion_topic=app.ingestion_topic,
         latest_level="WARNING",
-        repo_count=0,
+        service_count=0,
+        primary_service_configured=False,
         model_configured=False,
         model_available=False,
         ingestion_state=app.ingestion_state,
@@ -453,7 +427,7 @@ async def create_application(
 
 
 @router.put(
-    "/{application_id}/topic",
+    "/{application_id}/ingestion-topic",
     response_model=ApplicationTopicOut,
 )
 async def set_application_topic(
@@ -462,12 +436,7 @@ async def set_application_topic(
     _admin: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> ApplicationTopicOut:
-    """Bind / unbind / replace the Kafka topic for an application.
-
-    Topics are globally unique across applications (see
-    ``ApplicationKafka.topic`` unique constraint); switching applications to a
-    topic that's already bound to a *different* application returns 409.
-    """
+    """Replace an application's required, globally unique ingestion topic."""
     app = await session.get(Application, application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
@@ -477,39 +446,8 @@ async def set_application_topic(
             detail="pause ingestion before changing its Kafka topic",
         )
 
-    if payload.topic is None:
-        existing = await session.get(ApplicationKafka, application_id)
-        if existing is not None:
-            await session.delete(existing)
-        runtime = await _runtime_for(session, application_id)
-        if runtime is not None:
-            await session.delete(runtime)
-        app.ingestion_state = "draft"
-        app.ingestion_start_position = None
-        app.ingestion_paused_at = None
-        await session.commit()
-        await audit_action(
-            action="application.set_topic",
-            actor_id=_admin,
-            target_type="application",
-            target_id=str(application_id),
-            application_id=application_id,
-            detail={"topic": None, "ingestion_state": "draft"},
-        )
-        return ApplicationTopicOut(application_id=application_id, topic=None)
-
-    # Topic changes invalidate the prior activation. The administrator must
-    # explicitly start it again and choose a new initial offset policy.
-    # Read dependent state before staging a topic mutation. SQLAlchemy would
-    # otherwise autoflush the pending unique-topic write during _runtime_for(),
-    # causing an IntegrityError outside the conflict handling below.
-    existing = await session.get(ApplicationKafka, application_id)
     runtime = await _runtime_for(session, application_id)
-    if existing is None:
-        existing = ApplicationKafka(application_id=application_id, topic=payload.topic)
-        session.add(existing)
-    else:
-        existing.topic = payload.topic
+    app.ingestion_topic = payload.ingestion_topic
     if runtime is not None:
         await session.delete(runtime)
     app.ingestion_state = "draft"
@@ -521,18 +459,19 @@ async def set_application_topic(
         await session.rollback()
         raise HTTPException(
             status_code=409,
-            detail=f"topic '{payload.topic}' is already bound to another application",
+            detail=f"ingestion topic '{payload.ingestion_topic}' is already in use",
         )
-    await session.refresh(existing)
     await audit_action(
         action="application.set_topic",
         actor_id=_admin,
         target_type="application",
         target_id=str(application_id),
         application_id=application_id,
-        detail={"topic": existing.topic, "ingestion_state": "draft"},
+        detail={"ingestion_topic": app.ingestion_topic, "ingestion_state": "draft"},
     )
-    return ApplicationTopicOut(application_id=application_id, topic=existing.topic)
+    return ApplicationTopicOut(
+        application_id=application_id, ingestion_topic=app.ingestion_topic
+    )
 
 
 @router.get("/{application_id}/ingestion", response_model=ApplicationIngestionStatusOut)
@@ -544,10 +483,7 @@ async def get_application_ingestion(
     app = await session.get(Application, application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
-    topic = await session.scalar(
-        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == application_id)
-    )
-    return _ingestion_status_out(app, topic, await _runtime_for(session, application_id))
+    return _ingestion_status_out(app, await _runtime_for(session, application_id))
 
 
 @router.post(
@@ -599,7 +535,7 @@ async def start_application_ingestion(
             "start_position": payload.start_position,
         },
     )
-    return _ingestion_status_out(app, topic, runtime)
+    return _ingestion_status_out(app, runtime)
 
 
 @router.post("/{application_id}/ingestion/pause", response_model=ApplicationIngestionStatusOut)
@@ -613,9 +549,6 @@ async def pause_application_ingestion(
         raise HTTPException(status_code=404, detail="application not found")
     if app.ingestion_state != "active":
         raise HTTPException(status_code=409, detail="only an active application can be paused")
-    topic = await session.scalar(
-        select(ApplicationKafka.topic).where(ApplicationKafka.application_id == application_id)
-    )
     app.ingestion_state = "paused"
     app.ingestion_paused_at = datetime.now(UTC)
     runtime = await _ensure_runtime(session, app)
@@ -630,9 +563,9 @@ async def pause_application_ingestion(
         target_type="application",
         target_id=str(application_id),
         application_id=application_id,
-        detail={"topic": topic, "ingestion_version": app.ingestion_version},
+        detail={"ingestion_topic": app.ingestion_topic, "ingestion_version": app.ingestion_version},
     )
-    return _ingestion_status_out(app, topic, runtime)
+    return _ingestion_status_out(app, runtime)
 
 
 @router.post("/{application_id}/ingestion/resume", response_model=ApplicationIngestionStatusOut)
@@ -663,7 +596,7 @@ async def resume_application_ingestion(
         application_id=application_id,
         detail={"topic": topic, "ingestion_version": app.ingestion_version},
     )
-    return _ingestion_status_out(app, topic, runtime)
+    return _ingestion_status_out(app, runtime)
 
 
 @router.put(
@@ -673,7 +606,7 @@ async def resume_application_ingestion(
 async def set_application_model(
     application_id: int,
     payload: SetApplicationModelIn,
-    _admin: int = Depends(require_admin),
+    actor_id: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> ApplicationModelOut:
     """Select a globally supported model for this application, or clear it."""
@@ -710,7 +643,7 @@ async def set_application_model(
     await session.commit()
     await audit_action(
         action="application.set_model",
-        actor_id=_admin,
+        actor_id=actor_id,
         target_type="application",
         target_id=str(application_id),
         application_id=application_id,
@@ -896,15 +829,24 @@ def _integration_out(
     row: ApplicationIntegration, *, include_error: bool = True
 ) -> ApplicationIntegrationOut:
     """Safe integration projection. Credentials never leave the backend."""
+    configured_secret_fields: list[str] = []
+    try:
+        configured_secret_fields = sorted(resolve_integration_secrets(row.secrets_ciphertext))
+    except IntegrationError:
+        pass
     return ApplicationIntegrationOut(
         id=row.id,
         application_id=row.application_id,
         name=row.name,
         kind=row.kind,
+        kind_version=row.kind_version,
+        revision=row.revision,
         state=row.state,
-        readonly_verified_at=row.readonly_verified_at,
+        verification_status=row.verification_status,
+        verified_at=row.verified_at,
         last_collected_at=row.last_collected_at,
         last_error=row.last_error if include_error else None,
+        configured_secret_fields=configured_secret_fields,
     )
 
 
@@ -918,16 +860,29 @@ def _integration_configuration_out(
     )
 
 
-async def _verify_integration(kind: str, config: dict, encrypted_secret: str) -> None:
-    secret = resolve_integration_secret(encrypted_secret)
-    await connector_for(kind).verify_readonly(config, secret)
+@router.get(
+    "/{application_id}/integrations",
+    response_model=list[ApplicationIntegrationOut],
+)
+async def list_integrations(
+    application_id: int,
+    _auth: int = Security(require_app_perm, scopes=["read"]),
+    session: AsyncSession = Depends(get_session),
+) -> list[ApplicationIntegrationOut]:
+    rows = (
+        await session.execute(
+            select(ApplicationIntegration)
+            .where(ApplicationIntegration.application_id == application_id)
+            .order_by(ApplicationIntegration.kind, ApplicationIntegration.name)
+        )
+    ).scalars().all()
+    return [_integration_out(row, include_error=False) for row in rows]
 
 
-async def _verify_db_source_payload(payload: CreateDbSourceIn) -> None:
-    """Prove the effective PostgreSQL role is read-only before it is stored."""
-    dsn = _resolve_create_dsn(payload)
-    assert_source_readiness(dsn)
-    await verify_postgres_readonly_account(dsn, payload.allowed_tables)
+async def _verify_integration(
+    kind: str, config: dict, secrets: dict[str, str]
+) -> None:
+    await connector_for(kind).verify_readonly(config, secrets)
 
 
 @router.get(
@@ -937,7 +892,7 @@ async def _verify_db_source_payload(payload: CreateDbSourceIn) -> None:
 async def get_integration_configuration(
     application_id: int,
     integration_id: int,
-    _admin: int = Depends(require_admin),
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> ApplicationIntegrationConfigurationOut:
     row = await session.get(ApplicationIntegration, integration_id)
@@ -950,41 +905,41 @@ async def get_integration_configuration(
 async def test_integration(
     application_id: int,
     payload: ApplicationIntegrationIn,
-    _admin: int = Depends(require_admin),
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Verify a prospective integration without persisting its credential."""
     if await session.get(Application, application_id) is None:
         raise HTTPException(status_code=404, detail="application not found")
     try:
-        await _verify_integration(payload.kind, payload.config, encrypt_secret(payload.secret_ref) or "")
+        started = monotonic()
+        await _verify_integration(payload.kind, payload.config, payload.secrets)
     except IntegrationError as exc:
         await audit_action(
             action="integration.test", actor_id=_admin, target_type="application",
             target_id=str(application_id), application_id=application_id,
             result="error", detail={"kind": payload.kind, "error": str(exc)[:280]},
         )
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "latency_ms": None, "error": str(exc)}
     await audit_action(
         action="integration.test", actor_id=_admin, target_type="application",
         target_id=str(application_id), application_id=application_id,
         detail={"kind": payload.kind},
     )
-    return {"ok": True, "error": None}
+    return {"ok": True, "latency_ms": round((monotonic() - started) * 1000, 1), "error": None}
 
 
 @router.post("/{application_id}/integrations", response_model=ApplicationIntegrationOut, status_code=201)
 async def create_integration(
     application_id: int,
     payload: ApplicationIntegrationIn,
-    _admin: int = Depends(require_admin),
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> ApplicationIntegrationOut:
     if await session.get(Application, application_id) is None:
         raise HTTPException(status_code=404, detail="application not found")
-    encrypted_secret = encrypt_secret(payload.secret_ref) or ""
     try:
-        await _verify_integration(payload.kind, payload.config, encrypted_secret)
+        await _verify_integration(payload.kind, payload.config, payload.secrets)
     except IntegrationError as exc:
         await audit_action(
             action="integration.create", actor_id=_admin, target_type="application",
@@ -994,11 +949,20 @@ async def create_integration(
         raise HTTPException(status_code=422, detail=f"read-only verification failed: {exc}")
     row = ApplicationIntegration(
         application_id=application_id, name=payload.name, kind=payload.kind,
-        config=payload.config, secret_ref=encrypted_secret,
-        readonly_verified_at=datetime.now(UTC),
+        kind_version=integration_kind(payload.kind).version,
+        config=payload.config,
+        secrets_ciphertext=encrypt_secret(json.dumps(payload.secrets)) or "",
+        verification_status="verified", verified_at=datetime.now(UTC),
     )
     session.add(row)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"integration name '{payload.name}' is already in use for this application",
+        ) from exc
     await session.refresh(row)
     await audit_action(
         action="integration.create", actor_id=_admin, target_type="integration",
@@ -1012,7 +976,7 @@ async def update_integration(
     application_id: int,
     integration_id: int,
     payload: ApplicationIntegrationUpdateIn,
-    _admin: int = Depends(require_admin),
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> ApplicationIntegrationOut:
     row = await session.get(ApplicationIntegration, integration_id)
@@ -1023,11 +987,16 @@ async def update_integration(
         if payload.config is not None
         else dict(row.config or {})
     )
-    next_secret = encrypt_secret(payload.secret_ref) if payload.secret_ref else row.secret_ref
+    current_secrets = resolve_integration_secrets(row.secrets_ciphertext)
+    next_secrets = (
+        normalize_integration_secrets(row.kind, {**current_secrets, **payload.secrets})
+        if payload.secrets is not None
+        else current_secrets
+    )
     next_state = payload.state or row.state
     if next_state == "active":
         try:
-            await _verify_integration(row.kind, next_config, next_secret)
+            await _verify_integration(row.kind, next_config, next_secrets)
         except IntegrationError as exc:
             await audit_action(
                 action="integration.update", actor_id=_admin, target_type="integration",
@@ -1035,14 +1004,20 @@ async def update_integration(
                 detail={"error": str(exc)[:280]},
             )
             raise HTTPException(status_code=422, detail=f"read-only verification failed: {exc}")
-        row.readonly_verified_at = datetime.now(UTC)
+        row.verification_status = "verified"
+        row.verified_at = datetime.now(UTC)
         row.last_error = None
     if payload.name is not None:
-        row.name = payload.name
+        row.name = payload.name.strip()
     row.config = next_config
-    row.secret_ref = next_secret
+    row.secrets_ciphertext = encrypt_secret(json.dumps(next_secrets)) or ""
     row.state = next_state
-    await session.commit()
+    row.revision += 1
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="integration name already in use") from exc
     await session.refresh(row)
     await audit_action(
         action="integration.update", actor_id=_admin, target_type="integration",
@@ -1055,7 +1030,7 @@ async def update_integration(
 async def delete_integration(
     application_id: int,
     integration_id: int,
-    _admin: int = Depends(require_admin),
+    _admin: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> None:
     row = await session.get(ApplicationIntegration, integration_id)
@@ -1069,329 +1044,91 @@ async def delete_integration(
     )
 
 
-@router.post(
-    "/{application_id}/db-sources",
-    response_model=DbSourceOut,
-    status_code=201,
-)
-async def create_db_source(
+@router.post("/{application_id}/integrations/{integration_id}/query", response_model=dict)
+async def run_integration_query(
     application_id: int,
-    payload: CreateDbSourceIn,
-    _admin: int = Depends(require_admin),
+    integration_id: int,
+    payload: RunApprovedQueryIn,
+    actor_id: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
-) -> DbSourceOut:
-    """Add an application-scoped read-only data source.
-
-    Two connection modes are supported (the schema enforces that exactly one
-    is supplied):
-
-    * **Structured** — ``host`` / ``port`` / ``database`` / ``username`` /
-      ``password`` are stored on the row and the DSN is built at query time.
-      ``sslmode`` forces TLS when the replica is reached over a network.
-    * **Secret ref** — ``conn_secret_ref`` (``env://NAME``) keeps
-      the real credentials in the deployment environment rather than this row.
-
-    ``allowed_tables`` is the SQL whitelist the analysis engine respects when
-    querying this source; ``sensitive_columns`` are extra result columns masked
-    on top of the built-in heuristic.
-    """
-    app = await session.get(Application, application_id)
-    if app is None:
-        raise HTTPException(status_code=404, detail="application not found")
-    try:
-        await _verify_db_source_payload(payload)
-    except Exception as exc:
-        await audit_action(
-            action="db_source.create", actor_id=_admin, target_type="application",
-            target_id=str(application_id), application_id=application_id,
-            result="error", detail={"error": str(exc)[:280]},
-        )
-        raise HTTPException(status_code=422, detail=f"read-only verification failed: {exc}")
-
-    row = DbSource(
-        application_id=application_id,
-        name=payload.name,
-        description=payload.description,
-        conn_secret_ref=payload.conn_secret_ref,
-        host=payload.host,
-        port=payload.port,
-        database=payload.database,
-        username=payload.username,
-        password=encrypt_secret(payload.password),
-        sslmode=payload.sslmode,
-        allowed_tables=payload.allowed_tables,
-        sensitive_columns=payload.sensitive_columns,
-    )
-    session.add(row)
-    await session.commit()
-    await session.refresh(row)
-    await audit_action(
-        action="db_source.create",
-        actor_id=_admin,
-        target_type="db_source",
-        target_id=str(row.id),
-        application_id=application_id,
-        detail={"name": row.name},
-    )
-    return DbSourceOut(
-        id=row.id,
-        application_id=row.application_id,
-        name=row.name,
-        description=row.description,
-        conn_secret_ref=row.conn_secret_ref,
-        host=row.host,
-        port=row.port,
-        database=row.database,
-        username=row.username,
-        has_password=bool(row.password),
-        sslmode=row.sslmode,
-        allowed_tables=list(row.allowed_tables or []),
-        sensitive_columns=list(row.sensitive_columns or []),
-    )
-
-
-@router.delete(
-    "/{application_id}/db-sources/{source_id}",
-    status_code=204,
-)
-async def delete_db_source(
-    application_id: int,
-    source_id: int,
-    _admin: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-) -> None:
-    row = await session.get(DbSource, source_id)
-    if row is None or row.application_id != application_id:
-        raise HTTPException(status_code=404, detail="data source not found")
-
-    await session.delete(row)
-    await session.commit()
-    await audit_action(
-        action="db_source.delete",
-        actor_id=_admin,
-        target_type="db_source",
-        target_id=str(source_id),
-        application_id=application_id,
-    )
-
-
-@router.put(
-    "/{application_id}/db-sources/{source_id}",
-    response_model=DbSourceOut,
-)
-async def update_db_source(
-    application_id: int,
-    source_id: int,
-    payload: UpdateDbSourceIn,
-    _admin: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-) -> DbSourceOut:
-    """Update an existing data source.
-
-    All fields are optional. The stored password is only replaced when a
-    non-empty ``password`` is supplied, so metadata can be rotated without
-    re-pasting the secret. Supplying neither a structured connection nor a
-    secret ref leaves the existing connection mode untouched.
-    """
-    row = await session.get(DbSource, source_id)
-    if row is None or row.application_id != application_id:
-        raise HTTPException(status_code=404, detail="data source not found")
-
-    # Validate the complete proposed binding before mutating the persisted row.
-    proposed = CreateDbSourceIn(
-        name=payload.name if payload.name is not None else row.name,
-        description=payload.description if payload.description is not None else row.description,
-        host=payload.host if payload.host is not None else row.host,
-        port=payload.port if payload.port is not None else row.port,
-        database=payload.database if payload.database is not None else row.database,
-        username=payload.username if payload.username is not None else row.username,
-        password=payload.password if payload.password is not None else decrypt_secret(row.password),
-        conn_secret_ref=payload.conn_secret_ref if payload.conn_secret_ref is not None else row.conn_secret_ref,
-        sslmode=payload.sslmode if payload.sslmode is not None else row.sslmode,
-        allowed_tables=payload.allowed_tables if payload.allowed_tables is not None else list(row.allowed_tables or []),
-        sensitive_columns=payload.sensitive_columns if payload.sensitive_columns is not None else list(row.sensitive_columns or []),
-    )
-    try:
-        await _verify_db_source_payload(proposed)
-    except Exception as exc:
-        await audit_action(
-            action="db_source.update", actor_id=_admin, target_type="db_source",
-            target_id=str(source_id), application_id=application_id,
-            result="error", detail={"error": str(exc)[:280]},
-        )
-        raise HTTPException(status_code=422, detail=f"read-only verification failed: {exc}")
-
-    if payload.name is not None:
-        row.name = payload.name
-    if payload.description is not None:
-        row.description = payload.description
-    if payload.host is not None:
-        row.host = payload.host
-    if payload.port is not None:
-        row.port = payload.port
-    if payload.database is not None:
-        row.database = payload.database
-    if payload.username is not None:
-        row.username = payload.username
-    if payload.password:
-        row.password = encrypt_secret(payload.password)
-    if payload.conn_secret_ref is not None:
-        row.conn_secret_ref = payload.conn_secret_ref
-    if payload.sslmode is not None:
-        row.sslmode = payload.sslmode
-    if payload.allowed_tables is not None:
-        row.allowed_tables = payload.allowed_tables
-    if payload.sensitive_columns is not None:
-        row.sensitive_columns = payload.sensitive_columns
-
-    session.add(row)
-    await session.commit()
-    await session.refresh(row)
-    await audit_action(
-        action="db_source.update",
-        actor_id=_admin,
-        target_type="db_source",
-        target_id=str(source_id),
-        application_id=application_id,
-    )
-    return DbSourceOut(
-        id=row.id,
-        application_id=row.application_id,
-        name=row.name,
-        description=row.description,
-        conn_secret_ref=row.conn_secret_ref,
-        host=row.host,
-        port=row.port,
-        database=row.database,
-        username=row.username,
-        has_password=bool(row.password),
-        sslmode=row.sslmode,
-        allowed_tables=list(row.allowed_tables or []),
-        sensitive_columns=list(row.sensitive_columns or []),
-    )
-
-
-@router.post(
-    "/{application_id}/db-sources/test",
-    status_code=200,
-)
-async def test_db_source_connection(
-    application_id: int,
-    payload: CreateDbSourceIn,
-    _admin: int = Depends(require_admin),
 ) -> dict:
-    """Validate a structured/secret-ref connection without persisting it.
-
-    Lets an admin catch a typo in host/port/credentials (or a missing TLS
-    setup) *before* saving. Secret refs resolve through the same path as a real
-    query. Returns ``{ok, latency_ms, error}``.
-    """
-    dsn = _resolve_create_dsn(payload)
+    row = await session.get(ApplicationIntegration, integration_id)
+    if row is None or row.application_id != application_id:
+        raise HTTPException(status_code=404, detail="integration not found")
+    if row.state != "active" or "query_catalog" not in integration_kind(row.kind).capabilities:
+        raise HTTPException(status_code=409, detail="integration does not expose query_catalog")
     try:
-        assert_source_readiness(dsn)
-        await verify_postgres_readonly_account(dsn, payload.allowed_tables)
-        latency = await test_connection(dsn)
-    except Exception as exc:  # surfaced as a structured result, not 500
-        await audit_action(
-            action="db_source.test",
-            actor_id=_admin,
-            target_type="application",
-            target_id=str(application_id),
-            application_id=application_id,
-            result="error",
-            detail={"error": str(exc)},
+        result = await execute_approved_query(
+            dict(row.config or {}), resolve_integration_secrets(row.secrets_ciphertext),
+            table=payload.table, operation=payload.operation,
         )
-        return {"ok": False, "latency_ms": None, "error": str(exc)}
+    except DbProxyError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     await audit_action(
-        action="db_source.test",
-        actor_id=_admin,
-        target_type="application",
-        target_id=str(application_id),
-        application_id=application_id,
-        result="ok",
+        action="integration.query", actor_id=actor_id, target_type="integration",
+        target_id=str(row.id), application_id=application_id,
+        detail={"operation": payload.operation, "table": payload.table},
     )
-    return {"ok": True, "latency_ms": round(latency * 1000, 1), "error": None}
-
-
-def _resolve_create_dsn(payload: CreateDbSourceIn) -> str:
-    """Build the DSN a create/test payload would resolve to.
-
-    Mirrors the query-time resolution so the test exercises the exact
-    connection string the engine would use.
-    """
-    from lode.engine.db_proxy import resolve_dsn
-
-    return resolve_dsn(
-        payload.conn_secret_ref,
-        host=payload.host,
-        port=payload.port,
-        database=payload.database,
-        username=payload.username,
-        password=payload.password,
-        sslmode=payload.sslmode,
-    )
+    return result
 
 
 @router.post(
-    "/{application_id}/descriptions",
-    response_model=ApplicationDescriptionOut,
+    "/{application_id}/architecture-contexts",
+    response_model=ApplicationArchitectureContextOut,
     status_code=201,
 )
-async def create_application_description(
+async def create_application_architecture_context(
     application_id: int,
-    payload: CreateApplicationDescriptionIn,
-    _admin: int = Depends(require_admin),
+    payload: CreateApplicationArchitectureContextIn,
+    actor_id: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
-) -> ApplicationDescriptionOut:
-    """Add an application description (deploy / other) for the analysis engine."""
+) -> ApplicationArchitectureContextOut:
+    """Add architecture context that will be snapshotted for new investigations."""
     app = await session.get(Application, application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="application not found")
 
-    row = ApplicationDescription(
+    row = ApplicationArchitectureContext(
         application_id=application_id,
-        description_type=payload.description_type,
         content=payload.content,
     )
     session.add(row)
     await session.commit()
     await session.refresh(row)
     await audit_action(
-        action="application_description.create",
-        actor_id=_admin,
-        target_type="application_description",
+        action="application_architecture_context.create",
+        actor_id=actor_id,
+        target_type="application_architecture_context",
         target_id=str(row.id),
         application_id=application_id,
-        detail={"description_type": row.description_type},
     )
-    return ApplicationDescriptionOut(
+    return ApplicationArchitectureContextOut(
         id=row.id,
         application_id=row.application_id,
-        description_type=row.description_type,
         content=row.content,
     )
 
 
 @router.delete(
-    "/{application_id}/descriptions/{description_id}",
+    "/{application_id}/architecture-contexts/{context_id}",
     status_code=204,
 )
-async def delete_application_description(
+async def delete_application_architecture_context(
     application_id: int,
-    description_id: int,
-    _admin: int = Depends(require_admin),
+    context_id: int,
+    actor_id: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    row = await session.get(ApplicationDescription, description_id)
+    row = await session.get(ApplicationArchitectureContext, context_id)
     if row is None or row.application_id != application_id:
-        raise HTTPException(status_code=404, detail="description not found")
+        raise HTTPException(status_code=404, detail="architecture context not found")
     await session.delete(row)
     await session.commit()
     await audit_action(
-        action="application_description.delete",
-        actor_id=_admin,
-        target_type="application_description",
-        target_id=str(description_id),
+        action="application_architecture_context.delete",
+        actor_id=actor_id,
+        target_type="application_architecture_context",
+        target_id=str(context_id),
         application_id=application_id,
     )
 
@@ -1605,77 +1342,97 @@ async def remove_member(
     )
 
 
-@router.get("/{application_id}/evidence-connectors", response_model=list[EvidenceConnectorOut])
-async def list_evidence_connectors(
+@router.get(
+    "/{application_id}/services",
+    response_model=list[ApplicationServiceBindingOut],
+)
+async def list_application_services(
     application_id: int,
-    _admin: int = Security(require_app_perm, scopes=["admin"]),
+    _auth: int = Security(require_app_perm, scopes=["read"]),
     session: AsyncSession = Depends(get_session),
-) -> list[EvidenceConnectorOut]:
-    rows = (await session.execute(
-        select(EvidenceConnector)
-        .where(EvidenceConnector.application_id == application_id)
-        .order_by(EvidenceConnector.kind, EvidenceConnector.name)
-    )).scalars().all()
-    return [_evidence_connector_out(row) for row in rows]
+) -> list[ApplicationServiceBindingOut]:
+    rows = (
+        await session.execute(
+            select(ApplicationServiceBinding, Service)
+            .join(Service, Service.id == ApplicationServiceBinding.service_id)
+            .where(ApplicationServiceBinding.application_id == application_id)
+            .order_by(ApplicationServiceBinding.role, Service.service_name)
+        )
+    ).all()
+    return [
+        ApplicationServiceBindingOut(
+            application_id=application_id,
+            id=service.id,
+            service_name=service.service_name,
+            repo_id=service.repo_id,
+            state=service.state,
+            role=binding.role,
+        )
+        for binding, service in rows
+    ]
 
 
-@router.post("/{application_id}/evidence-connectors", response_model=EvidenceConnectorOut, status_code=201)
-async def create_evidence_connector(
+@router.post(
+    "/{application_id}/services",
+    response_model=ApplicationServiceBindingOut,
+    status_code=201,
+)
+async def bind_application_service(
     application_id: int,
-    payload: EvidenceConnectorIn,
+    payload: ApplicationServiceBindingIn,
     actor_id: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
-) -> EvidenceConnectorOut:
+) -> ApplicationServiceBindingOut:
     if await session.get(Application, application_id) is None:
         raise HTTPException(status_code=404, detail="application not found")
-    if payload.kind in {"loki", "prometheus", "tempo"} and not str(payload.config.get("base_url") or "").startswith("https://"):
-        raise HTTPException(status_code=422, detail="observability connectors require an HTTPS base_url")
-    secret_ref = payload.secret_ref
-    if secret_ref and not secret_ref.startswith("env://"):
-        secret_ref = encrypt_secret(secret_ref)
-    row = EvidenceConnector(
-        application_id=application_id, name=payload.name, kind=payload.kind, state=payload.state,
-        config=payload.config, secret_ref=secret_ref, diagnostic_profile=payload.diagnostic_profile,
-        collection_budget_seconds=payload.collection_budget_seconds,
+    service = await session.get(Service, payload.service_id)
+    if service is None or service.state != "active":
+        raise HTTPException(status_code=404, detail="active service not found")
+    binding = ApplicationServiceBinding(
+        application_id=application_id,
+        service_id=service.id,
+        role=payload.role,
     )
-    session.add(row)
-    await session.commit()
-    await audit_action(action="application.evidence_connector.create", actor_id=actor_id, target_type="evidence_connector", target_id=str(row.id), application_id=application_id, detail={"kind": row.kind, "state": row.state})
-    return _evidence_connector_out(row)
+    session.add(binding)
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="service binding conflicts") from exc
+    await audit_action(
+        action="application.service.bind",
+        actor_id=actor_id,
+        target_type="service",
+        target_id=str(service.id),
+        application_id=application_id,
+        detail={"role": payload.role},
+    )
+    return ApplicationServiceBindingOut(
+        application_id=application_id,
+        id=service.id,
+        service_name=service.service_name,
+        repo_id=service.repo_id,
+        state=service.state,
+        role=payload.role,
+    )
 
 
-@router.put("/{application_id}/evidence-connectors/{connector_id}", response_model=EvidenceConnectorOut)
-async def update_evidence_connector(
+@router.delete("/{application_id}/services/{service_id}", status_code=204)
+async def unbind_application_service(
     application_id: int,
-    connector_id: int,
-    payload: EvidenceConnectorUpdateIn,
-    actor_id: int = Security(require_app_perm, scopes=["admin"]),
-    session: AsyncSession = Depends(get_session),
-) -> EvidenceConnectorOut:
-    row = await session.get(EvidenceConnector, connector_id)
-    if row is None or row.application_id != application_id:
-        raise HTTPException(status_code=404, detail="evidence connector not found")
-    for field in ("name", "config", "diagnostic_profile", "collection_budget_seconds", "state"):
-        value = getattr(payload, field)
-        if value is not None:
-            setattr(row, field, value)
-    if payload.secret_ref is not None:
-        row.secret_ref = payload.secret_ref if payload.secret_ref.startswith("env://") else encrypt_secret(payload.secret_ref)
-    await session.commit()
-    await audit_action(action="application.evidence_connector.update", actor_id=actor_id, target_type="evidence_connector", target_id=str(row.id), application_id=application_id, detail={"kind": row.kind, "state": row.state})
-    return _evidence_connector_out(row)
-
-
-@router.delete("/{application_id}/evidence-connectors/{connector_id}", status_code=204)
-async def delete_evidence_connector(
-    application_id: int,
-    connector_id: int,
+    service_id: int,
     actor_id: int = Security(require_app_perm, scopes=["admin"]),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    row = await session.get(EvidenceConnector, connector_id)
-    if row is None or row.application_id != application_id:
-        raise HTTPException(status_code=404, detail="evidence connector not found")
-    await session.delete(row)
+    binding = await session.get(ApplicationServiceBinding, (application_id, service_id))
+    if binding is None:
+        raise HTTPException(status_code=404, detail="service binding not found")
+    await session.delete(binding)
     await session.commit()
-    await audit_action(action="application.evidence_connector.delete", actor_id=actor_id, target_type="evidence_connector", target_id=str(connector_id), application_id=application_id, detail={})
+    await audit_action(
+        action="application.service.unbind",
+        actor_id=actor_id,
+        target_type="service",
+        target_id=str(service_id),
+        application_id=application_id,
+    )

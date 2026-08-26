@@ -7,14 +7,22 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
+
 from lode.config import settings
 from lode.db.models.investigation import (
     EvidenceArtifact,
     Investigation,
     InvestigationEvidenceLink,
     InvestigationInput,
+    InvestigationServiceSnapshot,
     InvestigationJob,
     InvestigationStep,
+)
+from lode.db.models.application import (
+    ApplicationArchitectureContext,
+    ApplicationServiceBinding,
+    Service,
 )
 from lode.engine.evidence.secret_mask import mask_secrets
 from lode.engine.investigation_events import finish_operation, finish_step, start_operation, start_step
@@ -83,7 +91,7 @@ async def create_investigation(
     fields: dict[str, Any] | None = None,
     service_name: str | None = None,
     environment: str | None = None,
-    trace_id: str | None = None,
+    request_id: str | None = None,
     deployment_sha: str | None = None,
     application_version: str | None = None,
     source_metadata: dict[str, Any] | None = None,
@@ -99,7 +107,7 @@ async def create_investigation(
     scope = {
         "service": service_name,
         "environment": environment,
-        "trace_id": trace_id,
+        "request_id": request_id,
         "deployment_sha": deployment_sha,
         "application_version": application_version,
         "source": _bounded_json(source_metadata or {}),
@@ -115,13 +123,48 @@ async def create_investigation(
         output_language=output_language,
         service_name=service_name,
         environment=environment,
-        trace_id=trace_id,
+        request_id=request_id,
         deployment_sha=deployment_sha,
         window_started_at=occurred_at - timedelta(seconds=settings.investigation_window_before_seconds),
         window_finished_at=occurred_at + timedelta(seconds=settings.investigation_window_after_seconds),
         scope=scope,
     )
     session.add(investigation)
+    await session.flush()
+    bindings = (
+        await session.execute(
+            select(ApplicationServiceBinding, Service)
+            .join(Service, Service.id == ApplicationServiceBinding.service_id)
+            .where(
+                ApplicationServiceBinding.application_id == application_id,
+                Service.state == "active",
+            )
+            .order_by(ApplicationServiceBinding.role, Service.service_name)
+        )
+    ).all()
+    if not bindings:
+        raise ValueError("application has no active service bindings")
+    if service_name not in {service.service_name for _, service in bindings}:
+        raise ValueError("source service is outside the application service boundary")
+    application_contexts = (
+        await session.execute(
+            select(ApplicationArchitectureContext)
+            .where(ApplicationArchitectureContext.application_id == application_id)
+            .order_by(ApplicationArchitectureContext.id)
+        )
+    ).scalars().all()
+    session.add_all(
+        [
+            InvestigationServiceSnapshot(
+                investigation_id=investigation.id,
+                service_id=service.id,
+                service_name=service.service_name,
+                repo_id=service.repo_id,
+                role=binding.role,
+            )
+            for binding, service in bindings
+        ]
+    )
     await session.flush()
     investigation_input = InvestigationInput(
         investigation_id=investigation.id,
@@ -180,11 +223,11 @@ async def create_investigation(
         kind="scope_resolution",
         actor="engine",
         title="确认调查范围" if output_language == "zh" else "Resolve investigation scope",
-        purpose="固化服务、环境、版本、trace 和事故时间窗。" if output_language == "zh" else "Freeze service, environment, revision, trace, and incident window.",
+        purpose="固化服务、环境、版本、请求 ID 和事故时间窗。" if output_language == "zh" else "Freeze service, environment, revision, request ID, and incident window.",
         input_summary={"sources": scope_sources or {}},
         message="正在解析范围字段及其来源。" if output_language == "zh" else "Resolving scope fields and provenance.",
     )
-    identified = {"service": bool(service_name), "environment": bool(environment), "deployment_sha": bool(deployment_sha), "trace_id": bool(trace_id)}
+    identified = {"service": bool(service_name), "environment": bool(environment), "deployment_sha": bool(deployment_sha), "request_id": bool(request_id)}
     await finish_operation(
         session,
         scope_operation,
@@ -239,14 +282,64 @@ async def create_investigation(
     session.add(artifact)
     await session.flush()
     session.add(InvestigationEvidenceLink(investigation_id=investigation.id, artifact_id=artifact.id, relation="collected"))
+    context_artifact: EvidenceArtifact | None = None
+    if application_contexts:
+        context_payload = {
+            "application_id": application_id,
+            "entries": [
+                {
+                    "id": item.id,
+                    "content": item.content,
+                }
+                for item in application_contexts
+            ],
+        }
+        raw_context = json.dumps(
+            context_payload, ensure_ascii=False, sort_keys=True, default=str
+        )
+        redacted_context, context_categories = mask_secrets(raw_context)
+        context_excerpt = redacted_context[:30_000]
+        context_artifact = EvidenceArtifact(
+            investigation_id=investigation.id,
+            collection_id=None,
+            artifact_type="application_context",
+            source_kind="application",
+            source_id=application_id,
+            locator=f"application-context://{application_id}/{investigation.public_id}",
+            content_hash=hashlib.sha256(raw_context.encode()).hexdigest(),
+            redacted_excerpt=context_excerpt,
+            metadata_={
+                "selection_basis": "application_architecture_context",
+                "entry_count": len(application_contexts),
+                "truncated": len(context_excerpt) < len(redacted_context),
+                "secret_categories": context_categories,
+                "trust": "untrusted_background",
+            },
+        )
+        session.add(context_artifact)
+        await session.flush()
+        session.add(
+            InvestigationEvidenceLink(
+                investigation_id=investigation.id,
+                artifact_id=context_artifact.id,
+                relation="collected",
+            )
+        )
+    archived_refs = [artifact.id]
+    if context_artifact is not None:
+        archived_refs.append(context_artifact.id)
     await finish_operation(
         session,
         archive,
         status="succeeded",
-        result_summary=f"规范化事故输入已归档为证据 {artifact.id}。" if output_language == "zh" else f"Canonical incident input was archived as evidence {artifact.id}.",
+        result_summary=(
+            f"规范化事故输入已归档为证据 {artifact.id}，并固化 {len(application_contexts)} 条应用架构上下文。"
+            if output_language == "zh"
+            else f"Canonical incident input was archived as evidence {artifact.id} with {len(application_contexts)} application context entries."
+        ),
         message="不可变事故证据已生成。" if output_language == "zh" else "Immutable incident evidence was created.",
-        metrics={"artifact_id": artifact.id, "redacted": bool(categories), "bytes": len(redacted.encode())},
-        evidence_refs=[artifact.id],
+        metrics={"artifact_id": artifact.id, "redacted": bool(categories), "bytes": len(redacted.encode()), "application_context_entries": len(application_contexts)},
+        evidence_refs=archived_refs,
     )
 
     job = InvestigationJob(
@@ -265,7 +358,7 @@ async def create_investigation(
         kind="job_enqueue",
         actor="engine",
         title="提交调查任务" if output_language == "zh" else "Queue investigation",
-        purpose="将规范化调查提交给串行执行器。" if output_language == "zh" else "Submit the normalized investigation to the sequential executor.",
+        purpose="将规范化调查提交给分波次执行器。" if output_language == "zh" else "Submit the normalized investigation to the bounded-wave executor.",
         input_summary={"max_attempts": job.max_attempts},
         message="正在创建持久化调查任务。" if output_language == "zh" else "Creating the durable investigation job.",
     )
@@ -274,7 +367,7 @@ async def create_investigation(
         enqueue,
         status="succeeded",
         result_summary=f"任务 {job.public_id} 已入队，最多重试 {job.max_attempts} 次。" if output_language == "zh" else f"Job {job.public_id} was queued with at most {job.max_attempts} attempts.",
-        message="调查任务已进入串行执行队列。" if output_language == "zh" else "Investigation entered the sequential execution queue.",
+        message="调查任务已进入执行队列。" if output_language == "zh" else "Investigation entered the execution queue.",
         metrics={"job_id": job.public_id, "max_attempts": job.max_attempts},
     )
     await finish_step(
@@ -282,6 +375,6 @@ async def create_investigation(
         step,
         status="succeeded",
         result_summary="完整错误链、范围和不可变输入已归档。" if output_language == "zh" else "The complete error chain, scope, and immutable input were archived.",
-        output_refs=[artifact.id],
+        output_refs=archived_refs,
     )
     return investigation, job

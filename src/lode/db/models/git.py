@@ -28,7 +28,7 @@ class GitCredential(Base):
     )
     auth_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="ssh")
     username: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    secret_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     readonly: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     note: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     created_at: Mapped[datetime] = mapped_column(

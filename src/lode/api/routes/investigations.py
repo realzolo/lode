@@ -1,4 +1,4 @@
-"""V1 API for sequential, evidence-backed investigations."""
+"""V1 API for bounded-wave, evidence-backed investigations."""
 
 from __future__ import annotations
 
@@ -313,29 +313,33 @@ async def create_manual_investigation(body: InvestigationCreateIn, user_id: int 
     language = normalize_ai_output_language(setting.value if setting else None)
     signature_source = "\n".join([body.error.name, body.error.message, *(body.error.stack or "").splitlines()[:3]])
     trigger_signature = hashlib.sha256(signature_source.encode()).hexdigest()
-    run, job = await create_investigation(
-        session,
-        application_id=application.id,
-        trigger_signature=trigger_signature,
-        source_type="manual",
-        title=body.title,
-        severity=body.severity,
-        occurred_at=body.occurred_at,
-        output_language=language,
-        error_name=body.error.name,
-        error_message=body.error.message,
-        error_stack=body.error.stack,
-        error_cause=body.error.cause,
-        error_properties=body.error.properties,
-        fields={**body.fields, "attachments": [item.model_dump() for item in body.attachments]},
-        service_name=body.service_name,
-        environment=body.environment,
-        trace_id=body.trace_id,
-        deployment_sha=body.deployment_sha,
-        source_metadata={"submitted_by": user_id, "attachment_count": len(body.attachments)},
-        scope_sources={"service": "manual", "environment": "manual", "trace_id": "manual", "deployment_sha": "manual"},
-        created_by=user_id,
-    )
+    try:
+        run, job = await create_investigation(
+            session,
+            application_id=application.id,
+            trigger_signature=trigger_signature,
+            source_type="manual",
+            title=body.title,
+            severity=body.severity,
+            occurred_at=body.occurred_at,
+            output_language=language,
+            error_name=body.error.name,
+            error_message=body.error.message,
+            error_stack=body.error.stack,
+            error_cause=body.error.cause,
+            error_properties=body.error.properties,
+            fields={**body.fields, "attachments": [item.model_dump() for item in body.attachments]},
+            service_name=body.service_name,
+            environment=body.environment,
+            request_id=body.request_id,
+            deployment_sha=body.deployment_sha,
+            source_metadata={"submitted_by": user_id, "attachment_count": len(body.attachments)},
+            scope_sources={"service": "manual", "environment": "manual", "request_id": "manual", "deployment_sha": "manual"},
+            created_by=user_id,
+        )
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     for attachment in body.attachments:
         redacted, categories = mask_secrets(attachment.content)
         artifact_type = attachment.kind if attachment.kind in {"log", "trace", "dependency"} else "operator_input"
@@ -437,7 +441,7 @@ async def retry_investigation(
         fields=incident_input.fields,
         service_name=run.service_name,
         environment=run.environment,
-        trace_id=run.trace_id,
+        request_id=run.request_id,
         deployment_sha=run.deployment_sha,
         application_version=scope.get("application_version"),
         source_metadata={

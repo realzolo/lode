@@ -5,9 +5,10 @@ export type Level = 'CRITICAL' | 'WARNING';
 export interface Application {
   id: string;
   name: string;
-  topic: string;
+  ingestionTopic: string;
   level: Level;
-  repoCount: number;
+  serviceCount: number;
+  primaryServiceConfigured: boolean;
   modelConfigured: boolean;
   modelAvailable: boolean;
   ingestionState: 'draft' | 'active' | 'paused';
@@ -57,7 +58,6 @@ export interface AuditEvent {
   target_id: string | null;
   application_id: number | null;
   request_id: string | null;
-  trace_id: string | null;
   result: 'ok' | 'error';
   detail: Record<string, unknown> | null;
   created_at: string;
