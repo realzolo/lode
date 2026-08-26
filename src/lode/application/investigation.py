@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -63,6 +63,7 @@ class InvestigationRunResult:
     result_state: str
     wave_count: int
     policy_rejections: int
+    terminal_reason: str
 
 
 class Planner(Protocol):
@@ -72,6 +73,12 @@ class Planner(Protocol):
         catalog: Sequence[Mapping[str, Any]],
         rejection: Sequence[PolicyDecision] = (),
     ) -> InvestigationDecision: ...
+
+
+class PlannerUnavailable(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class OperationExecutor(Protocol):
@@ -189,7 +196,12 @@ class InvestigationOrchestrator:
                     result_state="insufficient",
                     reason="investigation_budget_exhausted",
                 )
-                return InvestigationRunResult("insufficient", state.wave_count, rejections)
+                return InvestigationRunResult(
+                    "insufficient",
+                    state.wave_count,
+                    rejections,
+                    "investigation_budget_exhausted",
+                )
             snapshots = await self.repository.capability_snapshots(investigation_id)
             static = await self.repository.static_capabilities(investigation_id)
             capabilities = self.catalog_builder.build(
@@ -199,7 +211,15 @@ class InvestigationOrchestrator:
                 static_capabilities=static,
             )
             model_catalog = catalog_for_model(capabilities)
-            candidate = await self.planner.decide(state, model_catalog)
+            try:
+                candidate = await self.planner.decide(state, model_catalog)
+            except PlannerUnavailable as exc:
+                await self.repository.finish_investigation(
+                    investigation_id,
+                    result_state="unavailable",
+                    reason=exc.code,
+                )
+                return InvestigationRunResult("unavailable", state.wave_count, rejections, exc.code)
             evaluated = self.decision_policy.evaluate(
                 candidate,
                 capabilities,
@@ -209,9 +229,19 @@ class InvestigationOrchestrator:
             )
             if evaluated.outcome == "reject":
                 rejections += 1
-                repaired = await self.planner.decide(
-                    state, model_catalog, evaluated.policy_decisions
-                )
+                try:
+                    repaired = await self.planner.decide(
+                        state, model_catalog, evaluated.policy_decisions
+                    )
+                except PlannerUnavailable as exc:
+                    await self.repository.finish_investigation(
+                        investigation_id,
+                        result_state="unavailable",
+                        reason=exc.code,
+                    )
+                    return InvestigationRunResult(
+                        "unavailable", state.wave_count, rejections, exc.code
+                    )
                 evaluated = self.decision_policy.evaluate(
                     repaired,
                     capabilities,
@@ -227,7 +257,12 @@ class InvestigationOrchestrator:
                         result_state="unavailable",
                         reason="decision_policy_rejected_after_repair",
                     )
-                    return InvestigationRunResult("unavailable", state.wave_count, rejections)
+                    return InvestigationRunResult(
+                        "unavailable",
+                        state.wave_count,
+                        rejections,
+                        "decision_policy_rejected_after_repair",
+                    )
             if evaluated.candidate.decision == "finish":
                 await self.repository.finish_investigation(
                     investigation_id,
@@ -238,6 +273,7 @@ class InvestigationOrchestrator:
                     _terminal_state(evaluated.candidate.hypotheses),
                     state.wave_count,
                     rejections,
+                    "planner_finished",
                 )
             await self.wave_coordinator.execute(investigation_id, evaluated)
 
@@ -251,5 +287,5 @@ def _terminal_state(hypotheses: Sequence[Hypothesis]) -> str:
     return "hypothesis" if hypotheses else "insufficient"
 
 
-def fingerprints(values: Sequence[PlannedOperation]) -> Set[str]:
+def fingerprints(values: Sequence[PlannedOperation]) -> set[str]:
     return frozenset(value.fingerprint for value in values)

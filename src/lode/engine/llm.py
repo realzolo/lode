@@ -1,8 +1,7 @@
-"""LLM client for the analysis agent.
+"""Provider-neutral LLM gateway for audited analysis invocations.
 
-The platform talks to OpenAI- or Anthropic-compatible chat-completion
-endpoints. The endpoint, model, and key come from the ``ai_model_configs``
-table (global default or per-application override).
+The caller supplies the endpoint, model, and encrypted credential selected from
+the investigation's frozen provider/deployment/binding snapshots.
 
 If no model is configured, or the request fails for any reason, this module
 returns an unavailable result. The investigation reports that semantic
@@ -18,8 +17,8 @@ import logging
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -113,11 +112,18 @@ async def complete(
 
 
 def _estimated_tokens(value: str) -> int:
-    """Conservative, provider-neutral token estimate for providers without usage."""
+    """Estimate post-call usage only when a provider omits usage metadata.
+
+    Admission and context assembly are performed before this gateway with the
+    frozen deployment's registered exact tokenizer; this estimate never decides
+    whether a request fits.
+    """
     return max(1, (len(value) + 3) // 4)
 
 
-def _usage(provider: str, body: dict[str, Any], system_prompt: str, user_prompt: str, text: str) -> tuple[int, int, int, str]:
+def _usage(
+    provider: str, body: dict[str, Any], system_prompt: str, user_prompt: str, text: str
+) -> tuple[int, int, int, str]:
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     if provider == "anthropic":
         input_tokens = usage.get("input_tokens")
@@ -127,7 +133,12 @@ def _usage(provider: str, body: dict[str, Any], system_prompt: str, user_prompt:
         output_tokens = usage.get("completion_tokens")
     if isinstance(input_tokens, int) and isinstance(output_tokens, int):
         total = usage.get("total_tokens")
-        return input_tokens, output_tokens, total if isinstance(total, int) else input_tokens + output_tokens, "provider"
+        return (
+            input_tokens,
+            output_tokens,
+            total if isinstance(total, int) else input_tokens + output_tokens,
+            "provider",
+        )
     input_estimate = _estimated_tokens(system_prompt + "\n" + user_prompt)
     output_estimate = _estimated_tokens(text)
     return input_estimate, output_estimate, input_estimate + output_estimate, "estimated"
@@ -146,11 +157,31 @@ async def complete_with_usage(
     """Run one bounded completion and retain provider usage when available."""
     started = time.monotonic()
     if config is None or not config.api_key_ciphertext:
-        return CompletionResult(None, 0, None, None, None, "unavailable", "model_not_configured", "No model configuration was selected.", 0)
+        return CompletionResult(
+            None,
+            0,
+            None,
+            None,
+            None,
+            "unavailable",
+            "model_not_configured",
+            "No model configuration was selected.",
+            0,
+        )
 
     api_key = resolve_api_key(config.api_key_ciphertext)
     if not api_key:
-        return CompletionResult(None, int((time.monotonic() - started) * 1000), None, None, None, "unavailable", "api_key_unavailable", "The configured API key could not be decrypted.", 0)
+        return CompletionResult(
+            None,
+            int((time.monotonic() - started) * 1000),
+            None,
+            None,
+            None,
+            "unavailable",
+            "api_key_unavailable",
+            "The configured API key could not be decrypted.",
+            0,
+        )
 
     if config.provider == "anthropic":
         payload, headers = _anthropic_payload(
@@ -202,10 +233,20 @@ async def complete_with_usage(
             body = await _run_blocking(_post)
             text = _extract_text(config.provider, body, response_schema=response_schema)
             elapsed = time.monotonic() - started
-            input_tokens, output_tokens, total_tokens, token_source = _usage(config.provider, body, system_prompt, user_prompt, text)
+            input_tokens, output_tokens, total_tokens, token_source = _usage(
+                config.provider, body, system_prompt, user_prompt, text
+            )
             LLM_LATENCY.observe(elapsed)
             LLM_CALLS.labels(outcome="success").inc()
-            return CompletionResult(text, int(elapsed * 1000), input_tokens, output_tokens, total_tokens, token_source, attempt_count=attempt)
+            return CompletionResult(
+                text,
+                int(elapsed * 1000),
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                token_source,
+                attempt_count=attempt,
+            )
         except Exception as exc:  # noqa: BLE001 - retry transient, degrade on exhaustion
             last_exc = exc
             if attempt >= max_retries or not _is_retryable(exc):
@@ -215,15 +256,19 @@ async def complete_with_usage(
                 await on_retry(attempt, max_retries, _error_code(exc), delay)
             logger.warning(
                 "LLM call attempt %d/%d failed (transient), retrying in %.1fs: %s",
-                attempt, max_retries, delay, exc,
+                attempt,
+                max_retries,
+                delay,
+                exc,
             )
             await asyncio.sleep(delay)
 
     elapsed = time.monotonic() - started
     LLM_LATENCY.observe(elapsed)
     LLM_CALLS.labels(outcome="unavailable").inc()
-    logger.warning("LLM call failed after %d attempt(s), reporting unavailable: %s",
-                   attempt, last_exc)
+    logger.warning(
+        "LLM call failed after %d attempt(s), reporting unavailable: %s", attempt, last_exc
+    )
     error_code = _error_code(last_exc)
     error_detail = f"Provider request failed at {endpoint}: {type(last_exc).__name__}."
     if isinstance(last_exc, urllib.error.HTTPError):
@@ -237,7 +282,17 @@ async def complete_with_usage(
     elif isinstance(last_exc, urllib.error.URLError):
         error_code = "network_error"
         error_detail = f"Provider endpoint {endpoint} could not be reached."
-    return CompletionResult(None, int(elapsed * 1000), None, None, None, "unavailable", error_code, error_detail, attempt)
+    return CompletionResult(
+        None,
+        int(elapsed * 1000),
+        None,
+        None,
+        None,
+        "unavailable",
+        error_code,
+        error_detail,
+        attempt,
+    )
 
 
 def _error_code(exc: Exception | None) -> str:
@@ -330,7 +385,11 @@ def _extract_text(
         parts = body.get("content") or []
         if response_schema is not None:
             for part in parts:
-                if isinstance(part, dict) and part.get("type") == "tool_use" and part.get("name") == response_schema.name:
+                if (
+                    isinstance(part, dict)
+                    and part.get("type") == "tool_use"
+                    and part.get("name") == response_schema.name
+                ):
                     return json.dumps(part.get("input"), ensure_ascii=False)
             return ""
         return "".join(p.get("text", "") for p in parts if isinstance(p, dict))

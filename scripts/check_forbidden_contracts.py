@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI entry point for removed V1 contract detection."""
+"""CLI entry point for removed contract detection."""
 
 from __future__ import annotations
 

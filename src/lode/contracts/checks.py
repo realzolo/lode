@@ -1,4 +1,4 @@
-"""Validate and fingerprint the frozen V1 contract and evaluation fixtures."""
+"""Validate and fingerprint the frozen current contract and evaluation fixtures."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
-
 
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_ROOT = ROOT / "contracts" / "v1"
@@ -70,8 +69,8 @@ def validate_contracts() -> dict[str, Any]:
     endpoints = [tuple(item) for item in api.get("endpoints", [])]
     if len(endpoints) != len(set(endpoints)):
         raise FixtureError("API endpoint manifest contains duplicates")
-    if any(path.startswith("/applications") or path.startswith("/services") for _, path in endpoints):
-        raise FixtureError("API endpoint manifest contains a removed V1 resource")
+    if any(path.startswith(("/applications", "/services")) for _, path in endpoints):
+        raise FixtureError("API endpoint manifest contains a removed resource")
 
     tables = _load_json(CONTRACT_ROOT / "database" / "tables.json")
     inventory = tables["control_plane"] + tables["intake"] + tables["investigation"]
@@ -79,7 +78,7 @@ def validate_contracts() -> dict[str, Any]:
         raise FixtureError("database table inventory contains duplicates")
     forbidden = set(tables["forbidden_tables"])
     if forbidden.intersection(inventory):
-        raise FixtureError("database table inventory contains a removed V1 table")
+        raise FixtureError("database table inventory contains a removed table")
 
     invariants = _load_json(CONTRACT_ROOT / "database" / "invariants.json")
     for field in ("immutable_tables", "archive_readonly_tables", "updated_at_tables"):
@@ -89,7 +88,9 @@ def validate_contracts() -> dict[str, Any]:
         if set(names) - set(inventory):
             raise FixtureError(f"database invariant {field} contains an unknown table")
     required_triggers = invariants.get("required_triggers")
-    if not isinstance(required_triggers, dict) or list(required_triggers) != sorted(required_triggers):
+    if not isinstance(required_triggers, dict) or list(required_triggers) != sorted(
+        required_triggers
+    ):
         raise FixtureError("required database triggers must be a sorted object")
     if set(required_triggers) - set(inventory):
         raise FixtureError("required database triggers contain an unknown table")

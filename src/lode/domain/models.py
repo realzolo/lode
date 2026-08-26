@@ -1,13 +1,14 @@
-"""Pure, immutable V1 domain records."""
+"""Pure, immutable domain records."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
 
 from lode.domain.errors import DomainValidationError
 from lode.domain.types import (
@@ -26,7 +27,6 @@ from lode.domain.types import (
     ResolutionStatus,
     SourceBindingRole,
 )
-
 
 _STABLE_KEY = re.compile(r"^[a-z0-9][a-z0-9._:/-]{0,199}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -85,9 +85,13 @@ class Workspace:
         _required(self.name, "name")
         _required(self.ingestion_topic, "ingestion_topic")
         if self.ingestion_version < 0:
-            raise DomainValidationError("invalid_revision", "ingestion_version must be non-negative")
+            raise DomainValidationError(
+                "invalid_revision", "ingestion_version must be non-negative"
+            )
         if self.ingestion_start_position not in {None, "earliest", "latest"}:
-            raise DomainValidationError("invalid_start_position", "invalid ingestion start position")
+            raise DomainValidationError(
+                "invalid_start_position", "invalid ingestion start position"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,8 +108,12 @@ class ProviderAccount:
 
     def __post_init__(self) -> None:
         for field_name in (
-            "name", "provider_kind", "base_url", "data_processing_policy_revision",
-            "data_residency", "retention_mode",
+            "name",
+            "provider_kind",
+            "base_url",
+            "data_processing_policy_revision",
+            "data_residency",
+            "retention_mode",
         ):
             _required(getattr(self, field_name), field_name)
         if self.revision < 1:
@@ -132,7 +140,9 @@ class ModelDeployment:
         _required(self.display_name, "display_name")
         _required(self.tokenizer_id, "tokenizer_id")
         if min(self.max_input_tokens, self.max_output_tokens, self.revision) < 1:
-            raise DomainValidationError("invalid_model_limit", "model limits and revision must be positive")
+            raise DomainValidationError(
+                "invalid_model_limit", "model limits and revision must be positive"
+            )
         object.__setattr__(self, "capabilities", _freeze(self.capabilities))
 
 
@@ -159,15 +169,24 @@ class WorkspaceModelBinding:
         _unique_nonempty(self.execution_classes, "execution_classes")
         _unique_nonempty(self.allowed_roles, "allowed_roles")
         _unique_nonempty(self.allowed_data_classes, "allowed_data_classes")
-        if self.priority < 0 or min(
-            self.max_calls, self.max_input_tokens, self.max_output_tokens, self.timeout_ms, self.revision
-        ) < 1:
+        if (
+            self.priority < 0
+            or min(
+                self.max_calls,
+                self.max_input_tokens,
+                self.max_output_tokens,
+                self.timeout_ms,
+                self.revision,
+            )
+            < 1
+        ):
             raise DomainValidationError("invalid_model_limit", "binding limits are invalid")
         if self.max_cost_per_call < 0:
             raise DomainValidationError("invalid_model_limit", "max cost must be non-negative")
         if not 0 < self.max_context_utilization < 1:
             raise DomainValidationError(
-                "invalid_context_utilization", "max context utilization must be between zero and one"
+                "invalid_context_utilization",
+                "max context utilization must be between zero and one",
             )
 
 
@@ -183,13 +202,27 @@ class ContextPolicyRevision:
         _unique_nonempty(self.pinned_evidence_kinds, "pinned_evidence_kinds")
         _unique_nonempty(self.compression_levels, "compression_levels")
         if min(self.minimum_output_tokens, self.provider_safety_margin_tokens, self.revision) < 1:
-            raise DomainValidationError("invalid_context_policy", "context policy limits must be positive")
+            raise DomainValidationError(
+                "invalid_context_policy", "context policy limits must be positive"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ModelBindingRevisionRef:
+    binding_id: int
+    revision: int
+
+    def __post_init__(self) -> None:
+        if min(self.binding_id, self.revision) < 1:
+            raise DomainValidationError(
+                "invalid_reference", "model binding revision references must be positive"
+            )
 
 
 @dataclass(frozen=True, slots=True)
 class ModelPolicyRevision:
     workspace_id: int
-    eligible_binding_revisions: tuple[int, ...]
+    eligible_bindings: tuple[ModelBindingRevisionRef, ...]
     role_policies: Mapping[str, Any]
     budget_policy: Mapping[str, Any]
     context_policy_revision_id: int
@@ -198,9 +231,12 @@ class ModelPolicyRevision:
     def __post_init__(self) -> None:
         if min(self.workspace_id, self.context_policy_revision_id, self.revision) < 1:
             raise DomainValidationError("invalid_reference", "policy references must be positive")
-        _unique_nonempty(self.eligible_binding_revisions, "eligible_binding_revisions")
-        if any(value < 1 for value in self.eligible_binding_revisions):
-            raise DomainValidationError("invalid_revision", "eligible binding revisions must be positive")
+        _unique_nonempty(self.eligible_bindings, "eligible_bindings")
+        binding_ids = tuple(value.binding_id for value in self.eligible_bindings)
+        if len(binding_ids) != len(set(binding_ids)):
+            raise DomainValidationError(
+                "duplicate_value", "eligible model binding IDs must be unique"
+            )
         object.__setattr__(self, "role_policies", _freeze(self.role_policies))
         object.__setattr__(self, "budget_policy", _freeze(self.budget_policy))
 
@@ -217,7 +253,9 @@ class RepositoryBinding:
 
     def __post_init__(self) -> None:
         if min(self.workspace_id, self.repository_id, self.descriptor_revision) < 1:
-            raise DomainValidationError("invalid_reference", "repository references must be positive")
+            raise DomainValidationError(
+                "invalid_reference", "repository references must be positive"
+            )
         if self.priority < 0:
             raise DomainValidationError("invalid_priority", "priority must be non-negative")
         if self.description != self.description.strip():
@@ -238,7 +276,9 @@ class BuildUnit:
 
     def __post_init__(self) -> None:
         if min(self.workspace_id, self.repository_binding_id, self.revision) < 1:
-            raise DomainValidationError("invalid_reference", "build unit references must be positive")
+            raise DomainValidationError(
+                "invalid_reference", "build unit references must be positive"
+            )
         _stable_key(self.stable_key)
         _repository_path(self.source_root, "source_root")
         _required(self.build_system, "build_system")
@@ -260,7 +300,9 @@ class Component:
 
     def __post_init__(self) -> None:
         if min(self.workspace_id, self.revision) < 1:
-            raise DomainValidationError("invalid_reference", "component references must be positive")
+            raise DomainValidationError(
+                "invalid_reference", "component references must be positive"
+            )
         _stable_key(self.stable_key)
         _required(self.display_name, "display_name")
         families = set(self.root_provenance_families)
@@ -279,7 +321,9 @@ class ComponentSourceBinding:
 
     def __post_init__(self) -> None:
         if min(self.component_id, self.build_unit_id) < 1:
-            raise DomainValidationError("invalid_reference", "source binding references must be positive")
+            raise DomainValidationError(
+                "invalid_reference", "source binding references must be positive"
+            )
         _repository_path(self.path_prefix, "path_prefix")
 
 
@@ -300,8 +344,12 @@ class ResourceObservation:
         if self.workspace_id < 1:
             raise DomainValidationError("invalid_reference", "workspace must be positive")
         for field_name in (
-            "source_kind", "source_ref", "observation_kind", "root_provenance_id",
-            "source_family", "trust_class",
+            "source_kind",
+            "source_ref",
+            "observation_kind",
+            "root_provenance_id",
+            "source_family",
+            "trust_class",
         ):
             _required(getattr(self, field_name), field_name)
         if not _SHA256.fullmatch(self.content_hash):
@@ -335,7 +383,9 @@ class IdentityResolution:
             )
         _required(self.validator_version, "validator_version")
         if not _SHA256.fullmatch(self.resolution_hash):
-            raise DomainValidationError("invalid_resolution_hash", "resolution hash must be SHA-256")
+            raise DomainValidationError(
+                "invalid_resolution_hash", "resolution hash must be SHA-256"
+            )
         object.__setattr__(self, "resolved_payload", _freeze(self.resolved_payload))
 
 
@@ -366,10 +416,16 @@ class EvidenceAccessScope:
     revision: int = 1
 
     def __post_init__(self) -> None:
-        if min(
-            self.connector_id, self.schema_catalog_revision, self.read_policy_revision,
-            self.normalization_policy_revision, self.revision,
-        ) < 1:
+        if (
+            min(
+                self.connector_id,
+                self.schema_catalog_revision,
+                self.read_policy_revision,
+                self.normalization_policy_revision,
+                self.revision,
+            )
+            < 1
+        ):
             raise DomainValidationError("invalid_reference", "scope revisions must be positive")
         _unique_nonempty(self.allowed_languages, "allowed_languages")
         object.__setattr__(self, "scope_config", _freeze(self.scope_config))

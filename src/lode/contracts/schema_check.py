@@ -1,4 +1,4 @@
-"""Verify a migrated PostgreSQL database against the frozen V1 inventory."""
+"""Verify a migrated PostgreSQL database against the frozen current inventory."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from lode.contracts.checks import CONTRACT_ROOT
 
 
 class SchemaInvariantError(RuntimeError):
-    """Raised when a migrated database differs from the frozen V1 contract."""
+    """Raised when a migrated database differs from the frozen current contract."""
 
 
 def _load(relative: str) -> dict[str, Any]:

@@ -113,7 +113,7 @@ async def main() -> None:
             max_calls=10,
             max_input_tokens=24576,
             max_output_tokens=4096,
-            max_cost_per_call=Decimal("0"),
+            max_cost_per_call=Decimal(0),
             timeout_ms=120000,
             allowed_data_classes=["masked_incident", "source_code"],
             max_context_utilization=Decimal("0.75"),
@@ -134,7 +134,7 @@ async def main() -> None:
         await session.flush()
         model_policy = ModelPolicyRevision(
             workspace_id=workspace.id,
-            eligible_binding_revisions=[binding.id],
+            eligible_bindings=[{"binding_id": binding.id, "revision": binding.revision}],
             role_policies={
                 "planner": {"execution_class": "latency_optimized"},
                 "synthesizer": {"execution_class": "latency_optimized"},

@@ -4,7 +4,9 @@
 
 The final replacement is being implemented from
 `workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-7 are
-the current completed implementation baseline:
+the completed baseline. The Phase 8 implementation candidate is present, but
+Phase 8 remains release-gated until frozen provider-run observations satisfy the
+quality and Wilson confidence thresholds below:
 
 - `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
   HTTP-surface, and database-inventory fixtures. These fixtures contain no
@@ -28,7 +30,7 @@ the current completed implementation baseline:
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
-- The V1 ORM registry and the only migration register exactly the 67 tables in
+- The current ORM registry and the only migration register exactly the 67 tables in
   `contracts/v1/database/tables.json`. Provider accounts, model deployments,
   Workspace bindings, repositories, build units, components, resource graph
   revisions, connectors, immutable investigation snapshots, the evidence
@@ -185,6 +187,49 @@ the current completed implementation baseline:
   execution bridge. Connector credentials are hashed without decryption while
   snapshots are frozen; later control-plane edits cannot change an existing
   investigation.
+- Intake now freezes repository resolution, connector instances/scopes, eligible
+  model binding revisions, model policy, context policy, architecture context,
+  and graph identity inside the same transaction as the investigation and job.
+  Repository snapshots retain the exact URL, read-only credential identity,
+  full SHA, revision role, and resolution status. Model policy
+  `eligible_bindings` contains explicit `{binding_id, revision}` objects; an ID
+  or revision mismatch fails closed instead of selecting current control-plane
+  state.
+- `src/lode/infrastructure/git_source.py`, `source_executor.py`, and
+  `source_store.py` provide shell-free, bounded, disposable exact-revision source
+  reads. The alert SHA is never replaced by a default branch. Multi-repository
+  exact matches remain ambiguous, secondary/default-branch matches are search
+  candidates, and archived source artifacts retain repository snapshot, SHA,
+  role, path, symbol, line range, masking, and immutable assessment provenance.
+- `src/lode/application/model_routing.py`, `context.py`, and
+  `context_compaction.py` plus `src/lode/infrastructure/model_runtime.py` own
+  frozen role/execution-class routing, per-investigation and per-binding call/
+  cost limits, exact tokenizer admission, immutable context bundles, audited
+  replay, and one bounded compaction retry. Pinned input and counter-evidence are
+  never tail-truncated. Compaction rejects reference, number, timestamp, SHA, or
+  identity drift; hidden reasoning, raw provider output, sessions, and provider
+  caches never cross role/model boundaries.
+- Planner, synthesizer, verifier, and context compactor are separate audited
+  invocations. Simple tasks route to eligible latency deployments; conflict,
+  multi-component/repository, deep causal, synthesis, and verification tasks
+  require reasoning deployments. A route with no eligible frozen candidate is
+  persisted with every exclusion and zero capacity before returning unavailable.
+  Provider/deployment drift cannot silently admit a replacement model.
+- `src/lode/infrastructure/report_store.py` is the sole report publisher. It
+  validates strict structured synthesis/verifier payloads, investigation-owned
+  evidence, exact source provenance, runtime configuration authority, frozen
+  verifier independence, and immutable finding/report hashes. Confirmed code
+  requires exact or independently corroborated runtime source plus verifier
+  approval; configuration without runtime evidence, source contradiction,
+  verifier absence/failure/rejection, or provenance mismatch downgrades or rejects
+  the conclusion. External incident causes do not require a fabricated code
+  finding. Repeated publication reuses identical immutable findings.
+- `src/lode/worker/main.py` composes the production planner, native/source
+  operation executor, dynamic orchestrator, synthesizer, verifier, and report
+  publisher by default. Frozen connector secrets are encrypted strict JSON
+  objects whose keys and values are strings; duplicate keys, decryption failure,
+  instance revision drift, or ciphertext hash drift make the connector
+  unavailable without a plaintext or current-state fallback.
 
 Run `make contracts` (or `uv run python scripts/check_contracts.py`) whenever
 a frozen contract or evaluation fixture changes. Run
@@ -209,14 +254,24 @@ Run `make investigation-check` whenever capability construction, decision
 policy, dynamic waves, connector snapshots, graph projection/persistence,
 operation replay, or worker leases change. Database checks that claim the
 global job queue must run serially or against isolated databases.
+Run `make analysis-check` whenever repository resolution/source archival, model
+policy/binding snapshots, routing, tokenizer/context assembly, compaction,
+planner roles, synthesis/verification, authority gates, or report publication
+changes. It runs the deterministic quality smoke suite and a repeatable real-
+database execution checker. `scripts/check_analysis_quality.py --release
+--observations <frozen-results.jsonl> --run-manifest <frozen-run.json>` is the
+strict provider-run release gate;
+the six-case deterministic smoke corpus intentionally reports its Wilson
+confidence as insufficient for release rather than pretending a small sample is
+statistically valid.
 Run
-`uv run python scripts/check_forbidden_contracts.py` as the full-repository V1
+`uv run python scripts/check_forbidden_contracts.py` as the full-repository
 removal gate; it is expected to become clean as the replacement phases delete
 the currently implemented pre-final runtime contracts. Do not add an allowlist
 or compatibility adapter to make this gate pass.
 
 The sections below include final contracts for later implementation phases.
-Phases 1-7 changed the database/control-plane identity architecture, the
+Phases 1-8 changed the database/control-plane identity architecture, the
 migration/seed verification workflow, Kafka/manual intake, automatic resource
 understanding, and the currently assembled API routes. Phase 3 added the direct
 `PyYAML` dependency and the `resource-check` workflow. Phase 4 added an
@@ -233,9 +288,13 @@ runner-specific `deploy/command-runner-seccomp.json` syscall profile, and the
 dynamic investigation application layer, health-bearing connector snapshots,
 Evidence Graph persistence, durable lease/replay behavior, native result
 archival, three Prometheus instruments, and the `investigation-check` workflow.
-Pre-final source/model/report, remaining API, and Web modules are not a
-supported execution path while their
-owning phases replace them; they must be rewritten without adapters.
+Phase 8 added no dependency; it added same-transaction repository/connector/model
+control snapshots, exact Git source reads, authority assessment, frozen multi-
+model routing, exact context and validated compaction, audited role isolation,
+strict synthesis/verifier publication, the default worker composition root, and
+the `analysis-check` workflow. Remaining API and Web modules are not a supported
+final execution path while their owning phase replaces them; they must be
+rewritten without adapters.
 
 Lode is an evidence-backed production incident investigation service. An
 investigation advances through serial decision waves; independent operations
@@ -282,6 +341,19 @@ historical protocol or execution-path adapters.
 - `src/lode/infrastructure/evidence_graph_store.py`: ownership-checked idempotent graph persistence.
 - `src/lode/infrastructure/evidence_archive.py`: normalized native-result collection/artifact archival.
 - `src/lode/infrastructure/native_read_executor.py`: dynamic operation to Evidence Access authorization/execution bridge.
+- `src/lode/application/model_routing.py`: deterministic selection over frozen binding snapshots and server-owned task complexity.
+- `src/lode/application/context.py`: exact-token, role-isolated context assembly without hidden provider state.
+- `src/lode/application/context_compaction.py`: drift-rejecting layered summary validation with pinned counter-evidence.
+- `src/lode/application/source_authority.py`: exact/runtime source and configuration authority rules.
+- `src/lode/application/conclusion_validation.py`: server-owned confirmation downgrade gates.
+- `src/lode/infrastructure/investigation_control_snapshots.py`: same-transaction repository and model control freezing.
+- `src/lode/infrastructure/model_runtime.py`: immutable routing/context/invocation audit, replay, drift checks, and bounded compaction.
+- `src/lode/infrastructure/git_source.py`: shell-free bounded exact-revision Git reader.
+- `src/lode/infrastructure/source_store.py`: masked source artifact, revision, and assessment archival.
+- `src/lode/infrastructure/investigation_reporting.py`: audited synthesis and independent verification roles.
+- `src/lode/infrastructure/report_store.py`: strict semantic validation and immutable report publication.
+- `src/lode/infrastructure/connector_resolver.py`: frozen connector/secret verification and production adapter construction.
+- `src/lode/infrastructure/operation_executor.py`: provider-neutral native/source operation dispatch.
 - `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, UI form metadata, and egress policy.
 - `src/lode/engine/integrations.py`: provider adapters for verification and bounded snapshots.
 - `src/lode/engine/evidence/git.py`: stack parsing, exact revision lookup, symbol range extraction, lexical candidates, and related-symbol expansion.
@@ -335,8 +407,9 @@ An investigation owns exactly one active decision wave:
 2. Parse stack frames and the structured error contract.
 3. Reload committed evidence, hypotheses, completed fingerprints, and remaining
    server budget.
-4. Freeze active, healthy Connector capabilities once and build a minimal,
-   credential-free server action catalog.
+4. Use the repository, Connector, scope, model binding/policy, context, and graph
+   snapshots frozen atomically at intake; build a minimal credential-free server
+   action catalog.
 5. Ask the planner to finish or select one to four independent actions. An
    external action may include a provider-native candidate, while a decision
    may select zero external connectors.
@@ -373,7 +446,7 @@ ValueRef, authorization, preflight, execution, masking, and archive chain. The
 model may never create credentials, connector configuration, access scope, or
 repository authorization.
 
-OpenAI-compatible base URLs are normalized to `/v1/chat/completions`; Anthropic base URLs are normalized to `/v1/messages`. Investigation requests use a configurable 120-second per-attempt timeout, provider-enforced strict JSON Schemas, and an 8192-token output bound; health probes keep a separate 30-second timeout. OpenAI-compatible providers use `response_format.json_schema`, while Anthropic uses a forced schema-bound tool result. Calls automatically retry only transient network failures, timeouts, HTTP 429, and HTTP 5xx with bounded exponential backoff. Authentication, request validation, and non-JSON protocol responses fail immediately. Each retry emits operation progress, and AI audit rows retain the actionable error classification and actual attempt count. Do not collapse a timeout or protocol error into a generic "model unavailable" message. If both the initial structured response and the single repair fail validation, report the analysis as unavailable with the exact contract error; never relabel output-format failure as insufficient evidence.
+OpenAI-compatible base URLs are normalized to `/v1/chat/completions`; Anthropic base URLs are normalized to `/v1/messages`. Investigation requests use the frozen deployment, binding, policy, prompt, schema, provider/deployment revisions, and registered tokenizer. Provider-enforced strict JSON Schemas and the binding's reserved output/headroom limits are mandatory. Health probes keep a separate timeout. OpenAI-compatible providers use `response_format.json_schema`, while Anthropic uses a forced schema-bound tool result. Calls automatically retry only transient network failures, timeouts, HTTP 429, and HTTP 5xx with bounded exponential backoff. Authentication, request validation, and non-JSON protocol responses fail immediately. Each retry emits operation progress, and AI audit rows retain the actionable error classification and actual attempt count. Provider-reported usage is retained; a post-call estimate is audit metadata only and never admits an oversized context. Do not collapse a timeout or protocol error into a generic "model unavailable" message. If structured output validation fails, report the analysis as unavailable with the exact contract error; never relabel output-format failure as insufficient evidence.
 
 ## Input Contract
 
@@ -453,7 +526,7 @@ access, and an effective action can execute only through a one-use permit.
 Kafka evidence connectors are independent of `Workspace.ingestion_topic` and
 are limited to administrator-allowlisted topics and consumer groups.
 
-All user-managed secrets are submitted as values, encrypted immediately with `LODE_DATA_ENCRYPTION_KEY`, stored separately from non-secret config, and never returned. Indirect environment-reference syntax is prohibited for integrations, AI keys, and Git credentials. The JWT signing key is never reused for encryption. Every integration endpoint must pass the application process egress allowlist and the deployment network policy must enforce the same boundary.
+All user-managed secrets are submitted as values, encrypted immediately with `LODE_DATA_ENCRYPTION_KEY`, stored separately from non-secret config, and never returned. A Connector secret plaintext is a strict duplicate-free JSON object of string keys to string values; adapters receive only that frozen decrypted map. Indirect environment-reference syntax is prohibited for integrations, AI keys, and Git credentials. The JWT signing key is never reused for encryption. Every integration endpoint must pass the application process egress allowlist and the deployment network policy must enforce the same boundary.
 
 `LODE_EVIDENCE_AUTHORIZATION_KEY` is a third independent key and must differ
 from both `LODE_SECRET_KEY` and `LODE_DATA_ENCRYPTION_KEY`. Missing, reused, or
@@ -486,7 +559,7 @@ Source lookup order is fixed:
 
 Generated build directories are excluded. Project documentation provides vocabulary and repository context only. A file read, path match, error-code match, or README excerpt is never code-cause proof.
 
-The context package always retains normalized input and error structure. Evidence is ordered by causal relevance instead of a simple first-N slice.
+The context package always retains normalized input and error structure. Evidence is ordered by causal relevance instead of a simple first-N slice. Exact tokenizer counts are verified before provider calls. Pinned evidence must fit or the route fails; optional evidence may be replaced once by a validated `ContextSummaryArtifact`, but summaries remain derived context and never become independent evidence. Counter-evidence and source mismatches are pinned through compaction.
 
 ## Result And Code Contracts
 
@@ -537,10 +610,10 @@ Operation event rows have monotonically increasing sequence values and support r
 
 The project has not released its database baseline.
 `alembic/versions/0001_initial.py` is the only revision and creates exactly the
-67 final V1 business tables. There is no V2 migration, compatibility view,
-dual write, backfill, or old-schema adapter; development databases are
-recreated from V1. Freeze V1 only after the first release, then use forward
-migrations.
+67 final business tables. There is one current schema and no parallel version,
+compatibility view, dual write, backfill, or old-schema adapter; unreleased
+development databases are recreated from the unique initial migration. After
+the first release, schema changes use ordinary forward migrations.
 
 The table inventory and database invariants are frozen independently under
 `contracts/v1/database`. SQLAlchemy metadata must exactly match the migration.
@@ -561,7 +634,7 @@ Retries insert a new `(authorized_read_id, attempt)` row.
 rewrite historical audit identity. Users and Workspaces referenced by audit are
 disabled rather than physically deleted.
 
-Until V1 is released, model changes are folded into `0001_initial.py`. Verify a fresh schema:
+Until the first release, model changes are folded into `0001_initial.py`. Verify a fresh schema:
 
 ```bash
 LODE_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lode_migration_test \
@@ -577,6 +650,8 @@ uv run python scripts/check_resource_graph.py
 uv run python scripts/check_evidence_access.py
 make log-connectors-check
 make native-connectors-check
+make investigation-check
+make analysis-check
 ```
 
 Alembic autogeneration against that database must produce no schema difference.
@@ -643,6 +718,7 @@ make evidence-access-check
 make log-connectors-check
 make native-connectors-check
 make investigation-check
+make analysis-check
 uv run python -m compileall -q src scripts alembic tests
 uv run pytest -q
 ```
@@ -709,5 +785,14 @@ partial sibling failure, terminal replay reuse without budget growth, frozen
 connector health/scope, artifact-before-attempt archival, graph causal rules,
 unknown/ambiguous entities, idempotent graph persistence, skip-locked claims,
 heartbeats, and expired-lease recovery.
+
+Source/model/report changes must additionally cover exact-SHA resolution with no
+default-branch fallback, ambiguous multi-repository matches, credential/revision
+drift, source/config authority matrices, strict source artifact provenance,
+latency/reasoning routing, role and provider/deployment isolation, per-binding
+budgets, tokenizer boundaries, pinned-context overflow, compaction reference and
+literal drift, replay without another provider call, verifier disagreement,
+immutable report retry, prompt/evidence injection, deterministic gold cases,
+false-confirmed metrics, and Wilson confidence release gates.
 
 Before declaring work complete, assess architecture, dependency, and development-workflow impact. Update this file immediately when any of those contracts change, then verify the documented commands and behavior match the implementation.

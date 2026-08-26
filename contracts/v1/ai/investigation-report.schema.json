@@ -10,6 +10,7 @@
     "summary",
     "incident_cause",
     "code_diagnosis",
+    "code_findings",
     "participants",
     "timeline_summary",
     "source_assessments",
@@ -25,6 +26,7 @@
     "summary": {"type": "string"},
     "incident_cause": {"$ref": "#/$defs/cause"},
     "code_diagnosis": {"$ref": "#/$defs/codeDiagnosis"},
+    "code_findings": {"type": "array", "items": {"$ref": "#/$defs/codeFinding"}},
     "participants": {"type": "array", "items": {"$ref": "#/$defs/participant"}},
     "timeline_summary": {"type": "array", "items": {"$ref": "#/$defs/timelineItem"}},
     "source_assessments": {"type": "array", "items": {"$ref": "#/$defs/sourceAssessment"}},
@@ -49,11 +51,46 @@
     "codeDiagnosis": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "summary", "finding_refs"],
+      "required": ["status", "summary", "finding_indices"],
       "properties": {
         "status": {"type": "string", "enum": ["confirmed", "hypothesis", "no_defect", "not_found"]},
         "summary": {"type": "string"},
-        "finding_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+        "finding_indices": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+      }
+    },
+    "codeFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "source_artifact_id", "source_assessment_id", "repository_id",
+        "revision", "revision_role", "path", "symbol", "start_line", "end_line",
+        "issue_type", "faulty_behavior", "why_wrong", "expected_behavior",
+        "trigger_condition", "propagation", "incident_evidence_refs",
+        "supporting_evidence_refs", "counter_evidence_refs", "missing_validation",
+        "test_scenario"
+      ],
+      "properties": {
+        "status": {"type": "string", "enum": ["confirmed", "hypothesis", "no_defect", "not_found"]},
+        "source_artifact_id": {"type": ["integer", "null"], "minimum": 1},
+        "source_assessment_id": {"type": ["integer", "null"], "minimum": 1},
+        "repository_id": {"type": ["integer", "null"], "minimum": 1},
+        "revision": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "revision_role": {"type": ["string", "null"], "enum": ["incident_source", "repository_search_candidate", "runtime_identified", null]},
+        "path": {"type": ["string", "null"]},
+        "symbol": {"type": ["string", "null"]},
+        "start_line": {"type": ["integer", "null"], "minimum": 1},
+        "end_line": {"type": ["integer", "null"], "minimum": 1},
+        "issue_type": {"type": ["string", "null"]},
+        "faulty_behavior": {"type": "string"},
+        "why_wrong": {"type": "string"},
+        "expected_behavior": {"type": "string"},
+        "trigger_condition": {"type": "string"},
+        "propagation": {"type": "array", "items": {"type": "string"}},
+        "incident_evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "supporting_evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "counter_evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "missing_validation": {"type": "array", "items": {"type": "string"}},
+        "test_scenario": {"type": "string"}
       }
     },
     "participant": {

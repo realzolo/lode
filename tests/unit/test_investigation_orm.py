@@ -61,10 +61,22 @@ def test_connector_snapshot_freezes_health_and_freshness() -> None:
     table = Base.metadata.tables["investigation_connector_snapshots"]
     sql = _check_sql("investigation_connector_snapshots")
 
-    assert {"verification_status", "verified_at", "last_introspected_at"}.issubset(
-        table.c.keys()
-    )
+    assert {"verification_status", "verified_at", "last_introspected_at"}.issubset(table.c.keys())
     assert "verification_status = 'healthy'" in sql
+
+
+def test_repository_snapshot_freezes_location_and_identity() -> None:
+    table = Base.metadata.tables["investigation_repository_snapshots"]
+    sql = _check_sql("investigation_repository_snapshots")
+
+    assert {
+        "credential_id",
+        "frozen_resolution_status",
+        "frozen_revision_role",
+        "repo_url",
+        "repository_identity_hash",
+    }.issubset(table.c.keys())
+    assert "repository_identity_hash ~ '^[0-9a-f]{64}$'" in sql
 
 
 def test_decision_contract_enforces_finish_zero_and_continue_one_to_four() -> None:

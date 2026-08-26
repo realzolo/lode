@@ -6,6 +6,7 @@ from lode.application.investigation import (
     DurableWaveCoordinator,
     InvestigationOrchestrator,
     InvestigationState,
+    PlannerUnavailable,
     PreparedOperation,
     PreparedWave,
 )
@@ -223,6 +224,27 @@ async def test_no_relevant_capability_finishes_with_zero_external_calls() -> Non
     ).run(42)
 
     assert result.wave_count == 0
+    assert executor.calls == []
+
+
+class UnavailablePlanner:
+    async def decide(self, state, catalog, rejection=()):
+        raise PlannerUnavailable("model_capability_unavailable")
+
+
+async def test_model_capability_failure_finishes_unavailable_without_operations() -> None:
+    repository = FakeRepository()
+    executor = CaptureExecutor()
+
+    result = await InvestigationOrchestrator(
+        planner=UnavailablePlanner(),
+        repository=repository,
+        wave_coordinator=DurableWaveCoordinator(repository, executor),
+    ).run(42)
+
+    assert result.result_state == "unavailable"
+    assert result.terminal_reason == "model_capability_unavailable"
+    assert repository.finished == ("unavailable", "model_capability_unavailable")
     assert executor.calls == []
 
 

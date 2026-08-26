@@ -28,6 +28,10 @@ from lode.db.models import (
     SealedEvidenceValue,
     Workspace,
 )
+from lode.infrastructure.investigation_control_snapshots import (
+    InvestigationControlSnapshotStore,
+)
+from lode.infrastructure.investigation_snapshots import ConnectorSnapshotStore
 
 IntakeOutcome = Literal["accepted", "duplicate", "dead_letter", "unassigned"]
 
@@ -48,9 +52,7 @@ def _sha256(value: str) -> str:
 
 
 def _signature(workspace_id: int, event: str, trace_id: str | None) -> str:
-    return canonical_hash(
-        {"event": event, "trace_id": trace_id, "workspace_id": workspace_id}
-    )
+    return canonical_hash({"event": event, "trace_id": trace_id, "workspace_id": workspace_id})
 
 
 class PostgresIntakeStore:
@@ -108,7 +110,9 @@ class PostgresIntakeStore:
                 topic=topic,
                 partition=partition,
                 offset=offset,
-                payload_masked=masked_payload if isinstance(masked_payload, dict) else {"raw": masked_payload},
+                payload_masked=masked_payload
+                if isinstance(masked_payload, dict)
+                else {"raw": masked_payload},
                 reason_code=reason_code,
                 reason_detail=detail,
             )
@@ -168,7 +172,11 @@ class PostgresIntakeStore:
         replay_event_id: int | None = None,
         replay_dead_letter_id: int | None = None,
     ) -> IntakeResult:
-        if incident.alert_id is None or incident.trace_id is None or incident.source_revision is None:
+        if (
+            incident.alert_id is None
+            or incident.trace_id is None
+            or incident.source_revision is None
+        ):
             raise ValueError("Kafka normalization requires alert, trace, and source revision")
 
         if replay_event_id is None:
@@ -326,7 +334,9 @@ class PostgresIntakeStore:
         incident: NormalizedIncident,
         created_by: int,
     ) -> IntakeResult:
-        trace_ciphertext = encrypt_value(incident.trace_id) if incident.trace_id is not None else None
+        trace_ciphertext = (
+            encrypt_value(incident.trace_id) if incident.trace_id is not None else None
+        )
         trace_hash = _sha256(incident.trace_id) if incident.trace_id is not None else None
         result = await self._create_investigation(
             workspace_id=workspace_id,
@@ -419,13 +429,25 @@ class PostgresIntakeStore:
                 investigation_id=investigation.id,
                 resource_graph_revision_id=None if graph_revision is None else graph_revision.id,
                 graph_revision=None if graph_revision is None else graph_revision.revision,
-                snapshot_hash=canonical_hash({
-                    "resource_graph_revision_id": None if graph_revision is None else graph_revision.id,
-                    "graph_revision": None if graph_revision is None else graph_revision.revision,
-                    "input_hash": None if graph_revision is None else graph_revision.input_hash,
-                }),
+                snapshot_hash=canonical_hash(
+                    {
+                        "resource_graph_revision_id": None
+                        if graph_revision is None
+                        else graph_revision.id,
+                        "graph_revision": None
+                        if graph_revision is None
+                        else graph_revision.revision,
+                        "input_hash": None if graph_revision is None else graph_revision.input_hash,
+                    }
+                ),
             )
         )
+        await InvestigationControlSnapshotStore(self.session).freeze(
+            investigation_id=investigation.id,
+            workspace_id=workspace_id,
+            incident_source_revision=incident.source_revision,
+        )
+        await ConnectorSnapshotStore.freeze_in_session(self.session, investigation.id)
         job = InvestigationJob(investigation_id=investigation.id)
         self.session.add(job)
         await self.session.flush()

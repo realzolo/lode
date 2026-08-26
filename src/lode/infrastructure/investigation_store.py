@@ -15,15 +15,19 @@ from lode.application.investigation import (
     PreparedOperation,
     PreparedWave,
 )
+from lode.config import settings
 from lode.db.models import (
     EvidenceArtifact,
     EvidenceAssertion,
     Investigation,
-    InvestigationDecision as InvestigationDecisionRow,
     InvestigationOperation,
     InvestigationOperationEvent,
+    InvestigationRepositorySnapshot,
     InvestigationStep,
     SealedEvidenceValue,
+)
+from lode.db.models import (
+    InvestigationDecision as InvestigationDecisionRow,
 )
 from lode.domain.investigation import (
     CapabilityEntry,
@@ -48,7 +52,46 @@ class PostgresInvestigationStore:
         return await self.snapshots.capabilities(investigation_id)
 
     async def static_capabilities(self, investigation_id: int) -> Sequence[CapabilityEntry]:
-        return ()
+        async with self.session_factory() as session:
+            snapshots = tuple(
+                (
+                    await session.execute(
+                        select(InvestigationRepositorySnapshot)
+                        .where(
+                            InvestigationRepositorySnapshot.investigation_id == investigation_id,
+                            InvestigationRepositorySnapshot.frozen_candidate_sha.is_not(None),
+                        )
+                        .order_by(
+                            InvestigationRepositorySnapshot.priority,
+                            InvestigationRepositorySnapshot.id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return tuple(
+            CapabilityEntry(
+                action_id=f"source:{snapshot.id}:inspect",
+                operation_kind="source_read",
+                evidence_types=("source_file",),
+                evidence_anchors=("incident.input",),
+                resource_summary={
+                    "repository_snapshot_id": snapshot.id,
+                    "role": snapshot.role,
+                    "revision_role": snapshot.frozen_revision_role,
+                    "resolution_status": snapshot.frozen_resolution_status,
+                },
+                resource_key=f"repository:{snapshot.repository_id}",
+                server_cost=0.0,
+                timeout_ms=settings.evidence_git_clone_timeout_seconds * 1_000,
+                result_limit=settings.evidence_git_max_files,
+                output_bytes=settings.evidence_git_max_bytes,
+                data_class="source_code",
+                max_parallelism=1,
+            )
+            for snapshot in snapshots
+        )
 
     async def load_state(self, investigation_id: int) -> InvestigationState:
         async with self.session_factory() as session:
@@ -146,6 +189,7 @@ class PostgresInvestigationStore:
                 hypotheses=hypotheses,
                 evidence_refs=evidence_refs,
                 evidence_anchors=(
+                    "incident.input",
                     *(("incident.trace_id",) if "incident.trace_id" in value_refs else ()),
                     *(f"assertion:{value}" for value in assertions),
                 ),
@@ -274,9 +318,7 @@ class PostgresInvestigationStore:
             await session.commit()
             for policy in decision.policy_decisions:
                 DECISION_POLICY.labels(outcome=policy.outcome, code=policy.code).inc()
-            native_reads = sum(
-                value.operation.native_candidate is not None for value in prepared
-            )
+            native_reads = sum(value.operation.native_candidate is not None for value in prepared)
             if native_reads:
                 CONNECTOR_SELECTION.labels(outcome="selected").inc(native_reads)
             return PreparedWave(investigation_id, step.id, decision_row.id, tuple(prepared))

@@ -15,6 +15,7 @@ from lode.domain.models import (
     EvidenceAccessScope,
     EvidenceArtifact,
     IdentityResolution,
+    ModelBindingRevisionRef,
     ModelDeployment,
     ModelPolicyRevision,
     ObservedRelation,
@@ -110,7 +111,10 @@ def test_context_and_model_policy_require_versioned_nonempty_inputs() -> None:
     )
     policy = ModelPolicyRevision(
         workspace_id=1,
-        eligible_binding_revisions=(3, 4),
+        eligible_bindings=(
+            ModelBindingRevisionRef(binding_id=3, revision=1),
+            ModelBindingRevisionRef(binding_id=4, revision=2),
+        ),
         role_policies={"planner": {"execution_classes": ["latency_optimized"]}},
         budget_policy={"max_calls": 10},
         context_policy_revision_id=1,
@@ -241,7 +245,13 @@ def test_evidence_artifact_is_immutable_and_timestamped() -> None:
 def test_domain_package_has_no_framework_or_provider_imports() -> None:
     domain_root = Path(__file__).resolve().parents[2] / "src" / "lode" / "domain"
     forbidden_roots = {
-        "fastapi", "sqlalchemy", "pydantic", "aiokafka", "httpx", "asyncpg", "asyncmy"
+        "fastapi",
+        "sqlalchemy",
+        "pydantic",
+        "aiokafka",
+        "httpx",
+        "asyncpg",
+        "asyncmy",
     }
     imported: set[str] = set()
     for path in domain_root.glob("*.py"):

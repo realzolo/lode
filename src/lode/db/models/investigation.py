@@ -126,11 +126,18 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
     repository_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False
     )
+    credential_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("git_credentials.id", ondelete="RESTRICT")
+    )
     binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    repo_url: Mapped[str] = mapped_column(Text, nullable=False)
     default_branch: Mapped[str] = mapped_column(Text, nullable=False)
     frozen_candidate_sha: Mapped[str | None] = mapped_column(Text)
+    frozen_revision_role: Mapped[str] = mapped_column(Text, nullable=False)
+    frozen_resolution_status: Mapped[str] = mapped_column(Text, nullable=False)
+    repository_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
     credential_identity_hash: Mapped[str | None] = mapped_column(Text)
     snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -147,6 +154,17 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
         CheckConstraint(
             "frozen_candidate_sha IS NULL OR frozen_candidate_sha ~ '^[0-9a-f]{40}$'",
             name="candidate_sha",
+        ),
+        CheckConstraint(
+            "frozen_revision_role IN ('incident_source', 'repository_search_candidate')",
+            name="frozen_revision_role",
+        ),
+        CheckConstraint(
+            "frozen_resolution_status IN ('exact', 'unverified', 'unresolved')",
+            name="frozen_resolution_status",
+        ),
+        CheckConstraint(
+            "repository_identity_hash ~ '^[0-9a-f]{64}$'", name="repository_hash_sha256"
         ),
         CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
     )
@@ -541,10 +559,9 @@ class ModelRoutingDecision(CreatedAtMixin, Base):
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
     role: Mapped[str] = mapped_column(Text, nullable=False)
-    model_binding_snapshot_id: Mapped[int] = mapped_column(
+    model_binding_snapshot_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("investigation_model_binding_snapshots.id", ondelete="RESTRICT"),
-        nullable=False,
     )
     execution_class: Mapped[str] = mapped_column(Text, nullable=False)
     required_context_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -564,11 +581,14 @@ class ModelRoutingDecision(CreatedAtMixin, Base):
             "execution_class IN ('latency_optimized', 'reasoning_optimized')",
             name="execution_class",
         ),
+        CheckConstraint("required_context_tokens > 0", name="required_context_positive"),
         CheckConstraint(
-            "required_context_tokens > 0 AND required_context_tokens <= allowed_input_tokens",
-            name="context_capacity",
+            "(model_binding_snapshot_id IS NULL AND allowed_input_tokens = 0 "
+            "AND allowed_output_tokens = 0) OR "
+            "(model_binding_snapshot_id IS NOT NULL AND allowed_output_tokens > 0 "
+            "AND required_context_tokens <= allowed_input_tokens)",
+            name="route_capacity",
         ),
-        CheckConstraint("allowed_output_tokens > 0", name="output_tokens_positive"),
         CheckConstraint("decision_hash ~ '^[0-9a-f]{64}$'", name="decision_hash_sha256"),
         UniqueConstraint(
             "investigation_id", "decision_hash", name="uq_model_routing_decision_hash"

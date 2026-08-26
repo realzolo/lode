@@ -27,86 +27,90 @@ class ConnectorSnapshotStore:
 
     async def freeze(self, investigation_id: int) -> tuple[InvestigationConnectorSnapshot, ...]:
         async with self.session_factory() as session:
-            investigation = (
-                await session.execute(
-                    select(Investigation)
-                    .where(Investigation.id == investigation_id)
-                    .with_for_update()
-                )
-            ).scalar_one()
-            existing = tuple(
-                (
-                    await session.execute(
-                        select(InvestigationConnectorSnapshot)
-                        .where(InvestigationConnectorSnapshot.investigation_id == investigation_id)
-                        .order_by(InvestigationConnectorSnapshot.id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            if existing:
-                await session.commit()
-                return existing
-
-            connectors = tuple(
-                (
-                    await session.execute(
-                        select(EvidenceConnector)
-                        .where(
-                            EvidenceConnector.workspace_id == investigation.workspace_id,
-                            EvidenceConnector.state == "active",
-                            EvidenceConnector.verification_status == "healthy",
-                        )
-                        .order_by(EvidenceConnector.id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            snapshots: list[InvestigationConnectorSnapshot] = []
-            for connector in connectors:
-                scope = (
-                    await session.execute(
-                        select(EvidenceAccessScope)
-                        .where(EvidenceAccessScope.connector_id == connector.id)
-                        .order_by(EvidenceAccessScope.revision.desc())
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if scope is None:
-                    continue
-                credential_hash = hashlib.sha256(
-                    connector.secret_ciphertext.encode("utf-8")
-                ).hexdigest()
-                payload = {
-                    "connector_id": connector.id,
-                    "access_scope_id": scope.id,
-                    "connector_kind": connector.kind,
-                    "connector_kind_version": connector.kind_version,
-                    "instance_revision": connector.instance_revision,
-                    "access_scope_revision": scope.revision,
-                    "verification_status": connector.verification_status,
-                    "verified_at": connector.verified_at,
-                    "last_introspected_at": connector.last_introspected_at,
-                    "capabilities": connector.capabilities,
-                    "allowed_languages": scope.allowed_languages,
-                    "config_masked": connector.config,
-                    "scope_config": scope.scope_config,
-                    "schema_catalog": scope.schema_catalog,
-                    "execution_budget_policy": scope.execution_budget_policy,
-                    "credential_identity_hash": credential_hash,
-                }
-                snapshot = InvestigationConnectorSnapshot(
-                    investigation_id=investigation_id,
-                    snapshot_hash=canonical_hash(payload),
-                    **payload,
-                )
-                session.add(snapshot)
-                snapshots.append(snapshot)
-            await session.flush()
+            snapshots = await self.freeze_in_session(session, investigation_id)
             await session.commit()
-            return tuple(snapshots)
+            return snapshots
+
+    @staticmethod
+    async def freeze_in_session(
+        session: AsyncSession, investigation_id: int
+    ) -> tuple[InvestigationConnectorSnapshot, ...]:
+        investigation = (
+            await session.execute(
+                select(Investigation).where(Investigation.id == investigation_id).with_for_update()
+            )
+        ).scalar_one()
+        existing = tuple(
+            (
+                await session.execute(
+                    select(InvestigationConnectorSnapshot)
+                    .where(InvestigationConnectorSnapshot.investigation_id == investigation_id)
+                    .order_by(InvestigationConnectorSnapshot.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if existing:
+            return existing
+
+        connectors = tuple(
+            (
+                await session.execute(
+                    select(EvidenceConnector)
+                    .where(
+                        EvidenceConnector.workspace_id == investigation.workspace_id,
+                        EvidenceConnector.state == "active",
+                        EvidenceConnector.verification_status == "healthy",
+                    )
+                    .order_by(EvidenceConnector.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        snapshots: list[InvestigationConnectorSnapshot] = []
+        for connector in connectors:
+            scope = (
+                await session.execute(
+                    select(EvidenceAccessScope)
+                    .where(EvidenceAccessScope.connector_id == connector.id)
+                    .order_by(EvidenceAccessScope.revision.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if scope is None:
+                continue
+            credential_hash = hashlib.sha256(
+                connector.secret_ciphertext.encode("utf-8")
+            ).hexdigest()
+            payload = {
+                "connector_id": connector.id,
+                "access_scope_id": scope.id,
+                "connector_kind": connector.kind,
+                "connector_kind_version": connector.kind_version,
+                "instance_revision": connector.instance_revision,
+                "access_scope_revision": scope.revision,
+                "verification_status": connector.verification_status,
+                "verified_at": connector.verified_at,
+                "last_introspected_at": connector.last_introspected_at,
+                "capabilities": connector.capabilities,
+                "allowed_languages": scope.allowed_languages,
+                "config_masked": connector.config,
+                "scope_config": scope.scope_config,
+                "schema_catalog": scope.schema_catalog,
+                "execution_budget_policy": scope.execution_budget_policy,
+                "credential_identity_hash": credential_hash,
+            }
+            snapshot = InvestigationConnectorSnapshot(
+                investigation_id=investigation_id,
+                snapshot_hash=canonical_hash(payload),
+                **payload,
+            )
+            session.add(snapshot)
+            snapshots.append(snapshot)
+        await session.flush()
+        return tuple(snapshots)
 
     async def capabilities(self, investigation_id: int) -> tuple[ConnectorCapabilitySnapshot, ...]:
         rows = await self.freeze(investigation_id)

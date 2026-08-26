@@ -1,4 +1,4 @@
-"""Detect removed V1 business contracts in selected source paths."""
+"""Detect removed business contracts in selected source paths."""
 
 from __future__ import annotations
 
@@ -8,11 +8,21 @@ from pathlib import Path
 
 from lode.contracts.checks import ROOT
 
-
 DEFAULT_PATHS = ("src", "tests", "alembic", "apps/web", "CLAUDE.md", "README.md")
 TEXT_SUFFIXES = {
-    ".css", ".html", ".js", ".json", ".md", ".mjs", ".py", ".sh",
-    ".toml", ".ts", ".tsx", ".yaml", ".yml",
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".mjs",
+    ".py",
+    ".sh",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yaml",
+    ".yml",
 }
 
 
@@ -23,8 +33,13 @@ class Rule:
 
 
 RULES = (
-    Rule("removed_service_model", re.compile(r"\b(?:ApplicationServiceBinding|InvestigationServiceSnapshot|Service)\b")),
-    Rule("removed_service_route", re.compile(r"/(?:services|workspaces/\{[^}]+\}/services)(?:\b|/)")),
+    Rule(
+        "removed_service_model",
+        re.compile(r"\b(?:ApplicationServiceBinding|InvestigationServiceSnapshot|Service)\b"),
+    ),
+    Rule(
+        "removed_service_route", re.compile(r"/(?:services|workspaces/\{[^}]+\}/services)(?:\b|/)")
+    ),
     Rule("removed_alert_field", re.compile(r"\b(?:service_name|request_id)\b")),
     Rule("removed_alert_revision", re.compile(r"\bgit_commit\b")),
     Rule("removed_application_resource", re.compile(r"/(?:applications)(?:\b|/)")),
@@ -41,7 +56,9 @@ def _iter_files(paths: list[Path]):
         for candidate in sorted(path.rglob("*")):
             if not candidate.is_file() or candidate.suffix.lower() not in TEXT_SUFFIXES:
                 continue
-            if any(part in {".git", ".next", "node_modules", "__pycache__"} for part in candidate.parts):
+            if any(
+                part in {".git", ".next", "node_modules", "__pycache__"} for part in candidate.parts
+            ):
                 continue
             yield candidate
 

@@ -1,4 +1,4 @@
-"""Transactional smoke checks for security-critical V1 database triggers."""
+"""Transactional smoke checks for security-critical database triggers."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
-
 
 _BEHAVIOR_SQL = r"""
 DO $checks$
@@ -71,7 +70,7 @@ BEGIN
     BEGIN
         UPDATE evidence_access_scopes SET revision = 2 WHERE id = scope_id;
     EXCEPTION WHEN raise_exception THEN
-        IF position('immutable V1 row cannot be changed' IN SQLERRM) = 0 THEN
+        IF position('immutable row cannot be changed' IN SQLERRM) = 0 THEN
             RAISE;
         END IF;
         rejected := true;

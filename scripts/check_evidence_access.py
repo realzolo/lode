@@ -72,9 +72,7 @@ def _candidate(
         payload = (
             {"query": f'{{app="api"}} |= "{SENTINEL}"'}
             if language == "logql"
-            else {
-                "query": "SELECT pg_sleep(1)" if variant == "unsupported" else "SELECT 1"
-            }
+            else {"query": "SELECT pg_sleep(1)" if variant == "unsupported" else "SELECT 1"}
         )
     else:
         query = {"term": {"trace.id": SENTINEL}}
@@ -85,9 +83,7 @@ def _candidate(
                         query,
                         {
                             "term": {
-                                "level": "error"
-                                if variant == "provider_failure"
-                                else "warning"
+                                "level": "error" if variant == "provider_failure" else "warning"
                             }
                         },
                     ],
@@ -246,7 +242,7 @@ async def _create_fixture(session):
     await session.flush()
     model_policy = ModelPolicyRevision(
         workspace_id=workspace.id,
-        eligible_binding_revisions=[binding.revision],
+        eligible_bindings=[{"binding_id": binding.id, "revision": binding.revision}],
         role_policies={"native_query": {"binding_id": binding.id}},
         budget_policy={"max_calls": 10},
         context_policy_revision_id=context_policy.id,
@@ -711,9 +707,7 @@ async def main() -> None:
             ).execute(allow.token, SlowCaptureAdapter(calls)),
             EvidenceReadOrchestrator(
                 second_session, PostgresEvidenceResultArchiver(second_session)
-            ).execute(
-                allow.token, SlowCaptureAdapter(calls)
-            ),
+            ).execute(allow.token, SlowCaptureAdapter(calls)),
             return_exceptions=True,
         )
     assert sum(getattr(item, "status", None) == "succeeded" for item in outcomes) == 1
@@ -790,9 +784,9 @@ async def main() -> None:
         ).scalar_one()
         assert success_attempt.status == "succeeded"
         assert len(success_attempt.result_artifact_refs) == 1
-        assert await session.get(
-            EvidenceArtifact, success_attempt.result_artifact_refs[0]
-        ) is not None
+        assert (
+            await session.get(EvidenceArtifact, success_attempt.result_artifact_refs[0]) is not None
+        )
         counts = {
             "authorized_reads": (
                 await session.execute(

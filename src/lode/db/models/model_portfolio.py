@@ -35,7 +35,9 @@ class AIProviderAccount(TimestampMixin, Base):
     project_ref: Mapped[str | None] = mapped_column(Text)
     tenant_ref: Mapped[str | None] = mapped_column(Text)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
-    verification_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="untested")
+    verification_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="untested"
+    )
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rate_limit_policy: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
@@ -77,7 +79,9 @@ class ProviderModelObservation(CreatedAtMixin, Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "provider_account_id", "provider_model_id", "response_hash",
+            "provider_account_id",
+            "provider_model_id",
+            "response_hash",
             name="uq_provider_model_observation",
         ),
         CheckConstraint("response_hash ~ '^[0-9a-f]{64}$'", name="response_hash_sha256"),
@@ -200,7 +204,7 @@ class ModelPolicyRevision(CreatedAtMixin, Base):
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    eligible_binding_revisions: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    eligible_bindings: Mapped[list] = mapped_column(JSONB, nullable=False)
     role_policies: Mapped[dict] = mapped_column(JSONB, nullable=False)
     budget_policy: Mapped[dict] = mapped_column(JSONB, nullable=False)
     context_policy_revision_id: Mapped[int] = mapped_column(
@@ -213,6 +217,9 @@ class ModelPolicyRevision(CreatedAtMixin, Base):
 
     __table_args__ = (
         UniqueConstraint("workspace_id", "revision", name="uq_model_policy_revision"),
-        CheckConstraint("cardinality(eligible_binding_revisions) > 0", name="bindings_nonempty"),
+        CheckConstraint(
+            "jsonb_typeof(eligible_bindings) = 'array' AND jsonb_array_length(eligible_bindings) > 0",
+            name="bindings_nonempty",
+        ),
         CheckConstraint("revision > 0", name="revision_positive"),
     )
