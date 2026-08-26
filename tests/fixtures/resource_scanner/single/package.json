@@ -1,0 +1,7 @@
+{
+  "name": "single-api",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "touch SHOULD_NOT_EXIST"
+  }
+}

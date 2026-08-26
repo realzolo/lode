@@ -185,8 +185,8 @@ def upgrade() -> None:
     sa.Column('detail', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("result IN ('ok', 'denied', 'failed')", name=op.f('ck_audit_events_result')),
-    sa.ForeignKeyConstraint(['actor_id'], ['users.id'], name=op.f('fk_audit_events_actor_id_users'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['workspace_id'], ['workspaces.id'], name=op.f('fk_audit_events_workspace_id_workspaces'), ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['actor_id'], ['users.id'], name=op.f('fk_audit_events_actor_id_users'), ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['workspace_id'], ['workspaces.id'], name=op.f('fk_audit_events_workspace_id_workspaces'), ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_audit_events'))
     )
     op.create_index('ix_audit_events_actor_id', 'audit_events', ['actor_id'], unique=False)

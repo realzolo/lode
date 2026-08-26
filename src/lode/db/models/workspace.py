@@ -126,14 +126,14 @@ class AuditEvent(CreatedAtMixin, Base):
 
     id: Mapped[int] = identity_pk()
     actor_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
+        BigInteger, ForeignKey("users.id", ondelete="RESTRICT")
     )
     actor_email: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     target_type: Mapped[str | None] = mapped_column(Text)
     target_id: Mapped[str | None] = mapped_column(Text)
     workspace_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("workspaces.id", ondelete="SET NULL")
+        BigInteger, ForeignKey("workspaces.id", ondelete="RESTRICT")
     )
     http_request_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
     result: Mapped[str] = mapped_column(Text, nullable=False, server_default="ok")

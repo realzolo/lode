@@ -29,6 +29,7 @@ from lode.api.routes.investigations import router as investigations_router
 from lode.api.routes.auth import router as auth_router
 from lode.api.routes.health import router as health_router
 from lode.api.routes.invites import router as invites_router
+from lode.api.routes.resources import router as resources_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
 from lode.migrations import run_migrations
@@ -164,6 +165,7 @@ app.include_router(auth_router)
 # Protected business routes (require a valid bearer token).
 _protected = [Depends(require_user)]
 app.include_router(investigations_router, dependencies=_protected)
+app.include_router(resources_router, dependencies=_protected)
 app.include_router(users_router, dependencies=_protected)
 
 # Invites: admin endpoints carry require_admin (which itself requires auth);

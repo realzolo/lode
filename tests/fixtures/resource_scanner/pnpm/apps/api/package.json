@@ -1,0 +1,4 @@
+{
+  "name": "@example/api",
+  "main": "src/index.js"
+}

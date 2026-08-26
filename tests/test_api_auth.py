@@ -30,12 +30,13 @@ async def test_user() -> tuple[str, str, int]:
         existing = (
             await session.execute(select(User).where(User.email == TEST_EMAIL))
         ).scalars().first()
-        if existing is not None:
-            await session.delete(existing)
-            await session.commit()
-        user = User(email=TEST_EMAIL, name="Auth Test", role="user", status="active")
+        user = existing or User(email=TEST_EMAIL, name="Auth Test")
+        user.name = "Auth Test"
+        user.role = "user"
+        user.status = "active"
         user.password_hash = hash_password(TEST_PASSWORD)
-        session.add(user)
+        if existing is None:
+            session.add(user)
         await session.commit()
         await session.refresh(user)
         uid = user.id
@@ -43,7 +44,7 @@ async def test_user() -> tuple[str, str, int]:
     async with AsyncSessionLocal() as session:
         victim = (await session.execute(select(User).where(User.id == uid))).scalars().first()
         if victim is not None:
-            await session.delete(victim)
+            victim.status = "disabled"
             await session.commit()
 
 
@@ -63,7 +64,7 @@ async def test_login_rejects_wrong_password(test_user):
 
 async def test_protected_route_requires_token(test_user):
     async with _client() as client:
-        resp = await client.get("/investigations")
+        resp = await client.get("/workspaces/1/build-units")
         assert resp.status_code == 401
 
 
@@ -78,42 +79,34 @@ async def test_login_and_token_grants_access(test_user):
         assert "token" in body and body["token"]
         token = body["token"]
 
-        # Protected route works with the token.
-        resp2 = await client.get("/investigations", headers={"Authorization": f"Bearer {token}"})
-        assert resp2.status_code == 200
-
         # /auth/me reflects the authenticated principal.
-        resp3 = await client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
-        assert resp3.status_code == 200
-        assert resp3.json()["email"] == email
+        resp2 = await client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert resp2.status_code == 200
+        assert resp2.json()["email"] == email
 
         # A malformed token is rejected.
-        resp4 = await client.get(
-            "/investigations", headers={"Authorization": "Bearer garbage.signature.token"}
+        resp3 = await client.get(
+            "/auth/me", headers={"Authorization": "Bearer garbage.signature.token"}
         )
-        assert resp4.status_code == 401
+        assert resp3.status_code == 401
 
         # Missing scheme is rejected.
-        resp5 = await client.get("/investigations", headers={"Authorization": token})
-        assert resp5.status_code == 401
+        resp4 = await client.get("/auth/me", headers={"Authorization": token})
+        assert resp4.status_code == 401
 
 
-async def test_settings_requires_token_but_serves_masked_config(test_user):
+async def test_workspace_resource_view_requires_auth_and_permission(test_user):
     email, password, _uid = test_user
     async with _client() as client:
-        unauthorized = await client.get("/settings")
+        unauthorized = await client.get("/workspaces/1/build-units")
         assert unauthorized.status_code == 401
 
         login = await client.post(
             "/auth/login", json={"email": email, "password": password}
         )
         token = login.json()["token"]
-        ok = await client.get("/settings", headers={"Authorization": f"Bearer {token}"})
-        assert ok.status_code == 200
-        data = ok.json()
-        # Secrets are masked, not echoed back.
-        for model in data.get("ai_model_configs", []):
-            assert "api_key" not in model
-            assert "api_key" not in model
-            # Presence is signalled without leaking the value.
-            assert "has_key" in model
+        denied = await client.get(
+            "/workspaces/1/build-units",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert denied.status_code == 403

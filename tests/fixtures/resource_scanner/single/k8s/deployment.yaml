@@ -1,0 +1,10 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: single-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          image: example/single-api:abc123

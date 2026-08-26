@@ -3,7 +3,7 @@
 ## Final Rebuild Status
 
 The final V1 replacement is being implemented from
-`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-2 are
+`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-3 are
 the current completed implementation baseline:
 
 - `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
@@ -58,6 +58,27 @@ the current completed implementation baseline:
   unassigned records are durably masked before optional Kafka DLQ mirroring;
   replay always runs the current strict validator. Concurrent offset and
   producer-ID races have one accepted result and one duplicate result.
+- `src/lode/resource_understanding` provides the bounded, non-executing
+  repository scanner, immutable scan values, deterministic identity validator,
+  and transactional ResourceGraph publisher. It supports Node/pnpm, Python,
+  Go, Cargo, Maven, Gradle, Docker, Kubernetes, Helm/compose metadata, nested
+  workspaces, and multi-repository Components without running repository code.
+- Repository discovery rejects symlinks, path escape, oversized/deep
+  structures, duplicate YAML keys, YAML aliases/object constructors, and XML
+  DTD/entities. `PyYAML` is a direct runtime dependency solely for safe YAML
+  parsing; JSON, TOML, and XML use standard-library structured parsers.
+- Build Units are created only for `runtime_source` bindings. Semantic
+  annotations may reference scanner-owned observations and candidate paths but
+  cannot create paths, repository bindings, access scopes, or credentials and
+  never count as independent identity evidence. Cross-batch alias conflict
+  deterministically downgrades identity to `ambiguous`.
+- ResourceGraph publication is serialized by a Workspace row lock. Identical
+  input reuses the current revision; changed input publishes an immutable child
+  revision, records member differences and invalidation reasons, and never
+  changes Repository bindings or EvidenceAccessScope. New investigations freeze
+  the latest graph revision while existing investigation snapshots remain
+  unchanged. Derived knowledge is exposed only through read-only Build Unit,
+  Component, observation, identity-resolution, and graph revision routes.
 - Current implementation files use unversioned canonical names (`intake.py`,
   `investigation.py`, `check_schema.py`, and so on). The repository maintains
   one current implementation and never creates `_v1`/`_v2` module variants.
@@ -70,6 +91,8 @@ a frozen contract or evaluation fixture changes. Run
 `make schema-check` against an upgraded PostgreSQL database whenever ORM or
 migration definitions change. Run `make intake-check` against an upgraded
 PostgreSQL database whenever intake, encryption, idempotency, or replay changes.
+Run `make resource-check` whenever scanning, identity validation, graph
+publication, derived-resource views, or investigation graph snapshots change.
 Run
 `uv run python scripts/check_forbidden_contracts.py` as the full-repository V1
 removal gate; it is expected to become clean as the replacement phases delete
@@ -77,11 +100,12 @@ the currently implemented pre-final runtime contracts. Do not add an allowlist
 or compatibility adapter to make this gate pass.
 
 The sections below include final contracts for later implementation phases.
-Phases 1-2 changed the database/control-plane identity architecture, the
-migration/seed verification workflow, Kafka/manual intake, and the currently
-assembled API routes. They added no dependency. Pre-final engine, remaining
-API, and Web modules are not a supported execution path while their owning
-phases replace them; they must be rewritten without adapters.
+Phases 1-3 changed the database/control-plane identity architecture, the
+migration/seed verification workflow, Kafka/manual intake, automatic resource
+understanding, and the currently assembled API routes. Phase 3 added the direct
+`PyYAML` dependency and the `resource-check` workflow. Pre-final engine,
+remaining API, and Web modules are not a supported execution path while their
+owning phases replace them; they must be rewritten without adapters.
 
 Lode is an evidence-backed production incident investigation service. A V1 investigation advances through serial decision waves; independent operations inside one wave may run concurrently with a hard limit of four. There are no historical protocol or execution-path adapters.
 
@@ -92,6 +116,9 @@ Lode is an evidence-backed production incident investigation service. A V1 inves
 - `src/lode/worker`: durable job claiming, investigation-scoped leases, retry, and bounded cross-investigation concurrency.
 - `src/lode/application/intake.py`: strict Kafka/manual validation and canonical normalization.
 - `src/lode/infrastructure/intake_store.py`: transactional idempotency, masking, encrypted sealed values, immutable input, and job creation.
+- `src/lode/resource_understanding/scanner.py`: bounded structured manifest scanner over frozen checkouts.
+- `src/lode/resource_understanding/validator.py`: deterministic candidate, provenance, conflict, and authorization-boundary validation.
+- `src/lode/resource_understanding/store.py`: idempotent multi-repository graph publication, invalidation, recovery, and materialized derived identity.
 - `src/lode/engine/investigation_engine.py`: one-action-at-a-time adaptive decision loop and terminal synthesis.
 - `src/lode/engine/structured_outputs.py`: provider-neutral strict JSON Schemas for decisions, reports, and causal verification.
 - `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, UI form metadata, and egress policy.
@@ -219,6 +246,14 @@ Other repositories and components remain candidates until stack, build,
 deployment, dependency, or connector evidence verifies their participation.
 Unverified candidates are recorded as gaps and never promoted to facts.
 
+Repository scanning always receives a frozen lowercase 40-character revision
+and a binding namespace. It walks without following links, reads only bounded
+known manifests, and never invokes a shell, repository script, package manager,
+build tool, manifest command, or dynamic language loader. A structured scanner
+observation may verify a Build Unit path; Component verification still requires
+at least two independent structured provenance families. Annotation text is
+untrusted data and cannot self-verify an identity.
+
 External evidence access uses Workspace-owned `EvidenceConnector` rows with
 separate immutable scope revisions, encrypted secrets, verification records,
 and authorization/read audit objects. Connector kinds are code-registered and
@@ -327,6 +362,11 @@ one after the operation finishes, with a non-null `finished_at`; success has no
 failure payload, while failure/interruption requires a stable failure code.
 Retries insert a new `(authorized_read_id, attempt)` row.
 
+`audit_events` is immutable. Its actor and Workspace foreign keys use
+`ON DELETE RESTRICT`, not `SET NULL`, because cascading nullification would
+rewrite historical audit identity. Users and Workspaces referenced by audit are
+disabled rather than physically deleted.
+
 Until V1 is released, model changes are folded into `0001_initial.py`. Verify a fresh schema:
 
 ```bash
@@ -338,6 +378,7 @@ uv run alembic check
 uv run python scripts/check_schema.py
 uv run python scripts/check_database_behavior.py
 uv run python scripts/check_intake.py
+uv run python scripts/check_resource_graph.py
 ```
 
 Alembic autogeneration against that database must produce no schema difference.
@@ -345,7 +386,12 @@ The behavior checker rolls back all fixtures, including its concurrent unique
 topic writes. The intake checker verifies strict validation, all dedupe layers,
 concurrent races, durable DLQ/unassigned handling, current-validator replay,
 manual HTTP intake, and exact encrypted trace round trips. `uv run python
-scripts/seed.py` is idempotent and may only create final control-plane models.
+scripts/check_resource_graph.py` verifies single/monorepo and multi-repository
+identity, non-runtime repository exclusion, recovery reuse, alias conflict,
+revision invalidation, immutable historical membership, investigation snapshot
+freezing, access-boundary preservation, and the authenticated read-only graph
+view. `uv run python scripts/seed.py` is idempotent and may only create final
+control-plane models.
 
 ## Frontend Contract
 
@@ -368,6 +414,7 @@ uv sync --extra dev
 export LODE_DATA_ENCRYPTION_KEY='replace-with-an-independent-random-secret'
 make contracts
 make intake-check
+make resource-check
 uv run python -m compileall -q src scripts alembic tests
 uv run pytest -q
 ```
@@ -391,5 +438,12 @@ external cause separation, cross-investigation concurrency, transient AI retry
 classification, scoped lease recovery, idempotent resume, manual retry lineage,
 archive immutability, operation detail, SSE replay, audit pagination,
 permissions, masking, and fresh schema creation.
+
+Resource-understanding changes must additionally cover single repositories,
+nested Node/Python/JVM workspaces, multi-repository Components, non-runtime
+repositories, path/symlink/YAML/XML attacks, bounded structure parsing,
+provenance independence, within/cross-publication alias conflicts, annotation
+authorization expansion, observation/publication idempotency, invalidation,
+immutable graph membership, job recovery, and investigation snapshot isolation.
 
 Before declaring work complete, assess architecture, dependency, and development-workflow impact. Update this file immediately when any of those contracts change, then verify the documented commands and behavior match the implementation.

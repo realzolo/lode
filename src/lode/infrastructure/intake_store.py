@@ -24,6 +24,7 @@ from lode.db.models import (
     InvestigationInput,
     InvestigationJob,
     InvestigationResourceGraphSnapshot,
+    ResourceGraphRevision,
     SealedEvidenceValue,
     Workspace,
 )
@@ -402,12 +403,24 @@ class PostgresIntakeStore:
                     envelope_key_version="data-encryption-key.v1",
                 )
             )
+        graph_revision = (
+            await self.session.execute(
+                select(ResourceGraphRevision)
+                .where(ResourceGraphRevision.workspace_id == workspace_id)
+                .order_by(ResourceGraphRevision.revision.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         self.session.add(
             InvestigationResourceGraphSnapshot(
                 investigation_id=investigation.id,
-                resource_graph_revision_id=None,
-                graph_revision=None,
-                snapshot_hash=canonical_hash({"resource_graph_revision": None}),
+                resource_graph_revision_id=None if graph_revision is None else graph_revision.id,
+                graph_revision=None if graph_revision is None else graph_revision.revision,
+                snapshot_hash=canonical_hash({
+                    "resource_graph_revision_id": None if graph_revision is None else graph_revision.id,
+                    "graph_revision": None if graph_revision is None else graph_revision.revision,
+                    "input_hash": None if graph_revision is None else graph_revision.input_hash,
+                }),
             )
         )
         job = InvestigationJob(investigation_id=investigation.id)
