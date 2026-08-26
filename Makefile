@@ -3,7 +3,7 @@
 # which uses the project .venv created by `make install` (uv sync). `make` itself
 # does NOT read .env — only the Python app does via pydantic-settings.
 
-.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check
+.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check
 
 # uv binary to use. Override from the shell if it is not on PATH, e.g.
 #   make serve UV=/Users/lixm/.local/bin/uv
@@ -65,6 +65,10 @@ intake-check:
 # Exercise repository discovery, deterministic validation, publication, and snapshots.
 resource-check:
 	$(UV) run python scripts/check_resource_graph.py
+
+# Exercise native-read policy, ValueRef binding, immutable audit, and replay defense.
+evidence-access-check:
+	$(UV) run python scripts/check_evidence_access.py
 
 # Build and run the full stack (postgres, kafka, api, web) via Docker.
 up:

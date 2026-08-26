@@ -3,7 +3,7 @@
 ## Final Rebuild Status
 
 The final V1 replacement is being implemented from
-`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-3 are
+`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-4 are
 the current completed implementation baseline:
 
 - `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
@@ -79,6 +79,29 @@ the current completed implementation baseline:
   the latest graph revision while existing investigation snapshots remain
   unchanged. Derived knowledge is exposed only through read-only Build Unit,
   Component, observation, identity-resolution, and graph revision routes.
+- `src/lode/evidence_access` is the fail-closed native-read authorization
+  kernel. Raw model JSON passes bounded UTF-8 decoding with duplicate-key,
+  depth/node, unknown-field, payload/language, window, and sentinel validation.
+  A language has no capability until a complete versioned parser/policy is
+  explicitly registered; there is no regex or partial-parser fallback.
+- Authorization re-reads the Investigation, native-read Operation, Connector
+  Snapshot, and native-query AI invocation from PostgreSQL. It intersects
+  evidence anchors, frozen scope, absolute investigation window, operation/
+  result/timeout/output budgets, and hierarchical Workspace/connector/language/
+  runner kill switches before any sealed value is opened.
+- ValueRef plaintext is resolved only after policy allow, replaces one parser-
+  approved value node, and must preserve the parsed structure. Candidate and
+  decision JSON retain sentinels; the exact bound action exists only encrypted
+  in `AuthorizedEvidenceRead`. Authorization capabilities use the independent
+  `LODE_EVIDENCE_AUTHORIZATION_KEY`, expire quickly, bind all hashes, and are
+  looked up by token hash.
+- The execution adapter accepts only an internal `ExecutionPermit`, never raw
+  candidate or model payload. A PostgreSQL advisory transaction lock plus a
+  terminal immutable `EvidenceReadAttempt` permits one concurrent consumer;
+  replay is rejected. Preflight/execution/cancellation and output byte
+  postconditions produce terminal `succeeded`, `failed`, or `interrupted`
+  attempts. The mock policy/adapter proves the boundary but is not registered by
+  the application; provider policies become active in Phases 5-6.
 - Current implementation files use unversioned canonical names (`intake.py`,
   `investigation.py`, `check_schema.py`, and so on). The repository maintains
   one current implementation and never creates `_v1`/`_v2` module variants.
@@ -93,6 +116,9 @@ migration definitions change. Run `make intake-check` against an upgraded
 PostgreSQL database whenever intake, encryption, idempotency, or replay changes.
 Run `make resource-check` whenever scanning, identity validation, graph
 publication, derived-resource views, or investigation graph snapshots change.
+Run `make evidence-access-check` whenever candidate validation, policy,
+ValueRef binding, authorization, execution permits, audit, or kill switches
+change.
 Run
 `uv run python scripts/check_forbidden_contracts.py` as the full-repository V1
 removal gate; it is expected to become clean as the replacement phases delete
@@ -100,10 +126,12 @@ the currently implemented pre-final runtime contracts. Do not add an allowlist
 or compatibility adapter to make this gate pass.
 
 The sections below include final contracts for later implementation phases.
-Phases 1-3 changed the database/control-plane identity architecture, the
+Phases 1-4 changed the database/control-plane identity architecture, the
 migration/seed verification workflow, Kafka/manual intake, automatic resource
 understanding, and the currently assembled API routes. Phase 3 added the direct
-`PyYAML` dependency and the `resource-check` workflow. Pre-final engine,
+`PyYAML` dependency and the `resource-check` workflow. Phase 4 added an
+independent authorization-key deployment requirement and the
+`evidence-access-check` workflow, but no dependency. Pre-final engine,
 remaining API, and Web modules are not a supported execution path while their
 owning phases replace them; they must be rewritten without adapters.
 
@@ -119,6 +147,9 @@ Lode is an evidence-backed production incident investigation service. A V1 inves
 - `src/lode/resource_understanding/scanner.py`: bounded structured manifest scanner over frozen checkouts.
 - `src/lode/resource_understanding/validator.py`: deterministic candidate, provenance, conflict, and authorization-boundary validation.
 - `src/lode/resource_understanding/store.py`: idempotent multi-repository graph publication, invalidation, recovery, and materialized derived identity.
+- `src/lode/evidence_access/candidate.py`: bounded strict native-read candidate input boundary.
+- `src/lode/evidence_access/authorizer.py`: snapshot-owned parser/policy evaluation, immutable decision audit, ValueRef binding, and token issuance.
+- `src/lode/evidence_access/orchestrator.py`: token-gated preflight/execution with replay defense and terminal attempts.
 - `src/lode/engine/investigation_engine.py`: one-action-at-a-time adaptive decision loop and terminal synthesis.
 - `src/lode/engine/structured_outputs.py`: provider-neutral strict JSON Schemas for decisions, reports, and causal verification.
 - `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, UI form metadata, and egress policy.
@@ -270,6 +301,11 @@ are limited to administrator-allowlisted topics and consumer groups.
 
 All user-managed secrets are submitted as values, encrypted immediately with `LODE_DATA_ENCRYPTION_KEY`, stored separately from non-secret config, and never returned. Indirect environment-reference syntax is prohibited for integrations, AI keys, and Git credentials. The JWT signing key is never reused for encryption. Every integration endpoint must pass the application process egress allowlist and the deployment network policy must enforce the same boundary.
 
+`LODE_EVIDENCE_AUTHORIZATION_KEY` is a third independent key and must differ
+from both `LODE_SECRET_KEY` and `LODE_DATA_ENCRYPTION_KEY`. Missing, reused, or
+non-positive-TTL authorization configuration fails before a native-read token
+is issued. Only token hashes are persisted.
+
 Workspace architecture context is configured beside its model policy. At
 investigation creation, the current ordered context entries are masked and
 frozen as an immutable snapshot. Every model phase receives that snapshot as
@@ -379,6 +415,7 @@ uv run python scripts/check_schema.py
 uv run python scripts/check_database_behavior.py
 uv run python scripts/check_intake.py
 uv run python scripts/check_resource_graph.py
+uv run python scripts/check_evidence_access.py
 ```
 
 Alembic autogeneration against that database must produce no schema difference.
@@ -392,6 +429,13 @@ revision invalidation, immutable historical membership, investigation snapshot
 freezing, access-boundary preservation, and the authenticated read-only graph
 view. `uv run python scripts/seed.py` is idempotent and may only create final
 control-plane models.
+
+The evidence-access checker constructs the full snapshot/model/operation/audit
+chain and verifies exact opaque ValueRef round trips, budget shrinkage, missing
+parser rejection, kill switch rejection, duplicate fingerprint rejection,
+encrypted-only effective actions, signed hash-bound tokens, forged permit
+rejection, one adapter call under concurrent replay, and one terminal immutable
+attempt.
 
 ## Frontend Contract
 
@@ -412,9 +456,11 @@ Backend:
 ```bash
 uv sync --extra dev
 export LODE_DATA_ENCRYPTION_KEY='replace-with-an-independent-random-secret'
+export LODE_EVIDENCE_AUTHORIZATION_KEY='replace-with-a-third-independent-random-secret'
 make contracts
 make intake-check
 make resource-check
+make evidence-access-check
 uv run python -m compileall -q src scripts alembic tests
 uv run pytest -q
 ```
@@ -445,5 +491,12 @@ repositories, path/symlink/YAML/XML attacks, bounded structure parsing,
 provenance independence, within/cross-publication alias conflicts, annotation
 authorization expansion, observation/publication idempotency, invalidation,
 immutable graph membership, job recovery, and investigation snapshot isolation.
+
+Evidence-access kernel changes must cover duplicate/oversized/deep/invalid
+candidate JSON, every stable rejection class, snapshot ownership, missing or
+partial parser behavior, scope and budget intersection, arbitrary ValueRef
+strings and injection shapes, authorization key separation, token tamper/
+expiry/replay, fingerprint dedupe, kill switches, forged execution permits,
+preflight/execution/cancellation terminals, output bounds, and immutable audit.
 
 Before declaring work complete, assess architecture, dependency, and development-workflow impact. Update this file immediately when any of those contracts change, then verify the documented commands and behavior match the implementation.

@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_group_id: str = "lode-consumer"
-    # Active application bindings are the consumer subscription source of truth.
+    # Active Workspace topics are the consumer subscription source of truth.
     # The consumer polls this interval so control-plane state changes do not
     # require a process restart.
     kafka_subscription_refresh_seconds: float = 5.0
@@ -122,6 +122,10 @@ class Settings(BaseSettings):
     # is intentionally no second-stage secret indirection and no signing-key
     # fallback. Secret operations fail closed when it is not configured.
     data_encryption_key: str = ""
+    # HMAC key for short-lived native-read capabilities. It must be independent
+    # from both JWT signing and evidence encryption keys.
+    evidence_authorization_key: str = ""
+    evidence_authorization_ttl_seconds: int = 60
 
     # Rate limiting (M6 hardening)
     # In-process fixed-window limiter applied to every non-exempt route. The
