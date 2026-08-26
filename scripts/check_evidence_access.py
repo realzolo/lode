@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
-from lode.application.intake import ManualIncidentRequest, canonical_hash, normalize_manual
+from lode.application.intake import ManualIncidentRequest, normalize_manual
 from lode.crypto import decrypt_value, encrypt_value
 from lode.db.models import (
     AIInvocation,
@@ -40,13 +40,13 @@ from lode.db.session import AsyncSessionLocal, engine
 from lode.evidence_access.authorizer import EvidenceAccessAuthorizer
 from lode.evidence_access.candidate import NativeReadCandidateInput
 from lode.evidence_access.kill_switch import EvidenceKillSwitch
-from lode.evidence_access.mock import MockEvidenceAdapter, MockTreePolicy
+from lode.evidence_access.mock import MockEvidenceAdapter
 from lode.evidence_access.orchestrator import EvidenceReadOrchestrator, ExecutionPermit
-from lode.evidence_access.registry import NativePolicyRegistry
 from lode.evidence_access.tokens import AuthorizationTokenError, verify_token
 from lode.evidence_access.types import AccessContext
+from lode.evidence_connectors.registry import build_log_policy_registry
+from lode.evidence_connectors.types import ProviderExecutionError
 from lode.infrastructure.intake_store import PostgresIntakeStore
-
 
 SENTINEL = "__LODE_VALUE_REF_INCIDENT_TRACE__"
 RAW_TRACE = ' trace/值?x=1&quoted="yes"\nnext '
@@ -61,32 +61,46 @@ def _candidate(
     action_id: str,
     connector_id: int,
     language: str = "elasticsearch_query_dsl",
+    variant: str = "default",
 ) -> NativeReadCandidateInput:
-    payload = (
-        {"query": f'{{app="api"}} |= "{SENTINEL}"'}
-        if language == "logql"
-        else {
+    if language in {"logql", "sql"}:
+        payload = (
+            {"query": f'{{app="api"}} |= "{SENTINEL}"'}
+            if language == "logql"
+            else {"query": "SELECT 1"}
+        )
+    else:
+        query = {"term": {"trace.id": SENTINEL}}
+        if variant == "provider_failure":
+            query = {
+                "bool": {
+                    "filter": [query, {"term": {"level": "error"}}],
+                }
+            }
+        payload = {
             "path": "/logs/_search",
-            "body": {"query": {"term": {"trace.id": SENTINEL}}},
+            "body": {"query": query},
+        }
+    bindings = {} if language == "sql" else {SENTINEL: "incident.trace_id"}
+    return NativeReadCandidateInput.model_validate(
+        {
+            "schema_version": "native-read-candidate.v1",
+            "action_id": action_id,
+            "connector_id": connector_id,
+            "language": language,
+            "purpose": "Find exact trace evidence",
+            "expected_evidence": "One matching log record",
+            "evidence_anchors": ["incident.trace_id"],
+            "payload": payload,
+            "value_bindings": bindings,
+            "requested_window": {
+                "start": "2026-08-26T11:50:00Z",
+                "end": "2026-08-26T12:10:00Z",
+            },
+            "requested_limit": 2_000,
+            "requested_timeout_ms": 60_000,
         }
     )
-    return NativeReadCandidateInput.model_validate({
-        "schema_version": "native-read-candidate.v1",
-        "action_id": action_id,
-        "connector_id": connector_id,
-        "language": language,
-        "purpose": "Find exact trace evidence",
-        "expected_evidence": "One matching log record",
-        "evidence_anchors": ["incident.trace_id"],
-        "payload": payload,
-        "value_bindings": {SENTINEL: "incident.trace_id"},
-        "requested_window": {
-            "start": "2026-08-26T11:50:00Z",
-            "end": "2026-08-26T12:10:00Z",
-        },
-        "requested_limit": 2_000,
-        "requested_timeout_ms": 60_000,
-    })
 
 
 class SlowCaptureAdapter(MockEvidenceAdapter):
@@ -97,7 +111,30 @@ class SlowCaptureAdapter(MockEvidenceAdapter):
         permit.assert_valid()
         self.calls.append(dict(permit.action))
         await asyncio.sleep(0.05)
-        return {"records": [{"trace": permit.action["body"]["query"]["term"]["trace.id"]}]}
+        return {"records": [{"trace": _find_trace_value(permit.action)}]}
+
+
+class RateLimitedAdapter(MockEvidenceAdapter):
+    async def execute(self, permit):
+        permit.assert_valid()
+        raise ProviderExecutionError("rate_limited", "fixture provider rate limit")
+
+
+def _find_trace_value(value):
+    if isinstance(value, dict):
+        term = value.get("term")
+        if isinstance(term, dict) and "trace.id" in term:
+            return term["trace.id"]
+        for item in value.values():
+            found = _find_trace_value(item)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_trace_value(item)
+            if found is not None:
+                return found
+    return None
 
 
 async def _create_fixture(session):
@@ -113,15 +150,17 @@ async def _create_fixture(session):
     )
     session.add_all([user, workspace])
     await session.flush()
-    request = ManualIncidentRequest.model_validate({
-        "workspace_id": workspace.id,
-        "occurred_at": "2026-08-26T12:00:00Z",
-        "severity": "WARNING",
-        "event": "evidence.access.check",
-        "trace_id": RAW_TRACE,
-        "source_revision": "a" * 40,
-        "error": {"type": "Check", "message": "evidence", "stack": "frame", "cause": None},
-    })
+    request = ManualIncidentRequest.model_validate(
+        {
+            "workspace_id": workspace.id,
+            "occurred_at": "2026-08-26T12:00:00Z",
+            "severity": "WARNING",
+            "event": "evidence.access.check",
+            "trace_id": RAW_TRACE,
+            "source_revision": "a" * 40,
+            "error": {"type": "Check", "message": "evidence", "stack": "frame", "cause": None},
+        }
+    )
     intake = await PostgresIntakeStore(session).persist_manual(
         workspace_id=workspace.id,
         incident=normalize_manual(request),
@@ -191,16 +230,18 @@ async def _create_fixture(session):
     session.add(model_policy)
     await session.flush()
     model_policy_hash = _hash("model-policy-snapshot")
-    session.add(InvestigationModelPolicySnapshot(
-        investigation_id=investigation.id,
-        model_policy_revision_id=model_policy.id,
-        context_policy_revision_id=context_policy.id,
-        model_policy_revision=1,
-        context_policy_revision=1,
-        policy=model_policy.role_policies,
-        context_policy={"pinned": context_policy.pinned_evidence_kinds},
-        snapshot_hash=model_policy_hash,
-    ))
+    session.add(
+        InvestigationModelPolicySnapshot(
+            investigation_id=investigation.id,
+            model_policy_revision_id=model_policy.id,
+            context_policy_revision_id=context_policy.id,
+            model_policy_revision=1,
+            context_policy_revision=1,
+            policy=model_policy.role_policies,
+            context_policy={"pinned": context_policy.pinned_evidence_kinds},
+            snapshot_hash=model_policy_hash,
+        )
+    )
     binding_snapshot = InvestigationModelBindingSnapshot(
         investigation_id=investigation.id,
         workspace_model_binding_id=binding.id,
@@ -251,7 +292,7 @@ async def _create_fixture(session):
     connector = EvidenceConnector(
         workspace_id=workspace.id,
         name="mock-search",
-        kind="mock_search",
+        kind="elasticsearch",
         kind_version=1,
         config={"endpoint": "https://logs.invalid"},
         secret_ciphertext=encrypt_value("connector-secret"),
@@ -263,9 +304,45 @@ async def _create_fixture(session):
     await session.flush()
     scope = EvidenceAccessScope(
         connector_id=connector.id,
-        allowed_languages=["elasticsearch_query_dsl", "logql"],
-        scope_config={"allowed_paths": ["/logs/_search"]},
-        schema_catalog={"fields": ["trace.id"]},
+        allowed_languages=["elasticsearch_query_dsl", "sql"],
+        scope_config={
+            "allowed_indices": ["logs"],
+            "required_terms": {},
+            "timestamp_field": "@timestamp",
+            "allowed_source_fields": ["@timestamp", "message", "trace.id"],
+            "default_source_fields": ["@timestamp", "message", "trace.id"],
+            "max_page_size": 100,
+        },
+        schema_catalog={
+            "indices": {
+                "logs": {
+                    "fields": {
+                        "@timestamp": {
+                            "type": "date",
+                            "searchable": True,
+                            "aggregatable": True,
+                        },
+                        "message": {
+                            "type": "text",
+                            "searchable": True,
+                            "aggregatable": False,
+                        },
+                        "trace.id": {
+                            "type": "keyword",
+                            "searchable": True,
+                            "aggregatable": True,
+                            "cardinality": 100,
+                        },
+                        "level": {
+                            "type": "keyword",
+                            "searchable": True,
+                            "aggregatable": True,
+                            "cardinality": 6,
+                        },
+                    }
+                }
+            }
+        },
         schema_catalog_revision=1,
         read_policy_revision=1,
         execution_budget_policy={
@@ -372,6 +449,78 @@ async def _create_fixture(session):
         await session.flush()
         operations.append(operation)
         invocations.append(invocation)
+
+    step.status = "succeeded"
+    step.finished_at = datetime.now(UTC)
+    await session.flush()
+    second_step = InvestigationStep(
+        investigation_id=investigation.id,
+        ordinal=2,
+        objective="Test provider failure audit",
+        status="running",
+        hypothesis_snapshot={"id": "h2"},
+        input_evidence_refs=[],
+        output_evidence_refs=[],
+    )
+    session.add(second_step)
+    await session.flush()
+    second_decision = InvestigationDecision(
+        investigation_id=investigation.id,
+        step_id=second_step.id,
+        ordinal=2,
+        decision="continue",
+        hypotheses=[{"id": "h2"}],
+        operation_plan=[{"action_id": "evidence.check.5"}],
+        policy_outcome="allow",
+        policy_decisions=[],
+        selected_operation_count=1,
+        decision_hash=_hash("investigation-decision-2"),
+    )
+    session.add(second_decision)
+    await session.flush()
+    failure_operation = InvestigationOperation(
+        investigation_id=investigation.id,
+        step_id=second_step.id,
+        decision_id=second_decision.id,
+        ordinal=5,
+        wave_ordinal=1,
+        action_id="evidence.check.5",
+        operation_kind="native_read",
+        purpose="Test provider failure audit",
+        expected_evidence="Stable provider failure",
+        evidence_anchors=["incident.trace_id"],
+        selection_reason="test",
+        stop_condition="failure recorded",
+        input_masked={},
+        fingerprint=_hash("operation-5"),
+    )
+    session.add(failure_operation)
+    await session.flush()
+    failure_invocation = AIInvocation(
+        investigation_id=investigation.id,
+        operation_id=failure_operation.id,
+        routing_decision_id=routing.id,
+        context_bundle_revision_id=bundle.id,
+        role="native_query",
+        provider_account_id=provider.id,
+        model_deployment_id=deployment.id,
+        provider_account_revision=1,
+        model_deployment_revision=1,
+        execution_class="latency_optimized",
+        prompt_revision="test",
+        schema_revision="native-read-candidate.v1",
+        context_hash=bundle.context_hash,
+        request_hash=_hash("request-5"),
+        response_hash=_hash("response-5"),
+        status="succeeded",
+        attempt_count=1,
+        latency_ms=1,
+        output_masked={"candidate": 5},
+    )
+    session.add(failure_invocation)
+    await session.flush()
+    operations.append(failure_operation)
+    invocations.append(failure_invocation)
     await session.commit()
     return workspace, investigation, connector, connector_snapshot, operations, invocations
 
@@ -399,8 +548,7 @@ async def main() -> None:
     async with AsyncSessionLocal() as session:
         fixture = await _create_fixture(session)
         workspace, investigation, connector, snapshot, operations, invocations = fixture
-        registry = NativePolicyRegistry()
-        registry.register(MockTreePolicy())
+        registry = build_log_policy_registry()
 
         allow = await EvidenceAccessAuthorizer(session, registry).authorize(
             _candidate(action_id=operations[0].action_id, connector_id=connector.id),
@@ -409,7 +557,7 @@ async def main() -> None:
         assert allow.outcome == "allow" and allow.token and allow.authorized_read_id
         authorized = await session.get(AuthorizedEvidenceRead, allow.authorized_read_id)
         bound = json.loads(decrypt_value(authorized.effective_action_ciphertext))
-        assert bound["body"]["query"]["term"]["trace.id"] == RAW_TRACE
+        assert _find_trace_value(bound) == RAW_TRACE
         candidate_row = await session.get(NativeReadCandidate, allow.candidate_id)
         decision_row = await session.get(EvidenceAccessDecision, allow.decision_id)
         assert RAW_TRACE not in json.dumps(candidate_row.payload_masked, ensure_ascii=False)
@@ -421,7 +569,7 @@ async def main() -> None:
             _candidate(
                 action_id=operations[1].action_id,
                 connector_id=connector.id,
-                language="logql",
+                language="sql",
             ),
             _context(workspace, investigation, connector, snapshot, operations[1], invocations[1]),
         )
@@ -443,17 +591,36 @@ async def main() -> None:
         )
         assert duplicate.rejection_code == "budget_violation"
 
+        provider_failure = await EvidenceAccessAuthorizer(session, registry).authorize(
+            _candidate(
+                action_id=operations[4].action_id,
+                connector_id=connector.id,
+                variant="provider_failure",
+            ),
+            _context(workspace, investigation, connector, snapshot, operations[4], invocations[4]),
+        )
+        assert provider_failure.outcome == "allow" and provider_failure.token
+
     calls: list[dict] = []
     async with AsyncSessionLocal() as first_session, AsyncSessionLocal() as second_session:
         outcomes = await asyncio.gather(
             EvidenceReadOrchestrator(first_session).execute(allow.token, SlowCaptureAdapter(calls)),
-            EvidenceReadOrchestrator(second_session).execute(allow.token, SlowCaptureAdapter(calls)),
+            EvidenceReadOrchestrator(second_session).execute(
+                allow.token, SlowCaptureAdapter(calls)
+            ),
             return_exceptions=True,
         )
     assert sum(getattr(item, "status", None) == "succeeded" for item in outcomes) == 1
     assert sum(isinstance(item, AuthorizationTokenError) for item in outcomes) == 1
     assert len(calls) == 1
-    assert calls[0]["body"]["query"]["term"]["trace.id"] == RAW_TRACE
+    assert _find_trace_value(calls[0]) == RAW_TRACE
+
+    async with AsyncSessionLocal() as failure_session:
+        failed = await EvidenceReadOrchestrator(failure_session).execute(
+            provider_failure.token,
+            RateLimitedAdapter(),
+        )
+    assert failed.status == "failed" and failed.failure_code == "rate_limited"
 
     bad_permit = ExecutionPermit(1, 1, {}, "a" * 64, object())
     try:
@@ -463,25 +630,54 @@ async def main() -> None:
     else:
         raise AssertionError("adapter accepted a forged execution permit")
 
-    claims = verify_token(allow.token, key=__import__("lode.config", fromlist=["settings"]).settings.evidence_authorization_key)
+    claims = verify_token(
+        allow.token,
+        key=__import__("lode.config", fromlist=["settings"]).settings.evidence_authorization_key,
+    )
     assert claims["candidate_hash"] == authorized.candidate_hash
     async with AsyncSessionLocal() as session:
+        failure_attempt = (
+            await session.execute(
+                select(EvidenceReadAttempt).where(
+                    EvidenceReadAttempt.authorized_read_id == provider_failure.authorized_read_id
+                )
+            )
+        ).scalar_one()
+        assert failure_attempt.status == "failed"
+        assert failure_attempt.failure_code == "rate_limited"
         counts = {
-            "authorized_reads": (await session.execute(select(func.count()).select_from(AuthorizedEvidenceRead))).scalar_one(),
-            "candidates": (await session.execute(select(func.count()).select_from(NativeReadCandidate))).scalar_one(),
-            "decisions": (await session.execute(select(func.count()).select_from(EvidenceAccessDecision))).scalar_one(),
-            "attempts": (await session.execute(select(func.count()).select_from(EvidenceReadAttempt))).scalar_one(),
+            "authorized_reads": (
+                await session.execute(select(func.count()).select_from(AuthorizedEvidenceRead))
+            ).scalar_one(),
+            "candidates": (
+                await session.execute(select(func.count()).select_from(NativeReadCandidate))
+            ).scalar_one(),
+            "decisions": (
+                await session.execute(select(func.count()).select_from(EvidenceAccessDecision))
+            ).scalar_one(),
+            "attempts": (
+                await session.execute(select(func.count()).select_from(EvidenceReadAttempt))
+            ).scalar_one(),
         }
-        print(json.dumps({
-            **counts,
-            "allow": allow.outcome,
-            "bound_trace_round_trip": calls[0]["body"]["query"]["term"]["trace.id"] == RAW_TRACE,
-            "concurrent_adapter_calls": len(calls),
-            "duplicate_fingerprint": duplicate.rejection_code,
-            "kill_switch": killed.rejection_code,
-            "replay_rejected": any(isinstance(item, AuthorizationTokenError) for item in outcomes),
-            "unsupported_language": unsupported.rejection_code,
-        }, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    **counts,
+                    "allow": allow.outcome,
+                    "bound_trace_round_trip": _find_trace_value(calls[0]) == RAW_TRACE,
+                    "concurrent_adapter_calls": len(calls),
+                    "duplicate_fingerprint": duplicate.rejection_code,
+                    "kill_switch": killed.rejection_code,
+                    "replay_rejected": any(
+                        isinstance(item, AuthorizationTokenError) for item in outcomes
+                    ),
+                    "unsupported_language": unsupported.rejection_code,
+                    "provider_failure": failed.failure_code,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
     await engine.dispose()
 
 

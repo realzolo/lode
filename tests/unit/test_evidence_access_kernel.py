@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
+from lode.evidence_access.authorizer import _call_policy
 from lode.evidence_access.budget import intersect_budget
 from lode.evidence_access.candidate import NativeReadCandidateInput, parse_candidate_json
 from lode.evidence_access.kill_switch import EvidenceKillSwitch
@@ -13,7 +14,6 @@ from lode.evidence_access.mock import MockTreePolicy
 from lode.evidence_access.registry import NativePolicyRegistry
 from lode.evidence_access.tokens import AuthorizationTokenError, issue_token, verify_token
 from lode.evidence_access.types import AccessContext, AccessRejection
-
 
 SENTINEL = "__LODE_VALUE_REF_INCIDENT_TRACE__"
 
@@ -119,7 +119,7 @@ def test_mock_policy_binds_arbitrary_value_only_at_exact_value_node() -> None:
     policy = MockTreePolicy()
     parsed = policy.parse(candidate())
     evaluation = policy.evaluate(parsed, candidate(), context())
-    raw = '\"},\"script\":{\"source\":\"delete everything\"}'
+    raw = '"},"script":{"source":"delete everything"}'
 
     bound = policy.bind_values(parsed, evaluation, {SENTINEL: raw})
 
@@ -175,6 +175,25 @@ def test_registry_never_falls_back_to_partial_parser() -> None:
     assert registry.require("elasticsearch_query_dsl").parser_name == "mock-json-tree"
     with pytest.raises(ValueError, match="already registered"):
         registry.register(MockTreePolicy())
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ValueError("raw secret"), TypeError("raw secret"), KeyError("raw secret")],
+)
+def test_policy_processing_errors_become_non_sensitive_stable_rejections(error: Exception) -> None:
+    def fail() -> None:
+        raise error
+
+    with pytest.raises(AccessRejection) as rejected:
+        _call_policy("bind_values", fail)
+
+    assert rejected.value.code == "invalid_syntax"
+    assert rejected.value.detail == {
+        "stage": "bind_values",
+        "error_type": type(error).__name__,
+    }
+    assert "raw secret" not in rejected.value.reason
 
 
 def test_authorization_token_is_signed_bound_and_expiring() -> None:

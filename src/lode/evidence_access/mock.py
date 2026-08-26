@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from lode.application.intake import canonical_hash
 from lode.evidence_access.budget import intersect_budget
 from lode.evidence_access.candidate import NativeReadCandidateInput, SearchPayload
 from lode.evidence_access.types import (
-    AccessContext, AccessRejection, BoundNativeAction, ParsedNativeAction, PolicyEvaluation,
+    AccessContext,
+    AccessRejection,
+    BoundNativeAction,
+    ParsedNativeAction,
+    PolicyEvaluation,
 )
 
 
@@ -53,19 +58,27 @@ class MockTreePolicy:
 
     def parse(self, candidate: NativeReadCandidateInput) -> ParsedNativeAction:
         if not isinstance(candidate.payload, SearchPayload):
-            raise AccessRejection("invalid_syntax", "mock policy requires structured search payload")
+            raise AccessRejection(
+                "invalid_syntax", "mock policy requires structured search payload"
+            )
         action = candidate.payload.model_dump(mode="json")
         slots: dict[str, tuple[str | int, ...]] = {}
         sentinel_keys = set(candidate.value_bindings)
         for path, value in _walk(action):
             if isinstance(value, str) and value in sentinel_keys:
                 if value in slots:
-                    raise AccessRejection("invalid_syntax", "sentinel appears in multiple value nodes")
+                    raise AccessRejection(
+                        "invalid_syntax", "sentinel appears in multiple value nodes"
+                    )
                 slots[value] = path
             elif isinstance(value, str) and any(sentinel in value for sentinel in sentinel_keys):
-                raise AccessRejection("invalid_syntax", "sentinel must occupy a complete JSON value node")
+                raise AccessRejection(
+                    "invalid_syntax", "sentinel must occupy a complete JSON value node"
+                )
         if set(slots) != sentinel_keys:
-            raise AccessRejection("invalid_syntax", "every binding sentinel must occupy one value node")
+            raise AccessRejection(
+                "invalid_syntax", "every binding sentinel must occupy one value node"
+            )
         structural_hash = canonical_hash(_shape(action))
         return ParsedNativeAction(
             language=self.language,
@@ -90,6 +103,7 @@ class MockTreePolicy:
         budget, diff = intersect_budget(candidate, context)
         return PolicyEvaluation(
             effective_action=action.canonical_action,
+            effective_structural_hash=action.structural_hash,
             validation_decisions=(
                 {"check": "complete_parse", "outcome": "allow"},
                 {"check": "scope_intersection", "outcome": "allow", "path": path},
@@ -111,7 +125,7 @@ class MockTreePolicy:
         for sentinel, path in action.value_slots.items():
             _assign(bound, path, values[sentinel])
         structural_hash = canonical_hash(_shape(bound))
-        if structural_hash != action.structural_hash:
+        if structural_hash != evaluation.effective_structural_hash:
             raise AccessRejection("invalid_syntax", "ValueRef binding changed action structure")
         return BoundNativeAction(
             language=action.language,

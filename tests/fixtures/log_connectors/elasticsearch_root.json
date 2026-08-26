@@ -1,0 +1,6 @@
+{
+  "name": "elastic-fixture",
+  "cluster_name": "fixture",
+  "version": {"number": "8.17.3", "build_flavor": "default"},
+  "tagline": "You Know, for Search"
+}

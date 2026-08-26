@@ -2,27 +2,51 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any
 
-
-REJECTION_CODES = frozenset({
-    "invalid_syntax",
-    "unsupported_node",
-    "write_semantics",
-    "scope_violation",
-    "budget_violation",
-    "egress_violation",
-    "sandbox_violation",
-    "preflight_failed",
-})
+REJECTION_CODES = frozenset(
+    {
+        "invalid_syntax",
+        "unsupported_node",
+        "write_semantics",
+        "scope_violation",
+        "budget_violation",
+        "egress_violation",
+        "sandbox_violation",
+        "preflight_failed",
+    }
+)
+EXECUTION_FAILURE_CODES = frozenset(
+    {
+        "authentication_failed",
+        "rate_limited",
+        "provider_timeout",
+        "provider_unavailable",
+        "invalid_response",
+        "partial_response",
+        "cost_exceeded",
+        "egress_violation",
+    }
+)
 
 
 class AccessRejection(ValueError):
     def __init__(self, code: str, reason: str, detail: Mapping[str, Any] | None = None) -> None:
         if code not in REJECTION_CODES:
             raise ValueError(f"unstable evidence rejection code: {code}")
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+        self.detail = dict(detail or {})
+
+
+class EvidenceExecutionFailure(RuntimeError):
+    def __init__(self, code: str, reason: str, detail: Mapping[str, Any] | None = None) -> None:
+        if code not in EXECUTION_FAILURE_CODES:
+            raise ValueError(f"unstable evidence execution failure code: {code}")
         super().__init__(reason)
         self.code = code
         self.reason = reason
@@ -72,6 +96,7 @@ class ParsedNativeAction:
 @dataclass(frozen=True, slots=True)
 class PolicyEvaluation:
     effective_action: Mapping[str, Any]
+    effective_structural_hash: str
     validation_decisions: tuple[Mapping[str, Any], ...]
     constraint_diff: Mapping[str, Any]
     effective_budget: EffectiveBudget

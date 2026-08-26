@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     # from both JWT signing and evidence encryption keys.
     evidence_authorization_key: str = ""
     evidence_authorization_ttl_seconds: int = 60
+    logql_parser_node: str = "node"
+    logql_parser_script: str = ""
+    logql_parser_timeout_seconds: float = 2.0
 
     # Rate limiting (M6 hardening)
     # In-process fixed-window limiter applied to every non-exempt route. The

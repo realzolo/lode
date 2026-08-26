@@ -1,0 +1,14 @@
+{
+  "indices": ["logs-orders"],
+  "fields": {
+    "@timestamp": {
+      "date": {"type": "date", "metadata_field": false, "searchable": true, "aggregatable": true}
+    },
+    "message": {
+      "text": {"type": "text", "metadata_field": false, "searchable": true, "aggregatable": false}
+    },
+    "trace.id": {
+      "keyword": {"type": "keyword", "metadata_field": false, "searchable": true, "aggregatable": true}
+    }
+  }
+}

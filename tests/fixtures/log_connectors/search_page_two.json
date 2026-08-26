@@ -1,0 +1,16 @@
+{
+  "took": 3,
+  "timed_out": false,
+  "_shards": {"total": 2, "successful": 2, "skipped": 0, "failed": 0},
+  "hits": {
+    "total": {"value": 3, "relation": "eq"},
+    "hits": [
+      {
+        "_index": "logs-orders",
+        "_id": "c",
+        "_source": {"@timestamp": "2026-08-26T09:15:03Z", "message": "third"},
+        "sort": ["2026-08-26T09:15:03Z", "c"]
+      }
+    ]
+  }
+}

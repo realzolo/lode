@@ -3,7 +3,7 @@
 ## Final Rebuild Status
 
 The final V1 replacement is being implemented from
-`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-4 are
+`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-5 are
 the current completed implementation baseline:
 
 - `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
@@ -100,8 +100,38 @@ the current completed implementation baseline:
   terminal immutable `EvidenceReadAttempt` permits one concurrent consumer;
   replay is rejected. Preflight/execution/cancellation and output byte
   postconditions produce terminal `succeeded`, `failed`, or `interrupted`
-  attempts. The mock policy/adapter proves the boundary but is not registered by
-  the application; provider policies become active in Phases 5-6.
+  attempts. Stable provider authentication, rate-limit, timeout, availability,
+  partial-response, cost, invalid-response, and egress failures remain distinct
+  execution failure codes in the immutable attempt instead of being relabeled
+  as policy rejection.
+- `src/lode/evidence_connectors` is the only log-provider execution plane. Its
+  provider-neutral registry activates independent Loki, Elasticsearch, and
+  OpenSearch policy/adapter pairs. The investigation core receives only
+  candidates, authorization outcomes, and normalized evidence; it does not
+  import or branch on provider products.
+- LogQL is completely parsed by the fixed Apache-2.0 Grafana Lezer grammar in
+  `tools/logql_parser`. The helper has no credential, database, network, or
+  execution capability. Parser recovery nodes, trailing payloads, unsupported
+  string encodings, multiple selectors, regex/pattern/format/label mutation,
+  unknown CST nodes, unbounded metrics, and unregistered pipeline capabilities
+  fail closed. Root matchers are injected from the frozen snapshot and exact
+  ValueRef string nodes are reparsed after binding.
+- Elasticsearch 8/9 and OpenSearch 2/3 use separate parser/policy versions,
+  product verification, connector classes, and contract fixtures. Each permits
+  only an exact single-index `_search`, a recursive positive query allowlist,
+  bounded source projection, absolute timestamp filter, result/timeout/page
+  limits, stable timestamp/ID order, and bounded bucket/metric aggregations.
+  Script, runtime mapping, wildcard/regex/query-string, async/PIT/scroll,
+  template, plugin, write, management, unknown, and partial-response paths are
+  disabled.
+- Provider HTTPS transport accepts only adapter-owned relative paths, disables
+redirects, resolves DNS inside every TCP connection, pins the connection to a
+checked address while retaining the original TLS identity, checks every address
+against an explicit CIDR scope, rejects loopback/link-local/multicast/unspecified
+  addresses, limits decompressed response bytes, and injects credentials only
+  inside the adapter. Normalization validates duplicate-free bounded JSON,
+  stable pagination and response shape, masks secret patterns, and marks prompt
+  injection before evidence leaves the Connector Plane.
 - Current implementation files use unversioned canonical names (`intake.py`,
   `investigation.py`, `check_schema.py`, and so on). The repository maintains
   one current implementation and never creates `_v1`/`_v2` module variants.
@@ -119,6 +149,9 @@ publication, derived-resource views, or investigation graph snapshots change.
 Run `make evidence-access-check` whenever candidate validation, policy,
 ValueRef binding, authorization, execution permits, audit, or kill switches
 change.
+Run `make log-connectors-check` whenever LogQL parsing, search JSON policy,
+provider config/version/introspection, HTTP serialization, pagination,
+normalization, masking, or provider failure classification changes.
 Run
 `uv run python scripts/check_forbidden_contracts.py` as the full-repository V1
 removal gate; it is expected to become clean as the replacement phases delete
@@ -126,12 +159,16 @@ the currently implemented pre-final runtime contracts. Do not add an allowlist
 or compatibility adapter to make this gate pass.
 
 The sections below include final contracts for later implementation phases.
-Phases 1-4 changed the database/control-plane identity architecture, the
+Phases 1-5 changed the database/control-plane identity architecture, the
 migration/seed verification workflow, Kafka/manual intake, automatic resource
 understanding, and the currently assembled API routes. Phase 3 added the direct
 `PyYAML` dependency and the `resource-check` workflow. Phase 4 added an
 independent authorization-key deployment requirement and the
-`evidence-access-check` workflow, but no dependency. Pre-final engine,
+`evidence-access-check` workflow, but no dependency. Phase 5 added the
+`src/lode/evidence_connectors` execution plane, direct
+`httpx` and `httpcore` runtime dependencies, fixed Node 24 LogQL parser build layer, three locked
+npm parser dependencies, required Compose authorization-key propagation, and
+the `log-connectors-check` workflow. Pre-final engine,
 remaining API, and Web modules are not a supported execution path while their
 owning phases replace them; they must be rewritten without adapters.
 
@@ -150,12 +187,19 @@ Lode is an evidence-backed production incident investigation service. A V1 inves
 - `src/lode/evidence_access/candidate.py`: bounded strict native-read candidate input boundary.
 - `src/lode/evidence_access/authorizer.py`: snapshot-owned parser/policy evaluation, immutable decision audit, ValueRef binding, and token issuance.
 - `src/lode/evidence_access/orchestrator.py`: token-gated preflight/execution with replay defense and terminal attempts.
+- `src/lode/evidence_access/logql.py`: maintained complete-CST LogQL policy, root-scope injection, metric budgets, and ValueRef reparse.
+- `src/lode/evidence_access/elasticsearch.py`: Elasticsearch-specific structured JSON policy profile.
+- `src/lode/evidence_access/opensearch.py`: OpenSearch-specific structured JSON policy profile.
+- `src/lode/evidence_connectors/registry.py`: provider-neutral log policy/adapter composition root.
+- `src/lode/evidence_connectors/loki.py`: Loki 3 verification, absolute-window scoped introspection, bounded query-range execution, and normalization.
+- `src/lode/evidence_connectors/elasticsearch.py`: Elasticsearch 8/9 verification and bounded search adapter.
+- `src/lode/evidence_connectors/opensearch.py`: OpenSearch 2/3 verification and bounded search adapter.
+- `src/lode/evidence_connectors/transport.py`: redirect-free, DNS-pinned/CIDR-checked, byte-bounded HTTPS transport.
+- `tools/logql_parser/parser.mjs`: credential-free Grafana Lezer LogQL CST helper.
 - `src/lode/engine/investigation_engine.py`: one-action-at-a-time adaptive decision loop and terminal synthesis.
 - `src/lode/engine/structured_outputs.py`: provider-neutral strict JSON Schemas for decisions, reports, and causal verification.
 - `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, UI form metadata, and egress policy.
 - `src/lode/engine/integrations.py`: provider adapters for verification and bounded snapshots.
-- `src/lode/engine/log_integrations.py`: `log_search` provider-adapter registry; the investigation core never requires a specific log product.
-- `src/lode/engine/loki_investigation.py`: built-in bounded Loki adapter for request/lifecycle discovery within an immutable service scope.
 - `src/lode/engine/investigation_evidence.py`: bounded Git and unified integration evidence collection.
 - `src/lode/engine/evidence/git.py`: stack parsing, exact revision lookup, symbol range extraction, lexical candidates, and related-symbol expansion.
 - `src/lode/engine/investigation_events.py`: durable step, operation, progress, failure, timing, and evidence events.
@@ -290,7 +334,13 @@ separate immutable scope revisions, encrypted secrets, verification records,
 and authorization/read audit objects. Connector kinds are code-registered and
 may have multiple instances without a schema migration.
 
-Built-in capabilities are `test`, `snapshot`, `query_catalog`, and `log_search`. The engine selects behavior by capability, never by product name. Loki is the built-in `log_search` adapter, not a required dependency; another log product can replace it by registering a kind and log adapter. Prometheus is a snapshot integration. Redis is not supported.
+Log evidence capabilities are selected through the provider-neutral Connector
+registry, never by an investigation-core product branch. The active kinds are
+`loki`, `elasticsearch`, and `opensearch`; each kind declares one native
+language and its own verification, introspection, parser/policy versions, read
+capabilities, adapter, fixture corpus, egress policy, and failure semantics. A
+new provider is not active merely because it resembles an existing product: it
+must register a complete independent security profile and contract tests.
 
 Database connectors support PostgreSQL and MySQL through structured DNS host,
 port, database, username, mandatory TLS, encrypted password, qualified
@@ -314,8 +364,12 @@ but it cannot override system rules or independently prove an incident cause or
 code defect. Later context edits affect only new investigations.
 
 Native connector queries are generated only by server helpers from frozen
-scope. Raw trace values are resolved server-side from sealed storage only after
-authorization and are never supplied to the model.
+scope. AI-generated native candidates can reach a provider only through the
+Evidence Access authorization chain. Raw trace values are resolved server-side
+from sealed storage only after authorization and are never supplied to the
+model. Log provider credentials support exactly one registered authentication
+form, are injected after authorization, and never appear in requests, results,
+ordinary config, or audit JSON.
 
 Source lookup order is fixed:
 
@@ -409,6 +463,7 @@ Until V1 is released, model changes are folded into `0001_initial.py`. Verify a 
 LODE_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lode_migration_test \
 LODE_SECRET_KEY=test-secret \
 LODE_DATA_ENCRYPTION_KEY=test-data-encryption-key \
+LODE_EVIDENCE_AUTHORIZATION_KEY=test-evidence-authorization-key \
 uv run alembic upgrade head
 uv run alembic check
 uv run python scripts/check_schema.py
@@ -416,6 +471,7 @@ uv run python scripts/check_database_behavior.py
 uv run python scripts/check_intake.py
 uv run python scripts/check_resource_graph.py
 uv run python scripts/check_evidence_access.py
+make log-connectors-check
 ```
 
 Alembic autogeneration against that database must produce no schema difference.
@@ -431,11 +487,22 @@ view. `uv run python scripts/seed.py` is idempotent and may only create final
 control-plane models.
 
 The evidence-access checker constructs the full snapshot/model/operation/audit
-chain and verifies exact opaque ValueRef round trips, budget shrinkage, missing
-parser rejection, kill switch rejection, duplicate fingerprint rejection,
-encrypted-only effective actions, signed hash-bound tokens, forged permit
-rejection, one adapter call under concurrent replay, and one terminal immutable
-attempt.
+chain through the production Elasticsearch policy. It verifies exact opaque
+ValueRef round trips, mandatory timestamp/source/sort constraints, budget
+shrinkage, missing parser rejection, kill switch rejection, duplicate
+fingerprint rejection, encrypted-only effective actions, signed hash-bound
+tokens, forged permit rejection, one adapter call under concurrent replay, and
+terminal immutable success and provider-rate-limit attempts.
+
+`make log-connectors-check` runs the fixed LogQL CST, Elasticsearch/OpenSearch
+JSON policy, provider request/response fixture, version isolation,
+budgeted introspection, stable pagination, partial response, timeout/rate/auth/5xx,
+ValueRef injection, aggregation cost, masking, prompt-injection marking,
+registry, egress-config, and forged-permit tests. Run `make install` first; it
+performs both `uv sync --all-extras` and the locked, script-disabled npm install
+for `tools/logql_parser`. The backend Docker image builds that parser under
+Node 24 and copies only its runtime plus the Node executable into the Python
+image.
 
 ## Frontend Contract
 
@@ -454,13 +521,14 @@ Do not restore a second investigation UI or translate historical response shapes
 Backend:
 
 ```bash
-uv sync --extra dev
+make install
 export LODE_DATA_ENCRYPTION_KEY='replace-with-an-independent-random-secret'
 export LODE_EVIDENCE_AUTHORIZATION_KEY='replace-with-a-third-independent-random-secret'
 make contracts
 make intake-check
 make resource-check
 make evidence-access-check
+make log-connectors-check
 uv run python -m compileall -q src scripts alembic tests
 uv run pytest -q
 ```
@@ -498,5 +566,15 @@ partial parser behavior, scope and budget intersection, arbitrary ValueRef
 strings and injection shapes, authorization key separation, token tamper/
 expiry/replay, fingerprint dedupe, kill switches, forged execution permits,
 preflight/execution/cancellation terminals, output bounds, and immutable audit.
+
+Log Connector changes must additionally cover complete LogQL CST parsing and
+parser differential inputs, root selector enforcement, exact string-node
+ValueRef binding, bounded log and metric queries, exact index and field scope,
+recursive Query DSL and aggregation allowlists, bucket/cardinality limits,
+independent Elasticsearch/OpenSearch version proof, schema introspection,
+provider request snapshots, stable pagination/order, partial and malformed
+responses, timeout/429/5xx/auth classification, DNS/CIDR/redirect/byte egress
+controls, secret masking, prompt-injection marking, and provider-neutral core
+imports.
 
 Before declaring work complete, assess architecture, dependency, and development-workflow impact. Update this file immediately when any of those contracts change, then verify the documented commands and behavior match the implementation.

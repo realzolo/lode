@@ -1,0 +1,13 @@
+{
+  "name": "lode-logql-parser",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@grafana/lezer-logql": "0.4.1",
+    "@lezer/common": "1.5.2",
+    "@lezer/lr": "1.4.10"
+  }
+}

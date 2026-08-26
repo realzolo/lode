@@ -3,7 +3,7 @@
 # which uses the project .venv created by `make install` (uv sync). `make` itself
 # does NOT read .env — only the Python app does via pydantic-settings.
 
-.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check
+.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check
 
 # uv binary to use. Override from the shell if it is not on PATH, e.g.
 #   make serve UV=/Users/lixm/.local/bin/uv
@@ -18,6 +18,7 @@ LODE_HTTP_PORT ?= 8000
 # Install deps into the project .venv from the lockfile (incl. dev + pgvector).
 install:
 	$(UV) sync --all-extras
+	npm ci --prefix tools/logql_parser --ignore-scripts --no-audit --no-fund
 
 # Auto-execute database migrations (Alembic) against LODE_DATABASE_URL.
 migrate:
@@ -69,6 +70,10 @@ resource-check:
 # Exercise native-read policy, ValueRef binding, immutable audit, and replay defense.
 evidence-access-check:
 	$(UV) run python scripts/check_evidence_access.py
+
+# Run fixed parser/policy/provider request-response contract tests.
+log-connectors-check:
+	$(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py
 
 # Build and run the full stack (postgres, kafka, api, web) via Docker.
 up:

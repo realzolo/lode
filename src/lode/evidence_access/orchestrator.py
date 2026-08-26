@@ -4,19 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lode.config import settings
 from lode.application.intake import canonical_hash
+from lode.config import settings
 from lode.crypto import decrypt_value
 from lode.db.models import AuthorizedEvidenceRead, EvidenceAccessDecision, EvidenceReadAttempt
 from lode.evidence_access.tokens import AuthorizationTokenError, token_hash, verify_token
-
+from lode.evidence_access.types import EvidenceExecutionFailure
 
 _PERMIT_AUTHORITY = object()
 
@@ -57,11 +58,16 @@ class EvidenceReadOrchestrator:
         adapter: EvidenceExecutionAdapter,
     ) -> ExecutionResult:
         claims = verify_token(token, key=settings.evidence_authorization_key)
-        row = (await self.session.execute(
-            select(AuthorizedEvidenceRead, EvidenceAccessDecision)
-            .join(EvidenceAccessDecision, EvidenceAccessDecision.id == AuthorizedEvidenceRead.access_decision_id)
-            .where(AuthorizedEvidenceRead.token_hash == token_hash(token))
-        )).one_or_none()
+        row = (
+            await self.session.execute(
+                select(AuthorizedEvidenceRead, EvidenceAccessDecision)
+                .join(
+                    EvidenceAccessDecision,
+                    EvidenceAccessDecision.id == AuthorizedEvidenceRead.access_decision_id,
+                )
+                .where(AuthorizedEvidenceRead.token_hash == token_hash(token))
+            )
+        ).one_or_none()
         if row is None:
             raise AuthorizationTokenError("authorization token is unknown")
         authorized, decision = row
@@ -70,11 +76,13 @@ class EvidenceReadOrchestrator:
             {"lock_id": authorized.id},
         )
         self._verify_claims(claims, authorized, decision)
-        previous = (await self.session.execute(
-            select(func.count()).select_from(EvidenceReadAttempt).where(
-                EvidenceReadAttempt.authorized_read_id == authorized.id
+        previous = (
+            await self.session.execute(
+                select(func.count())
+                .select_from(EvidenceReadAttempt)
+                .where(EvidenceReadAttempt.authorized_read_id == authorized.id)
             )
-        )).scalar_one()
+        ).scalar_one()
         if previous:
             raise AuthorizationTokenError("authorization token was already consumed")
         action_text = decrypt_value(authorized.effective_action_ciphertext)
@@ -102,52 +110,69 @@ class EvidenceReadOrchestrator:
             if result_bytes > output_limit:
                 raise ValueError("evidence result exceeds authorized output byte limit")
             finished_at = datetime.now(UTC)
-            self.session.add(EvidenceReadAttempt(
-                investigation_id=authorized.investigation_id,
-                authorized_read_id=authorized.id,
-                attempt=1,
-                status="succeeded",
-                preflight=dict(preflight),
-                started_at=started_at,
-                finished_at=finished_at,
-                result_artifact_refs=[],
-                metrics={"result_bytes": result_bytes},
-            ))
+            self.session.add(
+                EvidenceReadAttempt(
+                    investigation_id=authorized.investigation_id,
+                    authorized_read_id=authorized.id,
+                    attempt=1,
+                    status="succeeded",
+                    preflight=dict(preflight),
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    result_artifact_refs=[],
+                    metrics={"result_bytes": result_bytes},
+                )
+            )
             await self.session.commit()
             return ExecutionResult("succeeded", 1, result, None)
         except asyncio.CancelledError:
             finished_at = datetime.now(UTC)
-            self.session.add(EvidenceReadAttempt(
-                investigation_id=authorized.investigation_id,
-                authorized_read_id=authorized.id,
-                attempt=1,
-                status="interrupted",
-                preflight=None if preflight is None else dict(preflight),
-                started_at=started_at,
-                finished_at=finished_at,
-                result_artifact_refs=[],
-                metrics={},
-                failure_code="execution_interrupted",
-                failure_detail={"reason": "task_cancelled"},
-            ))
+            self.session.add(
+                EvidenceReadAttempt(
+                    investigation_id=authorized.investigation_id,
+                    authorized_read_id=authorized.id,
+                    attempt=1,
+                    status="interrupted",
+                    preflight=None if preflight is None else dict(preflight),
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    result_artifact_refs=[],
+                    metrics={},
+                    failure_code="execution_interrupted",
+                    failure_detail={"reason": "task_cancelled"},
+                )
+            )
             await asyncio.shield(self.session.commit())
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - every adapter failure needs a terminal audit row
             finished_at = datetime.now(UTC)
-            failure_code = "preflight_failed" if preflight is None else "execution_failed"
-            self.session.add(EvidenceReadAttempt(
-                investigation_id=authorized.investigation_id,
-                authorized_read_id=authorized.id,
-                attempt=1,
-                status="failed",
-                preflight=None if preflight is None else dict(preflight),
-                started_at=started_at,
-                finished_at=finished_at,
-                result_artifact_refs=[],
-                metrics={},
-                failure_code=failure_code,
-                failure_detail={"error_type": type(exc).__name__, "message": str(exc)[:1000]},
-            ))
+            failure_code = (
+                exc.code
+                if isinstance(exc, EvidenceExecutionFailure)
+                else "preflight_failed"
+                if preflight is None
+                else "execution_failed"
+            )
+            failure_detail = (
+                {"reason": exc.reason, **exc.detail}
+                if isinstance(exc, EvidenceExecutionFailure)
+                else {"error_type": type(exc).__name__, "message": str(exc)[:1000]}
+            )
+            self.session.add(
+                EvidenceReadAttempt(
+                    investigation_id=authorized.investigation_id,
+                    authorized_read_id=authorized.id,
+                    attempt=1,
+                    status="failed",
+                    preflight=None if preflight is None else dict(preflight),
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    result_artifact_refs=[],
+                    metrics={},
+                    failure_code=failure_code,
+                    failure_detail=failure_detail,
+                )
+            )
             await self.session.commit()
             return ExecutionResult("failed", 1, None, failure_code)
 

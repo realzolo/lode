@@ -1,0 +1,6 @@
+{
+  "took": 30000,
+  "timed_out": true,
+  "_shards": {"total": 2, "successful": 1, "skipped": 0, "failed": 1},
+  "hits": {"total": {"value": 0, "relation": "gte"}, "hits": []}
+}

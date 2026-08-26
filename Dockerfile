@@ -4,6 +4,13 @@
 # hook in lode/api/main.py), so a fresh container is always
 # schema-current before it serves traffic. Secrets are supplied via environment
 # variables at runtime — never baked into the image.
+FROM node:24-bookworm-slim AS logql-parser
+
+WORKDIR /parser
+COPY tools/logql_parser/package.json tools/logql_parser/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+COPY tools/logql_parser/parser.mjs ./parser.mjs
+
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -25,6 +32,8 @@ COPY src ./src
 COPY scripts ./scripts
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
+COPY --from=logql-parser /usr/local/bin/node /usr/local/bin/node
+COPY --from=logql-parser /parser ./tools/logql_parser
 
 RUN pip install --upgrade pip && pip install .
 

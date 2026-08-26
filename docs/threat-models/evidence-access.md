@@ -1,6 +1,6 @@
 # Evidence Access Plane Threat Model
 
-Status: Phase 0 frozen baseline
+Status: Phase 0 frozen baseline; Phase 4 kernel and Phase 5 log connectors implemented
 
 Owners:
 
@@ -60,7 +60,7 @@ regeneration.
 - Credential fields, authorization headers, cookies, absolute host paths,
   environment assignments, shell strings, provider management endpoints, and
   unbounded queries are never accepted from a candidate.
-- Compressed responses are bounded before decompression and scanned for secrets
+- Decompressed responses are bounded while streaming and scanned for secrets
   and prompt injection before storage or model use.
 - Kill switches exist per Workspace, connector, language, and runner. They block
   new authorization and cancel work that has not begun without deleting audit.

@@ -1,0 +1,23 @@
+{
+  "took": 5,
+  "timed_out": false,
+  "_shards": {"total": 2, "successful": 2, "skipped": 0, "failed": 0},
+  "hits": {
+    "total": {"value": 3, "relation": "eq"},
+    "hits": [
+      {
+        "_index": "logs-orders",
+        "_id": "a",
+        "_source": {"@timestamp": "2026-08-26T09:15:01Z", "message": "first"},
+        "sort": ["2026-08-26T09:15:01Z", "a"]
+      },
+      {
+        "_index": "logs-orders",
+        "_id": "b",
+        "_source": {"@timestamp": "2026-08-26T09:15:02Z", "message": "password=super-secret-value"},
+        "sort": ["2026-08-26T09:15:02Z", "b"]
+      }
+    ]
+  },
+  "aggregations": {"by_level": {"buckets": []}}
+}

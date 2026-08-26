@@ -1,0 +1,8 @@
+{
+  "version": "3.5.7",
+  "revision": "fixture-revision",
+  "branch": "release-3.5.x",
+  "buildUser": "fixture",
+  "buildDate": "2026-08-20T00:00:00Z",
+  "goVersion": "go1.24.0"
+}

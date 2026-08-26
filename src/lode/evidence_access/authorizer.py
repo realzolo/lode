@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -28,6 +29,22 @@ from lode.evidence_access.registry import NativePolicyRegistry
 from lode.evidence_access.tokens import issue_token, token_hash
 from lode.evidence_access.types import AccessContext, AccessRejection, AuthorizedReadResult
 from lode.evidence_access.vault import EvidenceValueVault
+
+
+def _call_policy[PolicyResult](
+    stage: str, operation: Callable[[], PolicyResult]
+) -> PolicyResult:
+    """Turn candidate-driven parser failures into durable, non-sensitive rejects."""
+    try:
+        return operation()
+    except AccessRejection:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AccessRejection(
+            "invalid_syntax",
+            "native action could not be safely processed by the active policy",
+            {"stage": stage, "error_type": type(exc).__name__},
+        ) from exc
 
 
 class EvidenceAccessAuthorizer:
@@ -63,7 +80,11 @@ class EvidenceAccessAuthorizer:
             evidence_anchors=candidate.evidence_anchors,
             payload_masked=candidate.payload.model_dump(mode="json"),
             value_bindings=candidate.value_bindings,
-            requested_window=(None if candidate.requested_window is None else candidate.requested_window.model_dump(mode="json")),
+            requested_window=(
+                None
+                if candidate.requested_window is None
+                else candidate.requested_window.model_dump(mode="json")
+            ),
             requested_limit=candidate.requested_limit,
             requested_timeout_ms=candidate.requested_timeout_ms,
             candidate_hash=candidate_hash,
@@ -74,16 +95,18 @@ class EvidenceAccessAuthorizer:
         parser_name = "unavailable"
         parser_version = "0"
         parse_tree_hash = canonical_hash({"unparsed_candidate_hash": candidate_hash})
-        snapshot_authorization_hash = canonical_hash({
-            "investigation_id": context.investigation_id,
-            "connector_snapshot_id": context.connector_snapshot_id,
-            "connector_id": context.connector_id,
-            "snapshot_hash": context.snapshot_hash,
-            "allowed_languages": context.allowed_languages,
-            "scope_config": context.scope_config,
-            "schema_catalog": context.schema_catalog,
-            "execution_budget_policy": context.execution_budget_policy,
-        })
+        snapshot_authorization_hash = canonical_hash(
+            {
+                "investigation_id": context.investigation_id,
+                "connector_snapshot_id": context.connector_snapshot_id,
+                "connector_id": context.connector_id,
+                "snapshot_hash": context.snapshot_hash,
+                "allowed_languages": context.allowed_languages,
+                "scope_config": context.scope_config,
+                "schema_catalog": context.schema_catalog,
+                "execution_budget_policy": context.execution_budget_policy,
+            }
+        )
         decisions: list[dict[str, Any]] = []
         try:
             await self._check_ownership(candidate, context)
@@ -97,14 +120,20 @@ class EvidenceAccessAuthorizer:
             policy = self.registry.require(candidate.language)
             parser_name = policy.parser_name
             parser_version = policy.parser_version
-            action = policy.parse(candidate)
+            action = _call_policy("parse", lambda: policy.parse(candidate))
             parse_tree_hash = action.parse_tree_hash
             decisions.append({"check": "complete_parse", "outcome": "allow"})
-            evaluation = policy.evaluate(action, candidate, context)
+            evaluation = _call_policy(
+                "evaluate",
+                lambda: policy.evaluate(action, candidate, context),
+            )
             decisions.extend(dict(item) for item in evaluation.validation_decisions)
             values_by_sentinel = await self._resolve_bindings(candidate, context)
-            bound = policy.bind_values(action, evaluation, values_by_sentinel)
-            if bound.structural_hash != action.structural_hash:
+            bound = _call_policy(
+                "bind_values",
+                lambda: policy.bind_values(action, evaluation, values_by_sentinel),
+            )
+            if bound.structural_hash != evaluation.effective_structural_hash:
                 raise AccessRejection("invalid_syntax", "bound action changed parsed structure")
             decisions.append({"check": "value_binding_reparse", "outcome": "allow"})
         except AccessRejection as exc:
@@ -133,28 +162,34 @@ class EvidenceAccessAuthorizer:
             value = budget[field]
             budget[field] = None if value is None else value.isoformat()
         effective_masked = dict(evaluation.effective_action)
-        language_policy_hash = canonical_hash({
-            "kernel": self.policy_version,
-            "language": candidate.language,
-            "parser_name": policy.parser_name,
-            "parser_version": policy.parser_version,
-            "policy_version": policy.policy_version,
-            "snapshot_authorization_hash": snapshot_authorization_hash,
-        })
+        language_policy_hash = canonical_hash(
+            {
+                "kernel": self.policy_version,
+                "language": candidate.language,
+                "parser_name": policy.parser_name,
+                "parser_version": policy.parser_version,
+                "policy_version": policy.policy_version,
+                "snapshot_authorization_hash": snapshot_authorization_hash,
+            }
+        )
         effective_action = dict(bound.canonical_action)
         effective_action_hash = canonical_hash(effective_action)
-        fingerprint = canonical_hash({
-            "connector_snapshot_id": context.connector_snapshot_id,
-            "language": candidate.language,
-            "effective_action_hash": effective_action_hash,
-            "effective_budget": budget,
-        })
-        existing_fingerprint = (await self.session.execute(
-            select(AuthorizedEvidenceRead.id).where(
-                AuthorizedEvidenceRead.investigation_id == context.investigation_id,
-                AuthorizedEvidenceRead.fingerprint == fingerprint,
+        fingerprint = canonical_hash(
+            {
+                "connector_snapshot_id": context.connector_snapshot_id,
+                "language": candidate.language,
+                "effective_action_hash": effective_action_hash,
+                "effective_budget": budget,
+            }
+        )
+        existing_fingerprint = (
+            await self.session.execute(
+                select(AuthorizedEvidenceRead.id).where(
+                    AuthorizedEvidenceRead.investigation_id == context.investigation_id,
+                    AuthorizedEvidenceRead.fingerprint == fingerprint,
+                )
             )
-        )).scalar_one_or_none()
+        ).scalar_one_or_none()
         if existing_fingerprint is not None:
             rejection = AccessRejection(
                 "budget_violation",
@@ -180,15 +215,17 @@ class EvidenceAccessAuthorizer:
                 rejection_detail={"reason": rejection.reason, **rejection.detail},
             )
 
-        decision_hash = canonical_hash({
-            "candidate_hash": candidate_hash,
-            "snapshot_authorization_hash": snapshot_authorization_hash,
-            "parse_tree_hash": parse_tree_hash,
-            "policy_hash": language_policy_hash,
-            "effective_action": effective_masked,
-            "effective_budget": budget,
-            "constraint_diff": evaluation.constraint_diff,
-        })
+        decision_hash = canonical_hash(
+            {
+                "candidate_hash": candidate_hash,
+                "snapshot_authorization_hash": snapshot_authorization_hash,
+                "parse_tree_hash": parse_tree_hash,
+                "policy_hash": language_policy_hash,
+                "effective_action": effective_masked,
+                "effective_budget": budget,
+                "constraint_diff": evaluation.constraint_diff,
+            }
+        )
         decision = EvidenceAccessDecision(
             investigation_id=context.investigation_id,
             candidate_id=candidate_row.id,
@@ -236,7 +273,9 @@ class EvidenceAccessAuthorizer:
             snapshot_hash=context.snapshot_hash,
             policy_hash=decision_hash,
             effective_action_ciphertext=encrypt_value(
-                json.dumps(effective_action, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                json.dumps(
+                    effective_action, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
             ),
             effective_action_hash=effective_action_hash,
             fingerprint=fingerprint,
@@ -275,16 +314,22 @@ class EvidenceAccessAuthorizer:
             or operation.operation_kind != "native_read"
             or operation.action_id != candidate.action_id
         ):
-            raise AccessRejection("scope_violation", "candidate does not belong to native-read operation")
+            raise AccessRejection(
+                "scope_violation", "candidate does not belong to native-read operation"
+            )
         if (
             invocation is None
             or invocation.investigation_id != investigation.id
             or invocation.operation_id != operation.id
             or invocation.role != "native_query"
         ):
-            raise AccessRejection("scope_violation", "candidate model invocation is not operation-bound")
+            raise AccessRejection(
+                "scope_violation", "candidate model invocation is not operation-bound"
+            )
         if snapshot is None or snapshot.investigation_id != investigation.id:
-            raise AccessRejection("scope_violation", "connector snapshot does not belong to investigation")
+            raise AccessRejection(
+                "scope_violation", "connector snapshot does not belong to investigation"
+            )
         snapshot_values = {
             "connector_id": snapshot.connector_id,
             "snapshot_hash": snapshot.snapshot_hash,
@@ -302,14 +347,22 @@ class EvidenceAccessAuthorizer:
             "execution_budget_policy": context.execution_budget_policy,
         }
         if snapshot_values != context_values:
-            raise AccessRejection("scope_violation", "authorization context differs from frozen snapshot")
+            raise AccessRejection(
+                "scope_violation", "authorization context differs from frozen snapshot"
+            )
         if candidate.connector_id != context.connector_id:
-            raise AccessRejection("scope_violation", "connector is not the frozen snapshot connector")
+            raise AccessRejection(
+                "scope_violation", "connector is not the frozen snapshot connector"
+            )
         if candidate.language not in context.allowed_languages:
-            raise AccessRejection("scope_violation", "language is not allowed by the connector snapshot")
+            raise AccessRejection(
+                "scope_violation", "language is not allowed by the connector snapshot"
+            )
         allowed_anchors = set(context.allowed_evidence_anchors) & set(operation.evidence_anchors)
         if not set(candidate.evidence_anchors) & allowed_anchors:
-            raise AccessRejection("scope_violation", "candidate has no current-investigation evidence anchor")
+            raise AccessRejection(
+                "scope_violation", "candidate has no current-investigation evidence anchor"
+            )
 
     async def _resolve_bindings(
         self,
@@ -321,7 +374,9 @@ class EvidenceAccessAuthorizer:
             investigation_id=context.investigation_id,
             value_refs=candidate.value_bindings.values(),
         )
-        return {sentinel: by_ref[value_ref] for sentinel, value_ref in candidate.value_bindings.items()}
+        return {
+            sentinel: by_ref[value_ref] for sentinel, value_ref in candidate.value_bindings.items()
+        }
 
     async def _persist_rejection(
         self,
@@ -336,14 +391,16 @@ class EvidenceAccessAuthorizer:
         rejection: AccessRejection,
     ) -> EvidenceAccessDecision:
         detail = {"reason": rejection.reason, **rejection.detail}
-        decision_hash = canonical_hash({
-            "candidate_hash": candidate_row.candidate_hash,
-            "snapshot_authorization_hash": snapshot_authorization_hash,
-            "parse_tree_hash": parse_tree_hash,
-            "outcome": "reject",
-            "rejection_code": rejection.code,
-            "rejection_detail": detail,
-        })
+        decision_hash = canonical_hash(
+            {
+                "candidate_hash": candidate_row.candidate_hash,
+                "snapshot_authorization_hash": snapshot_authorization_hash,
+                "parse_tree_hash": parse_tree_hash,
+                "outcome": "reject",
+                "rejection_code": rejection.code,
+                "rejection_detail": detail,
+            }
+        )
         decision = EvidenceAccessDecision(
             investigation_id=context.investigation_id,
             candidate_id=candidate_row.id,

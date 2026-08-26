@@ -1,0 +1,6 @@
+{
+  "name": "opensearch-fixture",
+  "cluster_name": "fixture",
+  "version": {"distribution": "opensearch", "number": "3.2.0"},
+  "tagline": "The OpenSearch Project: https://opensearch.org/"
+}
