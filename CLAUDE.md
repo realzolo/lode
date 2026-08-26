@@ -1,5 +1,88 @@
 # Lode Project Context
 
+## Final Rebuild Status
+
+The final V1 replacement is being implemented from
+`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-2 are
+the current completed implementation baseline:
+
+- `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
+  HTTP-surface, and database-inventory fixtures. These fixtures contain no
+  compatibility aliases.
+- `docs/threat-models/evidence-access.md` owns the LogQL,
+  Elasticsearch/OpenSearch DSL, SQL, HTTPS, and command execution threat model
+  and review checklist.
+- `evals/v1` is the isolated, versioned release-test corpus. The Phase 0 smoke
+  baseline is deterministic and does not contain production data or hidden
+  model reasoning.
+- `lode.contracts` provides the shared fixture validator and removed-contract
+  scanner used by tests and command-line checks.
+- `src/lode/domain` contains immutable,
+  standard-library-only V1 domain records for Workspaces, model portfolios,
+  repository/build/component identity, ResourceGraph evidence, connector
+  scopes, investigation snapshots, context bundles, model routing decisions,
+  the four-part native-read audit chain, evidence artifacts, and observed
+  relations. Domain tests enforce canonical repository paths, independent
+  provenance for verified identity, closed model/native-language roles,
+  context headroom, hash-bound expiring read authorizations, allowed/rejected
+  decision consistency, and explicit evidence for causal relations. The
+  package must not import ORM, web, queue, transport, or provider libraries.
+- The V1 ORM registry and the only migration register exactly the 67 tables in
+  `contracts/v1/database/tables.json`. Provider accounts, model deployments,
+  Workspace bindings, repositories, build units, components, resource graph
+  revisions, connectors, immutable investigation snapshots, the evidence
+  graph, native-read audit chain, source assessments, findings, and reports are
+  separate final objects. Removed Application, Service, single-model, and
+  product-specific integration tables are not registered; the standalone
+  Service API and Application Service-binding routes were deleted.
+- `contracts/v1/database/invariants.json` freezes 83 required triggers. The
+  migration enforces timestamp updates, secret-free ordinary JSON,
+  immutability, archived-investigation read-only behavior, authorization-chain
+  integrity, frozen AI routing/context, exact source anchors, and confirmed
+  report semantics. `EvidenceReadAttempt` is inserted only after execution in
+  `succeeded`, `failed`, or `interrupted` state; retry creates a new immutable
+  attempt rather than updating a running row.
+- `scripts/check_schema.py` compares a migrated PostgreSQL catalog with the
+  frozen table/trigger/FK contract. `scripts/check_database_behavior.py`
+  performs rollback-only trigger checks plus a two-transaction uniqueness
+  check. The final seed creates only Workspace, repository, provider/model,
+  binding, and policy objects and is idempotent.
+- `src/lode/application/intake.py` owns the only Kafka/manual normalization
+  contract. `src/lode/infrastructure/intake_store.py` atomically resolves the
+  Workspace from the Kafka topic and persists the alert, incident,
+  investigation, immutable input, sealed values, graph snapshot, and durable
+  job. `src/lode/consumer/main.py` commits Kafka offsets only after that
+  transaction succeeds. Manual `POST /investigations` uses the same service.
+- Intake has three independent idempotency boundaries: topic/partition/offset,
+  Workspace/producer alert ID, and the active incident signature. Invalid and
+  unassigned records are durably masked before optional Kafka DLQ mirroring;
+  replay always runs the current strict validator. Concurrent offset and
+  producer-ID races have one accepted result and one duplicate result.
+- Current implementation files use unversioned canonical names (`intake.py`,
+  `investigation.py`, `check_schema.py`, and so on). The repository maintains
+  one current implementation and never creates `_v1`/`_v2` module variants.
+  Version literals remain only where an external wire or persisted schema
+  contract requires them, such as `incident.alert.v1` and migration revision
+  `0001_initial`.
+
+Run `make contracts` (or `uv run python scripts/check_contracts.py`) whenever
+a frozen contract or evaluation fixture changes. Run
+`make schema-check` against an upgraded PostgreSQL database whenever ORM or
+migration definitions change. Run `make intake-check` against an upgraded
+PostgreSQL database whenever intake, encryption, idempotency, or replay changes.
+Run
+`uv run python scripts/check_forbidden_contracts.py` as the full-repository V1
+removal gate; it is expected to become clean as the replacement phases delete
+the currently implemented pre-final runtime contracts. Do not add an allowlist
+or compatibility adapter to make this gate pass.
+
+The sections below include final contracts for later implementation phases.
+Phases 1-2 changed the database/control-plane identity architecture, the
+migration/seed verification workflow, Kafka/manual intake, and the currently
+assembled API routes. They added no dependency. Pre-final engine, remaining
+API, and Web modules are not a supported execution path while their owning
+phases replace them; they must be rewritten without adapters.
+
 Lode is an evidence-backed production incident investigation service. A V1 investigation advances through serial decision waves; independent operations inside one wave may run concurrently with a hard limit of four. There are no historical protocol or execution-path adapters.
 
 ## Runtime Components
@@ -7,7 +90,8 @@ Lode is an evidence-backed production incident investigation service. A V1 inves
 - `src/lode/api`: FastAPI control plane, authorization, manual intake, investigation detail, audit pagination, and SSE.
 - `src/lode/consumer`: strict Kafka `incident.alert.v1` validation and shared intake dispatch.
 - `src/lode/worker`: durable job claiming, investigation-scoped leases, retry, and bounded cross-investigation concurrency.
-- `src/lode/engine/investigation_intake.py`: canonical normalization, masking, immutable input evidence, and job creation.
+- `src/lode/application/intake.py`: strict Kafka/manual validation and canonical normalization.
+- `src/lode/infrastructure/intake_store.py`: transactional idempotency, masking, encrypted sealed values, immutable input, and job creation.
 - `src/lode/engine/investigation_engine.py`: one-action-at-a-time adaptive decision loop and terminal synthesis.
 - `src/lode/engine/structured_outputs.py`: provider-neutral strict JSON Schemas for decisions, reports, and causal verification.
 - `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, UI form metadata, and egress policy.
@@ -19,29 +103,45 @@ Lode is an evidence-backed production incident investigation service. A V1 inves
 - `src/lode/engine/investigation_events.py`: durable step, operation, progress, failure, timing, and evidence events.
 - `apps/web`: Next.js workbench with manual intake, wave/operation execution track, final-finding code viewer, and paginated audit drawer.
 
-PostgreSQL is the source of truth. Kafka consumers only validate and enqueue; workers execute investigations. Model configuration is selected from the application binding first, then the global default. The global default does not satisfy the application activation requirement described below.
+PostgreSQL is the source of truth. Kafka consumers only validate and enqueue;
+workers execute investigations. The currently assembled FastAPI application
+contains health, authentication, user/invite administration, and final manual
+intake routes; later phases add the final investigation and Workspace control
+surfaces. Model routing is frozen per investigation from its Workspace policy
+and eligible deployments; there is no single-model or global-default fallback.
 
-## Application Activation
+## Workspace Activation
 
-Every transition into active Kafka ingestion fails closed unless the application has all three required bindings:
+The Workspace activation API is implemented in the control-plane phase. Every
+transition into active Kafka ingestion must fail closed unless all three
+conditions hold:
 
-1. exactly one active primary `ApplicationServiceBinding` whose service maps to a global repository;
-2. the application's required, globally unique `Application.ingestion_topic`;
-3. one existing application-level `model_config_id` whose protocol availability test passed.
+1. the Workspace has its required globally unique ingestion topic;
+2. its active model policy can route every required role to an enabled,
+   protocol-healthy deployment;
+3. the broker can reach the configured topic.
 
-Both initial start and resume call the same backend readiness gate. Initial start validates broker visibility only after the three configuration checks pass. Missing configuration returns HTTP 409 using the canonical business-error envelope:
+Initial start and resume call the same backend readiness gate. Repository,
+build-unit, component, ResourceGraph, and evidence-connector coverage remain
+visible capabilities and evidence gaps; they do not block alert ingestion.
+Missing requirements return HTTP 409 using the canonical business-error
+envelope:
 
 ```json
 {
   "error": {
-    "code": "application_not_ready",
-    "message": "Complete all required application settings before starting ingestion.",
-    "details": {"missing": ["repositories", "topic", "model_availability"]}
+    "code": "workspace_not_ready",
+    "message": "Complete all required Workspace settings before starting ingestion.",
+    "details": {"missing": ["topic", "model_roles", "broker_reachability"]}
   }
 }
 ```
 
-`GET /applications` exposes `service_count` and `primary_service_configured`; it does not use repository count as a runtime-readiness proxy. The Web start dialog displays all requirements and cannot submit while its current application snapshot is incomplete. Binding a model performs a live protocol probe before persisting the binding. `POST /settings/ai-models/{id}/test` repeats the probe on demand. Editing endpoint, key, provider, or model resets health to `untested`. The backend gate remains authoritative for stale clients and direct API callers.
+The Web start dialog displays the actual requirements and capability gaps. A
+model deployment must pass its provider protocol probe before becoming routing
+eligible; editing endpoint, credential, provider, or model resets its health to
+`untested`. The backend gate remains authoritative for stale clients and direct
+API callers.
 
 ## Investigation Execution
 
@@ -73,31 +173,78 @@ OpenAI-compatible base URLs are normalized to `/v1/chat/completions`; Anthropic 
 
 ## Input Contract
 
-Kafka accepts only strict `incident.alert.v1` with no compatibility aliases. Required fields are `schema_version`, `alert_id`, `occurred_at`, `severity`, stable `event`, `service_name`, `environment`, full 40-character `git_commit`, UUID v4 `request_id`, `correlation`, and structured `error` (`type`, `message`, `stack`, recursive `cause`). The Kafka topic selects the Lode application; no business application identifier is accepted from the payload.
+Kafka accepts only strict `incident.alert.v1` with no compatibility aliases.
+Required fields are `schema_version`, `alert_id`, timezone-aware `occurred_at`,
+`severity`, stable `event`, arbitrary opaque `trace_id`, full lowercase
+40-character `source_revision`, and structured `error` (`type`, `message`,
+`stack`, recursive `cause`). Unknown fields are rejected, including removed
+service, environment, request, commit, correlation, and carrier fields. The
+Kafka topic selects the Workspace; no Workspace identifier is accepted from
+the payload.
 
-`request_id` is the sole cross-service correlation key. Lode does not accept `trace_id`, `traceparent`, baggage, a service-name request header, or a carrier wrapper. A real distributed-tracing contract may only be introduced later together with spans and a tracing backend.
+The original `trace_id`, including empty, whitespace, Unicode, or punctuation,
+is never normalized. It is encrypted in the alert and sealed-value vault and
+represented in ordinary investigation JSON only as
+`<VALUE_REF:incident.trace_id>`. The complete recursive error is structurally
+masked and archived without discarding stack or cause information.
 
-Manual `POST /investigations` requires an explicitly bound source service and bounded error input. Environment, UUID v4 request ID and incident commit are optional operator evidence; omitting them disables the corresponding log-search/source action and must remain an explicit evidence gap. It requires application `analyze` permission and calls the same normalization service as Kafka. Unbound source services fail closed.
+Kafka processing persists before committing its offset. Redelivery is deduped
+by topic/partition/offset, producer retry by `(workspace_id, alert_id)`, and an
+already-active incident by its canonical Workspace/event/trace signature.
+Invalid and unassigned payloads are durably masked. DLQ replay is atomic and
+always uses the current validator; failed validation does not mark a record as
+replayed.
 
-Complete error input is masked and archived without discarding stack or cause information.
+Manual `POST /investigations` accepts `workspace_id`, timezone-aware
+`occurred_at`, `severity`, `event`, optional opaque `trace_id`, optional
+lowercase `source_revision`, structured `error`, and at most ten bounded typed
+attachments. It requires Workspace `analyze` or `admin` permission (or global
+admin) and calls the same normalization and persistence services as Kafka.
+Removed service/environment/request fields fail strict validation.
+
+`source_revision` is immutable alert/input evidence for resolving the alert's
+source candidate. It is not a generic runtime commit for every repository.
 
 ## Source Investigation
 
-`Service`, source repository, and Lode `Application` are separate identities. `Service.service_name` is globally unique and maps to one global `GitRepo`; `ApplicationServiceBinding` is many-to-many with one `primary` and any number of `shared` services. Investigation creation copies these bindings into immutable `InvestigationServiceSnapshot` rows, and all Loki/Git access is limited to that snapshot. A discovered unbound `peer_service` is recorded as an evidence gap and never queried.
+Workspace, repository, build unit, component, and runtime resource are separate
+identities. A Workspace binds repositories; scanner-produced BuildUnits and
+Components plus ResourceGraph observations provide independently sourced
+identity. Investigation creation freezes repository, component, resource,
+connector-scope, model-policy, architecture-context, and graph-revision
+snapshots. Identity is never learned from an inbound service-name header.
 
-The current runtime service identities to register are `pornbox`, `payment-gateway`, and `sonakit`. They must exactly match each deployment's own `SERVICE_NAME`; service identity is never learned from an inbound request header.
+The alert `source_revision` may resolve only the alert's source repository.
+Other repositories and components remain candidates until stack, build,
+deployment, dependency, or connector evidence verifies their participation.
+Unverified candidates are recorded as gaps and never promoted to facts.
 
-All external services are application-owned `ApplicationIntegration` rows. Database, Kafka, ClickHouse, Loki, and Prometheus are peers, and every kind may have multiple named instances per application. `kind` is unconstrained text in PostgreSQL; runtime support comes from the code registry, which owns its version, config schema, secret contract, capabilities, form metadata, verification adapter, and evidence adapter. Adding a kind does not require a schema migration.
+External evidence access uses Workspace-owned `EvidenceConnector` rows with
+separate immutable scope revisions, encrypted secrets, verification records,
+and authorization/read audit objects. Connector kinds are code-registered and
+may have multiple instances without a schema migration.
 
 Built-in capabilities are `test`, `snapshot`, `query_catalog`, and `log_search`. The engine selects behavior by capability, never by product name. Loki is the built-in `log_search` adapter, not a required dependency; another log product can replace it by registering a kind and log adapter. Prometheus is a snapshot integration. Redis is not supported.
 
-Database integrations support PostgreSQL and MySQL through structured DNS host, port, database, username, mandatory TLS, encrypted password, qualified allowed-table catalog, and optional sensitive-column masks. AI never supplies SQL or connector queries. Only the server-owned `sample` and `count` operations are accepted. Kafka evidence integrations are independent of `Application.ingestion_topic` and are limited to administrator-allowlisted topics and consumer groups.
+Database connectors support PostgreSQL and MySQL through structured DNS host,
+port, database, username, mandatory TLS, encrypted password, qualified
+allowed-table catalog, and optional sensitive-column masks. AI never supplies
+SQL or connector queries. Only server-owned bounded operations are accepted.
+Kafka evidence connectors are independent of `Workspace.ingestion_topic` and
+are limited to administrator-allowlisted topics and consumer groups.
 
 All user-managed secrets are submitted as values, encrypted immediately with `LODE_DATA_ENCRYPTION_KEY`, stored separately from non-secret config, and never returned. Indirect environment-reference syntax is prohibited for integrations, AI keys, and Git credentials. The JWT signing key is never reused for encryption. Every integration endpoint must pass the application process egress allowlist and the deployment network policy must enforce the same boundary.
 
-Application architecture context is configured beside the application's model selection. At investigation creation, the current ordered context entries are masked and frozen as an immutable `application_context` evidence artifact. Every model phase receives that snapshot as explicitly untrusted background: it may clarify service boundaries and architecture, but it cannot override system rules or independently prove an incident cause or code defect. Later context edits affect only new investigations.
+Workspace architecture context is configured beside its model policy. At
+investigation creation, the current ordered context entries are masked and
+frozen as an immutable snapshot. Every model phase receives that snapshot as
+explicitly untrusted background: it may clarify boundaries and architecture,
+but it cannot override system rules or independently prove an incident cause or
+code defect. Later context edits affect only new investigations.
 
-Loki queries are generated only by server helpers. Streams are selected by low-cardinality `service_name` and `environment`, then JSON is filtered by UUID v4 `request_id`. When the initial request evidence only covers one async stage, the engine may query allowlisted `order_id`, `job_id`, `delivery_id`, or `provider_transaction_id` lifecycle keys discovered from committed evidence. Request IDs and business IDs must never be Loki labels.
+Native connector queries are generated only by server helpers from frozen
+scope. Raw trace values are resolved server-side from sealed storage only after
+authorization and are never supplied to the model.
 
 Source lookup order is fixed:
 
@@ -105,7 +252,8 @@ Source lookup order is fixed:
 2. Incident-revision symbols and structured error identifiers.
 3. Error code definitions and references.
 4. Caller, callee, error branch, exception conversion, return checks, timeout, retry, and related tests.
-5. Resolve each participating service only at the full `git_commit` observed in its own runtime evidence. Multiple commits for one service remain separate incident revisions.
+5. Resolve each participating component only at the full revision independently
+   observed for it. Multiple revisions remain separate incident observations.
 
 Generated build directories are excluded. Project documentation provides vocabulary and repository context only. A file read, path match, error-code match, or README excerpt is never code-cause proof.
 
@@ -158,9 +306,26 @@ Operation event rows have monotonically increasing sequence values and support r
 
 ## Database
 
-The project has not released its database baseline. `alembic/versions/0001_initial.py` is the single complete V1 schema, including model health, retry/archive state, service directory/bindings/snapshots, request IDs, and Loki evidence support. There is no V2 migration or old-schema adapter; development databases are recreated from V1. Freeze V1 only after the first release, then use forward migrations.
+The project has not released its database baseline.
+`alembic/versions/0001_initial.py` is the only revision and creates exactly the
+67 final V1 business tables. There is no V2 migration, compatibility view,
+dual write, backfill, or old-schema adapter; development databases are
+recreated from V1. Freeze V1 only after the first release, then use forward
+migrations.
 
-The investigation-owned tables are inputs, service snapshots, steps, decisions, operations, operation events, evidence collections/artifacts/links, source revisions, findings/edges, code findings, AI invocations, reports, and jobs. Evidence content is immutable after archival. Application integrations are the single external-service ownership model. Their non-secret JSON, encrypted secret JSON, kind version, instance revision, verification status, and collection health are persisted separately.
+The table inventory and database invariants are frozen independently under
+`contracts/v1/database`. SQLAlchemy metadata must exactly match the migration.
+The schema currently owns 83 explicit non-internal triggers: 35 immutable-row
+triggers, 25 archived-investigation read-only triggers, 16 `updated_at`
+triggers, and seven cross-table/security triggers. `set_updated_at()` uses
+`clock_timestamp()` so updates within one transaction still advance the value.
+Ordinary connector/scope JSON is traversed structurally and rejects credential
+keys at any object depth.
+
+Native-read attempts are terminal immutable audit records. An executor inserts
+one after the operation finishes, with a non-null `finished_at`; success has no
+failure payload, while failure/interruption requires a stable failure code.
+Retries insert a new `(authorized_read_id, attempt)` row.
 
 Until V1 is released, model changes are folded into `0001_initial.py`. Verify a fresh schema:
 
@@ -170,9 +335,17 @@ LODE_SECRET_KEY=test-secret \
 LODE_DATA_ENCRYPTION_KEY=test-data-encryption-key \
 uv run alembic upgrade head
 uv run alembic check
+uv run python scripts/check_schema.py
+uv run python scripts/check_database_behavior.py
+uv run python scripts/check_intake.py
 ```
 
 Alembic autogeneration against that database must produce no schema difference.
+The behavior checker rolls back all fixtures, including its concurrent unique
+topic writes. The intake checker verifies strict validation, all dedupe layers,
+concurrent races, durable DLQ/unassigned handling, current-validator replay,
+manual HTTP intake, and exact encrypted trace round trips. `uv run python
+scripts/seed.py` is idempotent and may only create final control-plane models.
 
 ## Frontend Contract
 
@@ -193,6 +366,8 @@ Backend:
 ```bash
 uv sync --extra dev
 export LODE_DATA_ENCRYPTION_KEY='replace-with-an-independent-random-secret'
+make contracts
+make intake-check
 uv run python -m compileall -q src scripts alembic tests
 uv run pytest -q
 ```
@@ -206,6 +381,15 @@ pnpm typecheck
 pnpm build
 ```
 
-For investigation changes, tests must cover strict `incident.alert.v1` parsing, UUID v4 request validation, bound-service access control, generated LogQL, full query fingerprints, lifecycle-key allowlists, bounded wave concurrency and partial failure, runtime-commit-only source lookup, full error preservation, exact stack/source range, candidate rejection, incident revision gates, strict model response schemas, independent semantic downgrade, external cause separation, cross-investigation concurrency, transient AI retry classification, scoped lease recovery, idempotent resume, manual retry lineage, archive immutability, operation detail, SSE replay, audit pagination, permissions, masking, and fresh V1 schema creation.
+For investigation changes, tests must cover strict `incident.alert.v1` parsing,
+opaque trace preservation/sealing, Workspace permissions, all intake idempotency
+boundaries, generated native queries, full query fingerprints, bounded wave
+concurrency and partial failure, independently observed source revisions, full
+error preservation, exact stack/source range, candidate rejection, incident
+revision gates, strict model response schemas, independent semantic downgrade,
+external cause separation, cross-investigation concurrency, transient AI retry
+classification, scoped lease recovery, idempotent resume, manual retry lineage,
+archive immutability, operation detail, SSE replay, audit pagination,
+permissions, masking, and fresh schema creation.
 
 Before declaring work complete, assess architecture, dependency, and development-workflow impact. Update this file immediately when any of those contracts change, then verify the documented commands and behavior match the implementation.

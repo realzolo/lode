@@ -1,0 +1,14 @@
+{
+  "schema_version": "lode-contract-manifest.v1",
+  "files": [
+    "ai/investigation-decision.schema.json",
+    "ai/investigation-report.schema.json",
+    "api/endpoints.json",
+    "control-plane/entities.schema.json",
+    "database/invariants.json",
+    "database/tables.json",
+    "evidence/native-read-candidate.schema.json",
+    "kafka/incident-alert.schema.json"
+  ],
+  "forbidden_compatibility": true
+}

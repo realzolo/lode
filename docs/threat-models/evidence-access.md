@@ -1,0 +1,97 @@
+# Evidence Access Plane Threat Model
+
+Status: Phase 0 frozen baseline
+
+Owners:
+
+| Boundary | Security owner | Runtime owner |
+|---|---|---|
+| Candidate schema and action relevance | Application | Investigation Engine |
+| Native grammar and read-only proof | Security | Evidence Access Policy |
+| Snapshot scope and budget intersection | Security | Evidence Access Policy |
+| Credential injection and provider request | Platform | Connector Adapter |
+| Durable authorization and replay prevention | Platform | Evidence Read Orchestrator |
+| Command isolation | Security | Isolated Command Runner |
+| Artifact masking and sealed values | Security | Evidence Store |
+
+## Assets And Trust Boundaries
+
+Protected assets are connector credentials, sealed evidence values, Workspace
+authorization scopes, production availability, private evidence, immutable audit
+history, and report integrity. AI output, repository content, alert content,
+external responses, schema descriptions, and operator guidance are untrusted.
+
+The AI process has no credential, network socket, subprocess, database session,
+or writable filesystem. A `NativeReadCandidate` is data, never an executable
+capability. Only an unexpired, single-use `AuthorizedEvidenceRead` whose hashes
+cover the candidate, snapshot, policy, parser, adapter, and effective budget may
+reach an execution adapter.
+
+## Mandatory Pipeline
+
+Every language passes, in order: strict schema validation, snapshot ownership,
+complete parse, single-action proof, read-only proof, evidence relevance, scope
+intersection, mandatory constraint injection, sealed ValueRef binding and
+shape-preserving reparse, durable authorization, provider preflight, isolated
+execution, postcondition validation, masking, and immutable archive.
+
+Failure is closed. The service may add a mandatory predicate or reduce a
+window, limit, projection, timeout, or output budget. Any other semantic rewrite
+is rejected with a stable code and returned to the planner for at most one
+regeneration.
+
+## Language Threats And Required Controls
+
+| Language | Primary threats | Required proof | Infrastructure backstop |
+|---|---|---|---|
+| LogQL | selector escape, parser differential, unbounded range, costly regexp/cardinality, rule or delete endpoints | Full maintained AST, root selector subset, bounded absolute time, allowed pipeline/aggregation nodes | Query-only token, endpoint allowlist, provider limits |
+| Elasticsearch DSL | index escape, script/runtime fields, async/scroll persistence, aggregation explosion, management API | JSON duplicate-key rejection, recursive node allowlist, exact `_search` path, forced range/size/source/bucket limits | Read-only role restricted to frozen indices, egress allowlist |
+| OpenSearch DSL | Elasticsearch policy reuse despite version/plugin differences, scripts, PPL/SQL, management API | Independent versioned parser/policy and contract corpus, exact `_search` path | Read-only role, plugins disabled, egress allowlist |
+| SQL | multi-statement, writable CTE, locking reads, file/network/UDF side effects, system catalogs, cost exhaustion | Fixed dialect AST, every node read-only, catalog allowlist, enforced limit/timeouts, optional non-executing explain | Attested replica/snapshot, read-only role and transaction, resource group |
+| HTTPS | SSRF, DNS rebinding, ambiguous normalization, redirects, credential override, nominal GET with side effects | Canonical HTTPS URL, safe-read endpoint catalog, host/port/path/schema and response checks | Network policy, IP policy, zero redirects, adapter-injected identity |
+| Command | shell injection, interpreter escape, path/symlink escape, writable mount, inherited environment/network, binary replacement | Structured executable/argv/working-set, exact flag grammar, fixed binary path and hash | Separate uid/image, read-only mounts/root, empty environment, no network, syscall/resource limits |
+
+## Cross-Cutting Abuse Cases
+
+- A model claim that a candidate is safe never changes policy.
+- A discovered resource never expands a repository binding or evidence scope.
+- Sentinels are valid only in approved AST value nodes. Values are bound after
+  authorization checks, reparsed, and cannot alter AST shape.
+- Credential fields, authorization headers, cookies, absolute host paths,
+  environment assignments, shell strings, provider management endpoints, and
+  unbounded queries are never accepted from a candidate.
+- Compressed responses are bounded before decompression and scanned for secrets
+  and prompt injection before storage or model use.
+- Kill switches exist per Workspace, connector, language, and runner. They block
+  new authorization and cancel work that has not begun without deleting audit.
+
+## Stable Rejection Classes
+
+`invalid_syntax`, `unsupported_node`, `write_semantics`, `scope_violation`,
+`budget_violation`, `egress_violation`, `sandbox_violation`, and
+`preflight_failed` are the complete V1 policy rejection classes. Provider,
+transport, timeout, and result failures are recorded separately as execution
+failures and never relabeled as policy decisions.
+
+## Review Checklist
+
+- [ ] Candidate JSON rejects unknown fields, duplicate keys, excessive depth,
+      invalid Unicode, and oversized values.
+- [ ] A maintained parser consumes the complete payload without warnings or
+      ignored suffixes.
+- [ ] Every AST/JSON/argv node is positively allowlisted.
+- [ ] Snapshot ownership and root scope are checked before ValueRef unsealing.
+- [ ] Value binding preserves the parsed shape.
+- [ ] Absolute window, result, byte, timeout, concurrency, and total budgets are
+      enforced below AI requests.
+- [ ] Credentials and provider identities are injected by the adapter only.
+- [ ] The infrastructure identity is independently read-only.
+- [ ] Authorization tokens are signed/hash-bound, expiring, and single-use.
+- [ ] Candidate, decisions, effective action, attempts, results, and rejection
+      reasons are immutable and replayable.
+- [ ] Positive, negative, parser-differential, scope, budget, and bypass tests
+      cover the exact parser/policy/adapter versions.
+- [ ] Kill switch and in-flight behavior have been exercised.
+
+No native language or connector may become active until every applicable item
+is supported by code, contract tests, and deployment policy.

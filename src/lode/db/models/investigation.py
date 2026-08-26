@@ -1,465 +1,610 @@
-"""Canonical V1 models for bounded-wave, evidence-backed investigations."""
+"""Investigation roots, immutable snapshots, waves, and model context."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Identity, Index, Integer, Text, text as sql_text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-from typing import Any
 
 from lode.db.base import Base
+from lode.db.models._common import CreatedAtMixin, TimestampMixin, identity_pk
 
 
-INVESTIGATION_STATUSES = ("queued", "running", "completed", "failed")
-RESULT_STATES = ("pending", "confirmed", "hypothesis", "insufficient", "unavailable")
-STEP_STATUSES = ("queued", "running", "succeeded", "partial", "blocked", "failed", "canceled")
-OPERATION_STATUSES = STEP_STATUSES
-OPERATION_EVENT_KINDS = ("started", "progress", "finished")
-CODE_FINDING_STATUSES = ("confirmed", "hypothesis", "no_defect", "not_found")
-
-
-class Investigation(Base):
+class Investigation(TimestampMixin, Base):
     __tablename__ = "investigations"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    public_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True, default=lambda: uuid.uuid4().hex)
-    application_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("applications.id", ondelete="CASCADE"), nullable=False)
-    alert_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("alerts.id", ondelete="SET NULL"))
-    incident_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("incidents.id", ondelete="SET NULL"))
-    trigger_signature: Mapped[str] = mapped_column(Text, nullable=False)
+    id: Mapped[int] = identity_pk()
+    public_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    alert_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("alerts.id", ondelete="SET NULL")
+    )
+    incident_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("incidents.id", ondelete="SET NULL")
+    )
+    retry_of_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="SET NULL")
+    )
+    trigger_signature_hash: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     result_state: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
-    output_language: Mapped[str] = mapped_column(Text, nullable=False)
-    service_name: Mapped[str | None] = mapped_column(Text)
-    environment: Mapped[str | None] = mapped_column(Text)
-    request_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
-    deployment_sha: Mapped[str | None] = mapped_column(Text)
+    output_language: Mapped[str] = mapped_column(Text, nullable=False, server_default="en")
     window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     window_finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    scope: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    review_required: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
-    review_reasons: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    audit_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="auditable")
-    engine_version: Mapped[str | None] = mapped_column(Text)
-    report_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    event_cursor: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    retry_of_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("investigations.id", ondelete="SET NULL"), nullable=True
+    execution_budget: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    budget_usage: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    archived_by: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    engine_version: Mapped[str] = mapped_column(Text, nullable=False)
+    event_cursor: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    lease_owner: Mapped[str | None] = mapped_column(Text)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
+    )
 
     __table_args__ = (
+        CheckConstraint("trigger_signature_hash ~ '^[0-9a-f]{64}$'", name="trigger_hash_sha256"),
         CheckConstraint("status IN ('queued', 'running', 'completed', 'failed')", name="status"),
-        CheckConstraint("result_state IN ('pending', 'confirmed', 'hypothesis', 'insufficient', 'unavailable')", name="result_state"),
+        CheckConstraint(
+            "result_state IN ('pending', 'confirmed', 'hypothesis', 'insufficient', 'unavailable')",
+            name="result_state",
+        ),
         CheckConstraint("output_language IN ('en', 'zh')", name="output_language"),
-        CheckConstraint("audit_status IN ('auditable', 'unverifiable', 'violated')", name="audit_status"),
-        Index("ix_investigations_application_created", "application_id", "created_at"),
+        CheckConstraint("window_finished_at > window_started_at", name="window_range"),
+        CheckConstraint("event_cursor >= 0", name="event_cursor_nonnegative"),
+        CheckConstraint("finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at", name="run_range"),
+        Index("ix_investigations_workspace_created", "workspace_id", "created_at"),
         Index("ix_investigations_incident", "incident_id"),
         Index("ix_investigations_retry_of", "retry_of_id"),
     )
 
 
-class InvestigationInput(Base):
+class InvestigationInput(CreatedAtMixin, Base):
     __tablename__ = "investigation_inputs"
 
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), primary_key=True)
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), primary_key=True
+    )
     source_type: Mapped[str] = mapped_column(Text, nullable=False)
-    title: Mapped[str] = mapped_column(Text, nullable=False)
+    event: Mapped[str] = mapped_column(Text, nullable=False)
     severity: Mapped[str] = mapped_column(Text, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    error_name: Mapped[str] = mapped_column(Text, nullable=False, server_default="Error")
-    error_message: Mapped[str] = mapped_column(Text, nullable=False)
-    error_stack: Mapped[str | None] = mapped_column(Text)
-    error_cause: Mapped[Any | None] = mapped_column(JSONB)
-    error_properties: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    fields: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    scope: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    created_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
+    trace_value_ref: Mapped[str | None] = mapped_column(Text)
+    source_revision: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    raw_payload_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    attachments_masked: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
+    )
 
     __table_args__ = (
         CheckConstraint("source_type IN ('kafka', 'manual')", name="source_type"),
         CheckConstraint("severity IN ('CRITICAL', 'WARNING')", name="severity"),
+        CheckConstraint(
+            "source_revision IS NULL OR source_revision ~ '^[0-9a-f]{40}$'",
+            name="source_revision_sha",
+        ),
     )
 
 
-class InvestigationStep(Base):
+class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
+    __tablename__ = "investigation_repository_snapshots"
+
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    repository_binding_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("workspace_repository_bindings.id", ondelete="RESTRICT"), nullable=False
+    )
+    repository_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False
+    )
+    binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    default_branch: Mapped[str] = mapped_column(Text, nullable=False)
+    frozen_candidate_sha: Mapped[str | None] = mapped_column(Text)
+    credential_identity_hash: Mapped[str | None] = mapped_column(Text)
+    snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("investigation_id", "repository_binding_id", name="uq_investigation_repository_snapshot"),
+        CheckConstraint(
+            "role IN ('runtime_source', 'shared_library', 'infrastructure', 'documentation')",
+            name="role",
+        ),
+        CheckConstraint("binding_revision > 0", name="binding_revision_positive"),
+        CheckConstraint("priority >= 0", name="priority_nonnegative"),
+        CheckConstraint(
+            "frozen_candidate_sha IS NULL OR frozen_candidate_sha ~ '^[0-9a-f]{40}$'",
+            name="candidate_sha",
+        ),
+        CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
+    )
+
+
+class InvestigationBuildUnitSnapshot(CreatedAtMixin, Base):
+    __tablename__ = "investigation_build_unit_snapshots"
+
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    build_unit_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("build_units.id", ondelete="RESTRICT"), nullable=False
+    )
+    repository_snapshot_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigation_repository_snapshots.id", ondelete="CASCADE"), nullable=False
+    )
+    stable_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_root: Mapped[str] = mapped_column(Text, nullable=False)
+    build_system: Mapped[str] = mapped_column(Text, nullable=False)
+    identity_status: Mapped[str] = mapped_column(Text, nullable=False)
+    build_unit_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("investigation_id", "build_unit_id", name="uq_investigation_build_unit_snapshot"),
+        CheckConstraint("identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"),
+        CheckConstraint("build_unit_revision > 0", name="revision_positive"),
+        CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
+    )
+
+
+class InvestigationComponentSnapshot(CreatedAtMixin, Base):
+    __tablename__ = "investigation_component_snapshots"
+
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    component_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("components.id", ondelete="RESTRICT"), nullable=False
+    )
+    stable_key: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    identity_status: Mapped[str] = mapped_column(Text, nullable=False)
+    component_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_bindings: Mapped[list] = mapped_column(JSONB, nullable=False)
+    identity_aliases: Mapped[list] = mapped_column(JSONB, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("investigation_id", "component_id", name="uq_investigation_component_snapshot"),
+        CheckConstraint("identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"),
+        CheckConstraint("component_revision > 0", name="revision_positive"),
+        CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
+    )
+
+
+class InvestigationConnectorSnapshot(CreatedAtMixin, Base):
+    __tablename__ = "investigation_connector_snapshots"
+
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    connector_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("evidence_connectors.id", ondelete="RESTRICT"), nullable=False
+    )
+    access_scope_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("evidence_access_scopes.id", ondelete="RESTRICT"), nullable=False
+    )
+    connector_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    connector_kind_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    instance_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    access_scope_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    capabilities: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    allowed_languages: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    config_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    scope_config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    schema_catalog: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    execution_budget_policy: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    credential_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("investigation_id", "connector_id", name="uq_investigation_connector_snapshot"),
+        CheckConstraint("connector_kind_version > 0", name="kind_version_positive"),
+        CheckConstraint("instance_revision > 0", name="instance_revision_positive"),
+        CheckConstraint("access_scope_revision > 0", name="scope_revision_positive"),
+        CheckConstraint("cardinality(capabilities) > 0", name="capabilities_nonempty"),
+        CheckConstraint("cardinality(allowed_languages) > 0", name="languages_nonempty"),
+        CheckConstraint("credential_identity_hash ~ '^[0-9a-f]{64}$'", name="credential_hash_sha256"),
+        CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
+    )
+
+
+class InvestigationResourceGraphSnapshot(CreatedAtMixin, Base):
+    __tablename__ = "investigation_resource_graph_snapshots"
+
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), primary_key=True
+    )
+    resource_graph_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("resource_graph_revisions.id", ondelete="RESTRICT")
+    )
+    graph_revision: Mapped[int | None] = mapped_column(Integer)
+    snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("graph_revision IS NULL OR graph_revision > 0", name="graph_rev_pos"),
+        CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
+    )
+
+
+class InvestigationDescriptorSnapshot(CreatedAtMixin, Base):
+    __tablename__ = "investigation_descriptor_snapshots"
+
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    descriptor_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    descriptor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    descriptor_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "investigation_id", "descriptor_kind", "descriptor_id",
+            name="uq_investigation_descriptor_snapshot",
+        ),
+        CheckConstraint("descriptor_kind IN ('repository', 'component')", name="descriptor_kind"),
+        CheckConstraint("descriptor_revision > 0", name="descriptor_rev_pos"),
+        CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
+    )
+
+
+class InvestigationModelPolicySnapshot(CreatedAtMixin, Base):
+    __tablename__ = "investigation_model_policy_snapshots"
+
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), primary_key=True
+    )
+    model_policy_revision_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("model_policy_revisions.id", ondelete="RESTRICT"), nullable=False
+    )
+    context_policy_revision_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("context_policy_revisions.id", ondelete="RESTRICT"), nullable=False
+    )
+    model_policy_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    context_policy_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    policy: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    context_policy: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("model_policy_revision > 0", name="model_revision_positive"),
+        CheckConstraint("context_policy_revision > 0", name="context_rev_pos"),
+        CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
+    )
+
+
+class InvestigationModelBindingSnapshot(CreatedAtMixin, Base):
+    __tablename__ = "investigation_model_binding_snapshots"
+
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    workspace_model_binding_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("workspace_model_bindings.id", ondelete="RESTRICT"), nullable=False
+    )
+    model_deployment_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("model_deployments.id", ondelete="RESTRICT"), nullable=False
+    )
+    provider_account_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("ai_provider_accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_deployment_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_account_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    execution_classes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    allowed_roles: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    routing_policy: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "investigation_id", "workspace_model_binding_id",
+            name="uq_investigation_model_binding_snapshot",
+        ),
+        CheckConstraint("binding_revision > 0", name="binding_rev_pos"),
+        CheckConstraint("model_deployment_revision > 0", name="deployment_rev_pos"),
+        CheckConstraint("provider_account_revision > 0", name="account_rev_pos"),
+        CheckConstraint("cardinality(execution_classes) > 0", name="classes_nonempty"),
+        CheckConstraint("cardinality(allowed_roles) > 0", name="allowed_roles_nonempty"),
+        CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
+    )
+
+
+class InvestigationStep(CreatedAtMixin, Base):
     __tablename__ = "investigation_steps"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    public_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True, default=lambda: uuid.uuid4().hex)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    kind: Mapped[str] = mapped_column(Text, nullable=False)
-    title: Mapped[str] = mapped_column(Text, nullable=False)
     objective: Mapped[str] = mapped_column(Text, nullable=False)
-    selection_reason: Mapped[str] = mapped_column(Text, nullable=False)
-    expected_evidence: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    tool_name: Mapped[str | None] = mapped_column(Text)
-    tool_input: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
-    input_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    output_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    result_summary: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    hypothesis_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    input_evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    output_evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
     failure_code: Mapped[str | None] = mapped_column(Text)
-    failure_detail: Mapped[str | None] = mapped_column(Text)
+    failure_detail: Mapped[dict | None] = mapped_column(JSONB)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
 
     __table_args__ = (
-        CheckConstraint("kind IN ('intake', 'triage', 'source', 'observability', 'dependency', 'evidence_request', 'synthesis')", name="kind"),
-        CheckConstraint("status IN ('queued', 'running', 'succeeded', 'partial', 'blocked', 'failed', 'canceled')", name="status"),
-        Index("uq_investigation_steps_ordinal", "investigation_id", "ordinal", unique=True),
-        Index("uq_investigation_steps_running", "investigation_id", unique=True, postgresql_where=sql_text("status = 'running'")),
+        CheckConstraint("ordinal > 0", name="ordinal_positive"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'partial', 'blocked', 'failed', 'interrupted')",
+            name="status",
+        ),
+        UniqueConstraint("investigation_id", "ordinal", name="uq_investigation_step_ordinal"),
+        Index(
+            "uq_investigation_step_running",
+            "investigation_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+        ),
     )
 
 
-class InvestigationDecision(Base):
+class InvestigationDecision(CreatedAtMixin, Base):
     __tablename__ = "investigation_decisions"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    after_step_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("investigation_steps.id", ondelete="SET NULL"))
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("investigation_steps.id", ondelete="SET NULL")
+    )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    action: Mapped[str] = mapped_column(Text, nullable=False)
-    selected_tool: Mapped[str | None] = mapped_column(Text)
-    action_fingerprint: Mapped[str | None] = mapped_column(Text)
-    rationale_summary: Mapped[str] = mapped_column(Text, nullable=False)
-    hypothesis_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    hypotheses: Mapped[list] = mapped_column(JSONB, nullable=False)
+    operation_plan: Mapped[list] = mapped_column(JSONB, nullable=False)
+    next_model_hint: Mapped[dict | None] = mapped_column(JSONB)
+    policy_outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_decisions: Mapped[list] = mapped_column(JSONB, nullable=False)
+    selected_operation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    model_invocation_id: Mapped[int | None] = mapped_column(BigInteger)
 
     __table_args__ = (
-        CheckConstraint("action IN ('execute', 'stop_confirmed', 'stop_hypothesis', 'stop_insufficient', 'stop_unavailable')", name="action"),
-        Index("uq_investigation_decisions_ordinal", "investigation_id", "ordinal", unique=True),
-        Index("uq_investigation_decisions_fingerprint", "investigation_id", "action_fingerprint", unique=True, postgresql_where=sql_text("action_fingerprint IS NOT NULL")),
+        CheckConstraint("ordinal > 0", name="ordinal_positive"),
+        CheckConstraint("decision IN ('continue', 'finish')", name="decision"),
+        CheckConstraint("policy_outcome IN ('allow', 'trim', 'reject')", name="policy_outcome"),
+        CheckConstraint("selected_operation_count BETWEEN 0 AND 4", name="operation_count"),
+        CheckConstraint(
+            "(decision = 'finish' AND selected_operation_count = 0) OR "
+            "(decision = 'continue' AND selected_operation_count BETWEEN 1 AND 4)",
+            name="decision_operation_count",
+        ),
+        CheckConstraint("decision_hash ~ '^[0-9a-f]{64}$'", name="decision_hash_sha256"),
+        UniqueConstraint("investigation_id", "ordinal", name="uq_investigation_decision_ordinal"),
+        UniqueConstraint("investigation_id", "decision_hash", name="uq_investigation_decision_hash"),
     )
 
 
-class InvestigationOperation(Base):
+class InvestigationOperation(CreatedAtMixin, Base):
     __tablename__ = "investigation_operations"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    public_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True, default=lambda: uuid.uuid4().hex)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    step_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigation_steps.id", ondelete="CASCADE"), nullable=False)
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigation_steps.id", ondelete="CASCADE"), nullable=False
+    )
+    decision_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigation_decisions.id", ondelete="CASCADE"), nullable=False
+    )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    kind: Mapped[str] = mapped_column(Text, nullable=False)
-    actor: Mapped[str] = mapped_column(Text, nullable=False)
-    title: Mapped[str] = mapped_column(Text, nullable=False)
+    wave_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    action_id: Mapped[str] = mapped_column(Text, nullable=False)
+    operation_kind: Mapped[str] = mapped_column(Text, nullable=False)
     purpose: Mapped[str] = mapped_column(Text, nullable=False)
-    input_summary: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    expected_evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_anchors: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    selection_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    stop_condition: Mapped[str] = mapped_column(Text, nullable=False)
+    input_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
-    result_summary: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    result_masked: Mapped[dict | None] = mapped_column(JSONB)
+    metrics: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     failure_code: Mapped[str | None] = mapped_column(Text)
-    failure_detail: Mapped[str | None] = mapped_column(Text)
+    failure_detail: Mapped[dict | None] = mapped_column(JSONB)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
 
     __table_args__ = (
-        CheckConstraint("actor IN ('engine', 'ai', 'collector')", name="actor"),
-        CheckConstraint("status IN ('queued', 'running', 'succeeded', 'partial', 'blocked', 'failed', 'canceled')", name="status"),
-        Index("uq_investigation_operations_ordinal", "investigation_id", "ordinal", unique=True),
-        Index("ix_investigation_operations_running", "investigation_id", postgresql_where=sql_text("status = 'running'")),
-        Index("ix_investigation_operations_step", "step_id", "ordinal"),
+        CheckConstraint("ordinal > 0 AND wave_ordinal BETWEEN 1 AND 4", name="ordinals"),
+        CheckConstraint(
+            "operation_kind IN ('model', 'source_read', 'native_read', 'snapshot', 'validation', 'synthesis')",
+            name="operation_kind",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'rejected', 'failed', 'interrupted')",
+            name="status",
+        ),
+        CheckConstraint("cardinality(evidence_anchors) > 0", name="anchors_nonempty"),
+        CheckConstraint("fingerprint ~ '^[0-9a-f]{64}$'", name="fingerprint_sha256"),
+        UniqueConstraint("investigation_id", "ordinal", name="uq_investigation_operation_ordinal"),
+        UniqueConstraint("step_id", "wave_ordinal", name="uq_step_operation_wave_ordinal"),
+        UniqueConstraint("investigation_id", "fingerprint", name="uq_investigation_operation_fingerprint"),
+        Index("ix_investigation_operations_step", "step_id", "wave_ordinal"),
     )
 
 
 class InvestigationOperationEvent(Base):
     __tablename__ = "investigation_operation_events"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    step_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigation_steps.id", ondelete="CASCADE"), nullable=False)
-    operation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigation_operations.id", ondelete="CASCADE"), nullable=False)
-    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    operation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigation_operations.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    event_name: Mapped[str] = mapped_column(Text, nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    detail: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
+    detail_masked: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
 
     __table_args__ = (
-        CheckConstraint("kind IN ('started', 'progress', 'finished')", name="kind"),
-        Index("uq_investigation_operation_events_sequence", "investigation_id", "sequence", unique=True),
+        CheckConstraint("sequence > 0", name="sequence_positive"),
+        CheckConstraint(
+            "event_name IN ('operation.started', 'operation.progress', 'operation.finished')",
+            name="event_name",
+        ),
+        UniqueConstraint("investigation_id", "sequence", name="uq_investigation_operation_event_sequence"),
         Index("ix_investigation_operation_events_operation", "operation_id", "sequence"),
     )
 
 
-class InvestigationAiInvocation(Base):
-    __tablename__ = "investigation_ai_invocations"
+class ModelRoutingDecision(CreatedAtMixin, Base):
+    __tablename__ = "model_routing_decisions"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    step_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("investigation_steps.id", ondelete="SET NULL"))
-    purpose: Mapped[str] = mapped_column(Text, nullable=False)
-    provider: Mapped[str | None] = mapped_column(Text)
-    model: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    prompt_template_version: Mapped[str] = mapped_column(Text, nullable=False)
-    input_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    output_hash: Mapped[str | None] = mapped_column(Text)
-    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    input_tokens: Mapped[int | None] = mapped_column(Integer)
-    output_tokens: Mapped[int | None] = mapped_column(Integer)
-    total_tokens: Mapped[int | None] = mapped_column(Integer)
-    token_source: Mapped[str] = mapped_column(Text, nullable=False, server_default="unavailable")
-    error_code: Mapped[str | None] = mapped_column(Text)
-    error_detail: Mapped[str | None] = mapped_column(Text)
-    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
-    summary: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("status IN ('succeeded', 'failed', 'unavailable')", name="status"),
-        CheckConstraint("token_source IN ('provider', 'estimated', 'unavailable')", name="token_source"),
-        Index("ix_investigation_ai_invocations_run", "investigation_id", "step_id", "created_at"),
-    )
-
-
-class InvestigationFinding(Base):
-    __tablename__ = "investigation_findings"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    kind: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    rationale: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("kind IN ('fact', 'hypothesis', 'counter_evidence', 'impact', 'evidence_gap', 'conclusion')", name="kind"),
-        CheckConstraint("status IN ('supported', 'leading', 'contradicted', 'required', 'confirmed')", name="status"),
-        Index("uq_investigation_findings_ordinal", "investigation_id", "ordinal", unique=True),
-    )
-
-
-class InvestigationFindingEdge(Base):
-    __tablename__ = "investigation_finding_edges"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    from_finding_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigation_findings.id", ondelete="CASCADE"), nullable=False)
-    to_finding_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigation_findings.id", ondelete="CASCADE"), nullable=False)
-    relation: Mapped[str] = mapped_column(Text, nullable=False)
-    evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-
-    __table_args__ = (
-        CheckConstraint("relation IN ('supports', 'contradicts', 'caused_by', 'needs_test')", name="relation"),
-        Index("ix_investigation_finding_edges_run", "investigation_id", "from_finding_id", "to_finding_id"),
-    )
-
-
-class InvestigationCodeFinding(Base):
-    __tablename__ = "investigation_code_findings"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    artifact_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("evidence_artifacts.id", ondelete="SET NULL"))
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    repo_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("git_repos.id", ondelete="SET NULL"))
-    revision: Mapped[str | None] = mapped_column(Text)
-    revision_role: Mapped[str | None] = mapped_column(Text)
-    path: Mapped[str | None] = mapped_column(Text)
-    symbol: Mapped[str | None] = mapped_column(Text)
-    start_line: Mapped[int | None] = mapped_column(Integer)
-    end_line: Mapped[int | None] = mapped_column(Integer)
-    issue_type: Mapped[str | None] = mapped_column(Text)
-    faulty_behavior: Mapped[str] = mapped_column(Text, nullable=False)
-    why_wrong: Mapped[str] = mapped_column(Text, nullable=False)
-    expected_behavior: Mapped[str] = mapped_column(Text, nullable=False)
-    trigger_condition: Mapped[str] = mapped_column(Text, nullable=False)
-    causal_chain: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    incident_evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    supporting_evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    counter_evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    missing_validation: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    fix_direction: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    test_scenario: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("status IN ('confirmed', 'hypothesis', 'no_defect', 'not_found')", name="status"),
-        CheckConstraint("revision_role IS NULL OR revision_role IN ('incident', 'latest')", name="revision_role"),
-        CheckConstraint("start_line IS NULL OR start_line > 0", name="start_line"),
-        CheckConstraint("end_line IS NULL OR end_line >= start_line", name="end_line"),
-        Index("ix_investigation_code_findings_run", "investigation_id", "status"),
-    )
-
-
-class InvestigationReport(Base):
-    __tablename__ = "investigation_reports"
-
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), primary_key=True)
-    result_state: Mapped[str] = mapped_column(Text, nullable=False)
-    headline: Mapped[str] = mapped_column(Text, nullable=False)
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    incident_cause: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    code_diagnosis: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    confirmed_facts: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    counter_evidence: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    evidence_gaps: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    next_step: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
-    schema_version: Mapped[str] = mapped_column(Text, nullable=False, server_default="investigation-report.v1")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-
-    __table_args__ = (CheckConstraint("result_state IN ('confirmed', 'hypothesis', 'insufficient', 'unavailable')", name="result_state"),)
-
-
-class InvestigationEvidenceLink(Base):
-    __tablename__ = "investigation_evidence_links"
-
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), primary_key=True)
-    artifact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("evidence_artifacts.id", ondelete="CASCADE"), primary_key=True)
-    relation: Mapped[str] = mapped_column(Text, nullable=False)
-    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("relation IN ('collected', 'manual')", name="relation"),
-        Index("ix_investigation_evidence_links_artifact", "artifact_id"),
-    )
-
-
-class EvidenceCollection(Base):
-    __tablename__ = "evidence_collections"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    step_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigation_steps.id", ondelete="CASCADE"), nullable=False)
-    connector_kind: Mapped[str] = mapped_column(Text, nullable=False)
-    connector_id: Mapped[int | None] = mapped_column(BigInteger)
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
-    selector: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    config_hash: Mapped[str | None] = mapped_column(Text)
-    collector_version: Mapped[str] = mapped_column(Text, nullable=False, server_default="1")
-    artifact_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    failure_code: Mapped[str | None] = mapped_column(Text)
-    failure_detail: Mapped[str | None] = mapped_column(Text)
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default="{}")
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (
-        CheckConstraint("status IN ('queued', 'running', 'succeeded', 'partial', 'blocked', 'failed')", name="status"),
-        Index("ix_evidence_collections_investigation", "investigation_id", "step_id"),
-    )
-
-
-class EvidenceArtifact(Base):
-    __tablename__ = "evidence_artifacts"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    collection_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("evidence_collections.id", ondelete="SET NULL"))
-    artifact_type: Mapped[str] = mapped_column(Text, nullable=False)
-    source_kind: Mapped[str] = mapped_column(Text, nullable=False)
-    source_id: Mapped[int | None] = mapped_column(BigInteger)
-    locator: Mapped[str | None] = mapped_column(Text)
-    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    redacted_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default="{}")
-    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("artifact_type IN ('incident_input', 'application_context', 'source_file', 'source_diff', 'log', 'metric', 'trace', 'dependency', 'database', 'operator_input')", name="type"),
-        Index("ix_evidence_artifacts_investigation", "investigation_id", "collection_id"),
-    )
-
-
-class SourceRevision(Base):
-    __tablename__ = "source_revisions"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    repo_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("git_repos.id", ondelete="SET NULL"))
-    service_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("services.id", ondelete="SET NULL"))
-    role: Mapped[str] = mapped_column(Text, nullable=False)
-    requested_ref: Mapped[str | None] = mapped_column(Text)
-    resolved_sha: Mapped[str | None] = mapped_column(Text)
-    resolution_basis: Mapped[str | None] = mapped_column(Text)
-    origin_url: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
-    failure_detail: Mapped[str | None] = mapped_column(Text)
-    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("role IN ('incident', 'latest')", name="role"),
-        CheckConstraint("status IN ('queued', 'resolved', 'unresolved', 'failed')", name="status"),
-        Index("uq_source_revisions_run_service_ref", "investigation_id", "service_id", "requested_ref", unique=True),
-    )
-
-
-class InvestigationServiceSnapshot(Base):
-    """Immutable service access scope captured when an investigation is created."""
-
-    __tablename__ = "investigation_service_snapshots"
-
+    id: Mapped[int] = identity_pk()
     investigation_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("investigations.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    service_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("services.id", ondelete="RESTRICT"),
-        primary_key=True,
-    )
-    service_name: Mapped[str] = mapped_column(Text, nullable=False)
-    repo_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_repos.id", ondelete="RESTRICT"), nullable=False
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
     role: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
+    model_binding_snapshot_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigation_model_binding_snapshots.id", ondelete="RESTRICT"), nullable=False
     )
+    execution_class: Mapped[str] = mapped_column(Text, nullable=False)
+    required_context_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    allowed_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    allowed_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    excluded_candidates: Mapped[list] = mapped_column(JSONB, nullable=False)
+    selection_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    budget: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    decision_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
-        CheckConstraint("role IN ('primary', 'shared')", name="role"),
-        Index("ix_investigation_service_snapshots_service", "service_id"),
+        CheckConstraint(
+            "role IN ('planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor')",
+            name="role",
+        ),
+        CheckConstraint(
+            "execution_class IN ('latency_optimized', 'reasoning_optimized')",
+            name="execution_class",
+        ),
+        CheckConstraint(
+            "required_context_tokens > 0 AND required_context_tokens <= allowed_input_tokens",
+            name="context_capacity",
+        ),
+        CheckConstraint("allowed_output_tokens > 0", name="output_tokens_positive"),
+        CheckConstraint("decision_hash ~ '^[0-9a-f]{64}$'", name="decision_hash_sha256"),
+        UniqueConstraint("investigation_id", "decision_hash", name="uq_model_routing_decision_hash"),
+        Index("ix_model_routing_decisions_run_role", "investigation_id", "role", "created_at"),
     )
 
 
-class InvestigationJob(Base):
-    __tablename__ = "investigation_jobs"
+class ContextBundleRevision(CreatedAtMixin, Base):
+    __tablename__ = "context_bundle_revisions"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    public_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True, default=lambda: uuid.uuid4().hex)
-    incident_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("incidents.id", ondelete="CASCADE"))
-    investigation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
-    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="5")
-    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
-    lease_owner: Mapped[str | None] = mapped_column(Text)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_error_code: Mapped[str | None] = mapped_column(Text)
-    last_error_detail: Mapped[str | None] = mapped_column(Text)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=sql_text("now()"))
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    routing_decision_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("model_routing_decisions.id", ondelete="RESTRICT"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    state_packet: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    summary_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    pinned_evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    tokenizer_id: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_safety_margin_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    context_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
-        CheckConstraint("status IN ('queued', 'running', 'retry_wait', 'succeeded', 'dead')", name="status"),
-        Index("ix_investigation_jobs_available", "status", "available_at", "priority", "created_at"),
-        Index("uq_investigation_jobs_active_incident", "incident_id", unique=True, postgresql_where=sql_text("incident_id IS NOT NULL AND status IN ('queued', 'running', 'retry_wait')")),
+        CheckConstraint(
+            "role IN ('planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor')",
+            name="role",
+        ),
+        CheckConstraint("revision > 0", name="revision_positive"),
+        CheckConstraint("token_count >= 0", name="token_count_nonnegative"),
+        CheckConstraint("reserved_output_tokens > 0", name="reserved_output_positive"),
+        CheckConstraint("provider_safety_margin_tokens > 0", name="safety_margin_positive"),
+        CheckConstraint("context_hash ~ '^[0-9a-f]{64}$'", name="context_hash_sha256"),
+        UniqueConstraint("investigation_id", "role", "revision", name="uq_context_bundle_revision"),
+        UniqueConstraint("investigation_id", "context_hash", name="uq_context_bundle_hash"),
+    )
+
+
+class ContextSummaryArtifact(CreatedAtMixin, Base):
+    __tablename__ = "context_summary_artifacts"
+
+    id: Mapped[int] = identity_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    model_invocation_id: Mapped[int | None] = mapped_column(BigInteger)
+    input_evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    covered_claim_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    retained_counter_evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    omitted_evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    summary_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    prompt_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    tokenizer_id: Mapped[str] = mapped_column(Text, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    validation_status: Mapped[str] = mapped_column(Text, nullable=False)
+    validation_detail: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("input_tokens > 0 AND output_tokens >= 0", name="token_counts"),
+        CheckConstraint("validation_status IN ('valid', 'rejected')", name="validation_status"),
+        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'", name="content_hash_sha256"),
+        UniqueConstraint("investigation_id", "content_hash", name="uq_context_summary_hash"),
     )

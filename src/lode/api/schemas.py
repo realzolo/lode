@@ -24,8 +24,6 @@ class ApplicationOut(BaseModel):
     name: str
     ingestion_topic: str
     latest_level: str
-    service_count: int
-    primary_service_configured: bool
     model_configured: bool
     model_available: bool
     ingestion_state: Literal["draft", "active", "paused"]
@@ -427,33 +425,6 @@ class AiOutputLanguageOut(BaseModel):
     language: Literal["en", "zh"]
 
 
-class ServiceIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    service_name: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
-    repo_id: int = Field(gt=0)
-    state: Literal["active", "disabled"] = "active"
-
-
-class ServiceOut(BaseModel):
-    id: int
-    service_name: str
-    repo_id: int
-    state: Literal["active", "disabled"]
-
-
-class ApplicationServiceBindingIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    service_id: int = Field(gt=0)
-    role: Literal["primary", "shared"]
-
-
-class ApplicationServiceBindingOut(ServiceOut):
-    application_id: int
-    role: Literal["primary", "shared"]
-
-
 # --- User management (admin) --------------------------------------------
 
 class UserCreateIn(BaseModel):
@@ -496,54 +467,6 @@ class InviteAcceptIn(BaseModel):
     token: str = Field(min_length=1, max_length=500)
     password: str = Field(min_length=8, max_length=200)
     name: str = Field(default="", max_length=200)
-
-
-class InvestigationErrorIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(default="Error", min_length=1, max_length=500)
-    message: str = Field(min_length=1, max_length=20_000)
-    stack: str | None = Field(default=None, max_length=50_000)
-    cause: Any = None
-    properties: dict[str, Any] = Field(default_factory=dict)
-
-
-class InvestigationAttachmentIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    kind: Literal["log", "trace", "dependency", "gateway_response"]
-    label: str = Field(min_length=1, max_length=1_000)
-    content: str = Field(min_length=1, max_length=20_000)
-
-
-class InvestigationCreateIn(BaseModel):
-    """Manual input using the same normalized contract as Kafka intake."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    application_id: int = Field(gt=0)
-    title: str = Field(min_length=1, max_length=500)
-    severity: Literal["CRITICAL", "WARNING"] = "WARNING"
-    occurred_at: datetime
-    error: InvestigationErrorIn
-    service_name: str = Field(
-        pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$"
-    )
-    environment: str | None = Field(default=None, max_length=300)
-    request_id: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-    )
-    deployment_sha: str | None = Field(default=None, max_length=300)
-    fields: dict[str, Any] = Field(default_factory=dict)
-    attachments: list[InvestigationAttachmentIn] = Field(default_factory=list, max_length=10)
-
-    @field_validator("occurred_at")
-    @classmethod
-    def occurred_at_must_include_timezone(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("occurred_at must include a timezone")
-        return value
 
 
 # --- Application membership (admin / app-admin) -------------------------

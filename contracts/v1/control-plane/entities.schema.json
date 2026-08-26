@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lode.local/contracts/v1/control-plane/entities.schema.json",
+  "title": "Lode V1 Control Plane Entities",
+  "$defs": {
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "ingestion_topic", "model_policy_revision_id", "ingestion_state", "ingestion_version", "ingestion_start_position"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "name": {"type": "string", "minLength": 1},
+        "ingestion_topic": {"type": "string", "minLength": 1},
+        "model_policy_revision_id": {"type": ["integer", "null"], "minimum": 1},
+        "ingestion_state": {"type": "string", "enum": ["draft", "active", "paused"]},
+        "ingestion_version": {"type": "integer", "minimum": 0},
+        "ingestion_start_position": {"type": ["string", "null"], "enum": ["earliest", "latest", null]}
+      }
+    },
+    "aiProviderAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "provider_kind", "base_url", "state", "verification_status", "rate_limit_policy", "cost_policy", "data_processing_policy_revision", "data_residency", "retention_mode", "revision"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "name": {"type": "string", "minLength": 1},
+        "provider_kind": {"type": "string", "minLength": 1},
+        "base_url": {"type": "string", "minLength": 1},
+        "state": {"type": "string", "enum": ["active", "disabled"]},
+        "verification_status": {"type": "string", "enum": ["untested", "healthy", "unavailable"]},
+        "rate_limit_policy": {"type": "object"},
+        "cost_policy": {"type": "object"},
+        "data_processing_policy_revision": {"type": "string", "minLength": 1},
+        "data_residency": {"type": "string", "minLength": 1},
+        "retention_mode": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 1}
+      }
+    },
+    "modelDeployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider_account_id", "provider_model_id", "display_name", "capabilities", "max_input_tokens", "max_output_tokens", "tokenizer_id", "availability_state", "state", "revision"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "provider_account_id": {"type": "integer", "minimum": 1},
+        "provider_model_id": {"type": "string", "minLength": 1},
+        "display_name": {"type": "string", "minLength": 1},
+        "capabilities": {"type": "object"},
+        "max_input_tokens": {"type": "integer", "minimum": 1},
+        "max_output_tokens": {"type": "integer", "minimum": 1},
+        "tokenizer_id": {"type": "string", "minLength": 1},
+        "availability_state": {"type": "string", "enum": ["untested", "healthy", "unavailable"]},
+        "state": {"type": "string", "enum": ["active", "disabled"]},
+        "revision": {"type": "integer", "minimum": 1}
+      }
+    },
+    "workspaceModelBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "workspace_id", "model_deployment_id", "execution_classes", "allowed_roles", "priority", "max_calls", "max_input_tokens", "max_output_tokens", "max_cost_per_call", "timeout_ms", "allowed_data_classes", "max_context_utilization", "state", "revision"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "workspace_id": {"type": "integer", "minimum": 1},
+        "model_deployment_id": {"type": "integer", "minimum": 1},
+        "execution_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["latency_optimized", "reasoning_optimized"]}},
+        "allowed_roles": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["planner", "native_query", "synthesizer", "verifier", "context_compactor"]}},
+        "priority": {"type": "integer", "minimum": 0},
+        "max_calls": {"type": "integer", "minimum": 1},
+        "max_input_tokens": {"type": "integer", "minimum": 1},
+        "max_output_tokens": {"type": "integer", "minimum": 1},
+        "max_cost_per_call": {"type": "number", "minimum": 0},
+        "timeout_ms": {"type": "integer", "minimum": 1},
+        "allowed_data_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+        "max_context_utilization": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "state": {"type": "string", "enum": ["active", "disabled"]},
+        "revision": {"type": "integer", "minimum": 1}
+      }
+    },
+    "modelPolicyRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "workspace_id", "eligible_binding_revisions", "role_policies", "budget_policy", "context_policy_revision_id", "revision"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "workspace_id": {"type": "integer", "minimum": 1},
+        "eligible_binding_revisions": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
+        "role_policies": {"type": "object"},
+        "budget_policy": {"type": "object"},
+        "context_policy_revision_id": {"type": "integer", "minimum": 1},
+        "revision": {"type": "integer", "minimum": 1}
+      }
+    },
+    "contextBundleRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "investigation_id", "role", "routing_decision_id", "state_packet", "evidence_refs", "summary_refs", "tokenizer_id", "token_count", "reserved_output_tokens", "context_hash", "revision"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "investigation_id": {"type": "integer", "minimum": 1},
+        "role": {"type": "string", "enum": ["planner", "native_query", "synthesizer", "verifier", "context_compactor"]},
+        "routing_decision_id": {"type": "integer", "minimum": 1},
+        "state_packet": {"type": "object"},
+        "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "summary_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "tokenizer_id": {"type": "string", "minLength": 1},
+        "token_count": {"type": "integer", "minimum": 0},
+        "reserved_output_tokens": {"type": "integer", "minimum": 1},
+        "context_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "revision": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

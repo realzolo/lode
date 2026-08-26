@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lode.local/contracts/v1/evidence/native-read-candidate.schema.json",
+  "title": "native-read-candidate.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "action_id",
+    "connector_id",
+    "language",
+    "purpose",
+    "expected_evidence",
+    "evidence_anchors",
+    "payload",
+    "value_bindings",
+    "requested_window",
+    "requested_limit",
+    "requested_timeout_ms"
+  ],
+  "properties": {
+    "schema_version": {"const": "native-read-candidate.v1"},
+    "action_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "connector_id": {"type": "integer", "minimum": 1},
+    "language": {
+      "type": "string",
+      "enum": [
+        "logql",
+        "elasticsearch_query_dsl",
+        "opensearch_query_dsl",
+        "sql",
+        "https",
+        "command"
+      ]
+    },
+    "purpose": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "expected_evidence": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "evidence_anchors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 200}
+    },
+    "payload": {
+      "oneOf": [
+        {"$ref": "#/$defs/queryPayload"},
+        {"$ref": "#/$defs/searchPayload"},
+        {"$ref": "#/$defs/httpsPayload"},
+        {"$ref": "#/$defs/commandPayload"}
+      ]
+    },
+    "value_bindings": {
+      "type": "object",
+      "maxProperties": 20,
+      "propertyNames": {"pattern": "^__LODE_VALUE_REF_[A-Z0-9_]+__$"},
+      "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 200}
+    },
+    "requested_window": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/window"}
+      ]
+    },
+    "requested_limit": {"type": "integer", "minimum": 1},
+    "requested_timeout_ms": {"type": "integer", "minimum": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"language": {"enum": ["logql", "sql"]}}},
+      "then": {"properties": {"payload": {"$ref": "#/$defs/queryPayload"}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "language": {"enum": ["elasticsearch_query_dsl", "opensearch_query_dsl"]}
+        }
+      },
+      "then": {"properties": {"payload": {"$ref": "#/$defs/searchPayload"}}}
+    },
+    {
+      "if": {"properties": {"language": {"const": "https"}}},
+      "then": {"properties": {"payload": {"$ref": "#/$defs/httpsPayload"}}}
+    },
+    {
+      "if": {"properties": {"language": {"const": "command"}}},
+      "then": {"properties": {"payload": {"$ref": "#/$defs/commandPayload"}}}
+    }
+  ],
+  "$defs": {
+    "queryPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query"],
+      "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 100000}}
+    },
+    "searchPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "body"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "body": {"type": "object"}
+      }
+    },
+    "httpsPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "url", "query", "body"],
+      "properties": {
+        "method": {"type": "string", "enum": ["GET", "HEAD"]},
+        "url": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "query": {"type": "object"},
+        "body": {"type": ["object", "null"]}
+      }
+    },
+    "commandPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "argv", "working_set_id"],
+      "properties": {
+        "executable": {"type": "string", "minLength": 1, "maxLength": 500},
+        "argv": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"type": "string", "maxLength": 4000}
+        },
+        "working_set_id": {"type": "string", "minLength": 1, "maxLength": 200}
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": "string", "format": "date-time"},
+        "end": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

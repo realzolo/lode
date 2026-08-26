@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lode.local/contracts/v1/ai/investigation-report.schema.json",
+  "title": "investigation-report.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "result_state",
+    "headline",
+    "summary",
+    "incident_cause",
+    "code_diagnosis",
+    "participants",
+    "timeline_summary",
+    "source_assessments",
+    "configuration_assessments",
+    "confirmed_facts",
+    "counter_evidence",
+    "evidence_gaps",
+    "next_step"
+  ],
+  "properties": {
+    "result_state": {"type": "string", "enum": ["confirmed", "hypothesis", "insufficient", "unavailable"]},
+    "headline": {"type": "string"},
+    "summary": {"type": "string"},
+    "incident_cause": {"$ref": "#/$defs/cause"},
+    "code_diagnosis": {"$ref": "#/$defs/codeDiagnosis"},
+    "participants": {"type": "array", "items": {"$ref": "#/$defs/participant"}},
+    "timeline_summary": {"type": "array", "items": {"$ref": "#/$defs/timelineItem"}},
+    "source_assessments": {"type": "array", "items": {"$ref": "#/$defs/sourceAssessment"}},
+    "configuration_assessments": {"type": "array", "items": {"$ref": "#/$defs/configAssessment"}},
+    "confirmed_facts": {"type": "array", "items": {"$ref": "#/$defs/evidenceStatement"}},
+    "counter_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceStatement"}},
+    "evidence_gaps": {"type": "array", "items": {"type": "string"}},
+    "next_step": {"type": "string"}
+  },
+  "$defs": {
+    "cause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "mechanism", "causal_chain", "evidence_refs"],
+      "properties": {
+        "status": {"type": "string", "enum": ["confirmed", "hypothesis", "not_found"]},
+        "mechanism": {"type": "string"},
+        "causal_chain": {"type": "array", "items": {"type": "string"}},
+        "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "codeDiagnosis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary", "finding_refs"],
+      "properties": {
+        "status": {"type": "string", "enum": ["confirmed", "hypothesis", "no_defect", "not_found"]},
+        "summary": {"type": "string"},
+        "finding_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_ref", "display_name", "identity_status", "evidence_refs"],
+      "properties": {
+        "entity_ref": {"type": "integer", "minimum": 1},
+        "display_name": {"type": "string"},
+        "identity_status": {"type": "string", "enum": ["verified", "provisional", "ambiguous", "unknown"]},
+        "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "timelineItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["occurred_at", "event_ref", "summary", "evidence_refs"],
+      "properties": {
+        "occurred_at": {"type": "string", "format": "date-time"},
+        "event_ref": {"type": "integer", "minimum": 1},
+        "summary": {"type": "string"},
+        "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "sourceAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_id", "build_unit_id", "component_id", "revision", "revision_role", "runtime_match_status", "mismatch_reasons", "evidence_refs"],
+      "properties": {
+        "repository_id": {"type": "integer", "minimum": 1},
+        "build_unit_id": {"type": ["integer", "null"], "minimum": 1},
+        "component_id": {"type": ["integer", "null"], "minimum": 1},
+        "revision": {"type": ["string", "null"]},
+        "revision_role": {"type": "string", "enum": ["incident_source", "repository_search_candidate", "runtime_identified"]},
+        "runtime_match_status": {"type": "string", "enum": ["exact", "unverified", "corroborated", "contradicted", "unresolved"]},
+        "mismatch_reasons": {"type": "array", "items": {"type": "string"}},
+        "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "configAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "declared_value", "runtime_value", "effective_status", "evidence_refs"],
+      "properties": {
+        "scope": {"type": "string"},
+        "declared_value": {},
+        "runtime_value": {},
+        "effective_status": {"type": "string", "enum": ["unknown", "corroborated", "contradicted"]},
+        "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "evidenceStatement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "evidence_refs"],
+      "properties": {
+        "text": {"type": "string"},
+        "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}}
+      }
+    }
+  }
+}

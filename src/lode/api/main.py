@@ -25,18 +25,10 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from lode.api.deps import require_user
-from lode.api.routes.alerts import router as alerts_router
 from lode.api.routes.investigations import router as investigations_router
-from lode.api.routes.applications import router as applications_router
-from lode.api.routes.audit import router as audit_router
 from lode.api.routes.auth import router as auth_router
-from lode.api.routes.dead_letters import router as dead_letters_router
 from lode.api.routes.health import router as health_router
 from lode.api.routes.invites import router as invites_router
-from lode.api.routes.integration_kinds import router as integration_kinds_router
-from lode.api.routes.metrics import router as metrics_router
-from lode.api.routes.settings import router as settings_router
-from lode.api.routes.services import router as services_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
 from lode.migrations import run_migrations
@@ -167,19 +159,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 # Open routes.
 app.include_router(health_router)
-app.include_router(dead_letters_router)
-app.include_router(audit_router)
-app.include_router(metrics_router)
 app.include_router(auth_router)
 
 # Protected business routes (require a valid bearer token).
 _protected = [Depends(require_user)]
 app.include_router(investigations_router, dependencies=_protected)
-app.include_router(applications_router, dependencies=_protected)
-app.include_router(integration_kinds_router, dependencies=_protected)
-app.include_router(alerts_router, dependencies=_protected)
-app.include_router(settings_router, dependencies=_protected)
-app.include_router(services_router, dependencies=_protected)
 app.include_router(users_router, dependencies=_protected)
 
 # Invites: admin endpoints carry require_admin (which itself requires auth);

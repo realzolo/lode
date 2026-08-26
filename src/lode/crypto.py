@@ -50,6 +50,15 @@ def encrypt_secret(plaintext: str | None) -> str | None:
         raise CryptoError(f"failed to encrypt secret: {exc}") from exc
 
 
+def encrypt_value(plaintext: str) -> str:
+    """Encrypt an opaque evidence value without treating an empty string as absent."""
+
+    try:
+        return _get_fernet().encrypt(plaintext.encode("utf-8")).decode("utf-8")
+    except Exception as exc:  # pragma: no cover - defensive
+        raise CryptoError(f"failed to encrypt evidence value: {exc}") from exc
+
+
 def decrypt_secret(ciphertext: str | None) -> str | None:
     """Decrypt a stored secret back to plaintext.
 
@@ -66,3 +75,16 @@ def decrypt_secret(ciphertext: str | None) -> str | None:
         ) from exc
     except Exception as exc:  # pragma: no cover - defensive
         raise CryptoError(f"failed to decrypt secret: {exc}") from exc
+
+
+def decrypt_value(ciphertext: str) -> str:
+    """Decrypt an opaque evidence value exactly, including the empty string."""
+
+    try:
+        return _get_fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise CryptoError(
+            "could not decrypt evidence value (data encryption key may have changed)"
+        ) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        raise CryptoError(f"failed to decrypt evidence value: {exc}") from exc

@@ -1,0 +1,6 @@
+{"case_id":"incident-confirmed-source","result_state":"confirmed","incident_cause":"application_code","source_status":"exact","runtime_config_status":"unknown","has_counter_evidence":true,"requires_verifier":true}
+{"case_id":"incident-unverified-secondary","result_state":"hypothesis","incident_cause":"external_dependency_or_code","source_status":"unverified","runtime_config_status":"unknown","has_counter_evidence":true,"requires_verifier":true}
+{"case_id":"incident-declared-config-only","result_state":"hypothesis","incident_cause":"configuration_candidate","source_status":"exact","runtime_config_status":"unknown","has_counter_evidence":true,"requires_verifier":true}
+{"case_id":"incident-runtime-source-mismatch","result_state":"hypothesis","incident_cause":"runtime_source_mismatch","source_status":"contradicted","runtime_config_status":"unknown","has_counter_evidence":true,"requires_verifier":true}
+{"case_id":"incident-insufficient-evidence","result_state":"insufficient","incident_cause":"not_found","source_status":"unresolved","runtime_config_status":"unknown","has_counter_evidence":false,"requires_verifier":false}
+{"case_id":"incident-model-contract-failure","result_state":"unavailable","incident_cause":"not_found","source_status":"unresolved","runtime_config_status":"unknown","has_counter_evidence":false,"requires_verifier":false}

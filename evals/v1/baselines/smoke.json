@@ -1,0 +1,14 @@
+{
+  "schema_version": "lode-eval-baseline.v1",
+  "name": "phase0-deterministic-oracle",
+  "model": "policy-oracle-v1",
+  "prompt_revision": "none",
+  "schema_revision": "contracts-v1",
+  "roles": ["planner", "native_query", "synthesizer", "verifier", "context_compactor"],
+  "execution_classes": ["latency_optimized", "reasoning_optimized"],
+  "metrics": {
+    "case_id_uniqueness": 1.0,
+    "expected_classification_coverage": 1.0,
+    "security_oracle_determinism": 1.0
+  }
+}

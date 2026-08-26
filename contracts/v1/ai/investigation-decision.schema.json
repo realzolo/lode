@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lode.local/contracts/v1/ai/investigation-decision.schema.json",
+  "title": "investigation-decision.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "hypotheses", "operations", "next_model_hint"],
+  "properties": {
+    "decision": {"type": "string", "enum": ["continue", "finish"]},
+    "hypotheses": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"$ref": "#/$defs/hypothesis"}
+    },
+    "operations": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/operation"}
+    },
+    "next_model_hint": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/modelHint"}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "finish"}}},
+      "then": {"properties": {"operations": {"maxItems": 0}}},
+      "else": {"properties": {"operations": {"minItems": 1}}}
+    }
+  ],
+  "$defs": {
+    "hypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mechanism", "supporting_evidence_refs", "counter_evidence_refs", "evidence_gaps"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "mechanism": {"type": "string", "minLength": 1},
+        "supporting_evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "counter_evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "evidence_gaps": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id",
+        "evidence_anchors",
+        "hypothesis_refs",
+        "expected_evidence",
+        "selection_reason",
+        "estimated_cost",
+        "stop_condition",
+        "independent_of",
+        "native_read_candidate"
+      ],
+      "properties": {
+        "action_id": {"type": "string", "minLength": 1},
+        "evidence_anchors": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "hypothesis_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "expected_evidence": {"type": "string", "minLength": 1},
+        "selection_reason": {"type": "string", "minLength": 1},
+        "estimated_cost": {"type": "object"},
+        "stop_condition": {"type": "string", "minLength": 1},
+        "independent_of": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "native_read_candidate": {"type": ["object", "null"]}
+      }
+    },
+    "modelHint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "execution_class", "required_context_tokens", "reason"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["planner", "native_query", "synthesizer", "verifier", "context_compactor"]
+        },
+        "execution_class": {"type": "string", "enum": ["latency_optimized", "reasoning_optimized"]},
+        "required_context_tokens": {"type": "integer", "minimum": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

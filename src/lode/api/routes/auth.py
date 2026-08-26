@@ -37,7 +37,7 @@ async def login(payload: AuthLoginIn, session: AsyncSession = Depends(get_sessio
             action="auth.login",
             actor_email=payload.email,
             target_type="user",
-            result="error",
+            result="failed",
             detail={"reason": "no_such_active_account"},
         )
         raise HTTPException(status_code=401, detail="invalid credentials")
@@ -47,7 +47,7 @@ async def login(payload: AuthLoginIn, session: AsyncSession = Depends(get_sessio
             actor_id=user.id,
             target_type="user",
             target_id=str(user.id),
-            result="error",
+            result="failed",
             detail={"reason": "bad_password"},
         )
         raise HTTPException(status_code=401, detail="invalid credentials")

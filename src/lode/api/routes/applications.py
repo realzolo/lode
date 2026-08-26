@@ -45,8 +45,6 @@ from lode.api.schemas import (
     ApplicationModelOut,
     ApplicationOut,
     ApplicationRepoOut,
-    ApplicationServiceBindingIn,
-    ApplicationServiceBindingOut,
     ApplicationTopicOut,
     BindRepoIn,
     CreateApplicationIn,
@@ -65,8 +63,6 @@ from lode.db.models.application import (
     ApplicationArchitectureContext,
     ApplicationIngestionRuntime,
     ApplicationRepo,
-    ApplicationServiceBinding,
-    Service,
 )
 from lode.db.models.integration import ApplicationIntegration
 from lode.config import kafka_security_kwargs, settings
@@ -171,23 +167,12 @@ async def _require_ingestion_readiness(
     session: AsyncSession,
     app: Application,
 ) -> str:
-    """Fail closed unless every application-level ingestion prerequisite exists."""
-    primary_service_count = await session.scalar(
-        select(func.count(ApplicationServiceBinding.service_id))
-        .join(Service, Service.id == ApplicationServiceBinding.service_id)
-        .where(
-            ApplicationServiceBinding.application_id == app.id,
-            ApplicationServiceBinding.role == "primary",
-            Service.state == "active",
-        )
-    )
+    """Fail closed unless every ingestion prerequisite exists."""
     model = await session.get(
         AiModelConfig, app.model_config_id
     ) if app.model_config_id is not None else None
 
     missing: list[str] = []
-    if not primary_service_count:
-        missing.append("primary_service")
     if model is None:
         missing.append("model")
     elif model.last_test_status != "available":
@@ -214,18 +199,9 @@ async def list_applications(
     stmt = (
         select(
             Application,
-            func.count(func.distinct(ApplicationServiceBinding.service_id)).label("service_count"),
-            func.count(ApplicationServiceBinding.service_id)
-            .filter(ApplicationServiceBinding.role == "primary")
-            .label("primary_service_count"),
             AiModelConfig.last_test_status,
         )
-        .outerjoin(
-            ApplicationServiceBinding,
-            ApplicationServiceBinding.application_id == Application.id,
-        )
         .outerjoin(AiModelConfig, AiModelConfig.id == Application.model_config_id)
-        .group_by(Application.id, AiModelConfig.last_test_status)
         .order_by(Application.created_at.desc())
     )
     if app_ids is not None:
@@ -257,7 +233,7 @@ async def list_applications(
     } if rows else {}
 
     out: list[ApplicationOut] = []
-    for app, service_count, primary_service_count, model_test_status in rows:
+    for app, model_test_status in rows:
         latest_level = await session.execute(
             select(Alert.level)
             .where(Alert.application_id == app.id)
@@ -271,8 +247,6 @@ async def list_applications(
                 name=app.name,
                 ingestion_topic=app.ingestion_topic,
                 latest_level=level,
-                service_count=service_count or 0,
-                primary_service_configured=bool(primary_service_count),
                 model_configured=app.model_config_id is not None,
                 model_available=model_test_status == "available",
                 ingestion_state=app.ingestion_state,
@@ -405,8 +379,6 @@ async def create_application(
         name=app.name,
         ingestion_topic=app.ingestion_topic,
         latest_level="WARNING",
-        service_count=0,
-        primary_service_configured=False,
         model_configured=False,
         model_available=False,
         ingestion_state=app.ingestion_state,
@@ -1338,101 +1310,5 @@ async def remove_member(
         actor_id=_auth,
         target_type="member",
         target_id=str(user_id),
-        application_id=application_id,
-    )
-
-
-@router.get(
-    "/{application_id}/services",
-    response_model=list[ApplicationServiceBindingOut],
-)
-async def list_application_services(
-    application_id: int,
-    _auth: int = Security(require_app_perm, scopes=["read"]),
-    session: AsyncSession = Depends(get_session),
-) -> list[ApplicationServiceBindingOut]:
-    rows = (
-        await session.execute(
-            select(ApplicationServiceBinding, Service)
-            .join(Service, Service.id == ApplicationServiceBinding.service_id)
-            .where(ApplicationServiceBinding.application_id == application_id)
-            .order_by(ApplicationServiceBinding.role, Service.service_name)
-        )
-    ).all()
-    return [
-        ApplicationServiceBindingOut(
-            application_id=application_id,
-            id=service.id,
-            service_name=service.service_name,
-            repo_id=service.repo_id,
-            state=service.state,
-            role=binding.role,
-        )
-        for binding, service in rows
-    ]
-
-
-@router.post(
-    "/{application_id}/services",
-    response_model=ApplicationServiceBindingOut,
-    status_code=201,
-)
-async def bind_application_service(
-    application_id: int,
-    payload: ApplicationServiceBindingIn,
-    actor_id: int = Security(require_app_perm, scopes=["admin"]),
-    session: AsyncSession = Depends(get_session),
-) -> ApplicationServiceBindingOut:
-    if await session.get(Application, application_id) is None:
-        raise HTTPException(status_code=404, detail="application not found")
-    service = await session.get(Service, payload.service_id)
-    if service is None or service.state != "active":
-        raise HTTPException(status_code=404, detail="active service not found")
-    binding = ApplicationServiceBinding(
-        application_id=application_id,
-        service_id=service.id,
-        role=payload.role,
-    )
-    session.add(binding)
-    try:
-        await session.commit()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise HTTPException(status_code=409, detail="service binding conflicts") from exc
-    await audit_action(
-        action="application.service.bind",
-        actor_id=actor_id,
-        target_type="service",
-        target_id=str(service.id),
-        application_id=application_id,
-        detail={"role": payload.role},
-    )
-    return ApplicationServiceBindingOut(
-        application_id=application_id,
-        id=service.id,
-        service_name=service.service_name,
-        repo_id=service.repo_id,
-        state=service.state,
-        role=payload.role,
-    )
-
-
-@router.delete("/{application_id}/services/{service_id}", status_code=204)
-async def unbind_application_service(
-    application_id: int,
-    service_id: int,
-    actor_id: int = Security(require_app_perm, scopes=["admin"]),
-    session: AsyncSession = Depends(get_session),
-) -> None:
-    binding = await session.get(ApplicationServiceBinding, (application_id, service_id))
-    if binding is None:
-        raise HTTPException(status_code=404, detail="service binding not found")
-    await session.delete(binding)
-    await session.commit()
-    await audit_action(
-        action="application.service.unbind",
-        actor_id=actor_id,
-        target_type="service",
-        target_id=str(service_id),
         application_id=application_id,
     )

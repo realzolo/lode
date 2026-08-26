@@ -27,7 +27,7 @@ from __future__ import annotations
 import contextvars
 import logging
 
-from lode.db.models.intake import AuditEvent
+from lode.db.models import AuditEvent
 from lode.db.session import AsyncSessionLocal
 
 logger = logging.getLogger("lode.api.audit")
@@ -48,7 +48,7 @@ async def record_audit_event(
     actor_email: str | None = None,
     target_type: str | None = None,
     target_id: str | None = None,
-    application_id: int | None = None,
+    workspace_id: int | None = None,
     result: str = "ok",
     detail: dict | None = None,
 ) -> AuditEvent:
@@ -65,8 +65,8 @@ async def record_audit_event(
         action=action,
         target_type=target_type,
         target_id=target_id,
-        application_id=application_id,
-        request_id=get_request_id(),
+        workspace_id=workspace_id,
+        http_request_id=get_request_id(),
         result=result,
         detail=detail,
     )
