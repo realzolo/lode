@@ -14,7 +14,6 @@ from lode.db.models import (
     BuildUnit,
     Component,
     ComponentSourceBinding,
-    GitRepository,
     IdentityResolution,
     ResourceGraphRevision,
     ResourceGraphRevisionMember,
@@ -27,7 +26,6 @@ from lode.resource_understanding.types import (
     IdentityResolutionDraft,
     ScanResult,
     SemanticAnnotationDraft,
-    canonical_json,
     content_hash,
 )
 from lode.resource_understanding.validator import ResourceIdentityValidator

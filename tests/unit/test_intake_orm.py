@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import CheckConstraint, Index, UniqueConstraint
+from sqlalchemy import CheckConstraint, UniqueConstraint
 
 from lode.db import models  # noqa: F401
 from lode.db.base import Base

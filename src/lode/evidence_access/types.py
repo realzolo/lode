@@ -29,6 +29,7 @@ EXECUTION_FAILURE_CODES = frozenset(
         "partial_response",
         "cost_exceeded",
         "egress_violation",
+        "sandbox_violation",
     }
 )
 

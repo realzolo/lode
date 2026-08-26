@@ -14,7 +14,6 @@ from sqlalchemy import func, select
 from lode.config import settings
 from lode.db.models.ai_model import AiModelConfig
 from lode.db.models.application import Application
-from lode.db.models.git import GitRepo
 from lode.db.models.integration import ApplicationIntegration
 from lode.db.models.investigation import (
     EvidenceArtifact,

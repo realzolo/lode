@@ -13,7 +13,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lode.integration_policy import (
-    integration_kind,
     normalize_integration_config,
     normalize_integration_secrets,
 )

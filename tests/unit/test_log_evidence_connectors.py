@@ -17,9 +17,9 @@ from lode.evidence_connectors.elasticsearch import ElasticsearchConnector
 from lode.evidence_connectors.loki import LokiConnector
 from lode.evidence_connectors.opensearch import OpenSearchConnector
 from lode.evidence_connectors.registry import (
-    build_log_policy_registry,
-    create_log_connector,
-    log_connector_capabilities,
+    build_native_policy_registry,
+    create_evidence_connector,
+    native_connector_capabilities,
 )
 from lode.evidence_connectors.transport import (
     BoundedHTTPTransport,
@@ -400,15 +400,26 @@ def test_provider_json_and_registry_are_strict_and_product_neutral() -> None:
         decode_provider_json(b'{"status":"ok","status":"bad"}')
     assert duplicate.value.code == "invalid_response"
 
-    registry = build_log_policy_registry()
+    registry = build_native_policy_registry()
     assert set(registry.capabilities) == {
+        "command",
         "logql",
         "elasticsearch_query_dsl",
+        "https",
         "opensearch_query_dsl",
+        "sql",
     }
-    assert set(log_connector_capabilities()) == {"loki", "elasticsearch", "opensearch"}
+    assert set(native_connector_capabilities()) == {
+        "command_runner",
+        "elasticsearch",
+        "https",
+        "loki",
+        "mysql",
+        "opensearch",
+        "postgresql",
+    }
     assert isinstance(
-        create_log_connector(
+        create_evidence_connector(
             "elasticsearch",
             connector_config(),
             {"api_key": "secret"},
@@ -417,4 +428,4 @@ def test_provider_json_and_registry_are_strict_and_product_neutral() -> None:
         ElasticsearchConnector,
     )
     with pytest.raises(ValueError, match="not registered"):
-        create_log_connector("legacy_loki", connector_config(), {"api_key": "secret"})
+        create_evidence_connector("legacy_loki", connector_config(), {"api_key": "secret"})

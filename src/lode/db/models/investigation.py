@@ -6,13 +6,11 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    Numeric,
     Text,
     UniqueConstraint,
     text,
@@ -72,7 +70,10 @@ class Investigation(TimestampMixin, Base):
         CheckConstraint("output_language IN ('en', 'zh')", name="output_language"),
         CheckConstraint("window_finished_at > window_started_at", name="window_range"),
         CheckConstraint("event_cursor >= 0", name="event_cursor_nonnegative"),
-        CheckConstraint("finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at", name="run_range"),
+        CheckConstraint(
+            "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
+            name="run_range",
+        ),
         Index("ix_investigations_workspace_created", "workspace_id", "created_at"),
         Index("ix_investigations_incident", "incident_id"),
         Index("ix_investigations_retry_of", "retry_of_id"),
@@ -118,7 +119,9 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
     repository_binding_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("workspace_repository_bindings.id", ondelete="RESTRICT"), nullable=False
+        BigInteger,
+        ForeignKey("workspace_repository_bindings.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     repository_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False
@@ -132,7 +135,9 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
     snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("investigation_id", "repository_binding_id", name="uq_investigation_repository_snapshot"),
+        UniqueConstraint(
+            "investigation_id", "repository_binding_id", name="uq_investigation_repository_snapshot"
+        ),
         CheckConstraint(
             "role IN ('runtime_source', 'shared_library', 'infrastructure', 'documentation')",
             name="role",
@@ -158,7 +163,9 @@ class InvestigationBuildUnitSnapshot(CreatedAtMixin, Base):
         BigInteger, ForeignKey("build_units.id", ondelete="RESTRICT"), nullable=False
     )
     repository_snapshot_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("investigation_repository_snapshots.id", ondelete="CASCADE"), nullable=False
+        BigInteger,
+        ForeignKey("investigation_repository_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
     )
     stable_key: Mapped[str] = mapped_column(Text, nullable=False)
     source_root: Mapped[str] = mapped_column(Text, nullable=False)
@@ -169,8 +176,12 @@ class InvestigationBuildUnitSnapshot(CreatedAtMixin, Base):
     snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("investigation_id", "build_unit_id", name="uq_investigation_build_unit_snapshot"),
-        CheckConstraint("identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"),
+        UniqueConstraint(
+            "investigation_id", "build_unit_id", name="uq_investigation_build_unit_snapshot"
+        ),
+        CheckConstraint(
+            "identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"
+        ),
         CheckConstraint("build_unit_revision > 0", name="revision_positive"),
         CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
     )
@@ -196,8 +207,12 @@ class InvestigationComponentSnapshot(CreatedAtMixin, Base):
     snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("investigation_id", "component_id", name="uq_investigation_component_snapshot"),
-        CheckConstraint("identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"),
+        UniqueConstraint(
+            "investigation_id", "component_id", name="uq_investigation_component_snapshot"
+        ),
+        CheckConstraint(
+            "identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"
+        ),
         CheckConstraint("component_revision > 0", name="revision_positive"),
         CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
     )
@@ -230,13 +245,17 @@ class InvestigationConnectorSnapshot(CreatedAtMixin, Base):
     snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("investigation_id", "connector_id", name="uq_investigation_connector_snapshot"),
+        UniqueConstraint(
+            "investigation_id", "connector_id", name="uq_investigation_connector_snapshot"
+        ),
         CheckConstraint("connector_kind_version > 0", name="kind_version_positive"),
         CheckConstraint("instance_revision > 0", name="instance_revision_positive"),
         CheckConstraint("access_scope_revision > 0", name="scope_revision_positive"),
         CheckConstraint("cardinality(capabilities) > 0", name="capabilities_nonempty"),
         CheckConstraint("cardinality(allowed_languages) > 0", name="languages_nonempty"),
-        CheckConstraint("credential_identity_hash ~ '^[0-9a-f]{64}$'", name="credential_hash_sha256"),
+        CheckConstraint(
+            "credential_identity_hash ~ '^[0-9a-f]{64}$'", name="credential_hash_sha256"
+        ),
         CheckConstraint("snapshot_hash ~ '^[0-9a-f]{64}$'", name="snapshot_hash_sha256"),
     )
 
@@ -275,7 +294,9 @@ class InvestigationDescriptorSnapshot(CreatedAtMixin, Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "investigation_id", "descriptor_kind", "descriptor_id",
+            "investigation_id",
+            "descriptor_kind",
+            "descriptor_id",
             name="uq_investigation_descriptor_snapshot",
         ),
         CheckConstraint("descriptor_kind IN ('repository', 'component')", name="descriptor_kind"),
@@ -335,7 +356,8 @@ class InvestigationModelBindingSnapshot(CreatedAtMixin, Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "investigation_id", "workspace_model_binding_id",
+            "investigation_id",
+            "workspace_model_binding_id",
             name="uq_investigation_model_binding_snapshot",
         ),
         CheckConstraint("binding_revision > 0", name="binding_rev_pos"),
@@ -414,7 +436,9 @@ class InvestigationDecision(CreatedAtMixin, Base):
         ),
         CheckConstraint("decision_hash ~ '^[0-9a-f]{64}$'", name="decision_hash_sha256"),
         UniqueConstraint("investigation_id", "ordinal", name="uq_investigation_decision_ordinal"),
-        UniqueConstraint("investigation_id", "decision_hash", name="uq_investigation_decision_hash"),
+        UniqueConstraint(
+            "investigation_id", "decision_hash", name="uq_investigation_decision_hash"
+        ),
     )
 
 
@@ -444,9 +468,7 @@ class InvestigationOperation(CreatedAtMixin, Base):
     fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     result_masked: Mapped[dict | None] = mapped_column(JSONB)
-    metrics: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
+    metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     failure_code: Mapped[str | None] = mapped_column(Text)
     failure_detail: Mapped[dict | None] = mapped_column(JSONB)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -466,7 +488,9 @@ class InvestigationOperation(CreatedAtMixin, Base):
         CheckConstraint("fingerprint ~ '^[0-9a-f]{64}$'", name="fingerprint_sha256"),
         UniqueConstraint("investigation_id", "ordinal", name="uq_investigation_operation_ordinal"),
         UniqueConstraint("step_id", "wave_ordinal", name="uq_step_operation_wave_ordinal"),
-        UniqueConstraint("investigation_id", "fingerprint", name="uq_investigation_operation_fingerprint"),
+        UniqueConstraint(
+            "investigation_id", "fingerprint", name="uq_investigation_operation_fingerprint"
+        ),
         Index("ix_investigation_operations_step", "step_id", "wave_ordinal"),
     )
 
@@ -498,7 +522,9 @@ class InvestigationOperationEvent(Base):
             "event_name IN ('operation.started', 'operation.progress', 'operation.finished')",
             name="event_name",
         ),
-        UniqueConstraint("investigation_id", "sequence", name="uq_investigation_operation_event_sequence"),
+        UniqueConstraint(
+            "investigation_id", "sequence", name="uq_investigation_operation_event_sequence"
+        ),
         Index("ix_investigation_operation_events_operation", "operation_id", "sequence"),
     )
 
@@ -512,7 +538,9 @@ class ModelRoutingDecision(CreatedAtMixin, Base):
     )
     role: Mapped[str] = mapped_column(Text, nullable=False)
     model_binding_snapshot_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("investigation_model_binding_snapshots.id", ondelete="RESTRICT"), nullable=False
+        BigInteger,
+        ForeignKey("investigation_model_binding_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     execution_class: Mapped[str] = mapped_column(Text, nullable=False)
     required_context_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -538,7 +566,9 @@ class ModelRoutingDecision(CreatedAtMixin, Base):
         ),
         CheckConstraint("allowed_output_tokens > 0", name="output_tokens_positive"),
         CheckConstraint("decision_hash ~ '^[0-9a-f]{64}$'", name="decision_hash_sha256"),
-        UniqueConstraint("investigation_id", "decision_hash", name="uq_model_routing_decision_hash"),
+        UniqueConstraint(
+            "investigation_id", "decision_hash", name="uq_model_routing_decision_hash"
+        ),
         Index("ix_model_routing_decisions_run_role", "investigation_id", "role", "created_at"),
     )
 
@@ -590,7 +620,9 @@ class ContextSummaryArtifact(CreatedAtMixin, Base):
     model_invocation_id: Mapped[int | None] = mapped_column(BigInteger)
     input_evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
     covered_claim_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
-    retained_counter_evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    retained_counter_evidence_refs: Mapped[list[int]] = mapped_column(
+        ARRAY(BigInteger), nullable=False
+    )
     omitted_evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
     summary_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
     prompt_revision: Mapped[str] = mapped_column(Text, nullable=False)

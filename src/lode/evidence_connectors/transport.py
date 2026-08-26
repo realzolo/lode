@@ -18,6 +18,10 @@ from lode.evidence_connectors.types import ProviderExecutionError, ProviderHTTPR
 
 def validate_base_url(base_url: str) -> tuple[str, str]:
     parsed = urlsplit(base_url)
+    try:
+        parsed_port = parsed.port
+    except ValueError as exc:
+        raise ValueError("provider base_url port is invalid") from exc
     if (
         parsed.scheme != "https"
         or not parsed.hostname
@@ -26,6 +30,7 @@ def validate_base_url(base_url: str) -> tuple[str, str]:
         or parsed.query
         or parsed.fragment
         or parsed.path not in {"", "/"}
+        or parsed.netloc != parsed.netloc.lower()
     ):
         raise ValueError("provider base_url must be a credential-free HTTPS origin")
     try:
@@ -34,11 +39,11 @@ def validate_base_url(base_url: str) -> tuple[str, str]:
         pass
     else:
         raise ValueError("provider base_url must use a DNS hostname")
-    if parsed.port is not None and parsed.port <= 0:
+    if parsed_port is not None and parsed_port <= 0:
         raise ValueError("provider base_url port is invalid")
     origin = f"https://{parsed.hostname.lower()}"
-    if parsed.port is not None and parsed.port != 443:
-        origin += f":{parsed.port}"
+    if parsed_port is not None and parsed_port != 443:
+        origin += f":{parsed_port}"
     return origin, parsed.hostname.lower()
 
 
@@ -50,6 +55,19 @@ def validate_ip_cidrs(values: list[str]) -> list[str]:
     if not networks:
         raise ValueError("provider allowed_ip_cidrs must not be empty")
     return [str(network) for network in networks]
+
+
+def validate_dns_hostname(hostname: str) -> str:
+    return validate_base_url(f"https://{hostname}")[1]
+
+
+async def resolve_checked_addresses(
+    hostname: str,
+    port: int,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+    backend = PinnedDNSBackend(hostname=hostname, port=port, networks=networks)
+    return await backend._resolve()
 
 
 class PinnedDNSBackend(httpcore.AnyIOBackend):
@@ -155,6 +173,7 @@ class BoundedHTTPTransport:
         allowed_ip_cidrs: list[str],
         headers: Mapping[str, str],
         max_response_bytes: int,
+        max_decompression_ratio: int = 20,
     ) -> None:
         self.base_url, self.hostname = validate_base_url(base_url)
         self.port = urlsplit(self.base_url).port or 443
@@ -165,6 +184,9 @@ class BoundedHTTPTransport:
         )
         self.headers = dict(headers)
         self.max_response_bytes = max_response_bytes
+        if not 1 <= max_decompression_ratio <= 100:
+            raise ValueError("provider max_decompression_ratio is invalid")
+        self.max_decompression_ratio = max_decompression_ratio
 
     async def request(
         self,
@@ -175,7 +197,7 @@ class BoundedHTTPTransport:
         json_body: Mapping[str, Any] | None = None,
         timeout_ms: int,
     ) -> ProviderHTTPResponse:
-        if method not in {"GET", "POST"}:
+        if method not in {"GET", "HEAD", "POST"}:
             raise ProviderExecutionError("egress_violation", "provider HTTP method is disabled")
         if (
             not path.startswith("/")
@@ -211,6 +233,13 @@ class BoundedHTTPTransport:
                         raise ProviderExecutionError(
                             "egress_violation", "provider redirect is disabled"
                         )
+                    encoding = response.headers.get("content-encoding", "identity").lower()
+                    if encoding not in {"identity", "gzip", "deflate", "br"}:
+                        raise ProviderExecutionError(
+                            "invalid_response", "provider response encoding is disabled"
+                        )
+                    declared = response.headers.get("content-length")
+                    compressed_size = int(declared) if declared and declared.isdigit() else None
                     chunks: list[bytes] = []
                     size = 0
                     async for chunk in response.aiter_bytes():
@@ -218,6 +247,14 @@ class BoundedHTTPTransport:
                         if size > self.max_response_bytes:
                             raise ProviderExecutionError(
                                 "cost_exceeded", "provider response byte budget exceeded"
+                            )
+                        if (
+                            encoding != "identity"
+                            and compressed_size is not None
+                            and size > max(1, compressed_size) * self.max_decompression_ratio
+                        ):
+                            raise ProviderExecutionError(
+                                "cost_exceeded", "provider decompression ratio budget exceeded"
                             )
                         chunks.append(chunk)
                     return ProviderHTTPResponse(

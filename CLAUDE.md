@@ -3,7 +3,7 @@
 ## Final Rebuild Status
 
 The final V1 replacement is being implemented from
-`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-5 are
+`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-6 are
 the current completed implementation baseline:
 
 - `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
@@ -104,9 +104,10 @@ the current completed implementation baseline:
   partial-response, cost, invalid-response, and egress failures remain distinct
   execution failure codes in the immutable attempt instead of being relabeled
   as policy rejection.
-- `src/lode/evidence_connectors` is the only log-provider execution plane. Its
-  provider-neutral registry activates independent Loki, Elasticsearch, and
-  OpenSearch policy/adapter pairs. The investigation core receives only
+- `src/lode/evidence_connectors` is the native provider execution plane. Its
+  provider-neutral registry activates independent Loki, Elasticsearch,
+  OpenSearch, PostgreSQL, MySQL, generic safe-read HTTPS, and isolated command
+  runner adapters plus all six native-language policies. The investigation core receives only
   candidates, authorization outcomes, and normalized evidence; it does not
   import or branch on provider products.
 - LogQL is completely parsed by the fixed Apache-2.0 Grafana Lezer grammar in
@@ -124,10 +125,38 @@ the current completed implementation baseline:
   Script, runtime mapping, wildcard/regex/query-string, async/PIT/scroll,
   template, plugin, write, management, unknown, and partial-response paths are
   disabled.
+- SQL is parsed with the exact `sqlglot==30.17.0` PostgreSQL/MySQL AST parser.
+  It permits a bounded SELECT, one non-recursive read-only CTE, or an
+  explain-only request; rejects unknown AST/function nodes, multiple statements,
+  system schemas, unsafe joins, locking and write semantics; validates the exact
+  table/column catalog; injects tenant/time predicates, stable ordering and
+  LIMIT; and enforces EXPLAIN row/cost plus result row/byte budgets. PostgreSQL
+  must attest a read-only replica and non-write-capable role; MySQL must attest
+  both read-only flags and an exact SELECT/SHOW VIEW grant set. Execution uses
+  explicit read-only transactions and server timeouts.
+- Generic HTTPS accepts only cataloged GET/HEAD endpoints with canonical
+  lowercase DNS origins, exact ports and typed path/query schemas. It has no
+  request-body, redirect, proxy, credential-header, arbitrary content-type, or
+  unchecked decompression capability. ValueRefs occupy complete query values;
+  server-owned window, limit, and constant values cannot be overridden.
+- `src/lode/command_runner` is an HMAC-authenticated, replay-protected process
+  boundary for one fixed `rg --fixed-strings` profile. The worker is the only
+  application service holding `LODE_COMMAND_RUNNER_KEY`; API and consumer do
+  not receive it. The runner verifies the binary hash and argv grammar again,
+  resolves a frozen working set without symlinks, and uses bubblewrap with no
+  network, an empty environment, a read-only root, and only the authorized file
+  mounted into the invocation. Compose gives it a private internal network,
+  separate numeric uid, no capabilities, no-new-privileges, process/CPU/memory
+  limits, a runner-specific seccomp deny profile, and no writable volume.
+  High-risk secret output is discarded with
+  only its SHA-256 and category retained. `LODE_COMMAND_RUNNER_ENABLED=false`
+  is an independent fail-closed process kill switch. The deployment host must
+  permit unprivileged user namespaces for bubblewrap; if it does not, command
+  execution fails with `sandbox_violation` rather than falling back.
 - Provider HTTPS transport accepts only adapter-owned relative paths, disables
-redirects, resolves DNS inside every TCP connection, pins the connection to a
-checked address while retaining the original TLS identity, checks every address
-against an explicit CIDR scope, rejects loopback/link-local/multicast/unspecified
+  redirects, resolves DNS inside every TCP connection, pins the connection to a
+  checked address while retaining the original TLS identity, checks every address
+  against an explicit CIDR scope, rejects loopback/link-local/multicast/unspecified
   addresses, limits decompressed response bytes, and injects credentials only
   inside the adapter. Normalization validates duplicate-free bounded JSON,
   stable pagination and response shape, masks secret patterns, and marks prompt
@@ -148,10 +177,16 @@ Run `make resource-check` whenever scanning, identity validation, graph
 publication, derived-resource views, or investigation graph snapshots change.
 Run `make evidence-access-check` whenever candidate validation, policy,
 ValueRef binding, authorization, execution permits, audit, or kill switches
-change.
+change. The check writes immutable audit rows, so every invocation creates a
+unique fixture identity and reports counts scoped to that invocation's
+investigation; repeated runs against the same upgraded development database
+must remain valid.
 Run `make log-connectors-check` whenever LogQL parsing, search JSON policy,
 provider config/version/introspection, HTTP serialization, pagination,
 normalization, masking, or provider failure classification changes.
+Run `make native-connectors-check` whenever any native parser/policy, SQL or
+HTTPS adapter, command runner protocol/sandbox, connector registry, or native
+deployment boundary changes.
 Run
 `uv run python scripts/check_forbidden_contracts.py` as the full-repository V1
 removal gate; it is expected to become clean as the replacement phases delete
@@ -159,7 +194,7 @@ the currently implemented pre-final runtime contracts. Do not add an allowlist
 or compatibility adapter to make this gate pass.
 
 The sections below include final contracts for later implementation phases.
-Phases 1-5 changed the database/control-plane identity architecture, the
+Phases 1-6 changed the database/control-plane identity architecture, the
 migration/seed verification workflow, Kafka/manual intake, automatic resource
 understanding, and the currently assembled API routes. Phase 3 added the direct
 `PyYAML` dependency and the `resource-check` workflow. Phase 4 added an
@@ -168,7 +203,11 @@ independent authorization-key deployment requirement and the
 `src/lode/evidence_connectors` execution plane, direct
 `httpx` and `httpcore` runtime dependencies, fixed Node 24 LogQL parser build layer, three locked
 npm parser dependencies, required Compose authorization-key propagation, and
-the `log-connectors-check` workflow. Pre-final engine,
+the `log-connectors-check` workflow. Phase 6 added the fixed SQLGlot runtime
+dependency, SQL/HTTPS/command policies and adapters, the isolated command-runner
+image and private Compose network, independent runner key/kill switch, and the
+runner-specific `deploy/command-runner-seccomp.json` syscall profile, and the
+`native-connectors-check` workflow. Pre-final engine,
 remaining API, and Web modules are not a supported execution path while their
 owning phases replace them; they must be rewritten without adapters.
 
@@ -190,10 +229,18 @@ Lode is an evidence-backed production incident investigation service. A V1 inves
 - `src/lode/evidence_access/logql.py`: maintained complete-CST LogQL policy, root-scope injection, metric budgets, and ValueRef reparse.
 - `src/lode/evidence_access/elasticsearch.py`: Elasticsearch-specific structured JSON policy profile.
 - `src/lode/evidence_access/opensearch.py`: OpenSearch-specific structured JSON policy profile.
-- `src/lode/evidence_connectors/registry.py`: provider-neutral log policy/adapter composition root.
+- `src/lode/evidence_access/sql.py`: fixed-dialect AST proof, catalog scope, mandatory predicates, bounded CTE/EXPLAIN, and ValueRef reparse.
+- `src/lode/evidence_access/https.py`: canonical safe-read endpoint and typed query policy.
+- `src/lode/evidence_access/command.py`: exact fixed-argv and working-set policy.
+- `src/lode/evidence_connectors/registry.py`: provider-neutral native policy/adapter composition root.
 - `src/lode/evidence_connectors/loki.py`: Loki 3 verification, absolute-window scoped introspection, bounded query-range execution, and normalization.
 - `src/lode/evidence_connectors/elasticsearch.py`: Elasticsearch 8/9 verification and bounded search adapter.
 - `src/lode/evidence_connectors/opensearch.py`: OpenSearch 2/3 verification and bounded search adapter.
+- `src/lode/evidence_connectors/postgresql.py`: replica/role-attested PostgreSQL read adapter.
+- `src/lode/evidence_connectors/mysql.py`: topology/grant-attested MySQL read adapter with DNS-pinned sockets.
+- `src/lode/evidence_connectors/https.py`: generic cataloged GET/HEAD adapter.
+- `src/lode/evidence_connectors/command.py`: signed worker client for the isolated runner.
+- `src/lode/command_runner`: replay-protected protocol, fixed executor, and minimal FastAPI process.
 - `src/lode/evidence_connectors/transport.py`: redirect-free, DNS-pinned/CIDR-checked, byte-bounded HTTPS transport.
 - `tools/logql_parser/parser.mjs`: credential-free Grafana Lezer LogQL CST helper.
 - `src/lode/engine/investigation_engine.py`: one-action-at-a-time adaptive decision loop and terminal synthesis.
@@ -334,9 +381,10 @@ separate immutable scope revisions, encrypted secrets, verification records,
 and authorization/read audit objects. Connector kinds are code-registered and
 may have multiple instances without a schema migration.
 
-Log evidence capabilities are selected through the provider-neutral Connector
+Native evidence capabilities are selected through the provider-neutral Connector
 registry, never by an investigation-core product branch. The active kinds are
-`loki`, `elasticsearch`, and `opensearch`; each kind declares one native
+`loki`, `elasticsearch`, `opensearch`, `postgresql`, `mysql`, `https`, and
+`command_runner`; each kind declares one native
 language and its own verification, introspection, parser/policy versions, read
 capabilities, adapter, fixture corpus, egress policy, and failure semantics. A
 new provider is not active merely because it resembles an existing product: it
@@ -344,8 +392,9 @@ must register a complete independent security profile and contract tests.
 
 Database connectors support PostgreSQL and MySQL through structured DNS host,
 port, database, username, mandatory TLS, encrypted password, qualified
-allowed-table catalog, and optional sensitive-column masks. AI never supplies
-SQL or connector queries. Only server-owned bounded operations are accepted.
+allowed-table catalog, AST-validated model candidates, and server-injected
+predicates and budgets. The model never receives credentials or direct database
+access, and an effective action can execute only through a one-use permit.
 Kafka evidence connectors are independent of `Workspace.ingestion_topic` and
 are limited to administrator-allowlisted topics and consumer groups.
 
@@ -472,6 +521,7 @@ uv run python scripts/check_intake.py
 uv run python scripts/check_resource_graph.py
 uv run python scripts/check_evidence_access.py
 make log-connectors-check
+make native-connectors-check
 ```
 
 Alembic autogeneration against that database must produce no schema difference.
@@ -489,7 +539,7 @@ control-plane models.
 The evidence-access checker constructs the full snapshot/model/operation/audit
 chain through the production Elasticsearch policy. It verifies exact opaque
 ValueRef round trips, mandatory timestamp/source/sort constraints, budget
-shrinkage, missing parser rejection, kill switch rejection, duplicate
+shrinkage, unsupported SQL-node rejection, kill switch rejection, duplicate
 fingerprint rejection, encrypted-only effective actions, signed hash-bound
 tokens, forged permit rejection, one adapter call under concurrent replay, and
 terminal immutable success and provider-rate-limit attempts.
@@ -503,6 +553,12 @@ performs both `uv sync --all-extras` and the locked, script-disabled npm install
 for `tools/logql_parser`. The backend Docker image builds that parser under
 Node 24 and copies only its runtime plus the Node executable into the Python
 image.
+
+`make native-connectors-check` additionally runs the PostgreSQL/MySQL AST and
+replica/grant-attestation suites, generic HTTPS canonicalization/SSRF and
+endpoint-schema corpus, command argv/path corpus, signed runner protocol,
+replay and process kill switches, exact-file bubblewrap mapping, high-risk
+secret hashing, and Compose privilege/network/key-ownership assertions.
 
 ## Frontend Contract
 
@@ -524,11 +580,13 @@ Backend:
 make install
 export LODE_DATA_ENCRYPTION_KEY='replace-with-an-independent-random-secret'
 export LODE_EVIDENCE_AUTHORIZATION_KEY='replace-with-a-third-independent-random-secret'
+export LODE_COMMAND_RUNNER_KEY='replace-with-a-fourth-independent-random-secret'
 make contracts
 make intake-check
 make resource-check
 make evidence-access-check
 make log-connectors-check
+make native-connectors-check
 uv run python -m compileall -q src scripts alembic tests
 uv run pytest -q
 ```
@@ -576,5 +634,15 @@ provider request snapshots, stable pagination/order, partial and malformed
 responses, timeout/429/5xx/auth classification, DNS/CIDR/redirect/byte egress
 controls, secret masking, prompt-injection marking, and provider-neutral core
 imports.
+
+SQL/HTTPS/Command changes must additionally cover PostgreSQL and MySQL dialect
+AST differentials, safe CTE and non-executing EXPLAIN, write/locking/function/
+system-catalog rejection, replica and grant attestation, read-only transaction
+and cost budgets, canonical URL/SSRF/DNS/redirect/decompression controls, exact
+endpoint schemas, argv and ValueRef injection, binary attestation, symlink/path
+escape, signed protocol replay, exact-file read-only mounts, empty environment,
+private network and secret ownership, process kill switch, output truncation,
+high-risk secret hashing, and infrastructure behavior when policy input is
+forged.
 
 Before declaring work complete, assess architecture, dependency, and development-workflow impact. Update this file immediately when any of those contracts change, then verify the documented commands and behavior match the implementation.

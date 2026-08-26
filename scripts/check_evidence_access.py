@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import func, select
 
@@ -44,7 +45,7 @@ from lode.evidence_access.mock import MockEvidenceAdapter
 from lode.evidence_access.orchestrator import EvidenceReadOrchestrator, ExecutionPermit
 from lode.evidence_access.tokens import AuthorizationTokenError, verify_token
 from lode.evidence_access.types import AccessContext
-from lode.evidence_connectors.registry import build_log_policy_registry
+from lode.evidence_connectors.registry import build_native_policy_registry
 from lode.evidence_connectors.types import ProviderExecutionError
 from lode.infrastructure.intake_store import PostgresIntakeStore
 
@@ -67,7 +68,9 @@ def _candidate(
         payload = (
             {"query": f'{{app="api"}} |= "{SENTINEL}"'}
             if language == "logql"
-            else {"query": "SELECT 1"}
+            else {
+                "query": "SELECT pg_sleep(1)" if variant == "unsupported" else "SELECT 1"
+            }
         )
     else:
         query = {"term": {"trace.id": SENTINEL}}
@@ -138,15 +141,16 @@ def _find_trace_value(value):
 
 
 async def _create_fixture(session):
+    fixture_id = uuid4().hex[:12]
     user = User(
-        email="evidence-access-check@example.invalid",
-        name="Evidence Access Check",
+        email=f"evidence-access-check+{fixture_id}@example.invalid",
+        name=f"Evidence Access Check {fixture_id}",
         role="admin",
         status="active",
     )
     workspace = Workspace(
-        name="Evidence access check",
-        ingestion_topic="evidence-access-check",
+        name=f"Evidence access check {fixture_id}",
+        ingestion_topic=f"evidence-access-check-{fixture_id}",
     )
     session.add_all([user, workspace])
     await session.flush()
@@ -169,7 +173,7 @@ async def _create_fixture(session):
     investigation = await session.get(Investigation, intake.investigation_id)
 
     provider = AIProviderAccount(
-        name="evidence-access-check",
+        name=f"evidence-access-check-{fixture_id}",
         provider_kind="mock",
         base_url="https://model.invalid",
         credential_ciphertext=encrypt_value("model-secret"),
@@ -548,7 +552,7 @@ async def main() -> None:
     async with AsyncSessionLocal() as session:
         fixture = await _create_fixture(session)
         workspace, investigation, connector, snapshot, operations, invocations = fixture
-        registry = build_log_policy_registry()
+        registry = build_native_policy_registry()
 
         allow = await EvidenceAccessAuthorizer(session, registry).authorize(
             _candidate(action_id=operations[0].action_id, connector_id=connector.id),
@@ -570,6 +574,7 @@ async def main() -> None:
                 action_id=operations[1].action_id,
                 connector_id=connector.id,
                 language="sql",
+                variant="unsupported",
             ),
             _context(workspace, investigation, connector, snapshot, operations[1], invocations[1]),
         )
@@ -647,16 +652,32 @@ async def main() -> None:
         assert failure_attempt.failure_code == "rate_limited"
         counts = {
             "authorized_reads": (
-                await session.execute(select(func.count()).select_from(AuthorizedEvidenceRead))
+                await session.execute(
+                    select(func.count())
+                    .select_from(AuthorizedEvidenceRead)
+                    .where(AuthorizedEvidenceRead.investigation_id == investigation.id)
+                )
             ).scalar_one(),
             "candidates": (
-                await session.execute(select(func.count()).select_from(NativeReadCandidate))
+                await session.execute(
+                    select(func.count())
+                    .select_from(NativeReadCandidate)
+                    .where(NativeReadCandidate.investigation_id == investigation.id)
+                )
             ).scalar_one(),
             "decisions": (
-                await session.execute(select(func.count()).select_from(EvidenceAccessDecision))
+                await session.execute(
+                    select(func.count())
+                    .select_from(EvidenceAccessDecision)
+                    .where(EvidenceAccessDecision.investigation_id == investigation.id)
+                )
             ).scalar_one(),
             "attempts": (
-                await session.execute(select(func.count()).select_from(EvidenceReadAttempt))
+                await session.execute(
+                    select(func.count())
+                    .select_from(EvidenceReadAttempt)
+                    .where(EvidenceReadAttempt.investigation_id == investigation.id)
+                )
             ).scalar_one(),
         }
         print(
@@ -671,7 +692,7 @@ async def main() -> None:
                     "replay_rejected": any(
                         isinstance(item, AuthorizationTokenError) for item in outcomes
                     ),
-                    "unsupported_language": unsupported.rejection_code,
+                    "unsupported_sql": unsupported.rejection_code,
                     "provider_failure": failed.failure_code,
                 },
                 indent=2,

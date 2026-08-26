@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Integer, Text, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,7 +34,9 @@ class EvidenceConnector(TimestampMixin, Base):
     secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     instance_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
-    verification_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="untested")
+    verification_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="untested"
+    )
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
     capabilities: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
@@ -71,6 +81,8 @@ class EvidenceAccessScope(CreatedAtMixin, Base):
         ),
         CheckConstraint("schema_catalog_revision > 0", name="schema_revision_positive"),
         CheckConstraint("read_policy_revision > 0", name="policy_revision_positive"),
-        CheckConstraint("normalization_policy_revision > 0", name="normalization_revision_positive"),
+        CheckConstraint(
+            "normalization_policy_revision > 0", name="normalization_revision_positive"
+        ),
         CheckConstraint("revision > 0", name="revision_positive"),
     )

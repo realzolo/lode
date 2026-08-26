@@ -94,7 +94,9 @@ class Settings(BaseSettings):
     evidence_git_clone_timeout_seconds: int = 60
     # Administrator-controlled repository context files. These are the only
     # instruction/document files that can enter immutable source evidence.
-    evidence_git_context_paths: str = "AGENTS.md,AGENT.md,CLAUDE.md,README.md,README.*,.github/AGENTS.md"
+    evidence_git_context_paths: str = (
+        "AGENTS.md,AGENT.md,CLAUDE.md,README.md,README.*,.github/AGENTS.md"
+    )
     evidence_git_context_max_files: int = 8
     evidence_git_context_max_bytes: int = 80_000
     # Read-only DB proxy hardening (M3). TLS certificate and hostname
@@ -129,6 +131,10 @@ class Settings(BaseSettings):
     logql_parser_node: str = "node"
     logql_parser_script: str = ""
     logql_parser_timeout_seconds: float = 2.0
+    # Independent authentication boundary for the isolated command runner.
+    # API and consumer processes must not receive this key.
+    command_runner_url: str = "http://command-runner:8080"
+    command_runner_key: str = ""
 
     # Rate limiting (M6 hardening)
     # In-process fixed-window limiter applied to every non-exempt route. The
@@ -149,6 +155,7 @@ class Settings(BaseSettings):
     llm_request_timeout_seconds: float = 120.0
     llm_probe_timeout_seconds: float = 30.0
     llm_max_output_tokens: int = 8_192
+
 
 @lru_cache
 def get_settings() -> Settings:

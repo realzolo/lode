@@ -112,6 +112,8 @@ services:
       LODE_DATA_ENCRYPTION_KEY: ${LODE_DATA_ENCRYPTION_KEY:?set LODE_DATA_ENCRYPTION_KEY}
       LODE_EVIDENCE_AUTHORIZATION_KEY: ${LODE_EVIDENCE_AUTHORIZATION_KEY:?set LODE_EVIDENCE_AUTHORIZATION_KEY}
       LODE_INTEGRATION_EGRESS_ALLOWLIST: ${LODE_INTEGRATION_EGRESS_ALLOWLIST:-}
+      LODE_COMMAND_RUNNER_URL: http://command-runner:8080
+      LODE_COMMAND_RUNNER_KEY: ${LODE_COMMAND_RUNNER_KEY:?set LODE_COMMAND_RUNNER_KEY}
       LODE_KAFKA_BOOTSTRAP_SERVERS: ${LODE_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
       LODE_KAFKA_SECURITY_PROTOCOL: ${LODE_KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
       LODE_KAFKA_SASL_MECHANISM: ${LODE_KAFKA_SASL_MECHANISM:-PLAIN}
@@ -127,6 +129,43 @@ services:
         condition: service_healthy
       app:
         condition: service_healthy
+      command-runner:
+        condition: service_healthy
+    networks:
+      - default
+      - runner-control
+    restart: unless-stopped
+
+  command-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.command-runner
+    environment:
+      LODE_COMMAND_RUNNER_KEY: ${LODE_COMMAND_RUNNER_KEY:?set LODE_COMMAND_RUNNER_KEY}
+      LODE_COMMAND_RUNNER_ENABLED: ${LODE_COMMAND_RUNNER_ENABLED:-true}
+    networks:
+      - runner-control
+    read_only: true
+    volumes:
+      - ./runner_worksets:/worksets:ro
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./deploy/command-runner-seccomp.json
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"
+      interval: 5s
+      timeout: 3s
+      retries: 12
     restart: unless-stopped
 
   web:
@@ -145,3 +184,7 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  runner-control:
+    internal: true

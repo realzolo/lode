@@ -1,6 +1,6 @@
 # Evidence Access Plane Threat Model
 
-Status: Phase 0 frozen baseline; Phase 4 kernel and Phase 5 log connectors implemented
+Status: Phase 0 frozen baseline; Phase 4 kernel and Phase 5/6 native connectors implemented
 
 Owners:
 
@@ -50,6 +50,29 @@ regeneration.
 | SQL | multi-statement, writable CTE, locking reads, file/network/UDF side effects, system catalogs, cost exhaustion | Fixed dialect AST, every node read-only, catalog allowlist, enforced limit/timeouts, optional non-executing explain | Attested replica/snapshot, read-only role and transaction, resource group |
 | HTTPS | SSRF, DNS rebinding, ambiguous normalization, redirects, credential override, nominal GET with side effects | Canonical HTTPS URL, safe-read endpoint catalog, host/port/path/schema and response checks | Network policy, IP policy, zero redirects, adapter-injected identity |
 | Command | shell injection, interpreter escape, path/symlink escape, writable mount, inherited environment/network, binary replacement | Structured executable/argv/working-set, exact flag grammar, fixed binary path and hash | Separate uid/image, read-only mounts/root, empty environment, no network, syscall/resource limits |
+
+The SQL policy uses the fixed SQLGlot parser for PostgreSQL and MySQL and
+enables only bounded SELECT, one non-recursive read-only CTE, and non-executing
+EXPLAIN evidence. The generic HTTPS adapter has no request body or redirect
+capability. The initial command catalog contains only one exact
+`/usr/bin/rg --fixed-strings` profile; adding another profile requires a code
+and threat-model change, not a configuration edit.
+
+The command runner is separately authenticated and replay protected. It
+revalidates binary hash, argv, budget, logical working root and every path
+component after the worker policy. Each bubblewrap invocation has no network,
+an empty environment and only its exact authorized file mounted read-only.
+The outer container has a read-only root, no writable volumes, a private network,
+separate uid, dropped capabilities, no-new-privileges and resource limits. API
+and consumer receive neither its key nor its network. A runner-specific seccomp
+profile permits namespace construction but rejects BPF, ptrace, keyring,
+cross-process memory, kernel-module, host-control and performance-monitoring
+syscalls. An independent process
+kill switch returns 503 before preflight or execution. Private-key and cloud
+access-key output is discarded; only SHA-256, category and rejection metadata
+cross the runner boundary. Unprivileged user namespaces are a deployment
+prerequisite. A host that disables them produces `sandbox_violation`; the
+runner never falls back to unsandboxed execution.
 
 ## Cross-Cutting Abuse Cases
 
