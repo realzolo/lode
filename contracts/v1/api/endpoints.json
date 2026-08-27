@@ -19,6 +19,9 @@
     ["POST", "/workspaces"],
     ["GET", "/workspaces"],
     ["GET", "/workspaces/{workspace_id}"],
+    ["GET", "/workspaces/{workspace_id}/members"],
+    ["PUT", "/workspaces/{workspace_id}/members/{member_id}"],
+    ["DELETE", "/workspaces/{workspace_id}/members/{member_id}"],
     ["POST", "/workspaces/{workspace_id}/ingestion/start"],
     ["POST", "/workspaces/{workspace_id}/ingestion/pause"],
     ["POST", "/workspaces/{workspace_id}/ingestion/resume"],
@@ -61,6 +64,7 @@
     ["POST", "/workspaces/{workspace_id}/evidence-connectors/{connector_id}/introspect"],
     ["DELETE", "/workspaces/{workspace_id}/evidence-connectors/{connector_id}"],
     ["POST", "/investigations"],
+    ["GET", "/workbench/workspaces"],
     ["GET", "/investigations"],
     ["GET", "/investigations/{investigation_id}"],
     ["GET", "/investigations/{investigation_id}/technical"],
@@ -68,6 +72,10 @@
     ["GET", "/investigations/{investigation_id}/audit"],
     ["GET", "/investigations/{investigation_id}/stream"],
     ["POST", "/investigations/{investigation_id}/retry"],
-    ["POST", "/investigations/{investigation_id}/archive"]
+    ["POST", "/admin/investigations/{investigation_id}/archive"],
+    ["GET", "/users"],
+    ["POST", "/users"],
+    ["PATCH", "/users/{user_id}"],
+    ["POST", "/users/{user_id}/reset-password"]
   ]
 }

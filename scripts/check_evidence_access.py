@@ -162,9 +162,9 @@ def _find_trace_value(value):
 async def _create_fixture(session):
     fixture_id = uuid4().hex[:12]
     user = User(
-        email=f"evidence-access-check+{fixture_id}@example.invalid",
-        name=f"Evidence Access Check {fixture_id}",
-        role="admin",
+        username=f"evidence-{fixture_id}",
+        display_name=f"Evidence Access Check {fixture_id}",
+        password_hash="checker",
         status="active",
     )
     workspace = Workspace(

@@ -36,7 +36,6 @@
     "context_policy_revisions",
     "users",
     "workspace_permissions",
-    "invites",
     "audit_events"
   ],
   "intake": [

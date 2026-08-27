@@ -12,8 +12,8 @@ const intlMiddleware = createMiddleware({
 // Routes that require an authenticated session. The app is split into two
 // portals under real top-level segments: `/admin` (Admin Console) and
 // `/workbench` (Developer Workbench). Everything under either is gated, so we
-// only need to protect those two segments — deeper paths inherit the parent.
-const PROTECTED_SEGMENTS = new Set(['admin', 'workbench']);
+// Password rotation is likewise session-only. Deeper paths inherit the parent.
+const PROTECTED_SEGMENTS = new Set(['admin', 'workbench', 'change-password']);
 
 const TOKEN_COOKIE = 'lode_token';
 

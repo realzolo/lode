@@ -57,7 +57,9 @@ from lode.api.control_schemas import (
     WorkspaceRepositoryCandidateOut,
     WorkspaceOut,
 )
+from lode.api.schemas import WorkspaceMemberOut, WorkspaceMemberPutIn
 from lode.api.deps import assert_workspace_permission, require_admin, require_user
+from lode.api.audit import audit_action
 from lode.ai_output import SUPPORTED_AI_OUTPUT_LANGUAGES
 from lode.application.investigation_policy import investigation_policy_columns
 from lode.config import kafka_security_kwargs, settings
@@ -238,7 +240,7 @@ def _platform_settings_out(row: PlatformSettings) -> PlatformSettingsOut:
 def _audit(user: User, action: str, target_type: str, target_id: int, workspace_id=None):
     return AuditEvent(
         actor_id=user.id,
-        actor_email=user.email,
+        actor_username=user.username,
         action=action,
         target_type=target_type,
         target_id=str(target_id),
@@ -780,7 +782,6 @@ async def create_workspace(
     session.add(policy)
     await session.flush()
     row.investigation_policy_revision_id = policy.id
-    session.add(WorkspacePermission(user_id=user.id, workspace_id=row.id, permission="admin"))
     session.add(_audit(user, "workspace.create", "workspace", row.id, row.id))
     session.add(
         _audit(user, "investigation_policy.publish", "investigation_policy_revision", policy.id, row.id)
@@ -796,10 +797,6 @@ async def list_workspaces(
 ):
     user = await _active_user(session, user_id)
     statement = select(Workspace).order_by(Workspace.name, Workspace.id)
-    if user.role != "admin":
-        statement = statement.join(WorkspacePermission).where(
-            WorkspacePermission.user_id == user.id
-        )
     rows = (await session.execute(statement)).scalars().unique()
     return [WorkspaceOut.model_validate(row) for row in rows]
 
@@ -812,6 +809,121 @@ async def get_workspace(
 ):
     _, row = await _workspace_access(session, user_id, workspace_id, "read")
     return WorkspaceOut.model_validate(row)
+
+
+@router.get("/workspaces/{workspace_id}/members", response_model=list[WorkspaceMemberOut])
+async def list_workspace_members(
+    workspace_id: int,
+    _: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[WorkspaceMemberOut]:
+    if await session.get(Workspace, workspace_id) is None:
+        raise _error(404, "workspace_not_found", "Workspace not found.")
+    rows = (
+        await session.execute(
+            select(WorkspacePermission, User)
+            .join(User, User.id == WorkspacePermission.user_id)
+            .where(WorkspacePermission.workspace_id == workspace_id)
+            .order_by(User.username)
+        )
+    ).all()
+    return [
+        WorkspaceMemberOut(
+            user_id=user.id,
+            username=user.username,
+            display_name=user.display_name,
+            status=user.status,
+            permission=grant.permission,
+        )
+        for grant, user in rows
+    ]
+
+
+@router.put("/workspaces/{workspace_id}/members/{member_id}", response_model=WorkspaceMemberOut)
+async def put_workspace_member(
+    workspace_id: int,
+    member_id: int,
+    payload: WorkspaceMemberPutIn,
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> WorkspaceMemberOut:
+    if await session.get(Workspace, workspace_id) is None:
+        raise _error(404, "workspace_not_found", "Workspace not found.")
+    user = await session.get(User, member_id)
+    if user is None or user.is_system_admin:
+        raise _error(404, "workbench_user_not_found", "Regular user not found.")
+    grant = await session.get(WorkspacePermission, (member_id, workspace_id))
+    if grant is None:
+        grant = WorkspacePermission(
+            user_id=member_id, workspace_id=workspace_id, permission=payload.permission
+        )
+        session.add(grant)
+        action = "workspace.member.grant"
+    else:
+        grant.permission = payload.permission
+        action = "workspace.member.update"
+    await session.commit()
+    await audit_action(
+        action=action,
+        actor_id=admin_id,
+        target_type="workspace_permission",
+        target_id=f"{member_id}:{workspace_id}",
+        workspace_id=workspace_id,
+    )
+    return WorkspaceMemberOut(
+        user_id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        status=user.status,
+        permission=grant.permission,
+    )
+
+
+@router.delete("/workspaces/{workspace_id}/members/{member_id}", status_code=204)
+async def delete_workspace_member(
+    workspace_id: int,
+    member_id: int,
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    grant = await session.get(WorkspacePermission, (member_id, workspace_id))
+    if grant is None:
+        raise _error(404, "workspace_member_not_found", "Workspace member not found.")
+    await session.delete(grant)
+    await session.commit()
+    await audit_action(
+        action="workspace.member.revoke",
+        actor_id=admin_id,
+        target_type="workspace_permission",
+        target_id=f"{member_id}:{workspace_id}",
+        workspace_id=workspace_id,
+    )
+
+
+@router.post("/admin/investigations/{investigation_id}/archive")
+async def archive_investigation_as_admin(
+    investigation_id: str,
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    row = await session.scalar(select(Investigation).where(Investigation.public_id == investigation_id))
+    if row is None:
+        raise _error(404, "investigation_not_found", "Investigation not found.")
+    if row.status not in {"completed", "failed", "cancelled"}:
+        raise _error(409, "investigation_not_terminal", "Only a terminal investigation can archive.")
+    if row.archived_at is not None:
+        raise _error(409, "investigation_already_archived", "Investigation is already archived.")
+    row.archived_at = datetime.now(UTC)
+    row.archived_by = admin_id
+    await session.commit()
+    await audit_action(
+        action="investigation.archive",
+        actor_id=admin_id,
+        target_type="investigation",
+        target_id=investigation_id,
+        workspace_id=row.workspace_id,
+    )
+    return {"status": "ok"}
 
 
 async def _broker_has_topic(topic: str) -> bool:

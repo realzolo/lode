@@ -20,7 +20,7 @@ from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
 from lode.security import hash_password
 
-TEST_EMAIL = f"test-auth-{uuid.uuid4().hex}@lode.local"
+TEST_USERNAME = f"auth-{uuid.uuid4().hex[:12]}"
 TEST_PASSWORD = "test-pass-123"
 
 
@@ -28,19 +28,19 @@ TEST_PASSWORD = "test-pass-123"
 async def test_user() -> tuple[str, str, int]:
     async with AsyncSessionLocal() as session:
         existing = (
-            await session.execute(select(User).where(User.email == TEST_EMAIL))
+            await session.execute(select(User).where(User.username == TEST_USERNAME))
         ).scalars().first()
-        user = existing or User(email=TEST_EMAIL, name="Auth Test")
-        user.name = "Auth Test"
-        user.role = "user"
+        user = existing or User(username=TEST_USERNAME, display_name="Auth Test", password_hash=hash_password(TEST_PASSWORD))
+        user.display_name = "Auth Test"
         user.status = "active"
         user.password_hash = hash_password(TEST_PASSWORD)
+        user.must_change_password = False
         if existing is None:
             session.add(user)
         await session.commit()
         await session.refresh(user)
         uid = user.id
-    yield TEST_EMAIL, TEST_PASSWORD, uid
+    yield TEST_USERNAME, TEST_PASSWORD, uid
     async with AsyncSessionLocal() as session:
         victim = (await session.execute(select(User).where(User.id == uid))).scalars().first()
         if victim is not None:
@@ -53,10 +53,10 @@ def _client() -> AsyncClient:
 
 
 async def test_login_rejects_wrong_password(test_user):
-    email, _password, _uid = test_user
+    username, _password, _uid = test_user
     async with _client() as client:
         resp = await client.post(
-            "/auth/login", json={"email": email, "password": "not-the-right-one"}
+            "/auth/login", json={"username": username, "password": "not-the-right-one"}
         )
         assert resp.status_code == 401
         assert "error" in resp.json()
@@ -69,10 +69,10 @@ async def test_protected_route_requires_token(test_user):
 
 
 async def test_login_and_token_grants_access(test_user):
-    email, password, _uid = test_user
+    username, password, _uid = test_user
     async with _client() as client:
         resp = await client.post(
-            "/auth/login", json={"email": email, "password": password}
+            "/auth/login", json={"username": username, "password": password}
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -82,7 +82,7 @@ async def test_login_and_token_grants_access(test_user):
         # /auth/me reflects the authenticated principal.
         resp2 = await client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert resp2.status_code == 200
-        assert resp2.json()["email"] == email
+        assert resp2.json()["username"] == username
 
         # A malformed token is rejected.
         resp3 = await client.get(
@@ -96,13 +96,13 @@ async def test_login_and_token_grants_access(test_user):
 
 
 async def test_workspace_resource_view_requires_auth_and_permission(test_user):
-    email, password, _uid = test_user
+    username, password, _uid = test_user
     async with _client() as client:
         unauthorized = await client.get("/workspaces/1/build-units")
         assert unauthorized.status_code == 401
 
         login = await client.post(
-            "/auth/login", json={"email": email, "password": password}
+            "/auth/login", json={"username": username, "password": password}
         )
         token = login.json()["token"]
         denied = await client.get(

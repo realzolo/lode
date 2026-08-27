@@ -135,9 +135,9 @@ async def _fixture() -> tuple[int, int, int]:
     suffix = uuid4().hex[:12]
     async with AsyncSessionLocal() as session:
         user = User(
-            email=f"investigation-check+{suffix}@example.invalid",
-            name=f"Investigation Check {suffix}",
-            role="admin",
+            username=f"investigation-{suffix}",
+            display_name=f"Investigation Check {suffix}",
+            password_hash="checker",
             status="active",
         )
         workspace = Workspace(

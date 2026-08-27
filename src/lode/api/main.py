@@ -25,13 +25,15 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from lode.api.audit import _correlation_id
-from lode.api.deps import require_user
+from lode.api.deps import require_admin, require_workbench_user
 from lode.api.rate_limit import HardeningMiddleware, RateLimiter
 from lode.api.routes.auth import router as auth_router
 from lode.api.routes.control_plane import router as control_plane_router
 from lode.api.routes.health import router as health_router
-from lode.api.routes.investigations import router as investigations_router
-from lode.api.routes.invites import router as invites_router
+from lode.api.routes.investigations import (
+    router as investigations_router,
+    workbench_router,
+)
 from lode.api.routes.resources import router as resources_router
 from lode.api.routes.users import router as users_router
 from lode.migrations import run_migrations
@@ -155,16 +157,16 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(health_router)
 app.include_router(auth_router)
 
-# Protected business routes (require a valid bearer token).
-_protected = [Depends(require_user)]
-app.include_router(investigations_router, dependencies=_protected)
-app.include_router(control_plane_router, dependencies=_protected)
-app.include_router(resources_router, dependencies=_protected)
-app.include_router(users_router, dependencies=_protected)
-
-# Invites: admin endpoints carry require_admin (which itself requires auth);
-# the accept endpoint is intentionally left open so new users can onboard.
-app.include_router(invites_router)
+# Management and Workbench are separate authorization domains.  Router-level
+# dependencies are intentional: they prevent a missed endpoint annotation from
+# leaking the other portal's data.
+_admin_routes = [Depends(require_admin)]
+_workbench_routes = [Depends(require_workbench_user)]
+app.include_router(control_plane_router, dependencies=_admin_routes)
+app.include_router(users_router, dependencies=_admin_routes)
+app.include_router(investigations_router, dependencies=_workbench_routes)
+app.include_router(workbench_router, dependencies=_workbench_routes)
+app.include_router(resources_router, dependencies=_workbench_routes)
 
 
 @app.get("/")

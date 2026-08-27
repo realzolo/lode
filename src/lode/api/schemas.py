@@ -14,15 +14,16 @@ class _StrictInput(BaseModel):
 
 class UserOut(BaseModel):
     id: int
-    email: str
-    name: str
-    role: str
+    username: str
+    display_name: str
     status: str
+    is_system_admin: bool
+    must_change_password: bool
     created_at: datetime
 
 
 class AuthLoginIn(_StrictInput):
-    email: str = Field(min_length=3, max_length=320)
+    username: str = Field(min_length=3, max_length=32)
     password: str = Field(min_length=1, max_length=200)
 
 
@@ -32,16 +33,14 @@ class TokenOut(BaseModel):
 
 
 class UserCreateIn(_StrictInput):
-    email: str = Field(min_length=3, max_length=320)
-    name: str = Field(default="", max_length=200)
-    role: Literal["admin", "user"] = "user"
-    password: str = Field(min_length=8, max_length=200)
+    username: str = Field(min_length=3, max_length=32)
+    display_name: str = Field(default="", max_length=200)
+    initial_password: str = Field(min_length=8, max_length=200)
 
 
 class UserUpdateIn(_StrictInput):
-    name: str | None = Field(default=None, max_length=200)
-    role: Literal["admin", "user"] | None = None
-    status: Literal["pending", "active", "disabled"] | None = None
+    display_name: str | None = Field(default=None, max_length=200)
+    status: Literal["active", "disabled"] | None = None
 
 
 class PasswordResetIn(_StrictInput):
@@ -53,19 +52,13 @@ class PasswordChangeIn(_StrictInput):
     new_password: str = Field(min_length=8, max_length=200)
 
 
-class InviteCreateIn(_StrictInput):
-    email: str = Field(min_length=3, max_length=320)
+class WorkspaceMemberPutIn(_StrictInput):
+    permission: Literal["viewer", "operator"]
 
 
-class InviteOut(BaseModel):
-    id: int
-    email: str
-    token: str
-    status: str
-    created_at: datetime
-
-
-class InviteAcceptIn(_StrictInput):
-    token: str = Field(min_length=1, max_length=500)
-    password: str = Field(min_length=8, max_length=200)
-    name: str = Field(default="", max_length=200)
+class WorkspaceMemberOut(BaseModel):
+    user_id: int
+    username: str
+    display_name: str
+    status: Literal["active", "disabled"]
+    permission: Literal["viewer", "operator"]

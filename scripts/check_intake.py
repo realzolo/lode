@@ -51,7 +51,7 @@ def _payload(*, alert_id: str, trace_id: str, event: str = "payment.order_create
 async def main() -> None:
     trace_id = '  引号\'" {job=~".*"} | json  '
     async with AsyncSessionLocal() as session:
-        user = User(email="intake-check@lode.local", role="admin", status="active")
+        user = User(username="intake-check", display_name="Intake Check", password_hash="checker", status="active")
         workspace = Workspace(
             name="Intake behavior",
             ingestion_topic="incident.intake.behavior.v1",

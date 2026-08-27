@@ -97,6 +97,7 @@
     "evidence_connectors": ["trg_evidence_connectors_secret_free"],
     "evidence_read_attempts": ["trg_evidence_read_attempts_authorization"],
     "investigation_code_findings": ["trg_investigation_code_findings_anchor"],
-    "investigation_reports": ["trg_investigation_reports_semantics"]
+    "investigation_reports": ["trg_investigation_reports_semantics"],
+    "users": ["trg_users_system_admin_immutable"]
   }
 }

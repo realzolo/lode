@@ -43,8 +43,8 @@ export function Sidebar({ portal, onNavigate }: { portal: Portal; onNavigate?: (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button className="sidebar-account" aria-label={t('accountMenu')}>
-          <span className="account-avatar">{(user?.name || user?.email || 'L')[0].toUpperCase()}</span>
-          <span className="account-meta"><strong>{user?.name || 'Lode user'}</strong><span>{user?.email}</span></span>
+          <span className="account-avatar">{(user?.display_name || user?.username || 'L')[0].toUpperCase()}</span>
+          <span className="account-meta"><strong>{user?.display_name || 'Lode user'}</strong><span>{user?.username}</span></span>
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>

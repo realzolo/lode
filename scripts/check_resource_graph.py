@@ -94,13 +94,13 @@ async def main() -> None:
         docs = await _binding(session, workspace, "docs", "documentation")
         conflict = await _binding(session, workspace, "conflict", "runtime_source")
         user = (await session.execute(
-            select(User).where(User.email == "resource-check@example.invalid")
+            select(User).where(User.username == "resource-check")
         )).scalar_one_or_none()
         if user is None:
             user = User(
-                email="resource-check@example.invalid",
-                name="Resource Check",
-                role="admin",
+                username="resource-check",
+                display_name="Resource Check",
+                password_hash="checker",
                 status="active",
             )
             session.add(user)

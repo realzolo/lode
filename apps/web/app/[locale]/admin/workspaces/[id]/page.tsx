@@ -27,12 +27,16 @@ import {
   fetchProviderAccounts,
   fetchRepositories,
   fetchWorkspace,
+  fetchWorkspaceMembers,
+  fetchUsers,
   fetchWorkspaceGitAccountGrants,
   fetchWorkspaceRepositoryCandidates,
   introspectConnector,
   publishModelPolicy,
   testConnector,
   updateInvestigationPolicy,
+  putWorkspaceMember,
+  removeWorkspaceMember,
 } from '@/lib/api';
 import { Link } from '@/lib/navigation';
 import type {
@@ -49,6 +53,8 @@ import type {
   Workspace,
   WorkspaceGitAccountGrant,
   WorkspaceRepositoryCandidate,
+  WorkspaceMember,
+  CurrentUser,
 } from '@/lib/types';
 
 const roles = ['planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor'];
@@ -72,13 +78,15 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
   const [connectors, setConnectors] = useState<EvidenceConnector[]>([]);
   const [investigationPolicy, setInvestigationPolicy] = useState<InvestigationPolicy | null>(null);
   const [kinds, setKinds] = useState<Array<{ kind: string; language: string; capabilities: string[]; secret_fields: string[] }>>([]);
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [users, setUsers] = useState<CurrentUser[]>([]);
   const [capabilities, setCapabilities] = useState<{ models: number; repositories: number; healthy_connectors: number; gaps: string[] } | null>(null);
   const [error, setError] = useState('');
   const [dialog, setDialog] = useState<'binding' | 'repository' | 'grant' | 'connector' | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [ws, modelRows, accountRows, repoRows, candidateRows, grantRows, buildUnitRows, componentRows, connectorRows, kindRows, caps, policy] = await Promise.all([
+      const [ws, modelRows, accountRows, repoRows, candidateRows, grantRows, buildUnitRows, componentRows, connectorRows, kindRows, caps, policy, memberRows, userRows] = await Promise.all([
         fetchWorkspace(params.id),
         fetchModelBindings(params.id),
         fetchProviderAccounts(),
@@ -91,6 +99,8 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
         fetchConnectorKinds(),
         fetchCapabilities(params.id),
         fetchInvestigationPolicy(params.id),
+        fetchWorkspaceMembers(params.id),
+        fetchUsers(),
       ]);
       setWorkspace(ws);
       setBindings(modelRows);
@@ -104,6 +114,8 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
       setKinds(kindRows);
       setCapabilities(caps);
       setInvestigationPolicy(policy);
+      setMembers(memberRows);
+      setUsers(userRows.filter((user) => !user.is_system_admin));
       setError('');
     } catch (cause) {
       setError(String(cause));
@@ -117,7 +129,8 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     { value: 'models', label: t('modelPolicy'), content: <Models workspaceId={params.id} bindings={bindings} accountModels={accountModels} onAdd={() => setDialog('binding')} onChanged={load} /> },
     { value: 'repositories', label: t('repositories'), content: <Repositories rows={repositories} grants={grants} buildUnits={buildUnits} components={components} onAuthorize={() => setDialog('grant')} onBind={() => setDialog('repository')} /> },
     { value: 'connectors', label: t('connectors'), content: <Connectors workspaceId={params.id} rows={connectors} onAdd={() => setDialog('connector')} onChanged={load} /> },
-  ], [accountModels, bindings, buildUnits, capabilities, components, connectors, grants, investigationPolicy, load, params.id, repositories, t, workspace]);
+    { value: 'members', label: t('members'), content: <Members workspaceId={params.id} members={members} users={users} onChanged={load} /> },
+  ], [accountModels, bindings, buildUnits, capabilities, components, connectors, grants, investigationPolicy, load, members, params.id, repositories, t, users, workspace]);
 
   return <main className="space-y-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
@@ -135,6 +148,15 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     <GrantDialog open={dialog === 'grant'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} onCreated={load} />
     <ConnectorDialog open={dialog === 'connector'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} kinds={kinds} onCreated={load} />
   </main>;
+}
+
+function Members({ workspaceId, members, users, onChanged }: { workspaceId: string; members: WorkspaceMember[]; users: CurrentUser[]; onChanged: () => Promise<void> }) {
+  const t = useTranslations('workspace');
+  const [userId, setUserId] = useState('');
+  const [permission, setPermission] = useState<'viewer' | 'operator'>('viewer');
+  async function save() { if (!userId) return; try { await putWorkspaceMember(workspaceId, Number(userId), permission); await onChanged(); setUserId(''); } catch (cause) { toast.error(String(cause)); } }
+  async function revoke(memberId: number) { try { await removeWorkspaceMember(workspaceId, memberId); await onChanged(); } catch (cause) { toast.error(String(cause)); } }
+  return <section className="space-y-4"><div className="flex flex-wrap gap-2"><Select value={userId} onChange={(event) => setUserId(event.target.value)}><option value="">{t('selectUser')}</option>{users.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}</Select><Select value={permission} onChange={(event) => setPermission(event.target.value as 'viewer' | 'operator')}><option value="viewer">{t('viewer')}</option><option value="operator">{t('operator')}</option></Select><Button disabled={!userId} onClick={() => void save()}>{t('grant')}</Button></div><div className="table-wrap"><table className="table"><thead><tr><th>{t('member')}</th><th>{t('permissions')}</th><th /></tr></thead><tbody>{members.map((member) => <tr key={member.user_id}><td>{member.username}</td><td><Select value={member.permission} onChange={(event) => void putWorkspaceMember(workspaceId, member.user_id, event.target.value as 'viewer' | 'operator').then(onChanged)}><option value="viewer">{t('viewer')}</option><option value="operator">{t('operator')}</option></Select></td><td><Button size="sm" variant="outline" onClick={() => void revoke(member.user_id)}>{t('revoke')}</Button></td></tr>)}</tbody></table></div></section>;
 }
 
 function Overview({ workspace, capabilities, policy, onPolicyChanged }: { workspace: Workspace | null; capabilities: { models: number; repositories: number; healthy_connectors: number; gaps: string[] } | null; policy: InvestigationPolicy | null; onPolicyChanged: (policy: InvestigationPolicy) => void }) {

@@ -1,17 +1,10 @@
 export interface CurrentUser {
   id: number;
-  email: string;
-  name: string;
-  role: 'admin' | 'user';
-  status: 'pending' | 'active' | 'disabled';
-  created_at: string;
-}
-
-export interface Invite {
-  id: number;
-  email: string;
-  token: string;
-  status: string;
+  username: string;
+  display_name: string;
+  status: 'active' | 'disabled';
+  is_system_admin: boolean;
+  must_change_password: boolean;
   created_at: string;
 }
 
@@ -28,6 +21,14 @@ export interface Workspace {
   ingestion_paused_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface WorkspaceMember {
+  user_id: number;
+  username: string;
+  display_name: string;
+  status: 'active' | 'disabled';
+  permission: 'viewer' | 'operator';
 }
 
 export interface PlatformSettings {

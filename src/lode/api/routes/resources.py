@@ -34,7 +34,7 @@ async def _authorized_session(workspace_id: int, user_id: int) -> AsyncSession:
         await session.close()
         raise HTTPException(status_code=401, detail="user not found")
     try:
-        await assert_workspace_permission(session, user, workspace_id, "read")
+        await assert_workspace_permission(session, user, workspace_id, "viewer")
     except Exception:
         await session.close()
         raise

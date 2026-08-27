@@ -33,11 +33,11 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
     now = datetime.now(UTC)
     async with AsyncSessionLocal() as session:
         user = User(
-            email=f"stream-{suffix}@lode.local",
-            name="Stream Admin",
+            username=f"stream-{suffix[:12]}",
+            display_name="Stream User",
             password_hash=hash_password("correct-horse-battery"),
-            role="admin",
             status="active",
+            must_change_password=False,
         )
         workspace = Workspace(
             name=f"stream-{suffix}",
@@ -59,7 +59,7 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
             WorkspacePermission(
                 user_id=user.id,
                 workspace_id=workspace.id,
-                permission="admin",
+                permission="operator",
             )
         )
         investigation = Investigation(
@@ -163,14 +163,21 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         assert "event: investigation.finished" in stream.text
         assert '"status":"completed"' in stream.text
 
-        archived = await client.post(f"/investigations/{public_id}/archive", headers=headers)
+    async with AsyncSessionLocal() as session:
+        admin = await session.scalar(select(User).where(User.is_system_admin))
+        assert admin is not None
+        admin.must_change_password = False
+        await session.commit()
+        admin_id = admin.id
+    admin_headers = {"Authorization": "Bearer " + create_token(admin_id, settings.jwt_signing_key, 3600)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        archived = await client.post(f"/admin/investigations/{public_id}/archive", headers=admin_headers)
         assert archived.status_code == 200
-        assert archived.json()["archived_at"] is not None
 
     async with AsyncSessionLocal() as session:
         persisted = await session.scalar(
             select(Investigation).where(Investigation.public_id == public_id)
         )
         assert persisted is not None
-        assert persisted.archived_by == user_id
+        assert persisted.archived_by == admin_id
         assert persisted.archived_at is not None

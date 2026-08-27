@@ -183,7 +183,7 @@ class WorkspacePermission(CreatedAtMixin, Base):
     permission: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
-        CheckConstraint("permission IN ('read', 'analyze', 'admin')", name="permission"),
+        CheckConstraint("permission IN ('viewer', 'operator')", name="permission"),
         Index("ix_workspace_permissions_workspace", "workspace_id", "permission"),
     )
 
@@ -195,7 +195,7 @@ class AuditEvent(CreatedAtMixin, Base):
     actor_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="RESTRICT")
     )
-    actor_email: Mapped[str | None] = mapped_column(Text)
+    actor_username: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     target_type: Mapped[str | None] = mapped_column(Text)
     target_id: Mapped[str | None] = mapped_column(Text)

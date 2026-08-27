@@ -15,7 +15,7 @@ export default function LoginPage() {
   const tc = useTranslations('common');
   const router = useRouter();
   const { setUser } = useUser();
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -25,25 +25,15 @@ export default function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      const result = await login(email, password);
+      const result = await login(username, password);
       clearToken();
       setToken(result.token);
       setUser(result.user);
-      // Send the user back to the page they originally requested (set by the
-      // middleware as ?redirect), defaulting to the dashboard. Read from the URL
-      // directly to avoid pulling in useSearchParams (which would need a Suspense
-      // boundary and deopt the page to client rendering).
-      const params = new URLSearchParams(window.location.search);
-      const redirectRaw = params.get('redirect');
-      // The JWT carries no role claim, so landing is decided from the user
-      // object returned by /auth/login (same authority as /auth/me). A pinned
-      // ?redirect (set by the middleware) always wins over the role default.
-      const roleDefault = result.user.role === 'admin' ? '/admin' : '/workbench';
-      const redirect =
-        redirectRaw && redirectRaw.startsWith('/') && !redirectRaw.startsWith('//')
-          ? redirectRaw
-          : roleDefault;
-      router.replace(redirect);
+      router.replace(
+        result.user.must_change_password
+          ? '/change-password'
+          : result.user.is_system_admin ? '/admin' : '/workbench',
+      );
     } catch (err) {
       setError(String(err));
     } finally {
@@ -64,14 +54,13 @@ export default function LoginPage() {
 
           <form className="stack" style={{ gap: 16 }} onSubmit={handleSubmit}>
             <div className="field">
-              <label className="field-label" htmlFor="email">{t('email')}</label>
+              <label className="field-label" htmlFor="username">{t('username')}</label>
               <Input
-                id="email"
-                type="email"
-                placeholder={t('email')}
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                id="username"
+                placeholder={t('username')}
+                autoComplete="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
               />
             </div>
             <div className="field">
@@ -94,7 +83,7 @@ export default function LoginPage() {
               className="w-full"
               variant="primary"
               type="submit"
-              disabled={busy || !email || !password}
+              disabled={busy || !username || !password}
             >
               {busy ? <span className="spinner" /> : null}
               {t('submit')}
@@ -102,7 +91,6 @@ export default function LoginPage() {
             </Button>
           </form>
 
-          <p className="login-note">{t('newHere')}</p>
       </Card>
     </main>
   );

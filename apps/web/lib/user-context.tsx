@@ -89,7 +89,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.is_system_admin === true;
 
   return (
     <UserContext.Provider value={{ user, isAdmin, loading, setUser, clearUser, refresh }}>

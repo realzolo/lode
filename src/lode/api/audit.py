@@ -47,7 +47,7 @@ async def record_audit_event(
     *,
     action: str,
     actor_id: int | None = None,
-    actor_email: str | None = None,
+    actor_username: str | None = None,
     target_type: str | None = None,
     target_id: str | None = None,
     workspace_id: int | None = None,
@@ -63,7 +63,7 @@ async def record_audit_event(
     """
     event = AuditEvent(
         actor_id=actor_id,
-        actor_email=actor_email,
+        actor_username=actor_username,
         action=action,
         target_type=target_type,
         target_id=target_id,

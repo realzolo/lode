@@ -137,11 +137,12 @@ def upgrade() -> None:
     op.create_table(
         "users",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
-        sa.Column("email", sa.Text(), nullable=False),
-        sa.Column("name", sa.Text(), server_default="", nullable=False),
-        sa.Column("password_hash", sa.Text(), nullable=True),
-        sa.Column("role", sa.Text(), server_default="user", nullable=False),
-        sa.Column("status", sa.Text(), server_default="pending", nullable=False),
+        sa.Column("username", sa.Text(), nullable=False),
+        sa.Column("display_name", sa.Text(), server_default="", nullable=False),
+        sa.Column("password_hash", sa.Text(), nullable=False),
+        sa.Column("status", sa.Text(), server_default="active", nullable=False),
+        sa.Column("must_change_password", sa.Boolean(), server_default=sa.text("false"), nullable=False),
+        sa.Column("is_system_admin", sa.Boolean(), server_default=sa.text("false"), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -154,41 +155,22 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.CheckConstraint("role IN ('admin', 'user')", name=op.f("ck_users_role")),
-        sa.CheckConstraint(
-            "status IN ('pending', 'active', 'disabled')", name=op.f("ck_users_status")
-        ),
+        sa.CheckConstraint("status IN ('active', 'disabled')", name=op.f("ck_users_status")),
+        sa.CheckConstraint("username = lower(btrim(username))", name=op.f("ck_users_username_normalized")),
+        sa.CheckConstraint("username ~ '^[a-z][a-z0-9._-]{2,31}$'", name=op.f("ck_users_username_format")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
-        sa.UniqueConstraint("email", name=op.f("uq_users_email")),
+        sa.UniqueConstraint("username", name=op.f("uq_users_username")),
     )
-    op.create_table(
-        "invites",
-        sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
-        sa.Column("email", sa.Text(), nullable=False),
-        sa.Column("token", sa.Text(), nullable=False),
-        sa.Column("invited_by", sa.BigInteger(), nullable=False),
-        sa.Column("status", sa.Text(), server_default="pending", nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.CheckConstraint(
-            "status IN ('pending', 'accepted', 'revoked')", name=op.f("ck_invites_status")
-        ),
-        sa.ForeignKeyConstraint(
-            ["invited_by"], ["users.id"], name=op.f("fk_invites_invited_by_users")
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_invites")),
-        sa.UniqueConstraint("token", name=op.f("uq_invites_token")),
+    op.create_index(
+        "uq_users_system_admin", "users", ["is_system_admin"], unique=True,
+        postgresql_where=sa.text("is_system_admin"),
     )
+    op.execute(sa.text("""
+        INSERT INTO users (username, display_name, password_hash, status, must_change_password, is_system_admin)
+        VALUES ('admin', 'System Administrator',
+                'pbkdf2_sha256$100000$0ac7bb0f44789ed5bccfd3007b5eafb5$4696eb0fa93219527d3899620592fb5498ad51d5a00151a205d3832df17e4245',
+                'active', true, true)
+    """))
     op.create_table(
         "provider_account_models",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
@@ -393,7 +375,7 @@ def upgrade() -> None:
         "audit_events",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("actor_id", sa.BigInteger(), nullable=True),
-        sa.Column("actor_email", sa.Text(), nullable=True),
+        sa.Column("actor_username", sa.Text(), nullable=True),
         sa.Column("action", sa.Text(), nullable=False),
         sa.Column("target_type", sa.Text(), nullable=True),
         sa.Column("target_id", sa.Text(), nullable=True),
@@ -1133,7 +1115,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
-            "permission IN ('read', 'analyze', 'admin')",
+            "permission IN ('viewer', 'operator')",
             name=op.f("ck_workspace_permissions_permission"),
         ),
         sa.ForeignKeyConstraint(
@@ -3990,6 +3972,31 @@ def upgrade() -> None:
 
     op.execute(
         sa.text("""
+        CREATE FUNCTION protect_system_administrator() RETURNS trigger AS $$
+        BEGIN
+            IF OLD.is_system_admin AND (
+                TG_OP = 'DELETE'
+                OR NEW.is_system_admin IS DISTINCT FROM true
+                OR NEW.username IS DISTINCT FROM 'admin'
+                OR NEW.status IS DISTINCT FROM 'active'
+            ) THEN
+                RAISE EXCEPTION 'system administrator identity is immutable';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """)
+    )
+    op.execute(
+        sa.text("""
+        CREATE TRIGGER trg_users_system_admin_immutable
+        BEFORE UPDATE OR DELETE ON users
+        FOR EACH ROW EXECUTE FUNCTION protect_system_administrator()
+        """)
+    )
+
+    op.execute(
+        sa.text("""
         CREATE FUNCTION reject_immutable_row_mutation() RETURNS trigger AS $$
         BEGIN
             RAISE EXCEPTION 'immutable row cannot be changed: %', TG_TABLE_NAME;
@@ -4441,7 +4448,7 @@ def downgrade() -> None:
     op.drop_table("platform_settings")
     op.drop_table("provider_model_observations")
     op.drop_table("provider_account_models")
-    op.drop_table("invites")
+    op.drop_index("uq_users_system_admin", table_name="users")
     op.drop_table("users")
     op.drop_constraint(
         "fk_git_account_connections_current_credential_revision",

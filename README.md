@@ -64,9 +64,11 @@ resuming ingestion is allowed only when:
 Repository, ResourceGraph, and evidence capability gaps remain visible but do
 not block intake.
 
-Global admins manage encrypted AI provider credentials and model deployments.
-Workspace administrators combine deployments into immutable bindings and
-publish policies that freeze exact binding revisions. Routing chooses a model
+The sole system administrator manages encrypted AI provider credentials,
+Workspace configuration, users, and Workspace grants. Ordinary users enter
+only the Workbench and receive either `viewer` (read-only) or `operator`
+(manual investigation and retry) permission per Workspace. The administrator
+does not have Workbench or investigation access. Routing chooses a model
 per role and execution class, applies per-binding token/call/cost limits, and
 records every selection, context bundle, invocation, usage result, and failure.
 Provider switches never carry hidden reasoning state.

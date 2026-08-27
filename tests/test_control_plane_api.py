@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from lode.api.main import app
 from lode.api.routes import control_plane
@@ -19,19 +20,15 @@ from lode.security import create_token, hash_password
 async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(monkeypatch) -> None:
     suffix = uuid.uuid4().hex
     async with AsyncSessionLocal() as session:
-        admin = User(
-            email=f"control-admin-{suffix}@lode.local",
-            name="Control Admin",
-            password_hash=hash_password("correct-horse-battery"),
-            role="admin",
-            status="active",
-        )
+        admin = await session.scalar(select(User).where(User.is_system_admin))
+        assert admin is not None
+        admin.must_change_password = False
         reader = User(
-            email=f"control-reader-{suffix}@lode.local",
-            name="Control Reader",
+            username=f"reader-{suffix[:12]}",
+            display_name="Control Reader",
             password_hash=hash_password("correct-horse-battery"),
-            role="user",
             status="active",
+            must_change_password=False,
         )
         session.add_all([admin, reader])
         await session.commit()
@@ -79,7 +76,7 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
         assert workspace.status_code == 201
         workspace_id = workspace.json()["id"]
 
-        hidden = await client.get("/workspaces", headers=reader_headers)
+        hidden = await client.get("/workbench/workspaces", headers=reader_headers)
         assert hidden.status_code == 200
         assert workspace_id not in {item["id"] for item in hidden.json()}
 
@@ -91,14 +88,15 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
             WorkspacePermission(
                 user_id=reader_id,
                 workspace_id=workspace_id,
-                permission="read",
+                permission="viewer",
             )
         )
         await session.commit()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        visible = await client.get(f"/workspaces/{workspace_id}", headers=reader_headers)
+        visible = await client.get("/workbench/workspaces", headers=reader_headers)
         assert visible.status_code == 200
+        assert workspace_id in {item["id"] for item in visible.json()}
 
         still_forbidden = await client.post(
             f"/workspaces/{workspace_id}/ingestion/start",
@@ -112,14 +110,9 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
 async def test_account_model_sync_manual_selection_and_active_binding_guard(monkeypatch) -> None:
     suffix = uuid.uuid4().hex
     async with AsyncSessionLocal() as session:
-        admin = User(
-            email=f"model-admin-{suffix}@lode.local",
-            name="Model Admin",
-            password_hash=hash_password("correct-horse-battery"),
-            role="admin",
-            status="active",
-        )
-        session.add(admin)
+        admin = await session.scalar(select(User).where(User.is_system_admin))
+        assert admin is not None
+        admin.must_change_password = False
         await session.commit()
         admin_id = admin.id
 

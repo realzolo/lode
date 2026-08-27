@@ -37,7 +37,7 @@ deployment-canary observations to pass the statistical and non-regression gate.
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
-- The current ORM registry and the only migration register exactly the 75 tables in
+- The current ORM registry and the only migration register exactly the 74 tables in
   `contracts/v1/database/tables.json`. Provider accounts, account models,
   global Git providers/accounts/catalogue, Workspace Git grants and repository
   entitlements, Workspace bindings, build units, components, resource graph
@@ -54,7 +54,7 @@ deployment-canary observations to pass the statistical and non-regression gate.
   are accessed only through the approved account connection, never through a
   per-repository secret. GitHub App, GitLab/Gitee OAuth, and read-only access
   token connections are verified before their repository catalogues are used.
-- `contracts/v1/database/invariants.json` freezes 91 required triggers. The
+- `contracts/v1/database/invariants.json` freezes 92 required triggers. The
   migration enforces timestamp updates, secret-free ordinary JSON,
   immutability, archived-investigation read-only behavior, authorization-chain
   integrity, frozen AI routing/context, exact source anchors, and confirmed
@@ -432,9 +432,10 @@ trace values, prompts, endpoints, or other unbounded data.
 
 PostgreSQL is the source of truth. Kafka consumers only validate and enqueue;
 workers execute investigations. FastAPI exposes health, authentication,
-user/invite administration, global provider-account/model administration,
-Workspace policy/repository/connector/resource control, manual intake,
-investigation reads, audit, retry, archive, and SSE. The singleton
+system-administrator user and Workspace-member administration, global
+provider-account/model administration, Workspace policy/repository/connector
+control, and a separate ordinary-user Workbench API for manual intake,
+investigation reads, audit, retry, and SSE. The singleton
 `platform_settings` row selects the output language for newly created
 investigations; each investigation freezes that language. Model routing is frozen per
 investigation from its Workspace policy and eligible account models; there is no
@@ -595,8 +596,9 @@ replayed.
 Manual `POST /investigations` accepts `workspace_id`, timezone-aware
 `occurred_at`, `severity`, `event`, optional opaque `trace_id`, optional
 lowercase `source_revision`, structured `error`, and at most ten bounded typed
-attachments. It requires Workspace `analyze` or `admin` permission (or global
-admin) and calls the same normalization and persistence services as Kafka.
+attachments. It requires Workspace `operator` permission and calls the same
+normalization and persistence services as Kafka. System administrators cannot
+read or operate investigations through the Workbench API.
 Removed service/environment/request fields fail strict validation.
 
 `source_revision` is immutable alert/input evidence for resolving the alert's
@@ -723,10 +725,10 @@ hashes, and connector secret values are never serialized.
 `POST /investigations/{id}/retry` is valid only for a non-archived terminal
 investigation. It creates a new investigation from the immutable normalized
 input, restores the sealed opaque trace, and records `retry_of`; it never
-mutates or reuses the old run. `POST /investigations/{id}/archive` requires
-Workspace admin permission, is valid only for a terminal run, and permanently
-makes that run read-only. Archived runs remain available to detail, event, SSE,
-and audit reads.
+mutates or reuses the old run. `POST /admin/investigations/{id}/archive`
+requires the system administrator, is valid only for a terminal run, and
+permanently makes that run read-only. Archived runs remain available to ordinary
+authorized users through detail, event, SSE, and audit reads.
 
 `GET /investigations/{id}/audit` cursor-pages one selected native candidate,
 access decision, authorized-read, attempt, or AI-invocation audit chain without
@@ -835,15 +837,27 @@ never renders token or tokenizer configuration. Workspace creation atomically re
 globally unique Kafka topic. `/[locale]/admin/git` manages reusable GitHub,
 GitLab, and Gitee services, multiple account connections, provider-native
 authorization, manual read-only tokens, and repository-catalogue refreshes.
-`admin/workspaces/[id]` provides Overview, Model policy, Repositories, and
-Connectors tabs. A global admin grants a Git account to a Workspace and selects
-its repository access; Workspace administrators bind only those selected
-catalogue entries. The Repositories tab presents Workspace-derived build units
+`admin/workspaces/[id]` provides Overview, Model policy, Repositories,
+Connectors, and Members tabs. The sole system administrator creates ordinary
+users and grants each Workspace `viewer` or `operator` access; it also grants a
+Git account to a Workspace and selects its repository access. There are no
+Workspace administrators. The Repositories tab presents Workspace-derived build units
 and components, not raw resource-graph payloads. Connector forms use ordinary
 provider-specific fields and require verification before introspection; secrets
 are password inputs and are never rendered after submission. Workspace
-administrators manage bindings, immutable model-policy revisions, read-only
-repositories, connector instances, and ingestion transitions.
+The system administrator manages bindings, immutable model-policy revisions,
+read-only repositories, connector instances, and ingestion transitions.
+
+Authentication uses normalized lowercase usernames. The initial migration
+creates exactly one system administrator, `admin`, with password `123456` and
+requires an immediate password change. This account is database-protected from
+deletion, disablement, renaming, or demotion. Every other account is an ordinary
+Workbench-only user: it cannot enter `/admin` or call management APIs. The
+administrator cannot enter `/workbench` or call investigation/resource APIs.
+Regular accounts are created directly with a one-time initial password, retain
+their Workspace grants when disabled, and regain them only after re-enablement.
+`invites`, email login, global role assignment, and Workspace `admin`/`analyze`
+permissions do not exist.
 
 The only investigation UI lives under `workbench`. Its list supports search,
 state filtering, manual intake, and navigation by opaque public ID. Detail leads

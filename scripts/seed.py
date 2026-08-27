@@ -23,9 +23,6 @@ from lode.db.models import (
 from lode.model_catalog import require_openai_model
 from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.session import AsyncSessionLocal
-from lode.security import hash_password
-
-SEED_ADMIN_PASSWORD = "lode"
 WORKSPACE_NAME = "Checkout"
 INGESTION_TOPIC = "incident.checkout.v1"
 
@@ -44,15 +41,9 @@ async def main() -> None:
             logger.info("V1 Workspace already exists: id=%s", existing.id)
             return
 
-        admin = User(
-            email="admin@lode.local",
-            name="Seed Admin",
-            role="admin",
-            status="active",
-            password_hash=hash_password(SEED_ADMIN_PASSWORD),
-        )
-        session.add(admin)
-        await session.flush()
+        admin = await session.scalar(select(User).where(User.username == "admin"))
+        if admin is None or not admin.is_system_admin:
+            raise RuntimeError("the initial migration did not create the system administrator")
 
         workspace = Workspace(
             name=WORKSPACE_NAME,

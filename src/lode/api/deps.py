@@ -5,9 +5,9 @@ returns the authenticated user id. The token is HMAC-signed (see
 ``lode.security``), so a valid decode proves authenticity; routes
 that need the full user object load it from the database themselves.
 
-Workspace authorization lives here too. ``WorkspacePermission`` rows grant a
-user ``read`` / ``analyze`` / ``admin`` access to one Workspace. Global admins
-always pass.
+Workspace authorization lives here too. ``WorkspacePermission`` rows grant an
+ordinary Workbench user ``viewer`` or ``operator`` access to one Workspace.
+The system administrator is deliberately excluded from the Workbench.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from lode.db.session import AsyncSessionLocal
 from lode.security import decode_token
 
 # Permission hierarchy: a higher rank satisfies any lower requirement.
-PERM_RANK = {"read": 1, "analyze": 2, "admin": 3}
+PERM_RANK = {"viewer": 1, "operator": 2}
 
 
 def _rank(perm: str) -> int:
@@ -45,11 +45,28 @@ def require_user(authorization: str | None = Header(default=None)) -> int:
 
 
 async def require_admin(user_id: int = Depends(require_user)) -> int:
-    """Require an authenticated *admin*; returns the admin user id."""
+    """Require the active, password-ready system administrator."""
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
-    if user is None or user.role != "admin":
-        raise HTTPException(status_code=403, detail="admin privileges required")
+    if user is None or not user.is_system_admin:
+        raise HTTPException(status_code=403, detail="admin_access_forbidden")
+    if user.status != "active":
+        raise HTTPException(status_code=401, detail="active_user_required")
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="password_change_required")
+    return user_id
+
+
+async def require_workbench_user(user_id: int = Depends(require_user)) -> int:
+    """Require an active regular user whose initial password was changed."""
+    async with AsyncSessionLocal() as session:
+        user = await session.get(User, user_id)
+    if user is None or user.status != "active":
+        raise HTTPException(status_code=401, detail="active_user_required")
+    if user.is_system_admin:
+        raise HTTPException(status_code=403, detail="workbench_access_forbidden")
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="password_change_required")
     return user_id
 
 
@@ -60,7 +77,7 @@ async def assert_workspace_permission(
     required_perm: str,
 ) -> None:
     """Raise unless ``user`` has the required Workspace permission."""
-    if user.role == "admin":
+    if user.is_system_admin:
         return
     row = await session.get(WorkspacePermission, (user.id, workspace_id))
     if row is None or _rank(row.permission) < _rank(required_perm):
@@ -86,10 +103,10 @@ async def require_workspace_permission(
 
 
 async def permitted_workspace_ids(
-    session: AsyncSession, user_id: int, role: str
+    session: AsyncSession, user_id: int, is_system_admin: bool = False
 ) -> set[int] | None:
     """Workspace ids the user may read, or ``None`` when unrestricted."""
-    if role == "admin":
+    if is_system_admin:
         return None
     rows = (
         (

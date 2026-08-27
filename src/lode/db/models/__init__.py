@@ -78,7 +78,7 @@ from lode.db.models.source_report import (
     SourceAssessment,
     SourceRevision,
 )
-from lode.db.models.user import Invite, User
+from lode.db.models.user import User
 from lode.db.models.workspace import (
     AuditEvent,
     InvestigationPolicyRevision,
@@ -120,7 +120,6 @@ __all__ = [
     "IdentityResolution",
     "Incident",
     "IngestionEvent",
-    "Invite",
     "InvestigationJob",
     "Investigation",
     "InvestigationBuildUnitSnapshot",

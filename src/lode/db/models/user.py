@@ -1,4 +1,9 @@
-"""User and invitation models."""
+"""Local user accounts.
+
+The product has one immutable system administrator and ordinary Workbench
+users.  Invitations and delegated global roles are intentionally not part of
+the schema.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ from sqlalchemy import (
     Identity,
     Text,
     ForeignKey,
+    Index,
     text as sql_text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -24,11 +30,16 @@ class User(Base):
     id: Mapped[int] = mapped_column(
         BigInteger, Identity(always=True), primary_key=True
     )
-    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
-    role: Mapped[str] = mapped_column(Text, nullable=False, server_default="user")
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    username: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
+    must_change_password: Mapped[bool] = mapped_column(
+        nullable=False, server_default=sql_text("false")
+    )
+    is_system_admin: Mapped[bool] = mapped_column(
+        nullable=False, server_default=sql_text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
     )
@@ -37,34 +48,15 @@ class User(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("role IN ('admin', 'user')", name="role"),
+        CheckConstraint("status IN ('active', 'disabled')", name="status"),
+        CheckConstraint("username = lower(btrim(username))", name="username_normalized"),
         CheckConstraint(
-            "status IN ('pending', 'active', 'disabled')", name="status"
+            "username ~ '^[a-z][a-z0-9._-]{2,31}$'", name="username_format"
         ),
-    )
-
-
-class Invite(Base):
-    __tablename__ = "invites"
-
-    id: Mapped[int] = mapped_column(
-        BigInteger, Identity(always=True), primary_key=True
-    )
-    email: Mapped[str] = mapped_column(Text, nullable=False)
-    token: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    invited_by: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.id"), nullable=False
-    )
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending', 'accepted', 'revoked')", name="status"
+        Index(
+            "uq_users_system_admin",
+            "is_system_admin",
+            unique=True,
+            postgresql_where=sql_text("is_system_admin"),
         ),
     )

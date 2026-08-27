@@ -6,22 +6,21 @@
 // user administration remains restricted to global admins.
 
 import { useEffect, type ReactNode } from 'react';
-import { usePathname, useRouter } from '@/lib/navigation';
+import { useRouter } from '@/lib/navigation';
 import { useUser } from '@/lib/user-context';
 import { AppShell } from '@/components/layout/app-shell';
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
   const { isAdmin, loading, user } = useUser();
   const router = useRouter();
-  const pathname = usePathname();
-  const isWorkspaceAdminRoute = pathname === '/admin'
-    || /^\/admin\/workspaces\/[^/]+\/?$/.test(pathname);
 
   useEffect(() => {
-    if (!loading && !isAdmin && !isWorkspaceAdminRoute) {
+    if (!loading && user?.must_change_password) {
+      router.replace('/change-password');
+    } else if (!loading && !isAdmin) {
       router.replace(user ? '/workbench' : '/login');
     }
-  }, [isAdmin, isWorkspaceAdminRoute, loading, router, user]);
+  }, [isAdmin, loading, router, user]);
 
   if (loading) {
     // Render the chrome without children until the role is known, so we don't
@@ -34,7 +33,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       </div>
     );
   }
-  if (!isAdmin && !isWorkspaceAdminRoute) return null;
+  if (!isAdmin || user?.must_change_password) return null;
 
   return <AppShell portal="admin">{children}</AppShell>;
 }

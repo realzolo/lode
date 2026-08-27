@@ -30,13 +30,14 @@ async def get_session() -> AsyncSession:
 
 @router.post("/login", response_model=TokenOut)
 async def login(payload: AuthLoginIn, session: AsyncSession = Depends(get_session)) -> TokenOut:
-    result = await session.execute(select(User).where(User.email == payload.email))
+    username = payload.username.strip().lower()
+    result = await session.execute(select(User).where(User.username == username))
     user = result.scalars().first()
-    # Constant-ish failure: never reveal whether the email exists.
-    if user is None or user.password_hash is None or user.status != "active":
+    # Constant-ish failure: never reveal whether the username exists.
+    if user is None or user.status != "active":
         await audit_action(
             action="auth.login",
-            actor_email=payload.email,
+            actor_username=username,
             target_type="user",
             result="failed",
             detail={"reason": "no_such_active_account"},
@@ -65,10 +66,11 @@ async def login(payload: AuthLoginIn, session: AsyncSession = Depends(get_sessio
         token=token,
         user=UserOut(
             id=user.id,
-            email=user.email,
-            name=user.name,
-            role=user.role,
+            username=user.username,
+            display_name=user.display_name,
             status=user.status,
+            is_system_admin=user.is_system_admin,
+            must_change_password=user.must_change_password,
             created_at=user.created_at,
         ),
     )
@@ -78,14 +80,15 @@ async def login(payload: AuthLoginIn, session: AsyncSession = Depends(get_sessio
 async def me(user_id: int = Depends(require_user)) -> UserOut:
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
-    if user is None:
+    if user is None or user.status != "active":
         raise HTTPException(status_code=401, detail="user not found")
     return UserOut(
         id=user.id,
-        email=user.email,
-        name=user.name,
-        role=user.role,
+        username=user.username,
+        display_name=user.display_name,
         status=user.status,
+        is_system_admin=user.is_system_admin,
+        must_change_password=user.must_change_password,
         created_at=user.created_at,
     )
 
@@ -98,11 +101,12 @@ async def change_password(
 ) -> dict[str, str]:
     """Let the authenticated user change their own password."""
     user = await session.get(User, user_id)
-    if user is None or user.password_hash is None:
+    if user is None or user.status != "active":
         raise HTTPException(status_code=401, detail="user not found")
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="current password is incorrect")
     user.password_hash = hash_password(payload.new_password)
+    user.must_change_password = False
     await session.commit()
     await audit_action(
         action="auth.change_password",

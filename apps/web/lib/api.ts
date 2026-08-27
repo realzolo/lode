@@ -10,7 +10,6 @@ import type {
   InvestigationOverview,
   InvestigationPolicy,
   InvestigationSummary,
-  Invite,
   ModelBinding,
   ProviderAccountModel,
   PlatformSettings,
@@ -98,29 +97,33 @@ function send<T>(path: string, method: string, body?: unknown): Promise<T> {
   });
 }
 
-export function login(email: string, password: string) {
-  return send<{ token: string; user: CurrentUser }>('/auth/login', 'POST', { email, password });
+export function login(username: string, password: string) {
+  return send<{ token: string; user: CurrentUser }>('/auth/login', 'POST', { username, password });
 }
 export function fetchCurrentUser() { return get<CurrentUser>('/auth/me'); }
 export function fetchUsers() { return get<CurrentUser[]>('/users'); }
-export function createUser(input: { email: string; name: string; role: string; password: string }) {
+export function createUser(input: { username: string; display_name: string; initial_password: string }) {
   return send<CurrentUser>('/users', 'POST', input);
 }
-export function updateUser(id: number, input: { name?: string; role?: string; status?: string }) {
-  return send<CurrentUser>(`/users/${id}`, 'PUT', input);
+export function updateUser(id: number, input: { display_name?: string; status?: string }) {
+  return send<CurrentUser>(`/users/${id}`, 'PATCH', input);
 }
-export function deleteUser(id: number) { return send<void>(`/users/${id}`, 'DELETE'); }
 export function resetUserPassword(id: number, password: string) {
   return send(`/users/${id}/reset-password`, 'POST', { password });
 }
-export function fetchInvites() { return get<Invite[]>('/invites'); }
-export function createInvite(email: string) { return send<Invite>('/invites', 'POST', { email }); }
-export function acceptInvite(token: string, password: string, name: string) {
-  return send('/invites/accept', 'POST', { token, password, name });
+export function changePassword(current_password: string, new_password: string) {
+  return send('/auth/change-password', 'POST', { current_password, new_password });
 }
 
-export function fetchWorkspaces() { return get<Workspace[]>('/workspaces'); }
+export function fetchWorkspaces() { return get<Workspace[]>('/workbench/workspaces'); }
 export function fetchWorkspace(id: number | string) { return get<Workspace>(`/workspaces/${id}`); }
+export function fetchWorkspaceMembers(id: number | string) { return get<import('./types').WorkspaceMember[]>(`/workspaces/${id}/members`); }
+export function putWorkspaceMember(workspaceId: number | string, userId: number, permission: 'viewer' | 'operator') {
+  return send<import('./types').WorkspaceMember>(`/workspaces/${workspaceId}/members/${userId}`, 'PUT', { permission });
+}
+export function removeWorkspaceMember(workspaceId: number | string, userId: number) {
+  return send<void>(`/workspaces/${workspaceId}/members/${userId}`, 'DELETE');
+}
 export function createWorkspace(input: { name: string; ingestion_topic: string }) {
   return send<Workspace>('/workspaces', 'POST', input);
 }

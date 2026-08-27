@@ -48,6 +48,7 @@ from lode.db.models import (
     SealedEvidenceValue,
     SourceAssessment,
     SourceRevision,
+    Workspace,
     User,
     Workspace,
 )
@@ -56,6 +57,7 @@ from lode.infrastructure.intake_store import PostgresIntakeStore
 from lode.metrics import SSE_CONNECTIONS, SSE_REPLAY_LAG
 
 router = APIRouter(prefix="/investigations", tags=["investigations"])
+workbench_router = APIRouter(prefix="/workbench", tags=["workbench"])
 _TERMINAL_STATUSES = {"completed", "failed"}
 
 
@@ -167,6 +169,39 @@ class InvestigationAuditPage(BaseModel):
 async def get_session() -> AsyncSession:
     async with AsyncSessionLocal() as session:
         yield session
+
+
+@workbench_router.get("/workspaces")
+async def list_workbench_workspaces(
+    user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)
+) -> list[dict[str, Any]]:
+    """Return only Workspaces explicitly granted to the signed-in user."""
+    user = await _active_user(session, user_id)
+    allowed = await permitted_workspace_ids(session, user.id, user.is_system_admin)
+    if not allowed:
+        return []
+    rows = (
+        await session.execute(
+            select(Workspace).where(Workspace.id.in_(allowed)).order_by(Workspace.name, Workspace.id)
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": row.id,
+            "name": row.name,
+            "ingestion_topic": row.ingestion_topic,
+            "model_policy_revision_id": row.model_policy_revision_id,
+            "investigation_policy_revision_id": row.investigation_policy_revision_id,
+            "ingestion_state": row.ingestion_state,
+            "ingestion_version": row.ingestion_version,
+            "ingestion_start_position": row.ingestion_start_position,
+            "ingestion_started_at": row.ingestion_started_at,
+            "ingestion_paused_at": row.ingestion_paused_at,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+        for row in rows
+    ]
 
 
 def _error(status: int, code: str, message: str, **details: Any) -> HTTPException:
@@ -293,7 +328,7 @@ async def create_manual_investigation(
         session,
         user_id=user_id,
         workspace_id=payload.workspace_id,
-        permission="analyze",
+        permission="operator",
     )
     result = await PostgresIntakeStore(session).persist_manual(
         workspace_id=payload.workspace_id,
@@ -303,7 +338,7 @@ async def create_manual_investigation(
     session.add(
         AuditEvent(
             actor_id=user.id,
-            actor_email=user.email,
+            actor_username=user.username,
             action="investigation.create.manual",
             target_type="investigation",
             target_id=result.investigation_public_id,
@@ -334,7 +369,7 @@ async def list_investigations(
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
-    allowed = await permitted_workspace_ids(session, user.id, user.role)
+    allowed = await permitted_workspace_ids(session, user.id, user.is_system_admin)
     statement = select(Investigation).where(Investigation.id > after_id)
     if allowed is not None:
         if not allowed:
@@ -402,7 +437,7 @@ async def get_investigation(
         session,
         user_id=user_id,
         public_id=investigation_id,
-        permission="read",
+        permission="viewer",
     )
     internal_id = investigation.id
     input_row = await session.get(InvestigationInput, internal_id)
@@ -490,7 +525,7 @@ async def get_investigation_technical(
         session,
         user_id=user_id,
         public_id=investigation_id,
-        permission="read",
+        permission="viewer",
     )
     internal_id = investigation.id
     input_row = await session.get(InvestigationInput, internal_id)
@@ -584,7 +619,7 @@ async def get_investigation_events(
     session: AsyncSession = Depends(get_session),
 ):
     _, investigation = await _investigation_access(
-        session, user_id=user_id, public_id=investigation_id, permission="read"
+        session, user_id=user_id, public_id=investigation_id, permission="viewer"
     )
     values = (
         await session.execute(
@@ -610,7 +645,7 @@ async def get_investigation_audit(
     session: AsyncSession = Depends(get_session),
 ):
     _, investigation = await _investigation_access(
-        session, user_id=user_id, public_id=investigation_id, permission="read"
+        session, user_id=user_id, public_id=investigation_id, permission="viewer"
     )
 
     models: dict[AuditKind, Any] = {
@@ -651,7 +686,7 @@ async def stream_investigation(
             access_session,
             user_id=user_id,
             public_id=investigation_id,
-            permission="read",
+            permission="viewer",
         )
     try:
         header_cursor = int(last_event_id or "0")
@@ -726,7 +761,7 @@ async def retry_investigation(
     session: AsyncSession = Depends(get_session),
 ):
     user, investigation = await _investigation_access(
-        session, user_id=user_id, public_id=investigation_id, permission="analyze"
+        session, user_id=user_id, public_id=investigation_id, permission="operator"
     )
     if investigation.status not in _TERMINAL_STATUSES:
         raise _error(409, "investigation_not_terminal", "Only a terminal investigation can retry.")
@@ -770,7 +805,7 @@ async def retry_investigation(
     session.add(
         AuditEvent(
             actor_id=user.id,
-            actor_email=user.email,
+            actor_username=user.username,
             action="investigation.retry",
             target_type="investigation",
             target_id=result.investigation_public_id,
@@ -786,40 +821,3 @@ async def retry_investigation(
         status="queued",
         job_id=result.job_id or 0,
     )
-
-
-@router.post("/{investigation_id}/archive")
-async def archive_investigation(
-    investigation_id: str,
-    user_id: int = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    user, investigation = await _investigation_access(
-        session, user_id=user_id, public_id=investigation_id, permission="admin"
-    )
-    if investigation.status not in _TERMINAL_STATUSES:
-        raise _error(
-            409, "investigation_not_terminal", "Only a terminal investigation can archive."
-        )
-    if investigation.archived_at is not None:
-        raise _error(409, "investigation_already_archived", "Investigation is already archived.")
-    investigation.archived_at = datetime.now(UTC)
-    investigation.archived_by = user.id
-    session.add(
-        AuditEvent(
-            actor_id=user.id,
-            actor_email=user.email,
-            action="investigation.archive",
-            target_type="investigation",
-            target_id=investigation.public_id,
-            workspace_id=investigation.workspace_id,
-            result="ok",
-            detail={},
-        )
-    )
-    await session.commit()
-    return {
-        "id": investigation.public_id,
-        "archived_at": investigation.archived_at,
-        "archived_by": investigation.archived_by,
-    }
