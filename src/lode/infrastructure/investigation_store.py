@@ -40,7 +40,13 @@ from lode.domain.investigation import (
 )
 from lode.infrastructure.investigation_snapshots import ConnectorSnapshotStore
 from lode.masking import mask_structure
-from lode.metrics import CONNECTOR_SELECTION, DECISION_POLICY, OPERATION_DURATION
+from lode.metrics import (
+    CONNECTOR_SELECTION,
+    DECISION_COST,
+    DECISION_POLICY,
+    OPERATION_DURATION,
+    OPERATION_FAILURES,
+)
 
 
 class PostgresInvestigationStore:
@@ -321,6 +327,9 @@ class PostgresInvestigationStore:
             native_reads = sum(value.operation.native_candidate is not None for value in prepared)
             if native_reads:
                 CONNECTOR_SELECTION.labels(outcome="selected").inc(native_reads)
+            DECISION_COST.labels(kind="estimated").inc(
+                sum(value.operation.estimated_cost for value in prepared)
+            )
             return PreparedWave(investigation_id, step.id, decision_row.id, tuple(prepared))
 
     async def mark_operation_running(self, operation_id: int) -> None:
@@ -390,6 +399,17 @@ class PostgresInvestigationStore:
                 operation_kind=operation.operation_kind,
                 status=result.status,
             ).observe(_nonnegative_int(result.metrics.get("duration_ms")) / 1_000)
+            if result.failure_code is not None:
+                OPERATION_FAILURES.labels(
+                    operation_kind=operation.operation_kind,
+                    failure_code=result.failure_code,
+                ).inc()
+            if (
+                operation.operation_kind == "native_read"
+                and result.status == "succeeded"
+                and result.evidence_refs
+            ):
+                CONNECTOR_SELECTION.labels(outcome="useful_result").inc()
 
     async def finish_wave(self, wave: PreparedWave, results: Sequence[OperationResult]) -> None:
         async with self.session_factory() as session:
@@ -446,6 +466,9 @@ class PostgresInvestigationStore:
             )
             investigation.budget_usage = usage
             await session.commit()
+            DECISION_COST.labels(kind="actual").inc(
+                sum(_nonnegative_float(result.metrics.get("cost"), 0.0) for result in results)
+            )
 
     async def record_rejected_decision(
         self, investigation_id: int, decision: EvaluatedDecision

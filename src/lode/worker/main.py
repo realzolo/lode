@@ -7,6 +7,7 @@ import logging
 import platform
 import uuid
 from collections.abc import Awaitable, Callable
+from time import monotonic
 
 from lode.application.investigation import (
     DurableWaveCoordinator,
@@ -33,11 +34,15 @@ from lode.infrastructure.native_read_executor import NativeReadOperationExecutor
 from lode.infrastructure.operation_executor import InvestigationOperationExecutor
 from lode.infrastructure.report_store import PostgresReportStore
 from lode.infrastructure.source_executor import SourceReadOperationExecutor
-from lode.metrics import ENGINE_IN_FLIGHT, INVESTIGATIONS
+from lode.metrics import ENGINE_IN_FLIGHT, INVESTIGATION_DURATION, INVESTIGATIONS
 
 logger = logging.getLogger("lode.worker")
 WORKER_ID = f"{platform.node()}:{uuid.uuid4().hex[:8]}"
 InvestigationHandler = Callable[[int], Awaitable[None]]
+
+
+class LeaseOwnershipLost(RuntimeError):
+    pass
 
 
 def _retryable(exc: Exception) -> bool:
@@ -57,7 +62,7 @@ async def _heartbeat(store: InvestigationLeaseStore, job_id: int) -> None:
     while True:
         await asyncio.sleep(interval)
         if not await store.heartbeat(job_id):
-            raise RuntimeError("investigation lease ownership was lost")
+            raise LeaseOwnershipLost("investigation lease ownership was lost")
 
 
 async def run_job(
@@ -67,12 +72,26 @@ async def run_job(
     store: InvestigationLeaseStore | None = None,
 ) -> None:
     durable = store or lease_store()
+    started = monotonic()
+    result = "interrupted"
     ENGINE_IN_FLIGHT.inc()
     heartbeat = asyncio.create_task(_heartbeat(durable, job.job_id))
+    investigation = asyncio.create_task(handler(job.investigation_id))
     try:
-        await handler(job.investigation_id)
+        done, _ = await asyncio.wait(
+            {heartbeat, investigation}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if heartbeat in done:
+            await heartbeat
+            raise LeaseOwnershipLost("investigation heartbeat stopped unexpectedly")
+        await investigation
         await durable.complete(job.job_id)
+        result = "completed"
         INVESTIGATIONS.labels(result="completed").inc()
+    except LeaseOwnershipLost:
+        result = "lease_lost"
+        logger.error("investigation %s lost its worker lease", job.investigation_id)
+        INVESTIGATIONS.labels(result="lease_lost").inc()
     except Exception as exc:
         logger.exception("investigation %s failed", job.investigation_id)
         outcome = await durable.fail(
@@ -82,37 +101,58 @@ async def run_job(
             max_attempts=settings.job_max_attempts,
             base_delay_seconds=settings.job_base_retry_delay,
         )
+        result = outcome
         INVESTIGATIONS.labels(result=outcome).inc()
     finally:
+        if not investigation.done():
+            investigation.cancel()
         heartbeat.cancel()
-        try:
-            await heartbeat
-        except asyncio.CancelledError:
-            pass
+        await asyncio.gather(investigation, heartbeat, return_exceptions=True)
         ENGINE_IN_FLIGHT.dec()
+        INVESTIGATION_DURATION.labels(result=result).observe(monotonic() - started)
 
 
-async def main(handler: InvestigationHandler | None = None) -> None:
-    if handler is None:
-        handler = build_handler()
-    durable = lease_store()
+async def run_worker(
+    handler: InvestigationHandler,
+    durable: InvestigationLeaseStore,
+    *,
+    stop: asyncio.Event | None = None,
+) -> None:
     await durable.reclaim_expired()
     semaphore = asyncio.Semaphore(settings.engine_concurrency)
     running: set[asyncio.Task[None]] = set()
-    while True:
-        job = await durable.claim()
-        if job is None:
-            await asyncio.sleep(settings.worker_poll_interval_seconds)
-            continue
-        await semaphore.acquire()
-        task = asyncio.create_task(run_job(job, handler, store=durable))
-        running.add(task)
+    try:
+        while True:
+            await semaphore.acquire()
+            if stop is not None and stop.is_set():
+                semaphore.release()
+                if not running:
+                    return
+                await asyncio.sleep(0)
+                continue
+            job = await durable.claim()
+            if job is None:
+                semaphore.release()
+                if stop is not None and stop.is_set() and not running:
+                    return
+                await asyncio.sleep(settings.worker_poll_interval_seconds)
+                continue
+            task = asyncio.create_task(run_job(job, handler, store=durable))
+            running.add(task)
 
-        def release(completed: asyncio.Task[None]) -> None:
-            running.discard(completed)
-            semaphore.release()
+            def release(completed: asyncio.Task[None]) -> None:
+                running.discard(completed)
+                semaphore.release()
 
-        task.add_done_callback(release)
+            task.add_done_callback(release)
+    finally:
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
+
+
+async def main(handler: InvestigationHandler | None = None) -> None:
+    await run_worker(handler or build_handler(), lease_store())
 
 
 def build_handler() -> InvestigationHandler:

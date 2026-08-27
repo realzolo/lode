@@ -87,6 +87,27 @@ All provider, Connector, and Git secrets are encrypted with
 `LODE_DATA_ENCRYPTION_KEY`, stored separately from ordinary config, and never
 returned. Evidence-read authorization and Runner signing use independent keys.
 
+Startup environment switches may be tightened without restarting a worker or
+runner. Set `LODE_EVIDENCE_KILL_SWITCH_FILE` to an absolute JSON file with the
+exact fields below. The file is re-read before every authorization:
+
+```json
+{
+  "enabled": true,
+  "disabled_workspace_ids": [],
+  "disabled_connector_ids": [],
+  "disabled_languages": [],
+  "runner_enabled": true
+}
+```
+
+The isolated runner uses `LODE_COMMAND_RUNNER_KILL_SWITCH_FILE` and the exact
+shape `{"enabled":true,"runner_enabled":true}`. Replace either file
+atomically. Runtime values can only disable additional access; they cannot
+loosen startup environment restrictions. A missing, oversized, malformed, or
+schema-invalid configured file fails closed. In Compose deployments, mount each
+configured absolute path read-only into only the worker or runner that owns it.
+
 ## Kafka Contract
 
 Kafka input uses `incident.alert.v1`. Unknown fields are rejected. The topic,
@@ -202,6 +223,7 @@ make native-connectors-check
 make investigation-check
 make analysis-check
 make api-check
+make hardening-check
 make web-check
 uv run python -m compileall -q src scripts alembic tests
 uv run pytest -q
@@ -220,5 +242,16 @@ intentionally too small to claim that statistical release gate.
 ```bash
 make provider-release-check \
   PROVIDER_OBSERVATIONS=/absolute/path/provider-observations.jsonl \
-  PROVIDER_RUN_MANIFEST=/absolute/path/provider-run-manifest.json
+  PROVIDER_RUN_MANIFEST=/absolute/path/provider-run-manifest.json \
+  OPERATIONAL_OBSERVATIONS=/absolute/path/operational-observations.jsonl \
+  OPERATIONAL_BASELINE=/absolute/path/operational-baseline.json \
+  CANARY_BASELINE_OBSERVATIONS=/absolute/path/canary-baseline-observations.jsonl \
+  CANARY_BASELINE_RUN_MANIFEST=/absolute/path/canary-baseline-run-manifest.json \
+  RELEASE_BUNDLE=/absolute/path/release-bundle.json
 ```
+
+The release bundle binds the SHA-256 of every supplied artifact plus the frozen
+gold and complete evaluation corpora. Candidate and baseline are distinct runs
+and differ in at least one frozen model, prompt, schema, or policy revision. The
+baseline itself must pass the statistical gate; any aggregate or per-case
+canary regression blocks release.

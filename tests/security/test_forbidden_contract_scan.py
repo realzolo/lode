@@ -37,3 +37,14 @@ def test_forbidden_contract_scan_ignores_binary_and_build_directories(tmp_path: 
     generated.write_text(f"{removed_service} = 'ignored'", encoding="utf-8")
 
     assert scan([tmp_path]) == []
+
+
+def test_forbidden_contract_scan_rejects_versioned_implementation_filenames(
+    tmp_path: Path,
+) -> None:
+    implementation = tmp_path / "release_v1_evaluator.py"
+    implementation.write_text("CURRENT = True\n", encoding="utf-8")
+
+    assert scan([implementation]) == [
+        f"{implementation}:versioned_implementation_filename"
+    ]

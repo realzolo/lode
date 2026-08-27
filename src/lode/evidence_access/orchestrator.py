@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any, Protocol
 
 from sqlalchemy import func, select, text
@@ -18,6 +19,13 @@ from lode.crypto import decrypt_value
 from lode.db.models import AuthorizedEvidenceRead, EvidenceAccessDecision, EvidenceReadAttempt
 from lode.evidence_access.tokens import AuthorizationTokenError, token_hash, verify_token
 from lode.evidence_access.types import EvidenceExecutionFailure
+from lode.metrics import (
+    EVIDENCE_ACCESS_STAGE_LATENCY,
+    EVIDENCE_QUERIES,
+    EVIDENCE_QUERY_COST,
+    EVIDENCE_RESULT_BYTES,
+    PROVIDER_SCANNED_ROWS,
+)
 
 _PERMIT_AUTHORITY = object()
 
@@ -107,25 +115,42 @@ class EvidenceReadOrchestrator:
             effective_action_hash=authorized.effective_action_hash,
             _authority=_PERMIT_AUTHORITY,
         )
+        adapter_name = type(adapter).__name__
+        EVIDENCE_QUERIES.labels(adapter=adapter_name, outcome="attempted").inc()
         started_at = datetime.now(UTC)
         preflight: Mapping[str, Any] | None = None
+        stage = "preflight"
+        stage_started = monotonic()
         try:
             preflight = await adapter.preflight(permit)
             if not isinstance(preflight, Mapping):
                 raise TypeError("preflight result must be a mapping")
+            EVIDENCE_ACCESS_STAGE_LATENCY.labels(
+                stage="preflight", outcome="succeeded"
+            ).observe(monotonic() - stage_started)
+            stage = "execute"
+            stage_started = monotonic()
             result = await adapter.execute(permit)
             if not isinstance(result, Mapping):
                 raise TypeError("evidence result must be a mapping")
+            EVIDENCE_ACCESS_STAGE_LATENCY.labels(
+                stage="execute", outcome="succeeded"
+            ).observe(monotonic() - stage_started)
             result_bytes = len(json.dumps(result, ensure_ascii=False).encode())
             output_limit = int(decision.effective_budget["output_bytes"])
             if result_bytes > output_limit:
                 raise ValueError("evidence result exceeds authorized output byte limit")
+            stage = "archive"
+            stage_started = monotonic()
             async with self.session.begin_nested():
                 artifact_refs = await self.archiver.archive(
                     authorized, decision, result
                 )
                 if not artifact_refs or any(value < 1 for value in artifact_refs):
                     raise TypeError("evidence archiver returned invalid artifact references")
+            EVIDENCE_ACCESS_STAGE_LATENCY.labels(
+                stage="archive", outcome="succeeded"
+            ).observe(monotonic() - stage_started)
             finished_at = datetime.now(UTC)
             self.session.add(
                 EvidenceReadAttempt(
@@ -141,8 +166,20 @@ class EvidenceReadOrchestrator:
                 )
             )
             await self.session.commit()
+            EVIDENCE_QUERIES.labels(adapter=adapter_name, outcome="succeeded").inc()
+            EVIDENCE_RESULT_BYTES.labels(adapter=adapter_name).observe(result_bytes)
+            scanned_rows = _nonnegative_number(result.get("scanned_rows"))
+            if scanned_rows is not None:
+                PROVIDER_SCANNED_ROWS.labels(adapter=adapter_name).inc(scanned_rows)
+            cost = _nonnegative_number(result.get("cost"))
+            if cost is not None:
+                EVIDENCE_QUERY_COST.labels(adapter=adapter_name).inc(cost)
             return ExecutionResult("succeeded", 1, result, None, artifact_refs)
         except asyncio.CancelledError:
+            EVIDENCE_ACCESS_STAGE_LATENCY.labels(
+                stage=stage, outcome="interrupted"
+            ).observe(monotonic() - stage_started)
+            EVIDENCE_QUERIES.labels(adapter=adapter_name, outcome="interrupted").inc()
             finished_at = datetime.now(UTC)
             self.session.add(
                 EvidenceReadAttempt(
@@ -162,6 +199,10 @@ class EvidenceReadOrchestrator:
             await asyncio.shield(self.session.commit())
             raise
         except Exception as exc:  # noqa: BLE001 - every adapter failure needs a terminal audit row
+            EVIDENCE_ACCESS_STAGE_LATENCY.labels(
+                stage=stage, outcome="failed"
+            ).observe(monotonic() - stage_started)
+            EVIDENCE_QUERIES.labels(adapter=adapter_name, outcome="failed").inc()
             finished_at = datetime.now(UTC)
             failure_code = (
                 exc.code
@@ -211,3 +252,9 @@ class EvidenceReadOrchestrator:
         for key, value in expected.items():
             if claims.get(key) != value:
                 raise AuthorizationTokenError(f"authorization claim mismatch: {key}")
+
+
+def _nonnegative_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return None
+    return float(value)

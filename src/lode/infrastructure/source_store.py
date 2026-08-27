@@ -23,6 +23,7 @@ from lode.domain.investigation import canonical_hash
 from lode.domain.model_execution import SourceRevisionRole
 from lode.infrastructure.git_source import GitSourceHit
 from lode.masking import mask_structure
+from lode.metrics import SOURCE_MISMATCH, SOURCE_RESOLUTION
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +202,9 @@ class PostgresSourceStore:
         )
         self.session.add(source_assessment)
         await self.session.flush()
+        SOURCE_RESOLUTION.labels(status=assessment.status).inc()
+        if assessment.mismatch_reasons:
+            SOURCE_MISMATCH.inc()
         return ArchivedSourceRevision(
             source_revision.id,
             source_assessment.id,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any, Iterable, Sequence
 
 from sqlalchemy import delete, select, update
@@ -29,6 +30,11 @@ from lode.resource_understanding.types import (
     content_hash,
 )
 from lode.resource_understanding.validator import ResourceIdentityValidator
+from lode.metrics import (
+    IDENTITY_RESOLUTIONS,
+    RESOURCE_EVENTS,
+    RESOURCE_INVALIDATION_LATENCY,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +69,7 @@ class ResourceGraphStore:
         annotations: Iterable[SemanticAnnotationDraft] = (),
         prompt_revision: str = "resource-understanding.1",
     ) -> PublishedResourceGraph:
+        started = monotonic()
         if not scans:
             raise ValueError("at least one repository scan is required")
         scans = tuple(sorted(scans, key=lambda item: item.repository_binding_id))
@@ -127,6 +134,7 @@ class ResourceGraphStore:
         ).scalar_one_or_none()
         if latest is not None and latest.input_hash == input_hash:
             await self.session.commit()
+            RESOURCE_EVENTS.labels(kind="graph_revision", outcome="reused").inc()
             return PublishedResourceGraph(
                 latest.id, latest.revision, True,
                 len(observation_ids), len(members), sum(len(item.scan.issues) for item in scans),
@@ -178,6 +186,14 @@ class ResourceGraphStore:
         ])
         await self._reconcile_materialized_state(workspace_id, members)
         await self.session.commit()
+        RESOURCE_EVENTS.labels(kind="observation", outcome="persisted").inc(
+            len(observation_ids)
+        )
+        RESOURCE_EVENTS.labels(kind="graph_revision", outcome="published").inc()
+        for row in resolution_rows:
+            IDENTITY_RESOLUTIONS.labels(status=row.status).inc()
+        if removed_ids:
+            RESOURCE_INVALIDATION_LATENCY.observe(monotonic() - started)
         return PublishedResourceGraph(
             graph.id, graph.revision, False,
             len(observation_ids), len(members), sum(len(item.scan.issues) for item in scans),

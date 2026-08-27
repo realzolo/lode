@@ -4,6 +4,7 @@
   "release_test_only": true,
   "files": [
     "gold-incidents.jsonl",
+    "operational-cases.jsonl",
     "security/malicious-evidence.jsonl",
     "security/native-reads.jsonl"
   ],

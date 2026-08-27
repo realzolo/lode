@@ -8,7 +8,15 @@ from pathlib import Path
 
 from lode.contracts.checks import ROOT
 
-DEFAULT_PATHS = ("src", "tests", "alembic", "apps/web", "CLAUDE.md", "README.md")
+DEFAULT_PATHS = (
+    "src",
+    "scripts",
+    "tests",
+    "alembic",
+    "apps/web",
+    "CLAUDE.md",
+    "README.md",
+)
 TEXT_SUFFIXES = {
     ".css",
     ".html",
@@ -67,6 +75,8 @@ RULES = (
     ),
 )
 
+_VERSIONED_IMPLEMENTATION_NAME = re.compile(r"v[0-9]+", re.IGNORECASE)
+
 
 def _iter_files(paths: list[Path]):
     for path in paths:
@@ -88,6 +98,9 @@ def _iter_files(paths: list[Path]):
 def scan(paths: list[Path]) -> list[str]:
     findings: list[str] = []
     for path in _iter_files(paths):
+        if _VERSIONED_IMPLEMENTATION_NAME.search(path.name):
+            location = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+            findings.append(f"{location}:versioned_implementation_filename")
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):

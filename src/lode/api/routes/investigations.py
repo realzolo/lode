@@ -53,6 +53,7 @@ from lode.db.models import (
 )
 from lode.db.session import AsyncSessionLocal
 from lode.infrastructure.intake_store import PostgresIntakeStore
+from lode.metrics import SSE_CONNECTIONS, SSE_REPLAY_LAG
 
 router = APIRouter(prefix="/investigations", tags=["investigations"])
 _TERMINAL_STATUSES = {"completed", "failed"}
@@ -387,46 +388,53 @@ async def stream_investigation(
 
     async def events():
         nonlocal cursor
-        while not await request.is_disconnected():
-            async with AsyncSessionLocal() as stream_session:
-                values = tuple(
-                    (
-                        await stream_session.execute(
-                            select(InvestigationOperationEvent)
-                            .where(
-                                InvestigationOperationEvent.investigation_id == internal_id,
-                                InvestigationOperationEvent.sequence > cursor,
+        SSE_CONNECTIONS.inc()
+        SSE_REPLAY_LAG.observe(max(0, investigation.event_cursor - cursor))
+        try:
+            while not await request.is_disconnected():
+                async with AsyncSessionLocal() as stream_session:
+                    values = tuple(
+                        (
+                            await stream_session.execute(
+                                select(InvestigationOperationEvent)
+                                .where(
+                                    InvestigationOperationEvent.investigation_id == internal_id,
+                                    InvestigationOperationEvent.sequence > cursor,
+                                )
+                                .order_by(InvestigationOperationEvent.sequence)
+                                .limit(100)
                             )
-                            .order_by(InvestigationOperationEvent.sequence)
-                            .limit(100)
-                        )
-                    ).scalars()
-                )
-                current = await stream_session.get(Investigation, internal_id)
-            for value in values:
-                cursor = value.sequence
-                payload = json.dumps(jsonable_encoder(_row(value)), separators=(",", ":"))
-                yield f"id: {cursor}\nevent: {value.event_name}\ndata: {payload}\n\n"
-            if values:
-                continue
-            if current is None:
-                return
-            if current.status in _TERMINAL_STATUSES:
-                state = json.dumps(
-                    jsonable_encoder(
-                        {
-                            "public_id": current.public_id,
-                            "status": current.status,
-                            "result_state": current.result_state,
-                            "event_cursor": current.event_cursor,
-                        }
-                    ),
-                    separators=(",", ":"),
-                )
-                yield f"event: investigation.finished\ndata: {state}\n\n"
-                return
-            yield ": keepalive\n\n"
-            await asyncio.sleep(1)
+                        ).scalars()
+                    )
+                    current = await stream_session.get(Investigation, internal_id)
+                for value in values:
+                    cursor = value.sequence
+                    payload = json.dumps(
+                        jsonable_encoder(_row(value)), separators=(",", ":")
+                    )
+                    yield f"id: {cursor}\nevent: {value.event_name}\ndata: {payload}\n\n"
+                if values:
+                    continue
+                if current is None:
+                    return
+                if current.status in _TERMINAL_STATUSES:
+                    state = json.dumps(
+                        jsonable_encoder(
+                            {
+                                "public_id": current.public_id,
+                                "status": current.status,
+                                "result_state": current.result_state,
+                                "event_cursor": current.event_cursor,
+                            }
+                        ),
+                        separators=(",", ":"),
+                    )
+                    yield f"event: investigation.finished\ndata: {state}\n\n"
+                    return
+                yield ": keepalive\n\n"
+                await asyncio.sleep(1)
+        finally:
+            SSE_CONNECTIONS.dec()
 
     return StreamingResponse(
         events(),

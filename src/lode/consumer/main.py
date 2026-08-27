@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from typing import Any, Protocol
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
@@ -19,6 +20,7 @@ from lode.config import kafka_security_kwargs, settings
 from lode.db.models import DeadLetter, IngestionEvent, Workspace
 from lode.db.session import AsyncSessionLocal
 from lode.infrastructure.intake_store import IntakeResult, PostgresIntakeStore
+from lode.metrics import ACTIVE_WORKSPACES, CONSUMER_HEARTBEAT
 
 logger = logging.getLogger("lode.consumer")
 
@@ -278,6 +280,8 @@ async def main() -> None:
     try:
         while True:
             topics = await _active_topics(AsyncSessionLocal)
+            ACTIVE_WORKSPACES.set(len(topics))
+            CONSUMER_HEARTBEAT.set(time.time())
             if topics != subscribed:
                 consumer.subscribe(topics=topics)
                 subscribed = topics

@@ -298,6 +298,29 @@ async def test_runner_process_kill_switch_fails_closed(
     assert preflight.status_code == 503
 
 
+@pytest.mark.asyncio
+async def test_runner_runtime_kill_switch_is_reloaded_each_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_file = tmp_path / "runner-kill-switch.json"
+    runtime_file.write_text(json.dumps({"enabled": True, "runner_enabled": True}))
+    monkeypatch.setenv("LODE_COMMAND_RUNNER_ENABLED", "true")
+    monkeypatch.setenv("LODE_COMMAND_RUNNER_KILL_SWITCH_FILE", str(runtime_file))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=runner_app.app), base_url="http://runner"
+    ) as client:
+        enabled = await client.get("/health")
+        runtime_file.write_text(json.dumps({"enabled": True, "runner_enabled": False}))
+        disabled = await client.get("/health")
+        runtime_file.write_text("not-json")
+        malformed = await client.get("/health")
+
+    assert enabled.status_code == 200
+    assert disabled.status_code == 503
+    assert malformed.status_code == 503
+
+
 def test_runner_deployment_has_private_network_and_minimum_privileges() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     services = compose["services"]

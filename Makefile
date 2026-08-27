@@ -3,7 +3,7 @@
 # which uses the project .venv created by `make install` (uv sync). `make` itself
 # does NOT read .env — only the Python app does via pydantic-settings.
 
-.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check investigation-check analysis-check api-check web-check local-release-check provider-release-check
+.PHONY: install migrate serve consume work dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check investigation-check analysis-check api-check web-check hardening-check local-release-check provider-release-check
 
 # uv binary to use. Override from the shell if it is not on PATH, e.g.
 #   make serve UV=/Users/lixm/.local/bin/uv
@@ -99,6 +99,10 @@ web-check:
 	npm run typecheck --prefix apps/web
 	npm run build --prefix apps/web
 
+# Exercise release evaluation, adversarial security, worker bounds, and lease-loss recovery.
+hardening-check:
+	$(UV) run pytest -q tests/evals tests/security tests/performance tests/unit/test_evidence_access_kernel.py tests/unit/test_command_runner.py tests/unit/test_metrics_contract.py
+
 # Run every deterministic local release gate. Use a fresh isolated upgraded database.
 local-release-check:
 	$(MAKE) contracts
@@ -111,6 +115,7 @@ local-release-check:
 	$(MAKE) investigation-check
 	$(MAKE) analysis-check
 	$(MAKE) api-check
+	$(MAKE) hardening-check
 	$(UV) run python -m compileall -q src scripts alembic tests
 	$(UV) run pytest -q
 	$(UV) run python scripts/check_forbidden_contracts.py
@@ -120,7 +125,12 @@ local-release-check:
 provider-release-check:
 	@test -n "$(PROVIDER_OBSERVATIONS)" || (echo "PROVIDER_OBSERVATIONS is required" >&2; exit 2)
 	@test -n "$(PROVIDER_RUN_MANIFEST)" || (echo "PROVIDER_RUN_MANIFEST is required" >&2; exit 2)
-	$(UV) run python scripts/check_analysis_quality.py --release --observations "$(PROVIDER_OBSERVATIONS)" --run-manifest "$(PROVIDER_RUN_MANIFEST)"
+	@test -n "$(OPERATIONAL_OBSERVATIONS)" || (echo "OPERATIONAL_OBSERVATIONS is required" >&2; exit 2)
+	@test -n "$(OPERATIONAL_BASELINE)" || (echo "OPERATIONAL_BASELINE is required" >&2; exit 2)
+	@test -n "$(CANARY_BASELINE_OBSERVATIONS)" || (echo "CANARY_BASELINE_OBSERVATIONS is required" >&2; exit 2)
+	@test -n "$(CANARY_BASELINE_RUN_MANIFEST)" || (echo "CANARY_BASELINE_RUN_MANIFEST is required" >&2; exit 2)
+	@test -n "$(RELEASE_BUNDLE)" || (echo "RELEASE_BUNDLE is required" >&2; exit 2)
+	$(UV) run python scripts/check_analysis_quality.py --release --observations "$(PROVIDER_OBSERVATIONS)" --run-manifest "$(PROVIDER_RUN_MANIFEST)" --operational-observations "$(OPERATIONAL_OBSERVATIONS)" --operational-baseline "$(OPERATIONAL_BASELINE)" --canary-baseline-observations "$(CANARY_BASELINE_OBSERVATIONS)" --canary-baseline-run-manifest "$(CANARY_BASELINE_RUN_MANIFEST)" --release-bundle "$(RELEASE_BUNDLE)"
 
 # Build and run the full stack (postgres, kafka, api, web) via Docker.
 up:

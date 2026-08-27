@@ -1,0 +1,9 @@
+{"case_id":"identity-verified-exact","kind":"identity","expected":"verified_correct","deterministic_fixture":true}
+{"case_id":"identity-provisional","kind":"identity","expected":"not_verified","deterministic_fixture":true}
+{"case_id":"identity-ambiguous","kind":"identity","expected":"not_verified","deterministic_fixture":true}
+{"case_id":"connector-useful-runtime-read","kind":"connector_selection","expected":"selected","expected_selected":true,"critical":true}
+{"case_id":"connector-critical-capability","kind":"connector_selection","expected":"selected","expected_selected":true,"critical":true}
+{"case_id":"connector-correct-zero-call","kind":"connector_selection","expected":"zero_call","expected_selected":false,"critical":false}
+{"case_id":"routing-simple-latency","kind":"model_routing","expected":"latency_optimized","expected_execution_class":"latency_optimized"}
+{"case_id":"routing-complex-reasoning","kind":"model_routing","expected":"reasoning_optimized","expected_execution_class":"reasoning_optimized"}
+{"case_id":"routing-compressed-reasoning","kind":"model_routing","expected":"reasoning_optimized","expected_execution_class":"reasoning_optimized"}

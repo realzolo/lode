@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from lode.db.models import (
@@ -16,6 +17,7 @@ from lode.db.models import (
     InvestigationStep,
 )
 from lode.masking import mask_structure
+from lode.metrics import JOB_CLAIM_LATENCY, JOB_QUEUE_DEPTH, LEASE_RECOVERIES
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,56 +43,89 @@ class InvestigationLeaseStore:
         self.lease_ttl_seconds = lease_ttl_seconds
 
     async def claim(self, *, now: datetime | None = None) -> ClaimedInvestigationJob | None:
+        started = monotonic()
         current = now or datetime.now(UTC)
-        async with self.session_factory() as session:
-            job = (
-                (
-                    await session.execute(
-                        select(InvestigationJob)
-                        .join(
-                            Investigation,
-                            Investigation.id == InvestigationJob.investigation_id,
+        try:
+            async with self.session_factory() as session:
+                queue_depth = int(
+                    (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(InvestigationJob)
+                            .join(
+                                Investigation,
+                                Investigation.id == InvestigationJob.investigation_id,
+                            )
+                            .where(
+                                InvestigationJob.status == "pending",
+                                InvestigationJob.available_at <= current,
+                                Investigation.status.in_(("queued", "running")),
+                                (
+                                    Investigation.lease_expires_at.is_(None)
+                                    | (Investigation.lease_expires_at < current)
+                                    | (Investigation.lease_owner == self.owner)
+                                ),
+                            )
                         )
-                        .where(
-                            InvestigationJob.status == "pending",
-                            InvestigationJob.available_at <= current,
-                            Investigation.status.in_(("queued", "running")),
-                            (
-                                Investigation.lease_expires_at.is_(None)
-                                | (Investigation.lease_expires_at < current)
-                                | (Investigation.lease_owner == self.owner)
-                            ),
+                    ).scalar_one()
+                )
+                JOB_QUEUE_DEPTH.set(queue_depth)
+                job = (
+                    (
+                        await session.execute(
+                            select(InvestigationJob)
+                            .join(
+                                Investigation,
+                                Investigation.id == InvestigationJob.investigation_id,
+                            )
+                            .where(
+                                InvestigationJob.status == "pending",
+                                InvestigationJob.available_at <= current,
+                                Investigation.status.in_(("queued", "running")),
+                                (
+                                    Investigation.lease_expires_at.is_(None)
+                                    | (Investigation.lease_expires_at < current)
+                                    | (Investigation.lease_owner == self.owner)
+                                ),
+                            )
+                            .order_by(
+                                InvestigationJob.available_at,
+                                InvestigationJob.created_at,
+                            )
+                            .limit(1)
+                            .with_for_update(skip_locked=True)
                         )
-                        .order_by(InvestigationJob.available_at, InvestigationJob.created_at)
-                        .limit(1)
-                        .with_for_update(skip_locked=True)
                     )
+                    .scalars()
+                    .first()
                 )
-                .scalars()
-                .first()
-            )
-            if job is None:
+                if job is None:
+                    await session.commit()
+                    return None
+                investigation = (
+                    await session.execute(
+                        select(Investigation)
+                        .where(Investigation.id == job.investigation_id)
+                        .with_for_update()
+                    )
+                ).scalar_one()
+                expires = current + timedelta(seconds=self.lease_ttl_seconds)
+                job.status = "running"
+                job.claimed_by = self.owner
+                job.lease_expires_at = expires
+                job.attempt_count += 1
+                investigation.status = "running"
+                investigation.lease_owner = self.owner
+                investigation.lease_expires_at = expires
+                if investigation.started_at is None:
+                    investigation.started_at = current
                 await session.commit()
-                return None
-            investigation = (
-                await session.execute(
-                    select(Investigation)
-                    .where(Investigation.id == job.investigation_id)
-                    .with_for_update()
+                JOB_QUEUE_DEPTH.set(max(0, queue_depth - 1))
+                return ClaimedInvestigationJob(
+                    job.id, job.investigation_id, job.attempt_count, expires
                 )
-            ).scalar_one()
-            expires = current + timedelta(seconds=self.lease_ttl_seconds)
-            job.status = "running"
-            job.claimed_by = self.owner
-            job.lease_expires_at = expires
-            job.attempt_count += 1
-            investigation.status = "running"
-            investigation.lease_owner = self.owner
-            investigation.lease_expires_at = expires
-            if investigation.started_at is None:
-                investigation.started_at = current
-            await session.commit()
-            return ClaimedInvestigationJob(job.id, job.investigation_id, job.attempt_count, expires)
+        finally:
+            JOB_CLAIM_LATENCY.observe(monotonic() - started)
 
     async def heartbeat(self, job_id: int, *, now: datetime | None = None) -> bool:
         current = now or datetime.now(UTC)
@@ -260,6 +295,7 @@ class InvestigationLeaseStore:
                 investigation.lease_owner = None
                 investigation.lease_expires_at = None
             await session.commit()
+            LEASE_RECOVERIES.inc(len(jobs))
             return len(jobs)
 
     async def _owned_job(self, session: AsyncSession, job_id: int) -> InvestigationJob:

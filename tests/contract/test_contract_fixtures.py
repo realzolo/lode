@@ -112,7 +112,7 @@ def test_contract_check_cli_output_is_reproducible() -> None:
 def test_eval_corpus_has_a_repeatable_complete_oracle() -> None:
     result = validate_eval_corpus()
 
-    assert result["count"] == 20
+    assert result["count"] == 29
     assert result["baseline"] == "phase0-deterministic-oracle"
     assert len(result["sha256"]) == 64
 

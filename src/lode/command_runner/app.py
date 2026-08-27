@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import threading
+from pathlib import Path
 from time import time
 
 from fastapi import FastAPI, Header, HTTPException
@@ -31,6 +33,22 @@ def _require_enabled() -> None:
     if value not in {"true", "false"}:
         raise RuntimeError("LODE_COMMAND_RUNNER_ENABLED must be true or false")
     if value == "false":
+        raise HTTPException(status_code=503, detail="runner is disabled")
+    path_value = os.environ.get("LODE_COMMAND_RUNNER_KILL_SWITCH_FILE", "")
+    if not path_value:
+        return
+    path = Path(path_value)
+    try:
+        if not path.is_absolute() or path.stat().st_size > 16_384:
+            raise ValueError("invalid runner kill switch path")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or set(document) != {"enabled", "runner_enabled"}:
+            raise ValueError("invalid runner kill switch fields")
+        if not all(isinstance(document[name], bool) for name in document):
+            raise ValueError("invalid runner kill switch values")
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="runner kill switch is invalid") from exc
+    if not document["enabled"] or not document["runner_enabled"]:
         raise HTTPException(status_code=503, detail="runner is disabled")
 
 

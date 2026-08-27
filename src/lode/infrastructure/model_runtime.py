@@ -42,6 +42,15 @@ from lode.engine.llm import (
     complete_with_usage,
 )
 from lode.masking import mask_structure
+from lode.metrics import (
+    AI_PROTOCOL,
+    MODEL_CAPACITY_GAPS,
+    MODEL_COMPRESSION_RATIO,
+    MODEL_CONTEXT_UTILIZATION,
+    MODEL_COST,
+    MODEL_ROUTING,
+    MODEL_TOKENS,
+)
 
 
 class ModelGateway(Protocol):
@@ -236,6 +245,10 @@ class PostgresModelRuntime:
                     await session.flush()
                 routing_decision_id = route_row.id
                 await session.commit()
+                MODEL_CAPACITY_GAPS.labels(
+                    role=task.role.value,
+                    execution_class=execution_class.value,
+                ).inc()
                 raise ModelRuntimeUnavailable(
                     "model_capability_unavailable", routing_decision_id
                 ) from exc
@@ -254,6 +267,10 @@ class PostgresModelRuntime:
                 provider_safety_margin_tokens=task.provider_safety_margin_tokens,
                 summary_refs=_summary_refs,
             )
+            MODEL_CONTEXT_UTILIZATION.labels(
+                role=task.role.value,
+                execution_class=route.execution_class.value,
+            ).observe(bundle.token_count / max(1, route.allowed_input_tokens))
             route_hash = canonical_hash(
                 {
                     "task": task,
@@ -451,6 +468,42 @@ class PostgresModelRuntime:
             await session.flush()
             invocation_id = row.id
             await session.commit()
+        provider = config.provider
+        MODEL_ROUTING.labels(
+            role=task.role.value,
+            execution_class=route.execution_class.value,
+            provider=provider,
+            outcome=status,
+        ).inc()
+        MODEL_COST.labels(
+            role=task.role.value,
+            execution_class=route.execution_class.value,
+            provider=provider,
+            kind="predicted",
+        ).inc(route.candidate.predicted_cost)
+        AI_PROTOCOL.labels(
+            outcome=(
+                "succeeded"
+                if payload is not None
+                else "schema_failure"
+                if parse_error is not None
+                else error_code or "unavailable"
+            )
+        ).inc()
+        if completion.input_tokens is not None:
+            MODEL_TOKENS.labels(
+                role=task.role.value,
+                execution_class=route.execution_class.value,
+                provider=provider,
+                direction="input",
+            ).inc(completion.input_tokens)
+        if completion.output_tokens is not None:
+            MODEL_TOKENS.labels(
+                role=task.role.value,
+                execution_class=route.execution_class.value,
+                provider=provider,
+                direction="output",
+            ).inc(completion.output_tokens)
         return ModelInvocationResult(invocation_id, payload, error_code)
 
     async def _compact_context(
@@ -568,6 +621,9 @@ class PostgresModelRuntime:
             await summary_session.commit()
         if not validation.valid:
             return None
+        MODEL_COMPRESSION_RATIO.observe(
+            max(0, invocation.output_tokens or 0) / max(1, invocation.input_tokens or 1)
+        )
         compacted_state = {
             **_plain(state_packet),
             "context_summary": {

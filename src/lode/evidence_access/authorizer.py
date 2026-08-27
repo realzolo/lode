@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any
 
 from sqlalchemy import select
@@ -29,6 +30,7 @@ from lode.evidence_access.registry import NativePolicyRegistry
 from lode.evidence_access.tokens import issue_token, token_hash
 from lode.evidence_access.types import AccessContext, AccessRejection, AuthorizedReadResult
 from lode.evidence_access.vault import EvidenceValueVault
+from lode.metrics import EVIDENCE_ACCESS_STAGE_LATENCY, NATIVE_CANDIDATES
 
 
 def _call_policy[PolicyResult](
@@ -65,6 +67,7 @@ class EvidenceAccessAuthorizer:
         candidate: NativeReadCandidateInput,
         context: AccessContext,
     ) -> AuthorizedReadResult:
+        started = monotonic()
         candidate_payload = candidate.model_dump(mode="json")
         candidate_hash = canonical_hash(candidate_payload)
         candidate_row = NativeReadCandidate(
@@ -149,6 +152,12 @@ class EvidenceAccessAuthorizer:
                 rejection=exc,
             )
             await self.session.commit()
+            NATIVE_CANDIDATES.labels(
+                language=candidate.language, outcome="rejected", reason=exc.code
+            ).inc()
+            EVIDENCE_ACCESS_STAGE_LATENCY.labels(
+                stage="policy", outcome="rejected"
+            ).observe(monotonic() - started)
             return AuthorizedReadResult(
                 outcome="reject",
                 candidate_id=candidate_row.id,
@@ -207,6 +216,14 @@ class EvidenceAccessAuthorizer:
                 rejection=rejection,
             )
             await self.session.commit()
+            NATIVE_CANDIDATES.labels(
+                language=candidate.language,
+                outcome="rejected",
+                reason=rejection.code,
+            ).inc()
+            EVIDENCE_ACCESS_STAGE_LATENCY.labels(
+                stage="policy", outcome="rejected"
+            ).observe(monotonic() - started)
             return AuthorizedReadResult(
                 outcome="reject",
                 candidate_id=candidate_row.id,
@@ -286,6 +303,12 @@ class EvidenceAccessAuthorizer:
         self.session.add(authorized)
         await self.session.flush()
         await self.session.commit()
+        NATIVE_CANDIDATES.labels(
+            language=candidate.language, outcome="accepted", reason="none"
+        ).inc()
+        EVIDENCE_ACCESS_STAGE_LATENCY.labels(
+            stage="policy", outcome="accepted"
+        ).observe(monotonic() - started)
         return AuthorizedReadResult(
             outcome="allow",
             candidate_id=candidate_row.id,
