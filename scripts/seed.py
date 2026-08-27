@@ -20,7 +20,7 @@ from lode.db.models import (
     WorkspaceModelBinding,
     WorkspaceRepositoryBinding,
 )
-from lode.model_catalog import require_openai_model
+from lode.model_catalog import require_model
 from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.session import AsyncSessionLocal
 WORKSPACE_NAME = "Checkout"
@@ -84,20 +84,19 @@ async def main() -> None:
 
         provider = AIProviderAccount(
             name="seed-openai-compatible",
-            provider_kind="openai_compatible",
+            protocol_id="openai.responses.v1",
             base_url="https://example.invalid/v1",
             credential_ciphertext="seed-disabled-ciphertext",
             state="disabled",
         )
         session.add(provider)
         await session.flush()
-        profile = require_openai_model("gpt-5.6-sol")
+        profile = require_model("openai", "openai.responses.v1", "gpt-5.6-sol")
         deployment = ProviderAccountModel(
             provider_account_id=provider.id,
             provider_model_id=profile.model_id,
             catalog_revision=profile.catalog_revision,
             catalog_profile_hash=profile.profile_hash,
-            discovery_state="manual",
             state="disabled",
         )
         session.add(deployment)

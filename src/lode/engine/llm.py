@@ -34,13 +34,11 @@ logger = logging.getLogger("lode.engine.llm")
 
 @dataclass
 class ModelConfig:
-    provider: str
+    protocol_id: str
     base_url: str
     api_key_ciphertext: str
     model: str
     max_completion_tokens: int | None = None
-    organization_ref: str | None = None
-    project_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,12 +73,20 @@ class ProviderHTTPError(Exception):
         super().__init__(f"provider returned HTTP {status_code}")
 
 
-def model_endpoint(provider: str, base_url: str) -> str:
-    """Resolve a configured API base URL to the provider's completion endpoint."""
+def model_endpoint(protocol_id: str, base_url: str) -> str:
+    """Resolve a configured API root to its explicit registered protocol endpoint."""
     parsed = urlsplit(base_url.strip())
     path = parsed.path.rstrip("/")
-    if not path.endswith("/chat/completions"):
-        path = f"{path}/chat/completions" if path.endswith("/v1") else f"{path}/v1/chat/completions"
+    relative = {
+        "openai.responses.v1": "/responses",
+        "openai.chat_completions.v1": "/chat/completions",
+        "anthropic.messages.v1": "/messages",
+    }.get(protocol_id)
+    if relative is None:
+        raise ValueError("unsupported model protocol")
+    if not path.endswith("/v1"):
+        path = f"{path}/v1"
+    path = f"{path}{relative}"
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
@@ -133,8 +139,8 @@ def _usage(
     body: dict[str, Any], system_prompt: str, user_prompt: str, text: str
 ) -> tuple[int, int, int, str]:
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
-    input_tokens = usage.get("prompt_tokens")
-    output_tokens = usage.get("completion_tokens")
+    input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+    output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
     if isinstance(input_tokens, int) and isinstance(output_tokens, int):
         total = usage.get("total_tokens")
         return (
@@ -187,22 +193,14 @@ async def complete_with_usage(
             0,
         )
 
-    payload, headers = _openai_payload(
-        api_key,
-        config.base_url,
-        config.model,
-        system_prompt,
-        user_prompt,
-        max_completion_tokens=config.max_completion_tokens,
-        organization_ref=config.organization_ref,
-        project_ref=config.project_ref,
-        json_mode=json_mode,
-        response_schema=response_schema,
+    payload, headers = _protocol_payload(
+        config.protocol_id, api_key, config.model, system_prompt, user_prompt,
+        max_completion_tokens=config.max_completion_tokens, json_mode=json_mode, response_schema=response_schema,
     )
 
     headers["Content-Type"] = "application/json"
     headers["Accept"] = "application/json"
-    endpoint = model_endpoint(config.provider, config.base_url)
+    endpoint = model_endpoint(config.protocol_id, config.base_url)
     request_timeout = max(1.0, timeout_seconds or LLM_REQUEST_TIMEOUT_SECONDS)
 
     async def _post() -> dict[str, Any]:
@@ -318,16 +316,30 @@ def _error_code(exc: Exception | None) -> str:
     return "provider_error"
 
 
+def _protocol_payload(
+    protocol_id: str,
+    api_key: str,
+    model: str,
+    system: str,
+    user: str,
+    **kwargs: Any,
+) -> tuple[dict, dict]:
+    if protocol_id == "openai.chat_completions.v1":
+        return _openai_payload(api_key, model, system, user, **kwargs)
+    if protocol_id == "openai.responses.v1":
+        return _openai_responses_payload(api_key, model, system, user, **kwargs)
+    if protocol_id == "anthropic.messages.v1":
+        return _anthropic_payload(api_key, model, system, user, **kwargs)
+    raise ValueError("unsupported model protocol")
+
+
 def _openai_payload(
     api_key: str,
-    base_url: str,
     model: str,
     system: str,
     user: str,
     *,
     max_completion_tokens: int | None = None,
-    organization_ref: str | None = None,
-    project_ref: str | None = None,
     json_mode: bool = False,
     response_schema: ResponseSchema | None = None,
 ) -> tuple[dict, dict]:
@@ -355,11 +367,45 @@ def _openai_payload(
     headers = {
         "Authorization": f"Bearer {api_key}",
     }
-    if organization_ref:
-        headers["OpenAI-Organization"] = organization_ref
-    if project_ref:
-        headers["OpenAI-Project"] = project_ref
     return payload, headers
+
+
+def _openai_responses_payload(
+    api_key: str, model: str, system: str, user: str, *, max_completion_tokens: int | None = None,
+    json_mode: bool = False, response_schema: ResponseSchema | None = None,
+) -> tuple[dict, dict]:
+    payload: dict[str, Any] = {
+        "model": model,
+        "instructions": system,
+        "input": user,
+        "store": False,
+        "temperature": 0.2,
+    }
+    if max_completion_tokens is not None:
+        payload["max_output_tokens"] = max_completion_tokens
+    if response_schema is not None:
+        payload["text"] = {"format": {"type": "json_schema", "name": response_schema.name, "strict": True, "schema": response_schema.schema}}
+    elif json_mode:
+        payload["text"] = {"format": {"type": "json_object"}}
+    return payload, {"Authorization": f"Bearer {api_key}"}
+
+
+def _anthropic_payload(
+    api_key: str, model: str, system: str, user: str, *, max_completion_tokens: int | None = None,
+    json_mode: bool = False, response_schema: ResponseSchema | None = None,
+) -> tuple[dict, dict]:
+    payload: dict[str, Any] = {
+        "model": model,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+        "max_tokens": max_completion_tokens or 1024,
+        "temperature": 0.2,
+    }
+    if response_schema is not None:
+        payload["output_config"] = {"format": {"type": "json_schema", "schema": response_schema.schema}}
+    elif json_mode:
+        payload["output_config"] = {"format": {"type": "json_object"}}
+    return payload, {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
 
 
 def _extract_text(
@@ -367,6 +413,11 @@ def _extract_text(
     *,
     response_schema: ResponseSchema | None = None,
 ) -> str:
+    if isinstance(body.get("output_text"), str):
+        return body["output_text"]
+    content = body.get("content")
+    if isinstance(content, list):
+        return "".join(item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text")
     choices = body.get("choices") or []
     if not choices:
         return ""

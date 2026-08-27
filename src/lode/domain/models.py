@@ -97,7 +97,7 @@ class Workspace:
 @dataclass(frozen=True, slots=True)
 class ProviderAccount:
     name: str
-    provider_kind: str
+    protocol_id: str
     base_url: str
     state: LifecycleState = LifecycleState.ACTIVE
     verification_status: HealthState = HealthState.UNTESTED
@@ -106,12 +106,16 @@ class ProviderAccount:
     def __post_init__(self) -> None:
         for field_name in (
             "name",
-            "provider_kind",
+            "protocol_id",
             "base_url",
         ):
             _required(getattr(self, field_name), field_name)
-        if self.provider_kind != "openai_compatible":
-            raise DomainValidationError("unsupported_provider", "only OpenAI-compatible accounts are supported")
+        if self.protocol_id not in {
+            "openai.responses.v1",
+            "openai.chat_completions.v1",
+            "anthropic.messages.v1",
+        }:
+            raise DomainValidationError("unsupported_protocol", "model protocol is not supported")
         if self.revision < 1:
             raise DomainValidationError("invalid_revision", "revision must be positive")
 
@@ -122,7 +126,6 @@ class ProviderAccountModel:
     provider_model_id: str
     catalog_revision: str
     catalog_profile_hash: str
-    discovery_state: Literal["synced", "manual", "missing"]
     availability_state: HealthState = HealthState.UNTESTED
     state: LifecycleState = LifecycleState.ACTIVE
     revision: int = 1

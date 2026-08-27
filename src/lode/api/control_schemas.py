@@ -36,57 +36,41 @@ class _ORMOutput(BaseModel):
 
 class _ModelSelection(_StrictInput):
     model_ids: tuple[str, ...] = Field(max_length=100)
-    manual_model_ids: tuple[str, ...] = Field(default=(), max_length=100)
 
     @model_validator(mode="after")
     def valid_model_selection(self):
         if len(self.model_ids) != len(set(self.model_ids)):
             raise ValueError("model IDs must be unique")
-        if len(self.manual_model_ids) != len(set(self.manual_model_ids)):
-            raise ValueError("manual model IDs must be unique")
-        if not set(self.manual_model_ids).issubset(self.model_ids):
-            raise ValueError("manual model IDs must be selected")
         if any(not value or value != value.strip() for value in self.model_ids):
             raise ValueError("model IDs must be trimmed and nonempty")
         return self
 
 
-class ProviderModelDiscoveryInput(_StrictInput):
+class ProviderAccountConnectionInput(_StrictInput):
+    protocol_id: Literal["openai.responses.v1", "openai.chat_completions.v1", "anthropic.messages.v1"]
     base_url: str = Field(min_length=1, max_length=2_000)
     credential: str = Field(min_length=1, max_length=8_000)
-    organization_ref: str | None = Field(default=None, max_length=500)
-    project_ref: str | None = Field(default=None, max_length=500)
 
 
-class ProviderAccountCreate(ProviderModelDiscoveryInput, _ModelSelection):
+class ProviderAccountCreate(ProviderAccountConnectionInput, _ModelSelection):
     name: str = Field(min_length=1, max_length=200)
     model_ids: tuple[str, ...] = Field(min_length=1, max_length=100)
 
 
 class ProviderAccountPatch(_StrictPatch):
-    nullable_fields = frozenset({"organization_ref", "project_ref"})
-
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    protocol_id: Literal["openai.responses.v1", "openai.chat_completions.v1", "anthropic.messages.v1"] | None = None
     base_url: str | None = Field(default=None, min_length=1, max_length=2_000)
     credential: str | None = Field(default=None, min_length=1, max_length=8_000)
-    organization_ref: str | None = Field(default=None, max_length=500)
-    project_ref: str | None = Field(default=None, max_length=500)
     model_ids: tuple[str, ...] | None = Field(default=None, max_length=100)
-    manual_model_ids: tuple[str, ...] | None = Field(default=None, max_length=100)
     state: Literal["active", "disabled"] | None = None
 
     @model_validator(mode="after")
     def valid_model_selection(self):
         if self.model_ids is None:
-            if self.manual_model_ids is not None:
-                raise ValueError("manual model IDs require model IDs")
             return self
-        selection = _ModelSelection(
-            model_ids=self.model_ids,
-            manual_model_ids=self.manual_model_ids or (),
-        )
+        selection = _ModelSelection(model_ids=self.model_ids)
         self.model_ids = selection.model_ids
-        self.manual_model_ids = selection.manual_model_ids
         return self
 
 
@@ -100,7 +84,6 @@ class ProviderAccountModelOut(_ORMOutput):
     provider_model_id: str
     display_name: str
     capabilities: dict[str, bool]
-    discovery_state: Literal["synced", "manual", "missing"]
     availability_state: Literal["untested", "healthy", "unavailable"]
     health_checked_at: datetime | None
     state: Literal["active", "disabled"]
@@ -109,18 +92,11 @@ class ProviderAccountModelOut(_ORMOutput):
     updated_at: datetime
 
 
-class ProviderModelDiscoveryOut(_StrictInput):
-    provider_model_id: str
-    display_name: str
-
-
 class ProviderAccountOut(_ORMOutput):
     id: int
     name: str
-    provider_kind: Literal["openai_compatible"]
+    protocol_id: Literal["openai.responses.v1", "openai.chat_completions.v1", "anthropic.messages.v1"]
     base_url: str
-    organization_ref: str | None
-    project_ref: str | None
     state: str
     verification_status: str
     verified_at: datetime | None
@@ -279,83 +255,27 @@ class PlatformSettingsOut(_ORMOutput):
     supported_languages: list[Literal["en", "zh"]]
 
 
-class GitProviderInstanceCreate(_StrictInput):
-    kind: Literal["github", "gitlab", "gitee"]
+class GitAccountCreate(_StrictInput):
+    adapter_id: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=200)
-    base_url: str | None = Field(default=None, max_length=2_000)
     api_url: str | None = Field(default=None, max_length=2_000)
-    github_app_id: str | None = Field(default=None, max_length=200)
-    github_app_private_key: str | None = Field(default=None, max_length=100_000)
-    oauth_client_id: str | None = Field(default=None, max_length=2_000)
-    oauth_client_secret: str | None = Field(default=None, max_length=8_000)
-    oauth_redirect_uri: str | None = Field(default=None, max_length=2_000)
-
-    @model_validator(mode="after")
-    def valid_native_auth(self):
-        github_values = (self.github_app_id, self.github_app_private_key)
-        oauth_values = (self.oauth_client_id, self.oauth_client_secret, self.oauth_redirect_uri)
-        if self.kind == "github":
-            if any(value is not None for value in oauth_values):
-                raise ValueError("GitHub provider instances do not use OAuth client fields")
-            if any(value is not None for value in github_values) and not all(github_values):
-                raise ValueError("GitHub App ID and private key must be supplied together")
-        else:
-            if any(value is not None for value in github_values):
-                raise ValueError("only GitHub provider instances accept GitHub App fields")
-            if any(value is not None for value in oauth_values) and not all(oauth_values):
-                raise ValueError("OAuth client ID, secret, and redirect URI must be supplied together")
-        return self
+    access_token: str = Field(min_length=1, max_length=8_000)
 
 
-class GitProviderInstanceOut(_ORMOutput):
-    id: int
-    kind: Literal["github", "gitlab", "gitee"]
-    name: str
-    base_url: str
-    api_url: str
-    state: Literal["active", "disabled"]
-    verification_status: Literal["untested", "healthy", "unavailable"]
-    verified_at: datetime | None
-    last_error: str | None
-    native_auth_available: bool
-    native_auth_kind: Literal["github_app", "oauth"] | None
-    revision: int
-    created_at: datetime
-    updated_at: datetime
-
-
-class GitProviderInstancePatch(_StrictPatch):
+class GitAccountPatch(_StrictPatch):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     state: Literal["active", "disabled"] | None = None
 
 
-class GitAccountManualCreate(_StrictInput):
-    provider_instance_id: int = Field(gt=0)
-    name: str = Field(min_length=1, max_length=200)
+class GitAccountTokenRotate(_StrictInput):
     access_token: str = Field(min_length=1, max_length=8_000)
 
 
-class GitHubAppConnectionCreate(_StrictInput):
-    provider_instance_id: int = Field(gt=0)
-    name: str = Field(min_length=1, max_length=200)
-    installation_id: str = Field(min_length=1, max_length=200)
-
-
-class GitOAuthStart(_StrictInput):
-    name: str = Field(min_length=1, max_length=200)
-
-
-class GitOAuthStartOut(_StrictInput):
-    authorization_url: str
-
-
-class GitAccountConnectionOut(_ORMOutput):
+class GitAccountOut(_ORMOutput):
     id: int
-    provider_instance_id: int
-    provider_kind: Literal["github", "gitlab", "gitee"]
-    provider_name: str
+    adapter_id: str
+    api_url: str
     name: str
-    auth_mode: Literal["github_app", "oauth", "access_token"]
     external_account_id: str
     external_account_login: str
     account_url: str

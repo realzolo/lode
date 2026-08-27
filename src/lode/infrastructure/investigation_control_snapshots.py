@@ -15,7 +15,7 @@ from lode.crypto import CryptoError, decrypt_secret
 from lode.db.models import (
     AIProviderAccount,
     ContextPolicyRevision,
-    GitAccountConnection,
+    GitAccount,
     GitAccountCredentialRevision,
     GitAccountRepositoryAccess,
     GitRepository,
@@ -38,7 +38,7 @@ from lode.infrastructure.git_source import (
     GitRemoteRevisionResolver,
     GitRevisionResolver,
 )
-from lode.model_catalog import require_openai_model
+from lode.model_catalog import require_model
 
 
 class InvestigationControlSnapshotStore:
@@ -83,7 +83,7 @@ class InvestigationControlSnapshotStore:
                     select(
                         WorkspaceRepositoryBinding,
                         GitRepository,
-                        GitAccountConnection,
+                        GitAccount,
                         GitAccountCredentialRevision,
                     )
                     .join(
@@ -101,18 +101,18 @@ class InvestigationControlSnapshotStore:
                         == WorkspaceGitRepositoryEntitlement.grant_id,
                     )
                     .join(
-                        GitAccountConnection,
-                        GitAccountConnection.id
+                        GitAccount,
+                        GitAccount.id
                         == WorkspaceGitAccountGrant.account_connection_id,
                     )
                     .join(
                         GitAccountCredentialRevision,
                         GitAccountCredentialRevision.id
-                        == GitAccountConnection.current_credential_revision_id,
+                        == GitAccount.current_credential_revision_id,
                     )
                     .join(
                         GitAccountRepositoryAccess,
-                        (GitAccountRepositoryAccess.account_connection_id == GitAccountConnection.id)
+                        (GitAccountRepositoryAccess.account_connection_id == GitAccount.id)
                         & (GitAccountRepositoryAccess.repository_id == GitRepository.id),
                     )
                     .where(
@@ -122,8 +122,8 @@ class InvestigationControlSnapshotStore:
                         WorkspaceGitRepositoryEntitlement.state == "active",
                         WorkspaceGitAccountGrant.workspace_id == workspace_id,
                         WorkspaceGitAccountGrant.state == "active",
-                        GitAccountConnection.state == "active",
-                        GitAccountConnection.verification_status == "healthy",
+                        GitAccount.state == "active",
+                        GitAccount.verification_status == "healthy",
                         GitAccountRepositoryAccess.state == "available",
                     )
                     .order_by(
@@ -214,7 +214,8 @@ class InvestigationControlSnapshotStore:
                         "repository_id": repository.id,
                         "repo_url": repository.repo_url,
                         "default_branch": repository.default_branch,
-                        "provider_instance_id": repository.provider_instance_id,
+                        "adapter_id": repository.adapter_id,
+                        "endpoint_identity_hash": repository.endpoint_identity_hash,
                         "external_repository_id": repository.external_repository_id,
                     }
                 ),
@@ -349,15 +350,16 @@ class InvestigationControlSnapshotStore:
             deployment = await self.session.get(ProviderAccountModel, binding.provider_account_model_id)
             if deployment is None:
                 raise ValueError("model binding deployment is missing")
-            profile = require_openai_model(deployment.provider_model_id)
+            provider = await self.session.get(AIProviderAccount, deployment.provider_account_id)
+            if provider is None:
+                raise ValueError("account model provider is missing")
+            provider_kind = "anthropic" if provider.protocol_id == "anthropic.messages.v1" else "openai"
+            profile = require_model(provider_kind, provider.protocol_id, deployment.provider_model_id)
             if (
                 deployment.catalog_revision != profile.catalog_revision
                 or deployment.catalog_profile_hash != profile.profile_hash
             ):
                 raise ValueError("account model catalog specification is stale")
-            provider = await self.session.get(AIProviderAccount, deployment.provider_account_id)
-            if provider is None:
-                raise ValueError("account model provider is missing")
             routing_policy = {
                 "priority": binding.priority,
                 "max_calls": binding.max_calls,
@@ -377,7 +379,7 @@ class InvestigationControlSnapshotStore:
                 "model_tokenizer_encoding": profile.tokenizer_encoding,
                 "model_health": deployment.availability_state,
                 "provider_health": provider.verification_status,
-                "provider_kind": provider.provider_kind,
+                "protocol_id": provider.protocol_id,
                 "provider_base_url": provider.base_url,
                 "provider_model_id": deployment.provider_model_id,
                 "credential_identity_hash": hashlib.sha256(

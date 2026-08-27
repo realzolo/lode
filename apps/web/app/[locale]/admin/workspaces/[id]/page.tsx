@@ -20,7 +20,7 @@ import {
   fetchComponents,
   fetchConnectorKinds,
   fetchConnectors,
-  fetchGitAccountConnections,
+  fetchGitAccounts,
   fetchGitAccountRepositories,
   fetchInvestigationPolicy,
   fetchModelBindings,
@@ -43,7 +43,7 @@ import type {
   BuildUnit,
   Component,
   EvidenceConnector,
-  GitAccountConnection,
+  GitAccount,
   GitAccountRepository,
   InvestigationPolicy,
   ModelBinding,
@@ -218,12 +218,12 @@ function RepositoryDialog({ open, onOpenChange, workspaceId, candidates, onCreat
 
 function GrantDialog({ open, onOpenChange, workspaceId, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; onCreated: () => Promise<void> }) {
   const t = useTranslations('workspace'); const tc = useTranslations('common');
-  const [accounts, setAccounts] = useState<GitAccountConnection[]>([]); const [repositories, setRepositories] = useState<GitAccountRepository[]>([]); const [accountId, setAccountId] = useState(''); const [scope, setScope] = useState<'selected' | 'all_visible'>('selected'); const [selected, setSelected] = useState<number[]>([]);
-  useEffect(() => { if (!open) return; void fetchGitAccountConnections().then(setAccounts).catch((cause) => toast.error(String(cause))); }, [open]);
+  const [accounts, setAccounts] = useState<GitAccount[]>([]); const [repositories, setRepositories] = useState<GitAccountRepository[]>([]); const [accountId, setAccountId] = useState(''); const [scope, setScope] = useState<'selected' | 'all_visible'>('selected'); const [selected, setSelected] = useState<number[]>([]);
+  useEffect(() => { if (!open) return; void fetchGitAccounts().then(setAccounts).catch((cause) => toast.error(String(cause))); }, [open]);
   useEffect(() => { if (!accountId) { setRepositories([]); setSelected([]); return; } void fetchGitAccountRepositories(Number(accountId)).then((values) => { setRepositories(values); setSelected([]); }).catch((cause) => toast.error(String(cause))); }, [accountId]);
   async function create() { try { await createWorkspaceGitAccountGrant(workspaceId, { account_connection_id: Number(accountId), repository_scope: scope, repository_ids: scope === 'selected' ? selected : [] }); onOpenChange(false); await onCreated(); } catch (cause) { toast.error(String(cause)); } }
   function toggle(repositoryId: number, checked: boolean) { setSelected((current) => checked ? [...current, repositoryId] : current.filter((value) => value !== repositoryId)); }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>{t('authorizeGitAccount')}</DialogTitle></DialogHeader><div className="space-y-3"><label className="field"><span className="field-label">{t('gitAccount')}</span><Select value={accountId} onChange={(event) => setAccountId(event.target.value)}><option value="">{t('selectGitAccount')}</option>{accounts.filter((account) => account.state === 'active' && account.verification_status === 'healthy').map((account) => <option key={account.id} value={account.id}>{account.provider_name} / {account.name} ({account.repository_count})</option>)}</Select></label><label className="field"><span className="field-label">{t('repositoryAccess')}</span><Select value={scope} onChange={(event) => setScope(event.target.value as 'selected' | 'all_visible')}><option value="all_visible">{t('allVisibleRepositories')}</option><option value="selected">{t('selectedRepositories')}</option></Select></label>{scope === 'selected' && repositories.length ? <div className="max-h-48 overflow-auto rounded-md border">{repositories.map((repository) => <label key={repository.repository_id} className="flex items-center gap-2 border-b px-3 py-2 text-sm last:border-0"><input type="checkbox" checked={selected.includes(repository.repository_id)} onChange={(event) => toggle(repository.repository_id, event.target.checked)} disabled={repository.archived} />{repository.full_name}<span className="ml-auto text-xs text-muted-foreground">{repository.visibility}</span></label>)}</div> : null}</div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" disabled={!accountId || (scope === 'selected' && !selected.length)} onClick={() => void create()}>{t('authorize')}</Button></DialogFooter></DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>{t('authorizeGitAccount')}</DialogTitle></DialogHeader><div className="space-y-3"><label className="field"><span className="field-label">{t('gitAccount')}</span><Select value={accountId} onChange={(event) => setAccountId(event.target.value)}><option value="">{t('selectGitAccount')}</option>{accounts.filter((account) => account.state === 'active' && account.verification_status === 'healthy').map((account) => <option key={account.id} value={account.id}>{account.adapter_id} / {account.name} ({account.repository_count})</option>)}</Select></label><label className="field"><span className="field-label">{t('repositoryAccess')}</span><Select value={scope} onChange={(event) => setScope(event.target.value as 'selected' | 'all_visible')}><option value="all_visible">{t('allVisibleRepositories')}</option><option value="selected">{t('selectedRepositories')}</option></Select></label>{scope === 'selected' && repositories.length ? <div className="max-h-48 overflow-auto rounded-md border">{repositories.map((repository) => <label key={repository.repository_id} className="flex items-center gap-2 border-b px-3 py-2 text-sm last:border-0"><input type="checkbox" checked={selected.includes(repository.repository_id)} onChange={(event) => toggle(repository.repository_id, event.target.checked)} disabled={repository.archived} />{repository.full_name}<span className="ml-auto text-xs text-muted-foreground">{repository.visibility}</span></label>)}</div> : null}</div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" disabled={!accountId || (scope === 'selected' && !selected.length)} onClick={() => void create()}>{t('authorize')}</Button></DialogFooter></DialogContent></Dialog>;
 }
 
 function ConnectorDialog({ open, onOpenChange, workspaceId, kinds, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; kinds: Array<{ kind: string }>; onCreated: () => Promise<void> }) {

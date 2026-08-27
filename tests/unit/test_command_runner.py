@@ -279,7 +279,8 @@ async def test_runner_api_authenticates_and_rejects_replay(
 
 
 def test_runner_deployment_has_private_network_and_minimum_privileges() -> None:
-    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    compose = yaml.safe_load((ROOT / "docker-compose.example.yml").read_text())
+    assert compose["name"] == "lode"
     services = compose["services"]
     runner = services["command-runner"]
 

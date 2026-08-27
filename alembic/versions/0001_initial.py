@@ -24,11 +24,9 @@ def upgrade() -> None:
         "ai_provider_accounts",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("name", sa.Text(), nullable=False),
-        sa.Column("provider_kind", sa.Text(), nullable=False),
+        sa.Column("protocol_id", sa.Text(), nullable=False),
         sa.Column("base_url", sa.Text(), nullable=False),
         sa.Column("credential_ciphertext", sa.Text(), nullable=False),
-        sa.Column("organization_ref", sa.Text(), nullable=True),
-        sa.Column("project_ref", sa.Text(), nullable=True),
         sa.Column("state", sa.Text(), server_default="active", nullable=False),
         sa.Column("verification_status", sa.Text(), server_default="untested", nullable=False),
         sa.Column("verified_at", sa.DateTime(timezone=True), nullable=True),
@@ -49,7 +47,8 @@ def upgrade() -> None:
             "state IN ('active', 'disabled')", name=op.f("ck_ai_provider_accounts_state")
         ),
         sa.CheckConstraint(
-            "provider_kind = 'openai_compatible'", name=op.f("ck_ai_provider_accounts_provider_kind")
+            "protocol_id IN ('openai.responses.v1', 'openai.chat_completions.v1', 'anthropic.messages.v1')",
+            name=op.f("ck_ai_provider_accounts_protocol_id"),
         ),
         sa.CheckConstraint(
             "verification_status IN ('untested', 'healthy', 'unavailable')",
@@ -60,35 +59,12 @@ def upgrade() -> None:
         sa.UniqueConstraint("name", name=op.f("uq_ai_provider_accounts_name")),
     )
     op.create_table(
-        "git_provider_instances",
+        "git_accounts",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
-        sa.Column("kind", sa.Text(), nullable=False),
-        sa.Column("name", sa.Text(), nullable=False),
-        sa.Column("base_url", sa.Text(), nullable=False),
+        sa.Column("adapter_id", sa.Text(), nullable=False),
         sa.Column("api_url", sa.Text(), nullable=False),
-        sa.Column("config", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("secret_ciphertext", sa.Text(), server_default="", nullable=False),
-        sa.Column("state", sa.Text(), server_default="active", nullable=False),
-        sa.Column("verification_status", sa.Text(), server_default="untested", nullable=False),
-        sa.Column("verified_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("last_error", sa.Text(), nullable=True),
-        sa.Column("revision", sa.Integer(), server_default="1", nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("kind IN ('github', 'gitlab', 'gitee')", name=op.f("ck_git_provider_instances_kind")),
-        sa.CheckConstraint("state IN ('active', 'disabled')", name=op.f("ck_git_provider_instances_state")),
-        sa.CheckConstraint("verification_status IN ('untested', 'healthy', 'unavailable')", name=op.f("ck_git_provider_instances_verification_status")),
-        sa.CheckConstraint("revision > 0", name=op.f("ck_git_provider_instances_revision_positive")),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_git_provider_instances")),
-        sa.UniqueConstraint("kind", "base_url", name="uq_git_provider_instance_kind_base_url"),
-        sa.UniqueConstraint("name", name="uq_git_provider_instance_name"),
-    )
-    op.create_table(
-        "git_account_connections",
-        sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
-        sa.Column("provider_instance_id", sa.BigInteger(), nullable=False),
+        sa.Column("endpoint_identity_hash", sa.Text(), nullable=False),
         sa.Column("name", sa.Text(), nullable=False),
-        sa.Column("auth_mode", sa.Text(), nullable=False),
         sa.Column("external_account_id", sa.Text(), nullable=False),
         sa.Column("external_account_login", sa.Text(), nullable=False),
         sa.Column("account_url", sa.Text(), nullable=False),
@@ -102,13 +78,13 @@ def upgrade() -> None:
         sa.Column("revision", sa.Integer(), server_default="1", nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("auth_mode IN ('github_app', 'oauth', 'access_token')", name=op.f("ck_git_account_connections_auth_mode")),
-        sa.CheckConstraint("state IN ('active', 'disabled', 'revoked')", name=op.f("ck_git_account_connections_state")),
-        sa.CheckConstraint("verification_status IN ('untested', 'healthy', 'unavailable')", name=op.f("ck_git_account_connections_verification_status")),
-        sa.CheckConstraint("revision > 0", name=op.f("ck_git_account_connections_revision_positive")),
-        sa.ForeignKeyConstraint(["provider_instance_id"], ["git_provider_instances.id"], name=op.f("fk_git_account_connections_provider_instance_id_git_provider_instances"), ondelete="RESTRICT"),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_git_account_connections")),
-        sa.UniqueConstraint("provider_instance_id", "external_account_id", "auth_mode", name="uq_git_account_connection_provider_external_mode"),
+        sa.CheckConstraint("adapter_id <> ''", name=op.f("ck_git_accounts_adapter_nonempty")),
+        sa.CheckConstraint("endpoint_identity_hash ~ '^[0-9a-f]{64}$'", name=op.f("ck_git_accounts_endpoint_hash_sha256")),
+        sa.CheckConstraint("state IN ('active', 'disabled', 'revoked')", name=op.f("ck_git_accounts_state")),
+        sa.CheckConstraint("verification_status IN ('untested', 'healthy', 'unavailable')", name=op.f("ck_git_accounts_verification_status")),
+        sa.CheckConstraint("revision > 0", name=op.f("ck_git_accounts_revision_positive")),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_git_accounts")),
+        sa.UniqueConstraint("adapter_id", "endpoint_identity_hash", "external_account_id", name="uq_git_account_adapter_endpoint_external"),
     )
     op.create_table(
         "git_account_credential_revisions",
@@ -121,14 +97,14 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.CheckConstraint("revision > 0", name=op.f("ck_git_account_credential_revisions_revision_positive")),
         sa.CheckConstraint("credential_identity_hash ~ '^[0-9a-f]{64}$'", name=op.f("ck_git_account_credential_revisions_credential_hash_sha256")),
-        sa.ForeignKeyConstraint(["account_connection_id"], ["git_account_connections.id"], name=op.f("fk_git_account_credential_revisions_account_connection_id_git_account_connections"), ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["account_connection_id"], ["git_accounts.id"], name=op.f("fk_git_account_credential_revisions_account_connection_id_git_accounts"), ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_git_account_credential_revisions")),
         sa.UniqueConstraint("id", "account_connection_id", name="uq_git_account_credential_revision_identity"),
         sa.UniqueConstraint("account_connection_id", "revision", name="uq_git_account_credential_revision"),
     )
     op.create_foreign_key(
-        "fk_git_account_connections_current_credential_revision",
-        "git_account_connections",
+        "fk_git_accounts_current_credential_revision",
+        "git_accounts",
         "git_account_credential_revisions",
         ["current_credential_revision_id", "id"],
         ["id", "account_connection_id"],
@@ -178,7 +154,6 @@ def upgrade() -> None:
         sa.Column("provider_model_id", sa.Text(), nullable=False),
         sa.Column("catalog_revision", sa.Text(), nullable=False),
         sa.Column("catalog_profile_hash", sa.Text(), nullable=False),
-        sa.Column("discovery_state", sa.Text(), nullable=False),
         sa.Column("availability_state", sa.Text(), server_default="untested", nullable=False),
         sa.Column("health_checked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("state", sa.Text(), server_default="active", nullable=False),
@@ -206,10 +181,6 @@ def upgrade() -> None:
             "catalog_profile_hash ~ '^[0-9a-f]{64}$'",
             name=op.f("ck_provider_account_models_catalog_profile_hash_sha256"),
         ),
-        sa.CheckConstraint(
-            "discovery_state IN ('synced', 'manual', 'missing')",
-            name=op.f("ck_provider_account_models_discovery_state"),
-        ),
         sa.CheckConstraint("revision > 0", name=op.f("ck_provider_account_models_revision_positive")),
         sa.ForeignKeyConstraint(
             ["provider_account_id"],
@@ -219,49 +190,6 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_provider_account_models")),
         sa.UniqueConstraint("provider_account_id", "provider_model_id", name="uq_provider_account_model"),
-    )
-    op.create_table(
-        "provider_model_observations",
-        sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
-        sa.Column("provider_account_id", sa.BigInteger(), nullable=False),
-        sa.Column("provider_model_id", sa.Text(), nullable=False),
-        sa.Column(
-            "capability_hints",
-            postgresql.JSONB(astext_type=sa.Text()),
-            server_default=sa.text("'{}'::jsonb"),
-            nullable=False,
-        ),
-        sa.Column(
-            "provider_payload_masked",
-            postgresql.JSONB(astext_type=sa.Text()),
-            server_default=sa.text("'{}'::jsonb"),
-            nullable=False,
-        ),
-        sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("response_hash", sa.Text(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.CheckConstraint(
-            "response_hash ~ '^[0-9a-f]{64}$'",
-            name=op.f("ck_provider_model_observations_response_hash_sha256"),
-        ),
-        sa.ForeignKeyConstraint(
-            ["provider_account_id"],
-            ["ai_provider_accounts.id"],
-            name=op.f("fk_provider_model_observations_provider_account_id_ai_provider_accounts"),
-            ondelete="CASCADE",
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_provider_model_observations")),
-        sa.UniqueConstraint(
-            "provider_account_id",
-            "provider_model_id",
-            "response_hash",
-            name="uq_provider_model_observation",
-        ),
     )
     op.create_table(
         "workspaces",
@@ -692,7 +620,8 @@ def upgrade() -> None:
     op.create_table(
         "git_repositories",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
-        sa.Column("provider_instance_id", sa.BigInteger(), nullable=False),
+        sa.Column("adapter_id", sa.Text(), nullable=False),
+        sa.Column("endpoint_identity_hash", sa.Text(), nullable=False),
         sa.Column("external_repository_id", sa.Text(), nullable=False),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column("full_name", sa.Text(), nullable=False),
@@ -716,15 +645,9 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint("visibility IN ('public', 'private', 'internal')", name=op.f("ck_git_repositories_visibility")),
-        sa.ForeignKeyConstraint(
-            ["provider_instance_id"],
-            ["git_provider_instances.id"],
-            name=op.f("fk_git_repositories_provider_instance_id_git_provider_instances"),
-            ondelete="RESTRICT",
-        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_git_repositories")),
         sa.UniqueConstraint(
-            "provider_instance_id", "external_repository_id", name="uq_git_repository_provider_external"
+            "adapter_id", "endpoint_identity_hash", "external_repository_id", name="uq_git_repository_adapter_endpoint_external"
         ),
     )
     op.create_table(
@@ -738,7 +661,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.CheckConstraint("access_level = 'read'", name=op.f("ck_git_account_repository_access_read_only")),
         sa.CheckConstraint("state IN ('available', 'lost')", name=op.f("ck_git_account_repository_access_state")),
-        sa.ForeignKeyConstraint(["account_connection_id"], ["git_account_connections.id"], name=op.f("fk_git_account_repository_access_account_connection_id_git_account_connections"), ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["account_connection_id"], ["git_accounts.id"], name=op.f("fk_git_account_repository_access_account_connection_id_git_accounts"), ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["repository_id"], ["git_repositories.id"], name=op.f("fk_git_account_repository_access_repository_id_git_repositories"), ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("account_connection_id", "repository_id", name=op.f("pk_git_account_repository_access")),
     )
@@ -757,7 +680,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.CheckConstraint("state IN ('queued', 'running', 'succeeded', 'failed')", name=op.f("ck_git_account_sync_jobs_state")),
         sa.CheckConstraint("attempt >= 0", name=op.f("ck_git_account_sync_jobs_attempt_nonnegative")),
-        sa.ForeignKeyConstraint(["account_connection_id"], ["git_account_connections.id"], name=op.f("fk_git_account_sync_jobs_account_connection_id_git_account_connections"), ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["account_connection_id"], ["git_accounts.id"], name=op.f("fk_git_account_sync_jobs_account_connection_id_git_accounts"), ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_git_account_sync_jobs")),
     )
     op.create_table(
@@ -1425,7 +1348,7 @@ def upgrade() -> None:
         sa.CheckConstraint("state IN ('active', 'disabled')", name=op.f("ck_workspace_git_account_grants_state")),
         sa.CheckConstraint("revision > 0", name=op.f("ck_workspace_git_account_grants_revision_positive")),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], name=op.f("fk_workspace_git_account_grants_workspace_id_workspaces"), ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["account_connection_id"], ["git_account_connections.id"], name=op.f("fk_workspace_git_account_grants_account_connection_id_git_account_connections"), ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["account_connection_id"], ["git_accounts.id"], name=op.f("fk_workspace_git_account_grants_account_connection_id_git_accounts"), ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_workspace_git_account_grants")),
         sa.UniqueConstraint("id", "workspace_id", name="uq_workspace_git_account_grant_workspace"),
         sa.UniqueConstraint("workspace_id", "account_connection_id", name="uq_workspace_git_account_grant"),
@@ -2347,8 +2270,8 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(
             ["account_connection_id"],
-            ["git_account_connections.id"],
-            name=op.f("fk_investigation_repository_snapshots_account_connection_id_git_account_connections"),
+            ["git_accounts.id"],
+            name=op.f("fk_investigation_repository_snapshots_account_connection_id_git_accounts"),
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
@@ -3946,8 +3869,7 @@ def upgrade() -> None:
         "ai_provider_accounts",
         "provider_account_models",
         "workspace_model_bindings",
-        "git_provider_instances",
-        "git_account_connections",
+        "git_accounts",
         "git_repositories",
         "git_account_repository_access",
         "git_account_sync_jobs",
@@ -4006,7 +3928,6 @@ def upgrade() -> None:
     )
     for table_name in (
         "audit_events",
-        "provider_model_observations",
         "context_policy_revisions",
         "investigation_policy_revisions",
         "model_policy_revisions",
@@ -4446,17 +4367,15 @@ def downgrade() -> None:
     op.drop_table("alerts")
     op.drop_table("workspaces")
     op.drop_table("platform_settings")
-    op.drop_table("provider_model_observations")
     op.drop_table("provider_account_models")
     op.drop_index("uq_users_system_admin", table_name="users")
     op.drop_table("users")
     op.drop_constraint(
-        "fk_git_account_connections_current_credential_revision",
-        "git_account_connections",
+        "fk_git_accounts_current_credential_revision",
+        "git_accounts",
         type_="foreignkey",
     )
     op.drop_table("git_account_credential_revisions")
-    op.drop_table("git_account_connections")
-    op.drop_table("git_provider_instances")
+    op.drop_table("git_accounts")
     op.drop_table("ai_provider_accounts")
     # ### end Alembic commands ###

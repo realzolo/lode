@@ -28,11 +28,9 @@ class AIProviderAccount(TimestampMixin, Base):
 
     id: Mapped[int] = identity_pk()
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    provider_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    protocol_id: Mapped[str] = mapped_column(Text, nullable=False)
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
     credential_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
-    organization_ref: Mapped[str | None] = mapped_column(Text)
-    project_ref: Mapped[str | None] = mapped_column(Text)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
     verification_status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="untested"
@@ -41,41 +39,16 @@ class AIProviderAccount(TimestampMixin, Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
 
     __table_args__ = (
-        CheckConstraint("provider_kind = 'openai_compatible'", name="provider_kind"),
+        CheckConstraint(
+            "protocol_id IN ('openai.responses.v1', 'openai.chat_completions.v1', 'anthropic.messages.v1')",
+            name="protocol_id",
+        ),
         CheckConstraint("state IN ('active', 'disabled')", name="state"),
         CheckConstraint(
             "verification_status IN ('untested', 'healthy', 'unavailable')",
             name="verification_status",
         ),
         CheckConstraint("revision > 0", name="revision_positive"),
-    )
-
-
-class ProviderModelObservation(CreatedAtMixin, Base):
-    __tablename__ = "provider_model_observations"
-
-    id: Mapped[int] = identity_pk()
-    provider_account_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("ai_provider_accounts.id", ondelete="CASCADE"), nullable=False
-    )
-    provider_model_id: Mapped[str] = mapped_column(Text, nullable=False)
-    capability_hints: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
-    provider_payload_masked: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
-    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    response_hash: Mapped[str] = mapped_column(Text, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint(
-            "provider_account_id",
-            "provider_model_id",
-            "response_hash",
-            name="uq_provider_model_observation",
-        ),
-        CheckConstraint("response_hash ~ '^[0-9a-f]{64}$'", name="response_hash_sha256"),
     )
 
 
@@ -89,7 +62,6 @@ class ProviderAccountModel(TimestampMixin, Base):
     provider_model_id: Mapped[str] = mapped_column(Text, nullable=False)
     catalog_revision: Mapped[str] = mapped_column(Text, nullable=False)
     catalog_profile_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    discovery_state: Mapped[str] = mapped_column(Text, nullable=False)
     availability_state: Mapped[str] = mapped_column(Text, nullable=False, server_default="untested")
     health_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
@@ -99,9 +71,6 @@ class ProviderAccountModel(TimestampMixin, Base):
         UniqueConstraint("provider_account_id", "provider_model_id", name="uq_provider_account_model"),
         CheckConstraint(
             "catalog_profile_hash ~ '^[0-9a-f]{64}$'", name="catalog_profile_hash_sha256"
-        ),
-        CheckConstraint(
-            "discovery_state IN ('synced', 'manual', 'missing')", name="discovery_state"
         ),
         CheckConstraint(
             "availability_state IN ('untested', 'healthy', 'unavailable')",

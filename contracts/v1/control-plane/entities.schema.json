@@ -49,11 +49,11 @@
     "aiProviderAccount": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "provider_kind", "base_url", "state", "verification_status", "revision"],
+      "required": ["id", "name", "protocol_id", "base_url", "state", "verification_status", "revision"],
       "properties": {
         "id": {"type": "integer", "minimum": 1},
         "name": {"type": "string", "minLength": 1},
-        "provider_kind": {"type": "string", "const": "openai_compatible"},
+        "protocol_id": {"type": "string", "enum": ["openai.responses.v1", "openai.chat_completions.v1", "anthropic.messages.v1"]},
         "base_url": {"type": "string", "minLength": 1},
         "state": {"type": "string", "enum": ["active", "disabled"]},
         "verification_status": {"type": "string", "enum": ["untested", "healthy", "unavailable"]},
@@ -63,14 +63,13 @@
     "providerAccountModel": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "provider_account_id", "provider_model_id", "display_name", "capabilities", "discovery_state", "availability_state", "state", "revision"],
+      "required": ["id", "provider_account_id", "provider_model_id", "display_name", "capabilities", "availability_state", "state", "revision"],
       "properties": {
         "id": {"type": "integer", "minimum": 1},
         "provider_account_id": {"type": "integer", "minimum": 1},
         "provider_model_id": {"type": "string", "minLength": 1},
         "display_name": {"type": "string", "minLength": 1},
         "capabilities": {"type": "object"},
-        "discovery_state": {"type": "string", "enum": ["synced", "manual", "missing"]},
         "availability_state": {"type": "string", "enum": ["untested", "healthy", "unavailable"]},
         "state": {"type": "string", "enum": ["active", "disabled"]},
         "revision": {"type": "integer", "minimum": 1}

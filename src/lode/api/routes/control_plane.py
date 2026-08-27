@@ -3,18 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import hashlib
-import hmac
 import json
-import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 from aiokafka.admin import AIOKafkaAdminClient
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,15 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lode.api.control_schemas import (
     ConnectorCreate,
     ConnectorOut,
-    GitAccountConnectionOut,
-    GitAccountManualCreate,
+    GitAccountCreate,
+    GitAccountOut,
+    GitAccountPatch,
     GitAccountRepositoryOut,
-    GitHubAppConnectionCreate,
-    GitOAuthStart,
-    GitOAuthStartOut,
-    GitProviderInstanceCreate,
-    GitProviderInstanceOut,
-    GitProviderInstancePatch,
+    GitAccountTokenRotate,
     IngestionStart,
     InvestigationPolicyOut,
     InvestigationPolicyPut,
@@ -39,8 +29,6 @@ from lode.api.control_schemas import (
     ModelBindingPatch,
     ProviderAccountModelOut,
     ProviderAccountModelSelection,
-    ProviderModelDiscoveryInput,
-    ProviderModelDiscoveryOut,
     ModelPolicyInput,
     ModelPolicyOut,
     PlatformSettingsOut,
@@ -70,11 +58,10 @@ from lode.db.models import (
     ContextPolicyRevision,
     EvidenceAccessScope,
     EvidenceConnector,
-    GitAccountConnection,
+    GitAccount,
     GitAccountCredentialRevision,
     GitAccountRepositoryAccess,
     GitAccountSyncJob,
-    GitProviderInstance,
     GitRepository,
     Investigation,
     InvestigationPolicyRevision,
@@ -82,7 +69,6 @@ from lode.db.models import (
     ModelPolicyRevision,
     ModelRoutingDecision,
     PlatformSettings,
-    ProviderModelObservation,
     User,
     Workspace,
     WorkspaceGitAccountGrant,
@@ -92,13 +78,12 @@ from lode.db.models import (
     WorkspaceRepositoryBinding,
 )
 from lode.db.session import AsyncSessionLocal
-from lode.domain.investigation import canonical_hash
-from lode.engine.llm import ModelConfig, complete_with_usage
+from lode.engine.llm import ModelConfig, ResponseSchema, complete_with_usage
 from lode.evidence_connectors.registry import (
     create_evidence_connector,
     native_connector_capabilities,
 )
-from lode.evidence_connectors.types import IntrospectionBudget, ProviderExecutionError
+from lode.evidence_connectors.types import IntrospectionBudget
 from lode.git_accounts import (
     GitAccountSecret,
     credential_identity_hash as git_credential_identity_hash,
@@ -107,19 +92,14 @@ from lode.git_accounts import (
 from lode.git_accounts.providers import (
     GitProviderError,
     authenticate_access_token,
-    default_provider_urls,
-    github_app_installation_token,
+    endpoint_identity_hash,
     list_repositories as list_provider_repositories,
-    exchange_oauth_code,
-    oauth_authorization_url,
-    validate_git_provider_url,
+    registered_adapters,
+    require_adapter,
+    resolve_api_url,
 )
-from lode.infrastructure.provider_http import (
-    provider_endpoint,
-    provider_request,
-    validate_provider_endpoint,
-)
-from lode.model_catalog import find_openai_model, require_openai_model
+from lode.infrastructure.provider_http import validate_provider_endpoint
+from lode.model_catalog import find_model, require_model, supported_models
 from lode.runtime_defaults import LLM_PROBE_TIMEOUT_SECONDS, KAFKA_TOPIC_VALIDATION_TIMEOUT_SECONDS
 
 router = APIRouter(tags=["control-plane"])
@@ -174,14 +154,20 @@ def _validate_provider_url(value: str) -> str:
 
 
 def _account_model_out(row: ProviderAccountModel) -> ProviderAccountModelOut:
-    profile = require_openai_model(row.provider_model_id)
+    raise RuntimeError("account model output requires the owning provider account")
+
+
+def _account_model_out_for_account(
+    row: ProviderAccountModel, account: AIProviderAccount
+) -> ProviderAccountModelOut:
+    provider_kind = "anthropic" if account.protocol_id == "anthropic.messages.v1" else "openai"
+    profile = require_model(provider_kind, account.protocol_id, row.provider_model_id)
     return ProviderAccountModelOut(
         id=row.id,
         provider_account_id=row.provider_account_id,
         provider_model_id=row.provider_model_id,
         display_name=profile.display_name,
         capabilities=dict(profile.capabilities),
-        discovery_state=row.discovery_state,
         availability_state=row.availability_state,
         health_checked_at=row.health_checked_at,
         state=row.state,
@@ -206,14 +192,12 @@ async def _provider_out(session: AsyncSession, row: AIProviderAccount) -> Provid
     return ProviderAccountOut(
         id=row.id,
         name=row.name,
-        provider_kind="openai_compatible",
+        protocol_id=row.protocol_id,
         base_url=row.base_url,
-        organization_ref=row.organization_ref,
-        project_ref=row.project_ref,
         state=row.state,
         verification_status=row.verification_status,
         verified_at=row.verified_at,
-        models=[_account_model_out(model) for model in models],
+        models=[_account_model_out_for_account(model, row) for model in models],
         revision=row.revision,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -298,6 +282,118 @@ async def list_provider_accounts(
     return [await _provider_out(session, row) for row in rows]
 
 
+def _protocol_provider_kind(protocol_id: str) -> str:
+    return "anthropic" if protocol_id == "anthropic.messages.v1" else "openai"
+
+
+async def _probe_model(
+    account: AIProviderAccount,
+    model_id: str,
+    *,
+    credential_ciphertext: str | None = None,
+) -> tuple[bool, str | None]:
+    result = await complete_with_usage(
+        "You are a protocol health probe.",
+        "Return a JSON object with the field ok set to true.",
+        ModelConfig(
+            protocol_id=account.protocol_id,
+            base_url=account.base_url,
+            api_key_ciphertext=credential_ciphertext or account.credential_ciphertext,
+            model=model_id,
+            max_completion_tokens=32,
+        ),
+        json_mode=True,
+        response_schema=ResponseSchema(
+            name="protocol_health", schema={"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
+        ),
+        timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
+    )
+    return bool(result.text), result.error_code
+
+
+async def _apply_model_selection(
+    session: AsyncSession,
+    account: AIProviderAccount,
+    *,
+    model_ids: tuple[str, ...],
+    reset_health: bool,
+    credential_ciphertext: str | None = None,
+) -> None:
+    provider_kind = _protocol_provider_kind(account.protocol_id)
+    profiles = {
+        model_id: require_model(provider_kind, account.protocol_id, model_id)
+        for model_id in model_ids
+    }
+    rows = tuple(
+        (
+            await session.execute(
+                select(ProviderAccountModel).where(
+                    ProviderAccountModel.provider_account_id == account.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    existing = {row.provider_model_id: row for row in rows}
+    for model_id, profile in profiles.items():
+        available, error_code = await _probe_model(
+            account, model_id, credential_ciphertext=credential_ciphertext
+        )
+        if not available:
+            raise _error(
+                422,
+                "model_probe_failed",
+                "The selected model did not pass its structured output probe.",
+                model_id=model_id,
+                provider_error=error_code,
+            )
+        row = existing.get(model_id)
+        if row is None:
+            session.add(
+                ProviderAccountModel(
+                    provider_account_id=account.id,
+                    provider_model_id=model_id,
+                    catalog_revision=profile.catalog_revision,
+                    catalog_profile_hash=profile.profile_hash,
+                    availability_state="healthy",
+                    health_checked_at=datetime.now(UTC),
+                    state="active",
+                )
+            )
+            continue
+        changed = (
+            row.catalog_revision != profile.catalog_revision
+            or row.catalog_profile_hash != profile.profile_hash
+            or row.state != "active"
+        )
+        row.catalog_revision = profile.catalog_revision
+        row.catalog_profile_hash = profile.profile_hash
+        row.availability_state = "healthy"
+        row.health_checked_at = datetime.now(UTC)
+        row.state = "active"
+        if changed or reset_health:
+            row.revision += 1
+    for row in rows:
+        if row.provider_model_id in profiles:
+            continue
+        active_binding = await session.scalar(
+            select(WorkspaceModelBinding.id).where(
+                WorkspaceModelBinding.provider_account_model_id == row.id,
+                WorkspaceModelBinding.state == "active",
+            )
+        )
+        if active_binding is not None:
+            raise _error(
+                409,
+                "account_model_in_use",
+                "Disable the active Workspace binding before removing this account model.",
+            )
+        if row.state != "disabled":
+            row.state = "disabled"
+            row.revision += 1
+
+
 @router.post("/ai-provider-accounts", response_model=ProviderAccountOut, status_code=201)
 async def create_provider_account(
     payload: ProviderAccountCreate,
@@ -306,21 +402,12 @@ async def create_provider_account(
 ):
     user = await _active_user(session, user_id)
     base_url = _validate_provider_url(payload.base_url)
-    discovered = await _discover_provider_models(
-        base_url=base_url,
-        credential=payload.credential,
-        organization_ref=payload.organization_ref,
-        project_ref=payload.project_ref,
-    )
     row = AIProviderAccount(
         name=payload.name.strip(),
-        provider_kind="openai_compatible",
+        protocol_id=payload.protocol_id,
         base_url=base_url,
         credential_ciphertext=encrypt_secret(payload.credential) or "",
-        organization_ref=payload.organization_ref,
-        project_ref=payload.project_ref,
-        verification_status="healthy",
-        verified_at=datetime.now(UTC),
+        verification_status="untested",
     )
     session.add(row)
     try:
@@ -330,15 +417,14 @@ async def create_provider_account(
         raise _error(
             409, "provider_name_conflict", "Provider account name is already used."
         ) from exc
-    await _record_model_observations(session, row, discovered.raw_models)
     await _apply_model_selection(
         session,
         row,
         model_ids=payload.model_ids,
-        manual_model_ids=payload.manual_model_ids,
-        discovered_ids=discovered.ids,
         reset_health=True,
     )
+    row.verification_status = "healthy"
+    row.verified_at = datetime.now(UTC)
     session.add(_audit(user, "provider_account.create", "ai_provider_account", row.id))
     await session.commit()
     await session.refresh(row)
@@ -359,296 +445,40 @@ async def patch_provider_account(
     values = payload.model_dump(exclude_unset=True)
     credential = values.pop("credential", None)
     model_ids = values.pop("model_ids", None)
-    manual_model_ids = values.pop("manual_model_ids", ())
     if "base_url" in values:
         values["base_url"] = _validate_provider_url(values["base_url"])
-    connection_changed = "base_url" in values or credential is not None
+    connection_changed = (
+        "base_url" in values or "protocol_id" in values or credential is not None
+    )
     if connection_changed and model_ids is None:
         raise _error(
             422,
             "model_selection_required",
             "Changing a provider connection requires a refreshed model selection.",
         )
-    base_url = values.get("base_url", row.base_url)
     effective_credential = credential or decrypt_secret(row.credential_ciphertext)
-    discovered = None
-    if model_ids is not None:
-        if not effective_credential:
-            raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
-        discovered = await _discover_provider_models(
-            base_url=base_url,
-            credential=effective_credential,
-            organization_ref=values.get("organization_ref", row.organization_ref),
-            project_ref=values.get("project_ref", row.project_ref),
-        )
+    if model_ids is not None and not effective_credential:
+        raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
     for key, value in values.items():
         setattr(row, key, value)
     if credential is not None:
         row.credential_ciphertext = encrypt_secret(credential) or ""
     row.revision += 1
-    if discovered is not None:
+    if model_ids is not None:
+        probe_credential = encrypt_secret(effective_credential) or ""
         row.verification_status = "healthy"
         row.verified_at = datetime.now(UTC)
-        await _record_model_observations(session, row, discovered.raw_models)
         await _apply_model_selection(
             session,
             row,
             model_ids=model_ids,
-            manual_model_ids=manual_model_ids,
-            discovered_ids=discovered.ids,
             reset_health=connection_changed,
+            credential_ciphertext=probe_credential,
         )
     session.add(_audit(user, "provider_account.update", "ai_provider_account", row.id))
     await session.commit()
     await session.refresh(row)
     return await _provider_out(session, row)
-
-
-class _DiscoveredModels:
-    def __init__(self, raw_models: list[dict]) -> None:
-        self.raw_models = raw_models
-        self.ids = frozenset(
-            model["id"] for model in raw_models if find_openai_model(str(model["id"])) is not None
-        )
-
-    def response(self) -> list[ProviderModelDiscoveryOut]:
-        return [
-            ProviderModelDiscoveryOut(
-                provider_model_id=profile.model_id,
-                display_name=profile.display_name,
-            )
-            for profile in sorted(
-                (require_openai_model(model_id) for model_id in self.ids),
-                key=lambda profile: profile.display_name,
-            )
-        ]
-
-
-async def _discover_provider_models(
-    *,
-    base_url: str,
-    credential: str,
-    organization_ref: str | None,
-    project_ref: str | None,
-) -> _DiscoveredModels:
-    headers = {"accept": "application/json"}
-    headers["authorization"] = f"Bearer {credential}"
-    if organization_ref:
-        headers["OpenAI-Organization"] = organization_ref
-    if project_ref:
-        headers["OpenAI-Project"] = project_ref
-    try:
-        response = await provider_request(
-            "GET",
-            provider_endpoint(base_url, "/models"),
-            headers=headers,
-            timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
-        )
-    except (ValueError, ProviderExecutionError) as exc:
-        raise _error(
-            502, "provider_probe_failed", "Provider model inventory request failed."
-        ) from exc
-    if response.status_code >= 400:
-        raise _error(502, "provider_probe_failed", "Provider model inventory request failed.")
-    try:
-        value = json.loads(response.body)
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise _error(
-            502, "provider_protocol_invalid", "Provider model inventory is invalid."
-        ) from exc
-    models = value.get("data") if isinstance(value, dict) else None
-    if not isinstance(models, list) or len(models) > 200:
-        raise _error(502, "provider_protocol_invalid", "Provider model inventory is invalid.")
-    output: list[dict] = []
-    for item in models:
-        if isinstance(item, dict) and isinstance(item.get("id"), str):
-            output.append({"id": item["id"], "owned_by": item.get("owned_by")})
-    if not output:
-        raise _error(502, "provider_protocol_invalid", "Provider returned no usable models.")
-    return _DiscoveredModels(output)
-
-
-async def _record_model_observations(
-    session: AsyncSession, account: AIProviderAccount, models: list[dict]
-) -> None:
-    observed_at = datetime.now(UTC)
-    for model in models:
-        payload = {"provider_model_id": model["id"], "owned_by": model.get("owned_by")}
-        response_hash = canonical_hash(payload)
-        existing = await session.scalar(
-            select(ProviderModelObservation.id).where(
-                ProviderModelObservation.provider_account_id == account.id,
-                ProviderModelObservation.provider_model_id == model["id"],
-                ProviderModelObservation.response_hash == response_hash,
-            )
-        )
-        if existing is None:
-            session.add(
-                ProviderModelObservation(
-                    provider_account_id=account.id,
-                    provider_model_id=model["id"],
-                    capability_hints={},
-                    provider_payload_masked=payload,
-                    observed_at=observed_at,
-                    response_hash=response_hash,
-                )
-            )
-
-
-async def _apply_model_selection(
-    session: AsyncSession,
-    account: AIProviderAccount,
-    *,
-    model_ids: tuple[str, ...],
-    manual_model_ids: tuple[str, ...],
-    discovered_ids: frozenset[str],
-    reset_health: bool,
-) -> None:
-    selected = set(model_ids)
-    manual = set(manual_model_ids)
-    rows = tuple(
-        (
-            await session.execute(
-                select(ProviderAccountModel).where(ProviderAccountModel.provider_account_id == account.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    existing = {row.provider_model_id: row for row in rows}
-    for model_id in selected:
-        if find_openai_model(model_id) is None:
-            raise _error(422, "unsupported_model", "Model is not in the supported OpenAI catalog.")
-        if model_id not in discovered_ids and model_id not in manual:
-            existing_row = existing.get(model_id)
-            if existing_row is not None and existing_row.discovery_state == "synced":
-                continue
-            raise _error(
-                422,
-                "model_not_discovered",
-                "Selected models must be discovered or explicitly added from the catalog.",
-            )
-    for model_id in selected:
-        profile = require_openai_model(model_id)
-        row = existing.get(model_id)
-        missing_upstream = model_id not in discovered_ids and model_id not in manual
-        discovery_state = "manual" if model_id in manual else "missing" if missing_upstream else "synced"
-        if row is None:
-            session.add(
-                ProviderAccountModel(
-                    provider_account_id=account.id,
-                    provider_model_id=model_id,
-                    catalog_revision=profile.catalog_revision,
-                    catalog_profile_hash=profile.profile_hash,
-                    discovery_state=discovery_state,
-                    availability_state="untested",
-                    state="disabled" if missing_upstream else "active",
-                )
-            )
-            continue
-        changed = (
-            row.catalog_revision != profile.catalog_revision
-            or row.catalog_profile_hash != profile.profile_hash
-            or row.discovery_state != discovery_state
-            or row.state != ("disabled" if missing_upstream else "active")
-        )
-        row.catalog_revision = profile.catalog_revision
-        row.catalog_profile_hash = profile.profile_hash
-        row.discovery_state = discovery_state
-        row.state = "disabled" if missing_upstream else "active"
-        if changed or reset_health:
-            row.availability_state = "untested"
-            row.health_checked_at = None
-            row.revision += 1
-    for row in rows:
-        if row.provider_model_id in selected:
-            continue
-        active_binding = await session.scalar(
-            select(WorkspaceModelBinding.id).where(
-                WorkspaceModelBinding.provider_account_model_id == row.id,
-                WorkspaceModelBinding.state == "active",
-            )
-        )
-        if active_binding is not None:
-            raise _error(
-                409,
-                "account_model_in_use",
-                "Disable the active Workspace binding before removing this account model.",
-            )
-        if row.state != "disabled":
-            row.state = "disabled"
-            row.revision += 1
-
-
-async def _reconcile_discovered_models(
-    session: AsyncSession,
-    account: AIProviderAccount,
-    discovered_ids: frozenset[str],
-) -> None:
-    """Record upstream disappearance without re-enabling an admin selection."""
-    rows = tuple(
-        (
-            await session.execute(
-                select(ProviderAccountModel).where(
-                    ProviderAccountModel.provider_account_id == account.id,
-                    ProviderAccountModel.discovery_state == "synced",
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for row in rows:
-        if row.provider_model_id in discovered_ids:
-            continue
-        row.discovery_state = "missing"
-        row.state = "disabled"
-        row.revision += 1
-
-
-@router.post("/ai-provider-accounts/discover-models", response_model=list[ProviderModelDiscoveryOut])
-async def discover_draft_provider_models(
-    payload: ProviderModelDiscoveryInput, _: int = Depends(require_admin)
-):
-    discovered = await _discover_provider_models(
-        base_url=_validate_provider_url(payload.base_url),
-        credential=payload.credential,
-        organization_ref=payload.organization_ref,
-        project_ref=payload.project_ref,
-    )
-    return discovered.response()
-
-
-@router.post(
-    "/ai-provider-accounts/{account_id}/discover-models",
-    response_model=list[ProviderModelDiscoveryOut],
-)
-async def discover_provider_models(
-    account_id: int,
-    user_id: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    row = await session.get(AIProviderAccount, account_id)
-    if row is None:
-        raise _error(404, "provider_account_not_found", "Provider account not found.")
-    credential = decrypt_secret(row.credential_ciphertext)
-    if not credential:
-        raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
-    discovered = await _discover_provider_models(
-        base_url=row.base_url,
-        credential=credential,
-        organization_ref=row.organization_ref,
-        project_ref=row.project_ref,
-    )
-    await _record_model_observations(session, row, discovered.raw_models)
-    await _reconcile_discovered_models(session, row, discovered.ids)
-    row.verification_status = "healthy"
-    row.verified_at = datetime.now(UTC)
-    row.revision += 1
-    session.add(_audit(user, "provider_account.models.discover", "ai_provider_account", row.id))
-    await session.commit()
-    return discovered.response()
 
 
 @router.put("/ai-provider-accounts/{account_id}/models", response_model=ProviderAccountOut)
@@ -665,19 +495,10 @@ async def update_provider_account_models(
     credential = decrypt_secret(row.credential_ciphertext)
     if not credential:
         raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
-    discovered = await _discover_provider_models(
-        base_url=row.base_url,
-        credential=credential,
-        organization_ref=row.organization_ref,
-        project_ref=row.project_ref,
-    )
-    await _record_model_observations(session, row, discovered.raw_models)
     await _apply_model_selection(
         session,
         row,
         model_ids=payload.model_ids,
-        manual_model_ids=payload.manual_model_ids,
-        discovered_ids=discovered.ids,
         reset_health=False,
     )
     row.verification_status = "healthy"
@@ -719,7 +540,11 @@ async def test_provider_account_model(
         raise _error(404, "provider_account_model_not_found", "Account model not found.")
     if row.state != "active" or provider.state != "active":
         raise _error(422, "account_model_ineligible", "An active account model is required.")
-    profile = require_openai_model(row.provider_model_id)
+    profile = require_model(
+        _protocol_provider_kind(provider.protocol_id),
+        provider.protocol_id,
+        row.provider_model_id,
+    )
     if (
         row.catalog_revision != profile.catalog_revision
         or row.catalog_profile_hash != profile.profile_hash
@@ -729,19 +554,15 @@ async def test_provider_account_model(
         "You are a protocol health probe.",
         "Reply with OK.",
         ModelConfig(
-            provider="openai_compatible",
+            protocol_id=provider.protocol_id,
             base_url=provider.base_url,
             api_key_ciphertext=provider.credential_ciphertext,
             model=row.provider_model_id,
             max_completion_tokens=16,
-            organization_ref=provider.organization_ref,
-            project_ref=provider.project_ref,
         ),
         timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
     )
     row.availability_state = "healthy" if result.text else "unavailable"
-    if not result.text and row.discovery_state == "manual":
-        row.state = "disabled"
     row.revision += 1
     row.health_checked_at = datetime.now(UTC)
     await session.commit()
@@ -1425,14 +1246,13 @@ async def workspace_capabilities(
 def _repository_out(
     binding: WorkspaceRepositoryBinding,
     repository: GitRepository,
-    provider: GitProviderInstance,
 ):
     return RepositoryBindingOut(
         id=binding.id,
         workspace_id=binding.workspace_id,
         repository_id=repository.id,
         repository_entitlement_id=binding.repository_entitlement_id,
-        provider_kind=provider.kind,
+        provider_kind=repository.adapter_id,
         name=repository.name,
         full_name=repository.full_name,
         repo_url=repository.repo_url,
@@ -1447,34 +1267,9 @@ def _repository_out(
     )
 
 
-def _git_provider_out(row: GitProviderInstance) -> GitProviderInstanceOut:
-    if "github_app_id" in row.config:
-        native_auth_kind: str | None = "github_app"
-    elif "oauth_client_id" in row.config:
-        native_auth_kind = "oauth"
-    else:
-        native_auth_kind = None
-    return GitProviderInstanceOut(
-        id=row.id,
-        kind=row.kind,
-        name=row.name,
-        base_url=row.base_url,
-        api_url=row.api_url,
-        state=row.state,
-        verification_status=row.verification_status,
-        verified_at=row.verified_at,
-        last_error=row.last_error,
-        native_auth_available=native_auth_kind is not None,
-        native_auth_kind=native_auth_kind,
-        revision=row.revision,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-    )
-
-
 async def _git_account_out(
-    session: AsyncSession, row: GitAccountConnection, provider: GitProviderInstance
-) -> GitAccountConnectionOut:
+    session: AsyncSession, row: GitAccount
+) -> GitAccountOut:
     repository_count = int(
         await session.scalar(
             select(func.count())
@@ -1486,13 +1281,11 @@ async def _git_account_out(
         )
         or 0
     )
-    return GitAccountConnectionOut(
+    return GitAccountOut(
         id=row.id,
-        provider_instance_id=provider.id,
-        provider_kind=provider.kind,
-        provider_name=provider.name,
+        adapter_id=row.adapter_id,
+        api_url=row.api_url,
         name=row.name,
-        auth_mode=row.auth_mode,
         external_account_id=row.external_account_id,
         external_account_login=row.external_account_login,
         account_url=row.account_url,
@@ -1506,74 +1299,13 @@ async def _git_account_out(
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
-
-
-def _provider_secret(value: str | None) -> dict[str, str]:
-    try:
-        plaintext = decrypt_secret(value)
-        parsed = json.loads(plaintext or "{}")
-    except (CryptoError, ValueError, TypeError) as exc:
-        raise ValueError("Git provider credential is unavailable") from exc
-    if not isinstance(parsed, dict) or any(
-        not isinstance(key, str) or not isinstance(item, str) or not item
-        for key, item in parsed.items()
-    ):
-        raise ValueError("Git provider credential is invalid")
-    return parsed
-
-
-def _oauth_state(*, provider_id: int, user_id: int, name: str) -> str:
-    payload = {
-        "provider_id": provider_id,
-        "user_id": user_id,
-        "name": name,
-        "nonce": secrets.token_urlsafe(24),
-        "expires_at": int(datetime.now(UTC).timestamp()) + 600,
-    }
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    ).rstrip(b"=")
-    signature = hmac.new(
-        settings.credential_identity_key.encode(), encoded, hashlib.sha256
-    ).digest()
-    return f"{encoded.decode()}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
-
-
-def _parse_oauth_state(value: str) -> dict[str, object]:
-    try:
-        encoded, signature = value.split(".", 1)
-        expected = hmac.new(
-            settings.credential_identity_key.encode(), encoded.encode(), hashlib.sha256
-        ).digest()
-        supplied = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
-        payload = json.loads(
-            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
-        )
-    except (ValueError, TypeError, json.JSONDecodeError, binascii.Error) as exc:
-        raise ValueError("OAuth state is invalid") from exc
-    if not hmac.compare_digest(expected, supplied):
-        raise ValueError("OAuth state signature is invalid")
-    if (
-        not isinstance(payload, dict)
-        or not isinstance(payload.get("provider_id"), int)
-        or not isinstance(payload.get("user_id"), int)
-        or not isinstance(payload.get("name"), str)
-        or not payload["name"].strip()
-        or not isinstance(payload.get("nonce"), str)
-        or not isinstance(payload.get("expires_at"), int)
-        or payload["expires_at"] < int(datetime.now(UTC).timestamp())
-    ):
-        raise ValueError("OAuth state is expired or invalid")
-    return payload
-
-
 async def _append_account_credential(
     session: AsyncSession,
-    account: GitAccountConnection,
+    account: GitAccount,
     *,
     username: str,
     token: str,
-    expires_at: datetime | None,
+    expires_at: datetime | None = None,
 ) -> GitAccountCredentialRevision:
     latest_revision = int(
         await session.scalar(
@@ -1598,34 +1330,8 @@ async def _append_account_credential(
     return row
 
 
-async def _refresh_github_app_credential(
-    session: AsyncSession, provider: GitProviderInstance, account: GitAccountConnection
-) -> None:
-    try:
-        secret = _provider_secret(provider.secret_ciphertext)
-        app_id = provider.config["github_app_id"]
-        installation_id = account.sync_cursor["github_installation_id"]
-        if not isinstance(app_id, str) or not isinstance(installation_id, str):
-            raise ValueError("GitHub App configuration is invalid")
-        _, token, expires_at = await github_app_installation_token(
-            api_url=provider.api_url,
-            app_id=app_id,
-            private_key_pem=secret["github_app_private_key"],
-            installation_id=installation_id,
-        )
-    except (KeyError, ValueError, GitProviderError) as exc:
-        raise ValueError("GitHub App credential cannot be refreshed") from exc
-    await _append_account_credential(
-        session,
-        account,
-        username="x-access-token",
-        token=token,
-        expires_at=expires_at,
-    )
-
-
 async def _account_secret(
-    session: AsyncSession, account: GitAccountConnection
+    session: AsyncSession, account: GitAccount
 ) -> GitAccountSecret:
     if account.current_credential_revision_id is None:
         raise ValueError("Git account credential is unavailable")
@@ -1690,21 +1396,16 @@ async def _ensure_all_visible_entitlements(
             )
 
 
-async def _sync_git_account(
-    session: AsyncSession, provider: GitProviderInstance, account: GitAccountConnection
-) -> GitAccountSyncJob:
+async def _sync_git_account(session: AsyncSession, account: GitAccount) -> GitAccountSyncJob:
     job = GitAccountSyncJob(account_connection_id=account.id, state="running", attempt=1)
     session.add(job)
     await session.flush()
     try:
-        if account.auth_mode == "github_app":
-            await _refresh_github_app_credential(session, provider, account)
         secret = await _account_secret(session, account)
         catalogue = await list_provider_repositories(
-            kind=provider.kind,
-            api_url=provider.api_url,
+            adapter_id=account.adapter_id,
+            api_url=account.api_url,
             token=secret.token,
-            auth_mode=account.auth_mode,
         )
         visible_ids: set[int] = set()
         now = datetime.now(UTC)
@@ -1712,14 +1413,16 @@ async def _sync_git_account(
             repository = (
                 await session.execute(
                     select(GitRepository).where(
-                        GitRepository.provider_instance_id == provider.id,
+                        GitRepository.adapter_id == account.adapter_id,
+                        GitRepository.endpoint_identity_hash == account.endpoint_identity_hash,
                         GitRepository.external_repository_id == item.external_id,
                     )
                 )
             ).scalar_one_or_none()
             if repository is None:
                 repository = GitRepository(
-                    provider_instance_id=provider.id,
+                    adapter_id=account.adapter_id,
+                    endpoint_identity_hash=account.endpoint_identity_hash,
                     external_repository_id=item.external_id,
                     name=item.name,
                     full_name=item.full_name,
@@ -1788,126 +1491,170 @@ async def _sync_git_account(
     return job
 
 
-@router.get("/git-provider-instances", response_model=list[GitProviderInstanceOut])
-async def list_git_provider_instances(
+@router.get("/git-adapters")
+async def list_git_adapters(_: int = Depends(require_admin)):
+    return [
+        {
+            "id": adapter.id,
+            "display_name": adapter.display_name,
+            "official_api_url": adapter.official_api_url,
+            "custom_endpoint_allowed": adapter.custom_endpoint_allowed,
+        }
+        for adapter in registered_adapters()
+    ]
+
+
+@router.get("/git-accounts", response_model=list[GitAccountOut])
+async def list_git_accounts(
     _: int = Depends(require_admin), session: AsyncSession = Depends(get_session)
 ):
-    rows = (
-        await session.execute(select(GitProviderInstance).order_by(GitProviderInstance.name))
-    ).scalars()
-    return [_git_provider_out(row) for row in rows]
+    rows = (await session.execute(select(GitAccount).order_by(GitAccount.adapter_id, GitAccount.name))).scalars()
+    return [await _git_account_out(session, row) for row in rows]
 
 
-@router.post("/git-provider-instances", response_model=GitProviderInstanceOut, status_code=201)
-async def create_git_provider_instance(
-    payload: GitProviderInstanceCreate,
-    user_id: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    default_base_url, default_api_url = default_provider_urls(payload.kind)
+async def _create_git_account(
+    session: AsyncSession, user: User, payload: GitAccountCreate
+) -> GitAccountOut:
     try:
-        base_url = validate_git_provider_url(payload.base_url or default_base_url)
-        api_url = validate_git_provider_url(payload.api_url or default_api_url)
-        config: dict[str, str] = {}
-        secrets: dict[str, str] = {}
-        if payload.kind == "github" and payload.github_app_id:
-            config["github_app_id"] = payload.github_app_id
-            secrets["github_app_private_key"] = payload.github_app_private_key or ""
-        elif payload.kind in {"gitlab", "gitee"} and payload.oauth_client_id:
-            config["oauth_client_id"] = payload.oauth_client_id
-            config["oauth_redirect_uri"] = validate_git_provider_url(payload.oauth_redirect_uri or "")
-            secrets["oauth_client_secret"] = payload.oauth_client_secret or ""
-    except ValueError as exc:
-        raise _error(422, "git_provider_configuration_invalid", str(exc)) from exc
-    row = GitProviderInstance(
-        kind=payload.kind,
-        name=payload.name,
-        base_url=base_url,
+        adapter = require_adapter(payload.adapter_id)
+        api_url = resolve_api_url(adapter.id, payload.api_url)
+        profile = await authenticate_access_token(
+            adapter_id=adapter.id, api_url=api_url, token=payload.access_token
+        )
+    except (GitProviderError, ValueError) as exc:
+        code = exc.code if isinstance(exc, GitProviderError) else "git_account_configuration_invalid"
+        raise _error(422, code, "Git account verification failed.") from exc
+    account = GitAccount(
+        adapter_id=adapter.id,
         api_url=api_url,
-        config=config,
-        secret_ciphertext=encrypt_secret(json.dumps(secrets, separators=(",", ":"), sort_keys=True))
-        or "",
+        endpoint_identity_hash=endpoint_identity_hash(adapter.id, api_url),
+        name=payload.name.strip(),
+        external_account_id=profile.external_id,
+        external_account_login=profile.login,
+        account_url=profile.account_url,
         state="active",
+        verification_status="healthy",
+        verified_at=datetime.now(UTC),
     )
-    session.add(row)
+    session.add(account)
     try:
         await session.flush()
     except IntegrityError as exc:
         await session.rollback()
-        raise _error(409, "git_provider_instance_conflict", "Git provider name or URL is already used.") from exc
-    session.add(_audit(user, "git_provider_instance.create", "git_provider_instance", row.id))
+        raise _error(409, "git_account_conflict", "Git account already exists for this endpoint.") from exc
+    username = "oauth2" if adapter.id in {"gitlab", "gitee"} else "x-access-token"
+    await _append_account_credential(session, account, username=username, token=payload.access_token)
+    job = await _sync_git_account(session, account)
+    if job.state != "succeeded":
+        await session.rollback()
+        raise _error(502, "git_repository_sync_failed", "Git account repository sync failed.")
+    session.add(_audit(user, "git_account.create", "git_account", account.id))
     await session.commit()
-    await session.refresh(row)
-    return _git_provider_out(row)
+    await session.refresh(account)
+    return await _git_account_out(session, account)
 
 
-@router.patch("/git-provider-instances/{provider_id}", response_model=GitProviderInstanceOut)
-async def patch_git_provider_instance(
-    provider_id: int,
-    payload: GitProviderInstancePatch,
+@router.post("/git-accounts", response_model=GitAccountOut, status_code=201)
+async def create_git_account(
+    payload: GitAccountCreate,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    return await _create_git_account(session, await _active_user(session, user_id), payload)
+
+
+@router.patch("/git-accounts/{account_id}", response_model=GitAccountOut)
+async def patch_git_account(
+    account_id: int,
+    payload: GitAccountPatch,
     user_id: int = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
-    row = await session.get(GitProviderInstance, provider_id)
-    if row is None:
-        raise _error(404, "git_provider_instance_not_found", "Git provider instance was not found.")
+    account = await session.get(GitAccount, account_id)
+    if account is None:
+        raise _error(404, "git_account_not_found", "Git account was not found.")
     for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(row, key, value)
-    row.revision += 1
-    session.add(_audit(user, "git_provider_instance.update", "git_provider_instance", row.id))
+        setattr(account, key, value)
+    account.revision += 1
+    session.add(_audit(user, "git_account.update", "git_account", account.id))
     await session.commit()
-    await session.refresh(row)
-    return _git_provider_out(row)
+    await session.refresh(account)
+    return await _git_account_out(session, account)
 
 
-@router.get("/git-account-connections", response_model=list[GitAccountConnectionOut])
-async def list_git_account_connections(
-    _: int = Depends(require_admin), session: AsyncSession = Depends(get_session)
+@router.post("/git-accounts/{account_id}/access-token", response_model=GitAccountOut)
+async def rotate_git_account_token(
+    account_id: int,
+    payload: GitAccountTokenRotate,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
 ):
-    rows = tuple(
-        (
-            await session.execute(
-                select(GitAccountConnection, GitProviderInstance)
-                .join(GitProviderInstance, GitProviderInstance.id == GitAccountConnection.provider_instance_id)
-                .order_by(GitProviderInstance.name, GitAccountConnection.name)
-            )
-        ).all()
-    )
-    return [await _git_account_out(session, account, provider) for account, provider in rows]
+    user = await _active_user(session, user_id)
+    account = await session.get(GitAccount, account_id)
+    if account is None:
+        raise _error(404, "git_account_not_found", "Git account was not found.")
+    try:
+        profile = await authenticate_access_token(
+            adapter_id=account.adapter_id, api_url=account.api_url, token=payload.access_token
+        )
+    except GitProviderError as exc:
+        raise _error(422, exc.code, "Git account credential verification failed.") from exc
+    if profile.external_id != account.external_account_id:
+        raise _error(422, "git_account_identity_mismatch", "Access token belongs to another Git account.")
+    username = "oauth2" if account.adapter_id in {"gitlab", "gitee"} else "x-access-token"
+    await _append_account_credential(session, account, username=username, token=payload.access_token)
+    job = await _sync_git_account(session, account)
+    session.add(_audit(user, "git_account.token_rotate", "git_account", account.id))
+    await session.commit()
+    if job.state != "succeeded":
+        raise _error(502, "git_repository_sync_failed", "Git account repository sync failed.")
+    await session.refresh(account)
+    return await _git_account_out(session, account)
 
 
-@router.get(
-    "/git-account-connections/{connection_id}/repositories",
-    response_model=list[GitAccountRepositoryOut],
-)
-async def list_git_account_repositories(
-    connection_id: int,
+@router.post("/git-accounts/{account_id}/sync", response_model=GitAccountOut)
+async def sync_git_account(
+    account_id: int,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    account = await session.get(GitAccount, account_id)
+    if account is None:
+        raise _error(404, "git_account_not_found", "Git account was not found.")
+    if account.state != "active":
+        raise _error(409, "git_account_inactive", "An active Git account is required.")
+    job = await _sync_git_account(session, account)
+    session.add(_audit(user, "git_account.sync", "git_account", account.id))
+    await session.commit()
+    if job.state != "succeeded":
+        raise _error(502, "git_repository_sync_failed", "Git account repository sync failed.")
+    await session.refresh(account)
+    return await _git_account_out(session, account)
+
+
+@router.get("/git-accounts/{account_id}/repositories", response_model=list[GitAccountRepositoryOut])
+async def list_git_account_repositories_current(
+    account_id: int,
     _: int = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    rows = tuple(
-        (
-            await session.execute(
-                select(GitRepository, GitProviderInstance)
-                .join(
-                    GitAccountRepositoryAccess,
-                    GitAccountRepositoryAccess.repository_id == GitRepository.id,
-                )
-                .join(GitProviderInstance, GitProviderInstance.id == GitRepository.provider_instance_id)
-                .where(
-                    GitAccountRepositoryAccess.account_connection_id == connection_id,
-                    GitAccountRepositoryAccess.state == "available",
-                )
-                .order_by(GitRepository.full_name)
+    rows = (
+        await session.execute(
+            select(GitRepository)
+            .join(GitAccountRepositoryAccess, GitAccountRepositoryAccess.repository_id == GitRepository.id)
+            .where(
+                GitAccountRepositoryAccess.account_connection_id == account_id,
+                GitAccountRepositoryAccess.state == "available",
             )
-        ).all()
-    )
+            .order_by(GitRepository.full_name)
+        )
+    ).scalars()
     return [
         GitAccountRepositoryOut(
             repository_id=repository.id,
-            provider_kind=provider.kind,
+            provider_kind=repository.adapter_id,
             full_name=repository.full_name,
             repo_url=repository.repo_url,
             web_url=repository.web_url,
@@ -1915,227 +1662,8 @@ async def list_git_account_repositories(
             visibility=repository.visibility,
             archived=repository.archived,
         )
-        for repository, provider in rows
+        for repository in rows
     ]
-
-
-async def _create_git_account_connection(
-    session: AsyncSession,
-    *,
-    user: User,
-    provider: GitProviderInstance,
-    name: str,
-    auth_mode: str,
-    profile_id: str,
-    profile_login: str,
-    profile_url: str,
-    username: str,
-    token: str,
-    expires_at: datetime | None = None,
-    sync_cursor: dict[str, str] | None = None,
-) -> GitAccountConnectionOut:
-    account = GitAccountConnection(
-        provider_instance_id=provider.id,
-        name=name,
-        auth_mode=auth_mode,
-        external_account_id=profile_id,
-        external_account_login=profile_login,
-        account_url=profile_url,
-        state="active",
-        verification_status="healthy",
-        verified_at=datetime.now(UTC),
-        sync_cursor=sync_cursor or {},
-    )
-    session.add(account)
-    try:
-        await session.flush()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise _error(409, "git_account_connection_conflict", "Git account connection already exists.") from exc
-    await _append_account_credential(
-        session, account, username=username, token=token, expires_at=expires_at
-    )
-    job = await _sync_git_account(session, provider, account)
-    if job.state != "succeeded":
-        await session.rollback()
-        raise _error(502, "git_repository_sync_failed", "Git account verification or repository sync failed.")
-    session.add(_audit(user, "git_account_connection.create", "git_account_connection", account.id))
-    await session.commit()
-    await session.refresh(account)
-    return await _git_account_out(session, account, provider)
-
-
-@router.post("/git-account-connections/access-token", response_model=GitAccountConnectionOut, status_code=201)
-async def create_git_account_access_token(
-    payload: GitAccountManualCreate,
-    user_id: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    provider = await session.get(GitProviderInstance, payload.provider_instance_id)
-    if provider is None or provider.state != "active":
-        raise _error(404, "git_provider_instance_not_found", "An active Git provider is required.")
-    try:
-        profile = await authenticate_access_token(
-            kind=provider.kind, api_url=provider.api_url, token=payload.access_token
-        )
-    except GitProviderError as exc:
-        raise _error(422, exc.code, "Git account credential verification failed.") from exc
-    username = "oauth2" if provider.kind in {"gitlab", "gitee"} else "x-access-token"
-    return await _create_git_account_connection(
-        session,
-        user=user,
-        provider=provider,
-        name=payload.name,
-        auth_mode="access_token",
-        profile_id=profile.external_id,
-        profile_login=profile.login,
-        profile_url=profile.account_url,
-        username=username,
-        token=payload.access_token,
-    )
-
-
-@router.post("/git-account-connections/github-app", response_model=GitAccountConnectionOut, status_code=201)
-async def create_github_app_connection(
-    payload: GitHubAppConnectionCreate,
-    user_id: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    provider = await session.get(GitProviderInstance, payload.provider_instance_id)
-    if provider is None or provider.kind != "github" or provider.state != "active":
-        raise _error(404, "github_provider_not_found", "An active GitHub provider is required.")
-    try:
-        secret = _provider_secret(provider.secret_ciphertext)
-        app_id = provider.config["github_app_id"]
-        profile, token, expires_at = await github_app_installation_token(
-            api_url=provider.api_url,
-            app_id=app_id,
-            private_key_pem=secret["github_app_private_key"],
-            installation_id=payload.installation_id,
-        )
-    except (KeyError, ValueError, GitProviderError) as exc:
-        raise _error(422, "github_app_configuration_invalid", "GitHub App verification failed.") from exc
-    return await _create_git_account_connection(
-        session,
-        user=user,
-        provider=provider,
-        name=payload.name,
-        auth_mode="github_app",
-        profile_id=profile.external_id,
-        profile_login=profile.login,
-        profile_url=profile.account_url,
-        username="x-access-token",
-        token=token,
-        expires_at=expires_at,
-        sync_cursor={"github_installation_id": payload.installation_id},
-    )
-
-
-@router.post(
-    "/git-provider-instances/{provider_id}/oauth/start", response_model=GitOAuthStartOut
-)
-async def start_git_oauth_connection(
-    provider_id: int,
-    payload: GitOAuthStart,
-    user_id: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    provider = await session.get(GitProviderInstance, provider_id)
-    if provider is None or provider.kind not in {"gitlab", "gitee"} or provider.state != "active":
-        raise _error(404, "git_oauth_provider_not_found", "An active OAuth Git provider is required.")
-    try:
-        client_id = provider.config["oauth_client_id"]
-        redirect_uri = provider.config["oauth_redirect_uri"]
-        if not isinstance(client_id, str) or not isinstance(redirect_uri, str):
-            raise ValueError("OAuth configuration is invalid")
-        authorization_url = oauth_authorization_url(
-            kind=provider.kind,
-            base_url=provider.base_url,
-            client_id=client_id,
-            redirect_uri=redirect_uri,
-            state=_oauth_state(provider_id=provider.id, user_id=user.id, name=payload.name),
-        )
-    except ValueError as exc:
-        raise _error(422, "git_oauth_configuration_invalid", str(exc)) from exc
-    return GitOAuthStartOut(authorization_url=authorization_url)
-
-
-@router.get("/git-account-connections/oauth/callback")
-async def finish_git_oauth_connection(
-    code: str = Query(min_length=1, max_length=8_000),
-    state: str = Query(min_length=1, max_length=8_000),
-    session: AsyncSession = Depends(get_session),
-):
-    try:
-        claims = _parse_oauth_state(state)
-        provider = await session.get(GitProviderInstance, claims["provider_id"])
-        user = await _active_user(session, claims["user_id"])
-        if provider is None or provider.kind not in {"gitlab", "gitee"} or provider.state != "active":
-            raise ValueError("OAuth provider is no longer available")
-        config = provider.config
-        secret = _provider_secret(provider.secret_ciphertext)
-        client_id = config["oauth_client_id"]
-        redirect_uri = config["oauth_redirect_uri"]
-        client_secret = secret["oauth_client_secret"]
-        if not all(isinstance(value, str) and value for value in (client_id, redirect_uri, client_secret)):
-            raise ValueError("OAuth configuration is invalid")
-        token = await exchange_oauth_code(
-            kind=provider.kind,
-            base_url=provider.base_url,
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
-            code=code,
-        )
-        profile = await authenticate_access_token(
-            kind=provider.kind, api_url=provider.api_url, token=token
-        )
-        await _create_git_account_connection(
-            session,
-            user=user,
-            provider=provider,
-            name=claims["name"],
-            auth_mode="oauth",
-            profile_id=profile.external_id,
-            profile_login=profile.login,
-            profile_url=profile.account_url,
-            username="oauth2",
-            token=token,
-        )
-    except (GitProviderError, KeyError, ValueError) as exc:
-        code_name = exc.code if isinstance(exc, GitProviderError) else "git_oauth_connection_failed"
-        return HTMLResponse(
-            f"<!doctype html><title>Git connection failed</title><p>{code_name}</p>",
-            status_code=422,
-        )
-    return HTMLResponse(
-        "<!doctype html><title>Git connected</title><script>window.close()</script><p>Git account connected.</p>"
-    )
-
-
-@router.post("/git-account-connections/{connection_id}/sync", response_model=GitAccountConnectionOut)
-async def sync_git_account_connection(
-    connection_id: int,
-    user_id: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    account = await session.get(GitAccountConnection, connection_id)
-    if account is None:
-        raise _error(404, "git_account_connection_not_found", "Git account connection was not found.")
-    provider = await session.get(GitProviderInstance, account.provider_instance_id)
-    if provider is None or provider.state != "active" or account.state != "active":
-        raise _error(409, "git_account_connection_inactive", "An active Git account connection is required.")
-    job = await _sync_git_account(session, provider, account)
-    session.add(_audit(user, "git_account_connection.sync", "git_account_connection", account.id))
-    await session.commit()
-    if job.state != "succeeded":
-        raise _error(502, "git_repository_sync_failed", "Git account repository sync failed.")
-    await session.refresh(account)
-    return await _git_account_out(session, account, provider)
 
 
 @router.get("/workspaces/{workspace_id}/repositories", response_model=list[RepositoryBindingOut])
@@ -2147,14 +1675,13 @@ async def list_repositories(
     await _workspace_access(session, user_id, workspace_id, "read")
     rows = (
         await session.execute(
-            select(WorkspaceRepositoryBinding, GitRepository, GitProviderInstance)
+            select(WorkspaceRepositoryBinding, GitRepository)
             .join(GitRepository, GitRepository.id == WorkspaceRepositoryBinding.repository_id)
-            .join(GitProviderInstance, GitProviderInstance.id == GitRepository.provider_instance_id)
             .where(WorkspaceRepositoryBinding.workspace_id == workspace_id)
             .order_by(WorkspaceRepositoryBinding.priority, WorkspaceRepositoryBinding.id)
         )
     ).all()
-    return [_repository_out(binding, repository, provider) for binding, repository, provider in rows]
+    return [_repository_out(binding, repository) for binding, repository in rows]
 
 
 async def _create_repository_binding(session, workspace_id, user, entitlement, repository, payload):
@@ -2177,9 +1704,7 @@ async def _create_repository_binding(session, workspace_id, user, entitlement, r
     )
     await session.commit()
     await session.refresh(row)
-    provider = await session.get(GitProviderInstance, repository.provider_instance_id)
-    assert provider is not None
-    return _repository_out(row, repository, provider)
+    return _repository_out(row, repository)
 
 
 @router.post(
@@ -2230,32 +1755,30 @@ async def list_workspace_repository_candidates(
                 select(
                     WorkspaceGitRepositoryEntitlement,
                     GitRepository,
-                    GitProviderInstance,
-                    GitAccountConnection,
+                    GitAccount,
                 )
                 .join(
                     WorkspaceGitAccountGrant,
                     WorkspaceGitAccountGrant.id == WorkspaceGitRepositoryEntitlement.grant_id,
                 )
                 .join(GitRepository, GitRepository.id == WorkspaceGitRepositoryEntitlement.repository_id)
-                .join(GitProviderInstance, GitProviderInstance.id == GitRepository.provider_instance_id)
                 .join(
-                    GitAccountConnection,
-                    GitAccountConnection.id == WorkspaceGitAccountGrant.account_connection_id,
+                    GitAccount,
+                    GitAccount.id == WorkspaceGitAccountGrant.account_connection_id,
                 )
                 .join(
                     GitAccountRepositoryAccess,
-                    (GitAccountRepositoryAccess.account_connection_id == GitAccountConnection.id)
+                    (GitAccountRepositoryAccess.account_connection_id == GitAccount.id)
                     & (GitAccountRepositoryAccess.repository_id == GitRepository.id),
                 )
                 .where(
                     WorkspaceGitRepositoryEntitlement.workspace_id == workspace_id,
                     WorkspaceGitRepositoryEntitlement.state == "active",
                     WorkspaceGitAccountGrant.state == "active",
-                    GitAccountConnection.state == "active",
+                    GitAccount.state == "active",
                     GitAccountRepositoryAccess.state == "available",
                 )
-                .order_by(GitProviderInstance.name, GitRepository.full_name)
+                .order_by(GitAccount.adapter_id, GitRepository.full_name)
             )
         ).all()
     )
@@ -2263,7 +1786,7 @@ async def list_workspace_repository_candidates(
         WorkspaceRepositoryCandidateOut(
             entitlement_id=entitlement.id,
             repository_id=repository.id,
-            provider_kind=provider.kind,
+            provider_kind=repository.adapter_id,
             full_name=repository.full_name,
             repo_url=repository.repo_url,
             web_url=repository.web_url,
@@ -2273,7 +1796,7 @@ async def list_workspace_repository_candidates(
             account_connection_id=account.id,
             account_name=account.name,
         )
-        for entitlement, repository, provider, account in rows
+        for entitlement, repository, account in rows
     ]
 
 
@@ -2290,14 +1813,13 @@ async def list_workspace_git_account_grants(
     rows = tuple(
         (
             await session.execute(
-                select(WorkspaceGitAccountGrant, GitAccountConnection, GitProviderInstance)
+                select(WorkspaceGitAccountGrant, GitAccount)
                 .join(
-                    GitAccountConnection,
-                    GitAccountConnection.id == WorkspaceGitAccountGrant.account_connection_id,
+                    GitAccount,
+                    GitAccount.id == WorkspaceGitAccountGrant.account_connection_id,
                 )
-                .join(GitProviderInstance, GitProviderInstance.id == GitAccountConnection.provider_instance_id)
                 .where(WorkspaceGitAccountGrant.workspace_id == workspace_id)
-                .order_by(GitProviderInstance.name, GitAccountConnection.name)
+                .order_by(GitAccount.adapter_id, GitAccount.name)
             )
         ).all()
     )
@@ -2307,7 +1829,7 @@ async def list_workspace_git_account_grants(
             workspace_id=grant.workspace_id,
             account_connection_id=account.id,
             account_name=account.name,
-            provider_kind=provider.kind,
+            provider_kind=account.adapter_id,
             external_account_login=account.external_account_login,
             repository_scope=grant.repository_scope,
             state=grant.state,
@@ -2326,7 +1848,7 @@ async def list_workspace_git_account_grants(
             created_at=grant.created_at,
             updated_at=grant.updated_at,
         )
-        for grant, account, provider in rows
+        for grant, account in rows
     ]
 
 
@@ -2345,11 +1867,9 @@ async def create_workspace_git_account_grant(
     workspace = await session.get(Workspace, workspace_id)
     if workspace is None:
         raise _error(404, "workspace_not_found", "Workspace was not found.")
-    account = await session.get(GitAccountConnection, payload.account_connection_id)
+    account = await session.get(GitAccount, payload.account_connection_id)
     if account is None or account.state != "active" or account.verification_status != "healthy":
         raise _error(422, "git_account_connection_invalid", "A healthy active Git account is required.")
-    provider = await session.get(GitProviderInstance, account.provider_instance_id)
-    assert provider is not None
     visible_repository_ids = set(
         (
             await session.execute(
@@ -2400,7 +1920,7 @@ async def create_workspace_git_account_grant(
         workspace_id=grant.workspace_id,
         account_connection_id=account.id,
         account_name=account.name,
-        provider_kind=provider.kind,
+        provider_kind=account.adapter_id,
         external_account_login=account.external_account_login,
         repository_scope=grant.repository_scope,
         state=grant.state,
@@ -2429,11 +1949,6 @@ async def patch_repository_binding(
         setattr(row, key, value)
     row.revision += 1
     repository = await session.get(GitRepository, row.repository_id)
-    provider = (
-        await session.get(GitProviderInstance, repository.provider_instance_id)
-        if repository is not None
-        else None
-    )
     session.add(
         _audit(
             user, "repository_binding.update", "workspace_repository_binding", row.id, workspace_id
@@ -2441,8 +1956,8 @@ async def patch_repository_binding(
     )
     await session.commit()
     await session.refresh(row)
-    assert repository is not None and provider is not None
-    return _repository_out(row, repository, provider)
+    assert repository is not None
+    return _repository_out(row, repository)
 
 
 @router.delete("/workspaces/{workspace_id}/repositories/{binding_id}", status_code=204)

@@ -15,9 +15,8 @@ import type {
   PlatformSettings,
   ProviderAccount,
   RepositoryBinding,
-  GitAccountConnection,
+  GitAccount,
   GitAccountRepository,
-  GitProviderInstance,
   WorkspaceGitAccountGrant,
   WorkspaceRepositoryCandidate,
   Workspace,
@@ -151,19 +150,13 @@ export function updateInvestigationPolicy(workspaceId: number | string, profile:
 }
 
 export function fetchProviderAccounts() { return get<ProviderAccount[]>('/ai-provider-accounts'); }
-export function discoverProviderModels(input: { base_url: string; credential: string; organization_ref?: string; project_ref?: string }) {
-  return send<Array<{ provider_model_id: string; display_name: string }>>('/ai-provider-accounts/discover-models', 'POST', input);
-}
-export function discoverSavedProviderModels(id: number) {
-  return send<Array<{ provider_model_id: string; display_name: string }>>(`/ai-provider-accounts/${id}/discover-models`, 'POST');
-}
 export function createProviderAccount(input: Record<string, unknown>) {
   return send<ProviderAccount>('/ai-provider-accounts', 'POST', input);
 }
 export function updateProviderAccount(id: number, input: Record<string, unknown>) {
   return send<ProviderAccount>(`/ai-provider-accounts/${id}`, 'PATCH', input);
 }
-export function updateProviderAccountModels(id: number, input: { model_ids: string[]; manual_model_ids: string[] }) {
+export function updateProviderAccountModels(id: number, input: { model_ids: string[] }) {
   return send<ProviderAccount>(`/ai-provider-accounts/${id}/models`, 'PUT', input);
 }
 export function testProviderAccountModel(accountId: number, accountModelId: number) {
@@ -183,25 +176,14 @@ export function publishModelPolicy(workspaceId: number | string, input: Record<s
 export function fetchRepositories(workspaceId: number | string) {
   return get<RepositoryBinding[]>(`/workspaces/${workspaceId}/repositories`);
 }
-export function fetchGitProviderInstances() { return get<GitProviderInstance[]>('/git-provider-instances'); }
-export function createGitProviderInstance(input: Record<string, unknown>) {
-  return send<GitProviderInstance>('/git-provider-instances', 'POST', input);
+export function fetchGitAdapters() { return get<import('./types').GitAdapter[]>('/git-adapters'); }
+export function fetchGitAccounts() { return get<GitAccount[]>('/git-accounts'); }
+export function createGitAccount(input: { adapter_id: string; name: string; api_url?: string; access_token: string }) {
+  return send<GitAccount>('/git-accounts', 'POST', input);
 }
-export function fetchGitAccountConnections() { return get<GitAccountConnection[]>('/git-account-connections'); }
-export function createGitAccountAccessToken(input: { provider_instance_id: number; name: string; access_token: string }) {
-  return send<GitAccountConnection>('/git-account-connections/access-token', 'POST', input);
-}
-export function createGitHubAppConnection(input: { provider_instance_id: number; name: string; installation_id: string }) {
-  return send<GitAccountConnection>('/git-account-connections/github-app', 'POST', input);
-}
-export function syncGitAccountConnection(id: number) {
-  return send<GitAccountConnection>(`/git-account-connections/${id}/sync`, 'POST');
-}
+export function syncGitAccount(id: number) { return send<GitAccount>(`/git-accounts/${id}/sync`, 'POST'); }
 export function fetchGitAccountRepositories(id: number) {
-  return get<GitAccountRepository[]>(`/git-account-connections/${id}/repositories`);
-}
-export function startGitOAuth(providerId: number, name: string) {
-  return send<{ authorization_url: string }>(`/git-provider-instances/${providerId}/oauth/start`, 'POST', { name });
+  return get<GitAccountRepository[]>(`/git-accounts/${id}/repositories`);
 }
 export function fetchWorkspaceGitAccountGrants(workspaceId: number | string) {
   return get<WorkspaceGitAccountGrant[]>(`/workspaces/${workspaceId}/git-account-grants`);

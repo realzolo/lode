@@ -152,8 +152,13 @@ isolated from the application key material:
 ```bash
 export LODE_MASTER_KEY='replace-with-a-random-secret-at-least-32-bytes'
 export LODE_COMMAND_RUNNER_KEY='replace-with-a-runner-only-secret-at-least-32-bytes'
+cp docker-compose.example.yml docker-compose.yml
 docker compose up --build
 ```
+
+`docker-compose.yml` is intentionally ignored because it is the local Compose
+override. Keep local ports, credentials, and deployment-specific settings there;
+use `docker-compose.example.yml` as the committed template.
 
 Web is available at `http://localhost:3000`; the API is available at
 `http://localhost:8000`. Seed only fresh development databases:

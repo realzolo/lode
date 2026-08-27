@@ -133,7 +133,7 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
         BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False
     )
     account_connection_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_account_connections.id", ondelete="RESTRICT"), nullable=False
+        BigInteger, ForeignKey("git_accounts.id", ondelete="RESTRICT"), nullable=False
     )
     credential_revision_id: Mapped[int] = mapped_column(
         BigInteger,

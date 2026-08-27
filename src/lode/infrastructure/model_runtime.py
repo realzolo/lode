@@ -58,7 +58,7 @@ from lode.metrics import (
     MODEL_ROUTING,
     MODEL_TOKENS,
 )
-from lode.model_catalog import find_openai_model, supported_openai_models
+from lode.model_catalog import find_model, supported_models
 
 
 class ModelGateway(Protocol):
@@ -110,7 +110,12 @@ class TokenizerRegistry:
     def __init__(self, tokenizers: Sequence[Tokenizer] = ()) -> None:
         default = ExactJSONTokenizer()
         self._values = {default.tokenizer_id: default}
-        for profile in supported_openai_models():
+        profiles = (
+            *supported_models("openai", "openai.responses.v1"),
+            *supported_models("openai", "openai.chat_completions.v1"),
+            *supported_models("anthropic", "anthropic.messages.v1"),
+        )
+        for profile in profiles:
             tokenizer = TiktokenJSONTokenizer(profile.tokenizer_encoding)
             self._values.setdefault(tokenizer.tokenizer_id, tokenizer)
         self._values.update({value.tokenizer_id: value for value in tokenizers})
@@ -517,7 +522,7 @@ class PostgresModelRuntime:
             await session.flush()
             invocation_id = row.id
             await session.commit()
-        provider = config.provider
+        provider = config.protocol_id
         MODEL_ROUTING.labels(
             role=task.role.value,
             execution_class=route.execution_class.value,
@@ -718,7 +723,9 @@ class PostgresModelRuntime:
             policy = snapshot.routing_policy
             deployment = await session.get(ProviderAccountModel, snapshot.provider_account_model_id)
             provider = await session.get(AIProviderAccount, snapshot.provider_account_id)
-            profile = find_openai_model(str(policy.get("provider_model_id", "")))
+            protocol_id = str(policy.get("protocol_id", ""))
+            provider_kind = "anthropic" if protocol_id == "anthropic.messages.v1" else "openai"
+            profile = find_model(provider_kind, protocol_id, str(policy.get("provider_model_id", "")))
             current_credential_hash = (
                 hashlib.sha256(provider.credential_ciphertext.encode()).hexdigest()
                 if provider is not None
@@ -730,7 +737,6 @@ class PostgresModelRuntime:
                 and deployment.revision == snapshot.provider_account_model_revision
                 and provider.revision == snapshot.provider_account_revision
                 and deployment.state == "active"
-                and deployment.discovery_state != "missing"
                 and provider.state == "active"
                 and deployment.availability_state == "healthy"
                 and provider.verification_status == "healthy"
@@ -801,13 +807,11 @@ class PostgresModelRuntime:
             raise RuntimeError("selected frozen model configuration is unavailable")
         policy = snapshot.routing_policy
         return ModelConfigWithTimeout(
-            provider=str(policy["provider_kind"]),
+            protocol_id=str(policy["protocol_id"]),
             base_url=str(policy["provider_base_url"]),
             api_key_ciphertext=provider.credential_ciphertext,
             model=str(policy["provider_model_id"]),
             max_completion_tokens=max_completion_tokens,
-            organization_ref=provider.organization_ref,
-            project_ref=provider.project_ref,
             timeout_ms=int(policy["timeout_ms"]),
         )
 

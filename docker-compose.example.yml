@@ -1,3 +1,8 @@
+# Copy this file to docker-compose.yml before starting the local stack.
+# Keep generated project resources namespaced as lode-* even when Compose is
+# invoked from a checkout whose directory name differs.
+name: lode
+
 services:
   postgres:
     image: postgres:16

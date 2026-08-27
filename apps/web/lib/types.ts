@@ -57,10 +57,8 @@ export interface InvestigationPolicy {
 export interface ProviderAccount {
   id: number;
   name: string;
-  provider_kind: 'openai_compatible';
+  protocol_id: 'openai.responses.v1' | 'openai.chat_completions.v1' | 'anthropic.messages.v1';
   base_url: string;
-  organization_ref: string | null;
-  project_ref: string | null;
   state: 'active' | 'disabled';
   verification_status: 'untested' | 'healthy' | 'unavailable';
   verified_at: string | null;
@@ -74,7 +72,6 @@ export interface ProviderAccountModel {
   provider_model_id: string;
   display_name: string;
   capabilities: Record<string, boolean>;
-  discovery_state: 'synced' | 'manual' | 'missing';
   availability_state: 'untested' | 'healthy' | 'unavailable';
   state: 'active' | 'disabled';
   revision: number;
@@ -115,30 +112,11 @@ export interface RepositoryBinding {
   revision: number;
 }
 
-export interface GitProviderInstance {
+export interface GitAccount {
   id: number;
-  kind: 'github' | 'gitlab' | 'gitee';
-  name: string;
-  base_url: string;
+  adapter_id: 'github' | 'gitlab' | 'gitee';
   api_url: string;
-  state: 'active' | 'disabled';
-  verification_status: 'untested' | 'healthy' | 'unavailable';
-  verified_at: string | null;
-  last_error: string | null;
-  native_auth_available: boolean;
-  native_auth_kind: 'github_app' | 'oauth' | null;
-  revision: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GitAccountConnection {
-  id: number;
-  provider_instance_id: number;
-  provider_kind: 'github' | 'gitlab' | 'gitee';
-  provider_name: string;
   name: string;
-  auth_mode: 'github_app' | 'oauth' | 'access_token';
   external_account_id: string;
   external_account_login: string;
   account_url: string;
@@ -151,6 +129,13 @@ export interface GitAccountConnection {
   revision: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface GitAdapter {
+  id: 'github' | 'gitlab' | 'gitee';
+  display_name: string;
+  official_api_url: string;
+  custom_endpoint_allowed: boolean;
 }
 
 export interface GitAccountRepository {

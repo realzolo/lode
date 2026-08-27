@@ -55,16 +55,16 @@ def test_unconfigured_model_is_auditable_fallback_without_token_claims():
 
 def test_model_endpoint_normalizes_provider_base_urls():
     assert (
-        model_endpoint("openai", "https://model.example")
+        model_endpoint("openai.chat_completions.v1", "https://model.example")
         == "https://model.example/v1/chat/completions"
     )
     assert (
-        model_endpoint("openai", "https://model.example/v1")
-        == "https://model.example/v1/chat/completions"
+        model_endpoint("openai.responses.v1", "https://model.example/v1")
+        == "https://model.example/v1/responses"
     )
     assert (
-        model_endpoint("openai", "https://model.example/v1/chat/completions")
-        == "https://model.example/v1/chat/completions"
+        model_endpoint("anthropic.messages.v1", "https://model.example")
+        == "https://model.example/v1/messages"
     )
 
 
@@ -76,7 +76,7 @@ class _Response(ProviderHTTPResponse):
 
 def _config() -> ModelConfig:
     return ModelConfig(
-        provider="openai",
+        protocol_id="openai.chat_completions.v1",
         base_url="https://model.example",
         api_key_ciphertext=encrypt_secret("test-key"),
         model="test-model",
@@ -90,7 +90,7 @@ def test_transient_provider_failures_retry_and_record_attempt_count(monkeypatch)
         attempts.append(endpoint)
         if len(attempts) < 3:
             return ProviderHTTPResponse(503, {}, b"")
-        return _Response({"choices": [{"message": {"content": "OK"}}]})
+        return _Response({"content": [{"type": "text", "text": "OK"}]})
 
     monkeypatch.setattr("lode.engine.llm.provider_request", request)
     monkeypatch.setattr("lode.engine.llm.LLM_RETRY_BASE_DELAY_SECONDS", 0)
@@ -156,7 +156,7 @@ def test_structured_request_sets_json_mode_routed_output_limit_and_custom_timeou
 
     monkeypatch.setattr("lode.engine.llm.provider_request", request)
     config = ModelConfig(
-        provider="openai_compatible",
+        protocol_id="openai.chat_completions.v1",
         base_url="https://model.example",
         api_key_ciphertext=encrypt_secret("test-key"),
         model="test-model",
@@ -206,7 +206,7 @@ def test_strict_response_schema_replaces_loose_json_mode(monkeypatch):
     }
 
 
-def test_openai_organization_and_project_are_forwarded(monkeypatch):
+def test_anthropic_uses_its_native_authentication_headers(monkeypatch):
     captured: dict = {}
 
     async def request(_method, _endpoint, **kwargs):
@@ -215,13 +215,11 @@ def test_openai_organization_and_project_are_forwarded(monkeypatch):
 
     monkeypatch.setattr("lode.engine.llm.provider_request", request)
     config = ModelConfig(
-        provider="openai_compatible",
+        protocol_id="anthropic.messages.v1",
         base_url="https://model.example",
         api_key_ciphertext=encrypt_secret("test-key"),
         model="test-model",
-        organization_ref="org-test",
-        project_ref="proj-test",
     )
     assert asyncio.run(complete_with_usage("system", "user", config)).text == "OK"
-    assert captured["OpenAI-Organization"] == "org-test"
-    assert captured["OpenAI-Project"] == "proj-test"
+    assert captured["x-api-key"] == "test-key"
+    assert captured["anthropic-version"]

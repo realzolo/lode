@@ -66,3 +66,6 @@ Thumbs.db
 .vscode/
 .workbuddy-ai/
 /workplace/
+
+# Local Compose configuration may contain machine-specific credentials and ports.
+docker-compose.yml

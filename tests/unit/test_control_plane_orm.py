@@ -92,14 +92,14 @@ def test_global_language_and_investigation_profiles_are_first_class_schema() -> 
 
 def test_repository_build_unit_and_component_identities_are_separate() -> None:
     repository = Base.metadata.tables["git_repositories"]
-    account = Base.metadata.tables["git_account_connections"]
+    account = Base.metadata.tables["git_accounts"]
     credential_revision = Base.metadata.tables["git_account_credential_revisions"]
     entitlement = Base.metadata.tables["workspace_git_repository_entitlements"]
     binding = Base.metadata.tables["workspace_repository_bindings"]
     build_unit = Base.metadata.tables["build_units"]
     component = Base.metadata.tables["components"]
 
-    assert {"provider_instance_id", "external_repository_id", "full_name"}.issubset(repository.c.keys())
+    assert {"adapter_id", "endpoint_identity_hash", "external_repository_id", "full_name"}.issubset(repository.c.keys())
     assert {"workspace_id", "credential_id", "scope"}.isdisjoint(repository.c.keys())
     assert "current_credential_revision_id" in account.c
     assert {"account_connection_id", "secret_ciphertext", "credential_identity_hash"}.issubset(

@@ -53,7 +53,7 @@ from lode.evidence_connectors.types import ProviderExecutionError
 from lode.infrastructure.evidence_archive import PostgresEvidenceResultArchiver
 from lode.infrastructure.intake_store import PostgresIntakeStore
 from lode.infrastructure.native_read_executor import NativeReadOperationExecutor
-from lode.model_catalog import require_openai_model
+from lode.model_catalog import require_model
 
 SENTINEL = "__LODE_VALUE_REF_INCIDENT_TRACE__"
 RAW_TRACE = ' trace/值?x=1&quoted="yes"\nnext '
@@ -203,20 +203,19 @@ async def _create_fixture(session):
 
     provider = AIProviderAccount(
         name=f"evidence-access-check-{fixture_id}",
-        provider_kind="openai_compatible",
+        protocol_id="openai.responses.v1",
         base_url="https://model.invalid",
         credential_ciphertext=encrypt_value("model-secret"),
         verification_status="healthy",
     )
     session.add(provider)
     await session.flush()
-    profile = require_openai_model("gpt-5.6-sol")
+    profile = require_model("openai", "openai.responses.v1", "gpt-5.6-sol")
     deployment = ProviderAccountModel(
         provider_account_id=provider.id,
         provider_model_id=profile.model_id,
         catalog_revision=profile.catalog_revision,
         catalog_profile_hash=profile.profile_hash,
-        discovery_state="synced",
         availability_state="healthy",
     )
     context_policy = ContextPolicyRevision(

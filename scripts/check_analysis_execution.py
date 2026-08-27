@@ -48,7 +48,7 @@ from lode.infrastructure.report_store import (
     ReportValidationError,
 )
 from lode.infrastructure.source_store import PostgresSourceStore
-from lode.model_catalog import require_openai_model
+from lode.model_catalog import require_model
 
 
 class FixtureGateway:
@@ -94,7 +94,7 @@ class FixtureGateway:
 async def _provider(session, suffix: str, name: str) -> AIProviderAccount:
     provider = AIProviderAccount(
         name=f"{name}-{suffix}",
-        provider_kind="openai_compatible",
+        protocol_id="openai.responses.v1",
         base_url="https://models.example.invalid",
         credential_ciphertext=encrypt_secret(f"{name}-secret") or "",
         state="active",
@@ -108,13 +108,12 @@ async def _provider(session, suffix: str, name: str) -> AIProviderAccount:
 
 
 async def _deployment(session, provider: AIProviderAccount, name: str) -> ProviderAccountModel:
-    profile = require_openai_model("gpt-5.6-sol")
+    profile = require_model("openai", "openai.responses.v1", "gpt-5.6-sol")
     deployment = ProviderAccountModel(
         provider_account_id=provider.id,
         provider_model_id=profile.model_id,
         catalog_revision=profile.catalog_revision,
         catalog_profile_hash=profile.profile_hash,
-        discovery_state="synced",
         availability_state="healthy",
         health_checked_at=datetime.now(UTC),
         state="active",

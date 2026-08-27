@@ -37,24 +37,26 @@ deployment-canary observations to pass the statistical and non-regression gate.
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
-- The current ORM registry and the only migration register exactly the 74 tables in
+- The current ORM registry and the only migration register exactly the 72 tables in
   `contracts/v1/database/tables.json`. Provider accounts, account models,
-  global Git providers/accounts/catalogue, Workspace Git grants and repository
+  static Git adapters/accounts/catalogue, Workspace Git grants and repository
   entitlements, Workspace bindings, build units, components, resource graph
   revisions, connectors, immutable investigation snapshots, the evidence graph,
   native-read audit chain, source assessments, findings, and reports are
   separate final objects. Deprecated global workload identity, single-model,
   per-repository Git credentials, and product-specific integration tables and
   routes are not registered.
-- Git provider instances, account connections, encrypted immutable credential
-  revisions, and discovered repository facts are global reusable objects. A
+- Git adapters are static reviewed code registrations. Token-only Git accounts,
+  encrypted immutable credential revisions, and discovered repository facts are
+  global reusable objects. A
   global admin explicitly grants an account to a Workspace and selects its
   repository entitlements; all cross-Workspace grant, entitlement, binding, and
   credential-revision references are database-constrained. Private repositories
   are accessed only through the approved account connection, never through a
-  per-repository secret. GitHub App, GitLab/Gitee OAuth, and read-only access
-  token connections are verified before their repository catalogues are used.
-- `contracts/v1/database/invariants.json` freezes 92 required triggers. The
+  per-repository secret. GitHub, GitLab, and Gitee account tokens are verified
+  before their repository catalogues are used. GitHub Enterprise Server and
+  GitLab Self-Managed may override the API root; Gitee is official-endpoint only.
+- `contracts/v1/database/invariants.json` freezes the required trigger inventory. The
   migration enforces timestamp updates, secret-free ordinary JSON,
   immutability, archived-investigation read-only behavior, authorization-chain
   integrity, frozen AI routing/context, exact source anchors, and confirmed
@@ -340,12 +342,20 @@ canary release evaluation, artifact hash binding, expanded low-cardinality
 Prometheus metrics, and the `hardening-check`, `local-release-check`, and
 `provider-release-check` workflows. README, evaluation documentation,
 environment examples, Compose, and this context document must remain
-synchronized with those deployment changes.
+synchronized with those deployment changes. Compose declares the project name
+as `lode`, so generated resources remain namespaced (`lode-...`) independently
+of the checkout directory. Service keys remain role-oriented (`postgres`,
+`kafka`, `app`, and so on) because they are the stable in-network DNS names;
+`container_name` must not be added solely to remove Compose's replica suffix
+such as `-1`, since that disables safe scaling and can create name conflicts.
+The committed Compose template is `docker-compose.example.yml`; the local
+`docker-compose.yml` is ignored and must be created from that template before
+running the stack.
 
 The account-model revision adds the direct `tiktoken` runtime dependency. It
-replaces standalone model deployments and product-specific AI protocols with
-OpenAI-compatible provider accounts, reviewed catalog-backed account models,
-and the `discover-models`/account-model health control-plane workflows. It
+uses explicit OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages
+protocol accounts with reviewed catalog-backed account models and a strict
+structured-output health probe. It
 also requires `make contracts`, `make schema-check`, `make api-check`,
 `make analysis-check`, and `make web-check` for changes in this surface.
 
@@ -414,8 +424,10 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/application/conclusion_validation.py`: server-owned confirmation downgrade gates.
 - `src/lode/infrastructure/investigation_control_snapshots.py`: same-transaction repository and model control freezing.
 - `src/lode/infrastructure/model_runtime.py`: immutable routing/context/invocation audit, replay, drift checks, and bounded compaction.
-- `src/lode/git_accounts`: bounded GitHub/GitLab/Gitee profile, OAuth, GitHub
-  App, and repository-catalogue adapters plus strict credential encoding.
+- `src/lode/git_accounts`: bounded token-only GitHub/GitLab/Gitee account and
+  repository-catalogue adapters plus strict credential encoding. New adapters
+  must add endpoint policy, token headers, pagination, normalization, error
+  classes, and private-repository regression coverage in the same change.
 - `src/lode/infrastructure/git_source.py`: bounded exact-revision HTTPS Git reader.
 - `src/lode/infrastructure/source_store.py`: masked source artifact, revision, and assessment archival.
 - `src/lode/infrastructure/investigation_reporting.py`: audited synthesis and independent verification roles.
@@ -537,11 +549,14 @@ ValueRef, authorization, preflight, execution, masking, and archive chain. The
 model may never create credentials, connector configuration, access scope, or
 repository authorization.
 
-Only OpenAI-compatible HTTPS base URLs are supported and are normalized to
-`/v1/chat/completions`. An account has a write-only key plus optional OpenAI
-organization and project IDs. `POST /ai-provider-accounts/discover-models`
-uses an unpersisted draft key for `GET /models`; account create/update repeats
-that discovery before atomically saving a selected model set. The only routing
+Model accounts use an explicit closed `protocol_id`: `openai.responses.v1`,
+`openai.chat_completions.v1`, or `anthropic.messages.v1`. Each accepts a
+credential-free HTTPS BaseURL, including a compatible gateway or private
+endpoint, but URL shape never selects a protocol. Accounts store only a
+write-only API key, use protocol-defined paths and authentication headers, and
+select exact model IDs from the reviewed provider/protocol catalog. Create,
+connection updates, and model-set updates run a restricted structured-output
+probe for every selected model before it becomes routable. The only routing
 targets are reviewed fixed catalog IDs. Each account model records
 `synced`/`manual`/`missing` discovery and
 `untested`/`healthy`/`unavailable` protocol health; an upstream disappearance
@@ -748,16 +763,15 @@ reconnects with the last observed cursor and preserves the last canonical view.
 
 The project has not released its database baseline.
 `alembic/versions/0001_initial.py` is the only revision and creates exactly the
-75 final business tables. There is one current schema and no parallel version,
+72 final business tables. There is one current schema and no parallel version,
 compatibility view, dual write, backfill, or old-schema adapter; unreleased
 development databases are recreated from the unique initial migration. After
 the first release, schema changes use ordinary forward migrations.
 
 The table inventory and database invariants are frozen independently under
 `contracts/v1/database`. SQLAlchemy metadata must exactly match the migration.
-The schema currently owns 91 explicit non-internal triggers: 37 immutable-row
-triggers, 25 archived-investigation read-only triggers, 22 `updated_at`
-triggers, and seven cross-table/security triggers. `set_updated_at()` uses
+The schema trigger inventory is frozen with the initial migration and database
+contract. `set_updated_at()` uses
 `clock_timestamp()` so updates within one transaction still advance the value.
 Ordinary connector/scope JSON is traversed structurally and rejects credential
 keys at any object depth.
@@ -829,14 +843,14 @@ secret hashing, and Compose privilege/network/key-ownership assertions.
 
 ## Frontend Contract
 
-Global admins manage write-only OpenAI-compatible account credentials and their
-account-model selections at `/[locale]/admin/models`. The account dialog
-synchronizes supported upstream models after Base URL/key entry and can add a
-reviewed catalog model manually; it has no separate model-deployment form and
-never renders token or tokenizer configuration. Workspace creation atomically requires name and the
-globally unique Kafka topic. `/[locale]/admin/git` manages reusable GitHub,
-GitLab, and Gitee services, multiple account connections, provider-native
-authorization, manual read-only tokens, and repository-catalogue refreshes.
+Global admins manage write-only explicit-protocol model account credentials and
+reviewed account-model selections at `/[locale]/admin/models`; the UI supports
+OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages BaseURLs but
+never organization/project IDs, dynamic discovery, or manual model IDs.
+Workspace creation atomically requires name and the globally unique Kafka topic.
+`/[locale]/admin/git` manages reusable GitHub, GitLab, and Gitee token accounts
+and repository-catalogue refreshes. It does not manage Git services, OAuth, or
+GitHub App credentials.
 `admin/workspaces/[id]` provides Overview, Model policy, Repositories,
 Connectors, and Members tabs. The sole system administrator creates ordinary
 users and grants each Workspace `viewer` or `operator` access; it also grants a

@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from lode.api.control_schemas import (
     ConnectorCreate,
-    GitProviderInstanceCreate,
+    GitAccountCreate,
     WorkspaceGitAccountGrantCreate,
     ModelBindingInput,
     ProviderAccountModelSelection,
@@ -49,7 +49,7 @@ def test_model_policy_rejects_duplicate_immutable_binding_refs() -> None:
     ("schema", "values"),
     [
         (ProviderAccountPatch, {"name": None}),
-        (ProviderAccountModelSelection, {"model_ids": ["gpt-5.6-sol"], "manual_model_ids": ["missing"]}),
+        (ProviderAccountModelSelection, {"model_ids": ["gpt-5.6-sol", "gpt-5.6-sol"]}),
     ],
 )
 def test_patch_rejects_explicit_null_for_required_storage_fields(schema, values) -> None:
@@ -69,13 +69,12 @@ def test_connector_creation_rejects_raw_configuration_documents() -> None:
         )
 
 
-def test_git_provider_and_workplace_access_forms_require_complete_authorization() -> None:
+def test_git_account_and_workplace_access_forms_require_complete_authorization() -> None:
     with pytest.raises(ValidationError):
-        GitProviderInstanceCreate.model_validate(
+        GitAccountCreate.model_validate(
             {
-                "kind": "github",
+                "adapter_id": "github",
                 "name": "GitHub",
-                "github_app_id": "123",
             }
         )
     with pytest.raises(ValidationError):
@@ -84,12 +83,9 @@ def test_git_provider_and_workplace_access_forms_require_complete_authorization(
         )
 
 
-def test_provider_patch_allows_clearing_optional_scope_references() -> None:
-    patch = ProviderAccountPatch.model_validate(
-        {"organization_ref": None, "project_ref": None}
-    )
-
-    assert patch.model_fields_set == {"organization_ref", "project_ref"}
+def test_provider_patch_rejects_removed_organization_and_project_fields() -> None:
+    with pytest.raises(ValidationError):
+        ProviderAccountPatch.model_validate({"organization_ref": "org"})
 
 
 def test_investigation_profile_and_ai_output_language_are_closed_sets() -> None:

@@ -23,48 +23,16 @@ from lode.db.base import Base
 from lode.db.models._common import CreatedAtMixin, TimestampMixin, identity_pk
 
 
-class GitProviderInstance(TimestampMixin, Base):
-    """A globally administered GitHub, GitLab, or Gitee integration."""
+class GitAccount(TimestampMixin, Base):
+    """A global, reusable token-only connection to one registered Git adapter."""
 
-    __tablename__ = "git_provider_instances"
+    __tablename__ = "git_accounts"
 
     id: Mapped[int] = identity_pk()
-    kind: Mapped[str] = mapped_column(Text, nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    adapter_id: Mapped[str] = mapped_column(Text, nullable=False)
     api_url: Mapped[str] = mapped_column(Text, nullable=False)
-    config: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
-    secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
-    verification_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="untested")
-    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_error: Mapped[str | None] = mapped_column(Text)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
-
-    __table_args__ = (
-        CheckConstraint("kind IN ('github', 'gitlab', 'gitee')", name="kind"),
-        CheckConstraint("state IN ('active', 'disabled')", name="state"),
-        CheckConstraint(
-            "verification_status IN ('untested', 'healthy', 'unavailable')",
-            name="verification_status",
-        ),
-        CheckConstraint("revision > 0", name="revision_positive"),
-        UniqueConstraint("kind", "base_url", name="uq_git_provider_instance_kind_base_url"),
-        UniqueConstraint("name", name="uq_git_provider_instance_name"),
-    )
-
-
-class GitAccountConnection(TimestampMixin, Base):
-    """A global, reusable read-only connection to one provider account."""
-
-    __tablename__ = "git_account_connections"
-
-    id: Mapped[int] = identity_pk()
-    provider_instance_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_provider_instances.id", ondelete="RESTRICT"), nullable=False
-    )
+    endpoint_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    auth_mode: Mapped[str] = mapped_column(Text, nullable=False)
     external_account_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_account_login: Mapped[str] = mapped_column(Text, nullable=False)
     account_url: Mapped[str] = mapped_column(Text, nullable=False)
@@ -78,7 +46,8 @@ class GitAccountConnection(TimestampMixin, Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
 
     __table_args__ = (
-        CheckConstraint("auth_mode IN ('github_app', 'oauth', 'access_token')", name="auth_mode"),
+        CheckConstraint("adapter_id <> ''", name="adapter_nonempty"),
+        CheckConstraint("endpoint_identity_hash ~ '^[0-9a-f]{64}$'", name="endpoint_hash_sha256"),
         CheckConstraint("state IN ('active', 'disabled', 'revoked')", name="state"),
         CheckConstraint(
             "verification_status IN ('untested', 'healthy', 'unavailable')",
@@ -93,11 +62,11 @@ class GitAccountConnection(TimestampMixin, Base):
             ],
             ondelete="RESTRICT",
             use_alter=True,
-            name="fk_git_account_connections_current_credential_revision",
+            name="fk_git_accounts_current_credential_revision",
         ),
         UniqueConstraint(
-            "provider_instance_id", "external_account_id", "auth_mode",
-            name="uq_git_account_connection_provider_external_mode",
+            "adapter_id", "endpoint_identity_hash", "external_account_id",
+            name="uq_git_account_adapter_endpoint_external",
         ),
     )
 
@@ -109,7 +78,7 @@ class GitAccountCredentialRevision(CreatedAtMixin, Base):
 
     id: Mapped[int] = identity_pk()
     account_connection_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_account_connections.id", ondelete="CASCADE"), nullable=False
+        BigInteger, ForeignKey("git_accounts.id", ondelete="CASCADE"), nullable=False
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
@@ -132,9 +101,8 @@ class GitRepository(TimestampMixin, Base):
     __tablename__ = "git_repositories"
 
     id: Mapped[int] = identity_pk()
-    provider_instance_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_provider_instances.id", ondelete="RESTRICT"), nullable=False
-    )
+    adapter_id: Mapped[str] = mapped_column(Text, nullable=False)
+    endpoint_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
     external_repository_id: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -149,8 +117,8 @@ class GitRepository(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("visibility IN ('public', 'private', 'internal')", name="visibility"),
         UniqueConstraint(
-            "provider_instance_id", "external_repository_id",
-            name="uq_git_repository_provider_external",
+            "adapter_id", "endpoint_identity_hash", "external_repository_id",
+            name="uq_git_repository_adapter_endpoint_external",
         ),
     )
 
@@ -159,7 +127,7 @@ class GitAccountRepositoryAccess(TimestampMixin, Base):
     __tablename__ = "git_account_repository_access"
 
     account_connection_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_account_connections.id", ondelete="CASCADE"), primary_key=True
+        BigInteger, ForeignKey("git_accounts.id", ondelete="CASCADE"), primary_key=True
     )
     repository_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("git_repositories.id", ondelete="CASCADE"), primary_key=True
@@ -182,7 +150,7 @@ class WorkspaceGitAccountGrant(TimestampMixin, Base):
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
     account_connection_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_account_connections.id", ondelete="RESTRICT"), nullable=False
+        BigInteger, ForeignKey("git_accounts.id", ondelete="RESTRICT"), nullable=False
     )
     repository_scope: Mapped[str] = mapped_column(Text, nullable=False, server_default="selected")
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
@@ -235,7 +203,7 @@ class GitAccountSyncJob(TimestampMixin, Base):
 
     id: Mapped[int] = identity_pk()
     account_connection_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_account_connections.id", ondelete="CASCADE"), nullable=False
+        BigInteger, ForeignKey("git_accounts.id", ondelete="CASCADE"), nullable=False
     )
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
