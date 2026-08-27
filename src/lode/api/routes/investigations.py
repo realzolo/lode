@@ -175,16 +175,15 @@ async def get_session() -> AsyncSession:
 async def list_workbench_workspaces(
     user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)
 ) -> list[dict[str, Any]]:
-    """Return only Workspaces explicitly granted to the signed-in user."""
+    """Return all Workspaces for admins, granted Workspaces for ordinary users."""
     user = await _active_user(session, user_id)
     allowed = await permitted_workspace_ids(session, user.id, user.is_system_admin)
-    if not allowed:
+    if allowed is not None and not allowed:
         return []
-    rows = (
-        await session.execute(
-            select(Workspace).where(Workspace.id.in_(allowed)).order_by(Workspace.name, Workspace.id)
-        )
-    ).scalars().all()
+    statement = select(Workspace).order_by(Workspace.name, Workspace.id)
+    if allowed is not None:
+        statement = statement.where(Workspace.id.in_(allowed))
+    rows = (await session.execute(statement)).scalars().all()
     return [
         {
             "id": row.id,

@@ -7,7 +7,7 @@ that need the full user object load it from the database themselves.
 
 Workspace authorization lives here too. ``WorkspacePermission`` rows grant an
 ordinary Workbench user ``viewer`` or ``operator`` access to one Workspace.
-The system administrator is deliberately excluded from the Workbench.
+The system administrator is unrestricted and can access both portals.
 """
 
 from __future__ import annotations
@@ -58,13 +58,11 @@ async def require_admin(user_id: int = Depends(require_user)) -> int:
 
 
 async def require_workbench_user(user_id: int = Depends(require_user)) -> int:
-    """Require an active regular user whose initial password was changed."""
+    """Require an active user whose initial password was changed."""
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
     if user is None or user.status != "active":
         raise HTTPException(status_code=401, detail="active_user_required")
-    if user.is_system_admin:
-        raise HTTPException(status_code=403, detail="workbench_access_forbidden")
     if user.must_change_password:
         raise HTTPException(status_code=403, detail="password_change_required")
     return user_id

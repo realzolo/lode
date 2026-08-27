@@ -165,7 +165,10 @@ _workbench_routes = [Depends(require_workbench_user)]
 app.include_router(control_plane_router, dependencies=_admin_routes)
 app.include_router(users_router, dependencies=_admin_routes)
 app.include_router(investigations_router, dependencies=_workbench_routes)
-app.include_router(workbench_router, dependencies=_workbench_routes)
+# Workspace discovery applies its own admin/all-workspaces vs ordinary-user/
+# granted-workspaces filtering. The shared Workbench dependency permits the
+# unrestricted system administrator as well as ordinary Workbench users.
+app.include_router(workbench_router)
 app.include_router(resources_router, dependencies=_workbench_routes)
 
 

@@ -68,7 +68,7 @@ The sole system administrator manages encrypted AI provider credentials,
 Workspace configuration, users, and Workspace grants. Ordinary users enter
 only the Workbench and receive either `viewer` (read-only) or `operator`
 (manual investigation and retry) permission per Workspace. The administrator
-does not have Workbench or investigation access. Routing chooses a model
+has unrestricted Workbench and investigation access. Routing chooses a model
 per role and execution class, applies per-binding token/call/cost limits, and
 records every selection, context bundle, invocation, usage result, and failure.
 Provider switches never carry hidden reasoning state.

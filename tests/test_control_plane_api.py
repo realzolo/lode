@@ -76,6 +76,15 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
         assert workspace.status_code == 201
         workspace_id = workspace.json()["id"]
 
+        admin_workspaces = await client.get("/workbench/workspaces", headers=admin_headers)
+        assert admin_workspaces.status_code == 200
+        assert workspace_id in {item["id"] for item in admin_workspaces.json()}
+
+        admin_components = await client.get(
+            f"/workspaces/{workspace_id}/components", headers=admin_headers
+        )
+        assert admin_components.status_code == 200
+
         hidden = await client.get("/workbench/workspaces", headers=reader_headers)
         assert hidden.status_code == 200
         assert workspace_id not in {item["id"] for item in hidden.json()}

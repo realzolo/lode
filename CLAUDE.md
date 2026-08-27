@@ -867,7 +867,10 @@ creates exactly one system administrator, `admin`, with password `123456` and
 requires an immediate password change. This account is database-protected from
 deletion, disablement, renaming, or demotion. Every other account is an ordinary
 Workbench-only user: it cannot enter `/admin` or call management APIs. The
-administrator cannot enter `/workbench` or call investigation/resource APIs.
+administrator has unrestricted access to both the control-plane and Workbench
+APIs, including all Workspace resources and investigations. Ordinary users
+only see Workspaces explicitly granted to them and remain limited by their
+`viewer` or `operator` permission.
 Regular accounts are created directly with a one-time initial password, retain
 their Workspace grants when disabled, and regain them only after re-enablement.
 `invites`, email login, global role assignment, and Workspace `admin`/`analyze`
