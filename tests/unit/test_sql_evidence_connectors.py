@@ -68,7 +68,6 @@ def config() -> dict[str, Any]:
         "port": 5432,
         "database": "analytics",
         "username": "lode_reader",
-        "allowed_ip_cidrs": ["10.0.0.0/8"],
         "ca_certificate_pem": "test-ca",
     }
 
@@ -238,12 +237,6 @@ async def test_sql_explain_mode_never_fetches_rows() -> None:
 
 
 def test_sql_connector_config_and_permit_are_strict() -> None:
-    with pytest.raises(ValueError):
-        PostgreSQLConnector(
-            {**config(), "host": "127.0.0.1"},
-            {"password": "secret"},
-            FakeSQLBackend(attestation=postgres_attestation()),
-        )
     with pytest.raises(ValueError):
         MySQLConnector(
             {**config(), "allowed_ip_cidrs": ["10.0.0.1/8"]},

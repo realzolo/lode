@@ -4,7 +4,7 @@ On startup the database migrations are executed automatically (Alembic), so a
 fresh deployment is always schema-current before it starts serving traffic.
 
 Production hardening in this module:
-  * CORS origins come from ``LODE_CORS_ORIGINS`` (not hard-coded).
+  * CORS accepts browser requests from any origin.
   * A request-id is assigned to every request and echoed back in the response.
   * All errors return a consistent JSON envelope ``{"error": {"code", "message"}}``.
   * Every business router requires a valid bearer token (``require_user``);
@@ -34,8 +34,8 @@ from lode.api.routes.investigations import router as investigations_router
 from lode.api.routes.invites import router as invites_router
 from lode.api.routes.resources import router as resources_router
 from lode.api.routes.users import router as users_router
-from lode.config import settings
 from lode.migrations import run_migrations
+from lode.runtime_defaults import API_RATE_LIMIT_PER_MINUTE
 
 # Note: ``_correlation_id`` lives in ``lode.api.audit`` so audit records and the
 # logger share one source of truth. Re-exported here for the request middleware.
@@ -80,8 +80,7 @@ app = FastAPI(
 # outermost and stamps CORS headers on rate-limited responses.
 app.add_middleware(
     HardeningMiddleware,
-    limiter=RateLimiter(settings.rate_limit_per_minute),
-    enabled=settings.rate_limit_enabled,
+    limiter=RateLimiter(API_RATE_LIMIT_PER_MINUTE),
 )
 
 
@@ -175,11 +174,10 @@ async def root() -> dict[str, str]:
 
 # CORS is registered last so it stays the outermost middleware: it stamps
 # CORS headers on every response, including rate-limited (429) ones.
-_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

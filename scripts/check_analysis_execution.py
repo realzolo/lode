@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from lode.application.intake import ManualIncidentRequest, normalize_manual
+from lode.application.investigation_policy import investigation_policy_columns
 from lode.crypto import encrypt_secret
 from lode.db.models import (
     AIInvocation,
@@ -21,6 +22,7 @@ from lode.db.models import (
     EvidenceArtifact,
     GitRepository,
     InvestigationModelBindingSnapshot,
+    InvestigationPolicyRevision,
     InvestigationRepositorySnapshot,
     ModelDeployment,
     ModelPolicyRevision,
@@ -176,6 +178,16 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
         )
         session.add_all([user, workspace])
         await session.flush()
+        investigation_policy = InvestigationPolicyRevision(
+            workspace_id=workspace.id,
+            profile="balanced",
+            **investigation_policy_columns("balanced"),
+            revision=1,
+            created_by=user.id,
+        )
+        session.add(investigation_policy)
+        await session.flush()
+        workspace.investigation_policy_revision_id = investigation_policy.id
         latency_provider = await _provider(session, suffix, "latency-provider")
         reasoning_provider = await _provider(session, suffix, "reasoning-provider")
         verifier_provider = await _provider(session, suffix, "verifier-provider")
@@ -233,7 +245,6 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
                 "synthesizer": {"binding_id": reasoning.id},
                 "verifier": {"binding_id": verifier.id},
             },
-            budget_policy={"max_calls": 20, "max_cost": 20},
             context_policy_revision_id=context.id,
             verifier_policy={
                 "separate_deployment": True,

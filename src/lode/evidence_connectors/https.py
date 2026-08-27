@@ -15,7 +15,6 @@ from lode.evidence_connectors.safety import sanitize_evidence
 from lode.evidence_connectors.transport import (
     BoundedHTTPTransport,
     validate_base_url,
-    validate_ip_cidrs,
 )
 from lode.evidence_connectors.types import (
     IntrospectionBudget,
@@ -32,7 +31,6 @@ class HTTPSConnectorConfig(BaseModel):
 
     base_url: str = Field(max_length=1_000)
     verification_path: str = Field(pattern=r"^/[A-Za-z0-9._~/-]*$", max_length=1_000)
-    allowed_ip_cidrs: list[str] = Field(min_length=1, max_length=20)
     max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1, le=2 * 1024 * 1024)
     max_decompression_ratio: int = Field(default=20, ge=1, le=100)
 
@@ -40,11 +38,6 @@ class HTTPSConnectorConfig(BaseModel):
     @classmethod
     def base_url_is_origin(cls, value: str) -> str:
         return validate_base_url(value)[0]
-
-    @field_validator("allowed_ip_cidrs")
-    @classmethod
-    def cidrs_are_networks(cls, value: list[str]) -> list[str]:
-        return validate_ip_cidrs(value)
 
 
 class HTTPSConnector:
@@ -63,7 +56,6 @@ class HTTPSConnector:
         headers = provider_headers(self.secrets)
         self.transport = transport or BoundedHTTPTransport(
             base_url=self.config.base_url,
-            allowed_ip_cidrs=self.config.allowed_ip_cidrs,
             headers=headers,
             max_response_bytes=self.config.max_response_bytes,
             max_decompression_ratio=self.config.max_decompression_ratio,
@@ -100,12 +92,13 @@ class HTTPSConnector:
                 raise ProviderExecutionError(
                     "invalid_response", "HTTPS endpoint entry is invalid"
                 ) from exc
-            endpoint_origin = f"https://{endpoint.get('host')}"
+            hostname = str(endpoint.get("host"))
+            endpoint_origin = f"https://[{hostname}]" if ":" in hostname else f"https://{hostname}"
             if endpoint.get("port", 443) != 443:
                 endpoint_origin += f":{endpoint.get('port')}"
             if endpoint_origin != origin:
                 raise ProviderExecutionError(
-                    "egress_violation", "HTTPS endpoint exceeds connector origin"
+                    "scope_violation", "HTTPS endpoint exceeds connector origin"
                 )
         return NativeSchemaCatalog(self.kind, "https/1.1", {"safe_read_endpoints": endpoints})
 
@@ -116,7 +109,7 @@ class HTTPSConnector:
     async def execute(self, permit: ExecutionPermit) -> Mapping[str, Any]:
         action = self._action(permit)
         if action["origin"] != self.config.base_url:
-            raise ProviderExecutionError("egress_violation", "HTTPS permit origin changed")
+            raise ProviderExecutionError("invalid_response", "HTTPS permit origin changed")
         response = await self.transport.request(
             action["method"],
             action["path"],

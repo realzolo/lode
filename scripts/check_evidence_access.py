@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from lode.application.intake import ManualIncidentRequest, normalize_manual
+from lode.application.investigation_policy import investigation_policy_columns
 from lode.crypto import decrypt_value, encrypt_value
 from lode.db.models import (
     AIInvocation,
@@ -24,6 +25,7 @@ from lode.db.models import (
     EvidenceConnector,
     EvidenceReadAttempt,
     Investigation,
+    InvestigationPolicyRevision,
     InvestigationConnectorSnapshot,
     InvestigationDecision,
     InvestigationModelBindingSnapshot,
@@ -42,7 +44,6 @@ from lode.db.session import AsyncSessionLocal, engine
 from lode.domain.investigation import PlannedOperation
 from lode.evidence_access.authorizer import EvidenceAccessAuthorizer
 from lode.evidence_access.candidate import NativeReadCandidateInput
-from lode.evidence_access.kill_switch import EvidenceKillSwitch
 from lode.evidence_access.mock import MockEvidenceAdapter
 from lode.evidence_access.orchestrator import EvidenceReadOrchestrator, ExecutionPermit
 from lode.evidence_access.tokens import AuthorizationTokenError, verify_token
@@ -171,6 +172,16 @@ async def _create_fixture(session):
     )
     session.add_all([user, workspace])
     await session.flush()
+    investigation_policy = InvestigationPolicyRevision(
+        workspace_id=workspace.id,
+        profile="balanced",
+        **investigation_policy_columns("balanced"),
+        revision=1,
+        created_by=user.id,
+    )
+    session.add(investigation_policy)
+    await session.flush()
+    workspace.investigation_policy_revision_id = investigation_policy.id
     request = ManualIncidentRequest.model_validate(
         {
             "workspace_id": workspace.id,
@@ -244,7 +255,6 @@ async def _create_fixture(session):
         workspace_id=workspace.id,
         eligible_bindings=[{"binding_id": binding.id, "revision": binding.revision}],
         role_policies={"native_query": {"binding_id": binding.id}},
-        budget_policy={"max_calls": 10},
         context_policy_revision_id=context_policy.id,
         revision=1,
     )
@@ -673,15 +683,15 @@ async def main() -> None:
         )
         assert unsupported.rejection_code == "unsupported_node"
 
-        killed = await EvidenceAccessAuthorizer(
-            session,
-            registry,
-            EvidenceKillSwitch(disabled_connectors={connector.id}),
-        ).authorize(
+        connector.state = "disabled"
+        await session.flush()
+        disabled = await EvidenceAccessAuthorizer(session, registry).authorize(
             _candidate(action_id=operations[2].action_id, connector_id=connector.id),
             _context(workspace, investigation, connector, snapshot, operations[2], invocations[2]),
         )
-        assert killed.rejection_code == "scope_violation"
+        assert disabled.rejection_code == "scope_violation"
+        connector.state = "active"
+        await session.flush()
 
         duplicate = await EvidenceAccessAuthorizer(session, registry).authorize(
             _candidate(action_id=operations[3].action_id, connector_id=connector.id),
@@ -826,7 +836,7 @@ async def main() -> None:
                     "durable_bridge_archived": len(bridge_result.evidence_refs) == 1,
                     "concurrent_adapter_calls": len(calls),
                     "duplicate_fingerprint": duplicate.rejection_code,
-                    "kill_switch": killed.rejection_code,
+                    "connector_lifecycle": disabled.rejection_code,
                     "replay_rejected": any(
                         isinstance(item, AuthorizationTokenError) for item in outcomes
                     ),

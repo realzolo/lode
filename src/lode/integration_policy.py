@@ -1,4 +1,4 @@
-"""Extensible integration-kind contracts and network policy.
+"""Extensible integration-kind contracts.
 
 Kinds are registered in code rather than constrained by the database. Each
 registration owns validation, capabilities, secret fields, and form metadata.
@@ -9,19 +9,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from ipaddress import ip_address
 from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from lode.config import settings
-
-_HOSTNAME = re.compile(
-    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
-    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
-)
 _RELATION = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -204,32 +197,18 @@ def _bootstrap_host(value: str) -> str:
     return host
 
 
-def _is_dns_name(host: str) -> bool:
-    try:
-        ip_address(host)
-        return False
-    except ValueError:
-        return bool(_HOSTNAME.fullmatch(host))
-
-
 def normalize_integration_config(kind: str, value: dict[str, Any]) -> dict[str, Any]:
     _reject_env_reference(value)
     definition = integration_kind(kind)
     data = definition.config_model.model_validate(value).model_dump(mode="json")
-    if "host" in data:
-        hosts = [data["host"]]
-    elif "bootstrap_servers" in data:
-        hosts = [_bootstrap_host(item) for item in data["bootstrap_servers"]]
-    else:
+    if "bootstrap_servers" in data:
+        for item in data["bootstrap_servers"]:
+            _bootstrap_host(item)
+    elif "base_url" in data:
         parsed = urlsplit(data["base_url"])
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise IntegrationPolicyError("HTTP integration endpoints must be credential-free HTTPS URLs")
-        hosts = [parsed.hostname]
         data["base_url"] = data["base_url"].rstrip("/")
-    if any(not _is_dns_name(host) for host in hosts):
-        raise IntegrationPolicyError(
-            "integration endpoints must be DNS hostnames, not URLs or IP literals"
-        )
     return data
 
 
@@ -247,29 +226,3 @@ def normalize_integration_secrets(kind: str, value: dict[str, Any]) -> dict[str,
     if any(not item or len(item) > 8_000 for item in normalized.values()):
         raise IntegrationPolicyError("integration secrets must be non-empty and at most 8000 characters")
     return normalized
-
-
-def assert_egress_allowed(config: dict[str, Any]) -> None:
-    configured = [
-        entry.strip().lower()
-        for entry in settings.integration_egress_allowlist.split(",")
-        if entry.strip()
-    ]
-    if not configured:
-        raise IntegrationPolicyError("no integration egress allowlist is configured")
-    if "host" in config:
-        hosts = [config["host"]]
-    elif "bootstrap_servers" in config:
-        hosts = [_bootstrap_host(item) for item in config["bootstrap_servers"]]
-    else:
-        hostname = urlsplit(config["base_url"]).hostname
-        hosts = [hostname] if hostname else []
-    for host in hosts:
-        lowered = host.lower()
-        if not any(
-            lowered == rule or (rule.startswith("*.") and lowered.endswith(rule[1:]))
-            for rule in configured
-        ):
-            raise IntegrationPolicyError(
-                f"endpoint '{host}' is not in the integration egress allowlist"
-            )

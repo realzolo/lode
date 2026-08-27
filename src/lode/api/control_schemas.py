@@ -152,6 +152,7 @@ class WorkspaceOut(_ORMOutput):
     name: str
     ingestion_topic: str
     model_policy_revision_id: int | None
+    investigation_policy_revision_id: int | None
     ingestion_state: str
     ingestion_version: int
     ingestion_start_position: str | None
@@ -229,7 +230,6 @@ class ModelBindingOut(_ORMOutput):
 class ModelPolicyInput(_StrictInput):
     eligible_binding_ids: tuple[int, ...] = Field(min_length=1)
     role_policies: dict[str, Any]
-    budget_policy: dict[str, Any]
     verifier_policy: dict[str, Any] = Field(default_factory=dict)
     pinned_evidence_kinds: tuple[str, ...] = Field(min_length=1)
     compression_levels: tuple[str, ...] = Field(min_length=1)
@@ -253,11 +253,42 @@ class ModelPolicyOut(_ORMOutput):
     workspace_id: int
     eligible_bindings: list[dict[str, int]]
     role_policies: dict[str, Any]
-    budget_policy: dict[str, Any]
     context_policy_revision_id: int
     verifier_policy: dict[str, Any]
     revision: int
     created_at: datetime
+
+
+class InvestigationPolicyPut(_StrictInput):
+    profile: Literal["fast", "balanced", "deep"]
+
+
+class InvestigationPolicyOut(_ORMOutput):
+    id: int
+    workspace_id: int
+    profile: Literal["fast", "balanced", "deep"]
+    max_evidence_steps: int
+    max_model_calls: int
+    max_native_reads: int
+    max_output_bytes: int
+    max_cost: float
+    timeout_seconds: int
+    window_before_seconds: int
+    window_after_seconds: int
+    revision: int
+    created_at: datetime
+
+
+class PlatformSettingsUpdate(_StrictInput):
+    ai_output_language: Literal["en", "zh"]
+    expected_revision: int = Field(gt=0)
+
+
+class PlatformSettingsOut(_ORMOutput):
+    ai_output_language: Literal["en", "zh"]
+    revision: int
+    updated_at: datetime
+    supported_languages: list[Literal["en", "zh"]]
 
 
 class RepositoryBind(_StrictInput):

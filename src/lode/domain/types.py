@@ -111,7 +111,6 @@ class AccessRejectionCode(StrEnum):
     WRITE_SEMANTICS = "write_semantics"
     SCOPE_VIOLATION = "scope_violation"
     BUDGET_VIOLATION = "budget_violation"
-    EGRESS_VIOLATION = "egress_violation"
     SANDBOX_VIOLATION = "sandbox_violation"
     PREFLIGHT_FAILED = "preflight_failed"
 

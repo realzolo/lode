@@ -10,12 +10,15 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from lode.api.main import app
+from lode.config import settings
+from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.models import (
     Investigation,
     InvestigationDecision,
     InvestigationOperation,
     InvestigationOperationEvent,
     InvestigationStep,
+    InvestigationPolicyRevision,
     User,
     Workspace,
     WorkspacePermission,
@@ -42,6 +45,16 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         )
         session.add_all([user, workspace])
         await session.flush()
+        policy = InvestigationPolicyRevision(
+            workspace_id=workspace.id,
+            profile="balanced",
+            **investigation_policy_columns("balanced"),
+            revision=1,
+            created_by=user.id,
+        )
+        session.add(policy)
+        await session.flush()
+        workspace.investigation_policy_revision_id = policy.id
         session.add(
             WorkspacePermission(
                 user_id=user.id,
@@ -52,6 +65,7 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         investigation = Investigation(
             public_id=str(uuid.uuid4()),
             workspace_id=workspace.id,
+            investigation_policy_revision_id=policy.id,
             trigger_signature_hash="a" * 64,
             status="running",
             result_state="pending",
@@ -133,7 +147,7 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         public_id = investigation.public_id
         user_id = user.id
 
-    token = create_token(user_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3600)
+    token = create_token(user_id, settings.jwt_signing_key, 3600)
     headers = {"Authorization": f"Bearer {token}"}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         replay = await client.get(f"/investigations/{public_id}/events", headers=headers)

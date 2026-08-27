@@ -21,6 +21,13 @@ from lode.db.models import DeadLetter, IngestionEvent, Workspace
 from lode.db.session import AsyncSessionLocal
 from lode.infrastructure.intake_store import IntakeResult, PostgresIntakeStore
 from lode.metrics import ACTIVE_WORKSPACES, CONSUMER_HEARTBEAT
+from lode.runtime_defaults import (
+    KAFKA_BATCH_MAX_RECORDS,
+    KAFKA_CONSUMER_GROUP_ID,
+    KAFKA_DEAD_LETTER_TOPIC,
+    KAFKA_SUBSCRIPTION_REFRESH_SECONDS,
+    KAFKA_UNASSIGNED_TOPIC,
+)
 
 logger = logging.getLogger("lode.consumer")
 
@@ -205,9 +212,9 @@ class KafkaIntakeHandler:
             "payload_masked": masked,
         }
         target = (
-            settings.kafka_dlq_topic
+            KAFKA_DEAD_LETTER_TOPIC
             if result.outcome == "dead_letter"
-            else settings.kafka_unassigned_topic
+            else KAFKA_UNASSIGNED_TOPIC
         )
         try:
             await self._publisher.send_and_wait(
@@ -264,7 +271,7 @@ async def main() -> None:
     security = kafka_security_kwargs()
     consumer = AIOKafkaConsumer(
         bootstrap_servers=settings.kafka_bootstrap_servers,
-        group_id=settings.kafka_group_id,
+        group_id=KAFKA_CONSUMER_GROUP_ID,
         enable_auto_commit=False,
         auto_offset_reset="earliest",
         **security,
@@ -287,12 +294,12 @@ async def main() -> None:
                 subscribed = topics
                 logger.info("subscribed to %d active Workspace topics", len(topics))
             if not topics:
-                await asyncio.sleep(settings.kafka_subscription_refresh_seconds)
+                await asyncio.sleep(KAFKA_SUBSCRIPTION_REFRESH_SECONDS)
                 continue
 
             batches = await consumer.getmany(
                 timeout_ms=1000,
-                max_records=settings.kafka_batch_max_records,
+                max_records=KAFKA_BATCH_MAX_RECORDS,
             )
             for topic_partition, records in batches.items():
                 for record in records:

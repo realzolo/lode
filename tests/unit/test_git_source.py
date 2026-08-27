@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ipaddress
 import subprocess
 from pathlib import Path
 
@@ -10,7 +9,6 @@ from lode.config import settings
 from lode.infrastructure.git_source import (
     GitRemoteRevisionResolver,
     GitSourceReader,
-    _git_egress_policy,
 )
 
 
@@ -97,50 +95,3 @@ async def test_git_source_rejects_unapproved_remote_schemes() -> None:
             branch="main",
             credential=None,
         )
-
-
-@pytest.mark.asyncio
-async def test_remote_git_requires_explicit_egress_scope(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "git_egress_allowlist", "")
-    monkeypatch.setattr(settings, "git_allowed_ip_cidrs", "")
-
-    with pytest.raises(ValueError, match="egress"):
-        await _git_egress_policy("https://git.example/repository.git")
-
-
-@pytest.mark.asyncio
-async def test_https_git_resolution_is_pinned_and_redirects_are_disabled(monkeypatch) -> None:
-    async def resolve(hostname, port, networks):
-        assert hostname == "git.example"
-        assert port == 443
-        assert ipaddress.ip_address("203.0.113.7") in networks[0]
-        return (ipaddress.ip_address("203.0.113.7"),)
-
-    monkeypatch.setattr(settings, "git_egress_allowlist", "git.example")
-    monkeypatch.setattr(settings, "git_allowed_ip_cidrs", "203.0.113.0/24")
-    monkeypatch.setattr("lode.infrastructure.git_source.resolve_checked_addresses", resolve)
-
-    policy = await _git_egress_policy("https://git.example/repository.git")
-
-    assert policy.git_options == (
-        "-c",
-        "http.followRedirects=false",
-        "-c",
-        "http.curloptResolve=git.example:443:203.0.113.7",
-    )
-
-
-@pytest.mark.asyncio
-async def test_ssh_git_resolution_is_pinned_with_original_host_key(monkeypatch) -> None:
-    async def resolve(_hostname, _port, _networks):
-        return (ipaddress.ip_address("203.0.113.8"),)
-
-    monkeypatch.setattr(settings, "git_egress_allowlist", "git.example")
-    monkeypatch.setattr(settings, "git_allowed_ip_cidrs", "203.0.113.0/24")
-    monkeypatch.setattr("lode.infrastructure.git_source.resolve_checked_addresses", resolve)
-
-    policy = await _git_egress_policy("git@git.example:repository.git")
-
-    assert policy.environment({})["GIT_SSH_COMMAND"] == (
-        "ssh -o Hostname=203.0.113.8 -o HostKeyAlias=git.example"
-    )

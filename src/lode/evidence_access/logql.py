@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from lode.application.intake import canonical_hash
-from lode.config import settings
 from lode.evidence_access.budget import intersect_budget
 from lode.evidence_access.candidate import NativeReadCandidateInput, QueryPayload
 from lode.evidence_access.types import (
@@ -23,6 +22,7 @@ from lode.evidence_access.types import (
     ParsedNativeAction,
     PolicyEvaluation,
 )
+from lode.runtime_defaults import LOGQL_PARSER_NODE, LOGQL_PARSER_TIMEOUT_SECONDS
 
 _PARSER_VERSION = "@grafana/lezer-logql@0.4.1"
 _BASE_NODES = {
@@ -140,22 +140,16 @@ class LogQLSyntax:
 
 class LogQLParser:
     def parse(self, query: str) -> LogQLSyntax:
-        script = (
-            Path(settings.logql_parser_script)
-            if settings.logql_parser_script
-            else _default_script()
-        )
+        script = _default_script()
         if not script.is_file():
             raise AccessRejection("unsupported_node", "LogQL parser helper is unavailable")
-        if settings.logql_parser_timeout_seconds <= 0:
-            raise AccessRejection("unsupported_node", "LogQL parser timeout is invalid")
         try:
             process = subprocess.run(
-                [settings.logql_parser_node, str(script)],
+                [LOGQL_PARSER_NODE, str(script)],
                 input=json.dumps({"query": query}, ensure_ascii=False).encode(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                timeout=settings.logql_parser_timeout_seconds,
+                timeout=LOGQL_PARSER_TIMEOUT_SECONDS,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:

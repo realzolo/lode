@@ -26,16 +26,7 @@ def _key() -> str:
     return value
 
 
-def _require_enabled() -> None:
-    value = os.environ.get("LODE_COMMAND_RUNNER_ENABLED", "true").lower()
-    if value not in {"true", "false"}:
-        raise RuntimeError("LODE_COMMAND_RUNNER_ENABLED must be true or false")
-    if value == "false":
-        raise HTTPException(status_code=503, detail="runner is disabled")
-
-
 def _authenticate(envelope: SignedRunnerRequest) -> None:
-    _require_enabled()
     try:
         verify_request(envelope, _key())
     except (PermissionError, ValueError) as exc:
@@ -52,14 +43,12 @@ def _authenticate(envelope: SignedRunnerRequest) -> None:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    _require_enabled()
     _key()
     return {"status": "ok"}
 
 
 @app.get("/catalog")
 async def catalog(x_runner_signature: str = Header(default="")) -> dict[str, object]:
-    _require_enabled()
     expected = hmac.new(_key().encode(), b"catalog", hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, x_runner_signature):
         raise HTTPException(status_code=403, detail="runner request rejected")

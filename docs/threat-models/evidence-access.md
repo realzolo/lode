@@ -45,10 +45,10 @@ regeneration.
 | Language | Primary threats | Required proof | Infrastructure backstop |
 |---|---|---|---|
 | LogQL | selector escape, parser differential, unbounded range, costly regexp/cardinality, rule or delete endpoints | Full maintained AST, root selector subset, bounded absolute time, allowed pipeline/aggregation nodes | Query-only token, endpoint allowlist, provider limits |
-| Elasticsearch DSL | index escape, script/runtime fields, async/scroll persistence, aggregation explosion, management API | JSON duplicate-key rejection, recursive node allowlist, exact `_search` path, forced range/size/source/bucket limits | Read-only role restricted to frozen indices, egress allowlist |
-| OpenSearch DSL | Elasticsearch policy reuse despite version/plugin differences, scripts, PPL/SQL, management API | Independent versioned parser/policy and contract corpus, exact `_search` path | Read-only role, plugins disabled, egress allowlist |
+| Elasticsearch DSL | index escape, script/runtime fields, async/scroll persistence, aggregation explosion, management API | JSON duplicate-key rejection, recursive node allowlist, exact `_search` path, forced range/size/source/bucket limits | Read-only role restricted to frozen indices |
+| OpenSearch DSL | Elasticsearch policy reuse despite version/plugin differences, scripts, PPL/SQL, management API | Independent versioned parser/policy and contract corpus, exact `_search` path | Read-only role, plugins disabled |
 | SQL | multi-statement, writable CTE, locking reads, file/network/UDF side effects, system catalogs, cost exhaustion | Fixed dialect AST, every node read-only, catalog allowlist, enforced limit/timeouts, optional non-executing explain | Attested replica/snapshot, read-only role and transaction, resource group |
-| HTTPS | SSRF, DNS rebinding, ambiguous normalization, redirects, credential override, nominal GET with side effects | Canonical HTTPS URL, safe-read endpoint catalog, host/port/path/schema and response checks | Network policy, IP policy, zero redirects, adapter-injected identity |
+| HTTPS | Ambiguous normalization, redirects, credential override, nominal GET with side effects | Canonical HTTPS URL, safe-read endpoint catalog, host/port/path/schema and response checks | Zero redirects, adapter-injected identity |
 | Command | shell injection, interpreter escape, path/symlink escape, writable mount, inherited environment/network, binary replacement | Structured executable/argv/working-set, exact flag grammar, fixed binary path and hash | Separate uid/image, read-only mounts/root, empty environment, no network, syscall/resource limits |
 
 The SQL policy uses the fixed SQLGlot parser for PostgreSQL and MySQL and
@@ -67,8 +67,10 @@ separate uid, dropped capabilities, no-new-privileges and resource limits. API
 and consumer receive neither its key nor its network. A runner-specific seccomp
 profile permits namespace construction but rejects BPF, ptrace, keyring,
 cross-process memory, kernel-module, host-control and performance-monitoring
-syscalls. An independent process
-kill switch returns 503 before preflight or execution. Private-key and cloud
+syscalls. The runner has no product-level enable switch. A new execution is
+allowed only when its frozen Connector remains active at authorization time;
+disabled Connectors reject future reads while preserving immutable audit.
+Private-key and cloud
 access-key output is discarded; only SHA-256, category and rejection metadata
 cross the runner boundary. Unprivileged user namespaces are a deployment
 prerequisite. A host that disables them produces `sandbox_violation`; the
@@ -85,13 +87,14 @@ runner never falls back to unsandboxed execution.
   unbounded queries are never accepted from a candidate.
 - Decompressed responses are bounded while streaming and scanned for secrets
   and prompt injection before storage or model use.
-- Kill switches exist per Workspace, connector, language, and runner. They block
-  new authorization and cancel work that has not begun without deleting audit.
+- All registered native languages and execution adapters are available to the
+  planner. The planner decides whether they are relevant; Connector lifecycle
+  and health checks block new authorization without deleting audit.
 
 ## Stable Rejection Classes
 
 `invalid_syntax`, `unsupported_node`, `write_semantics`, `scope_violation`,
-`budget_violation`, `egress_violation`, `sandbox_violation`, and
+`budget_violation`, `sandbox_violation`, and
 `preflight_failed` are the complete V1 policy rejection classes. Provider,
 transport, timeout, and result failures are recorded separately as execution
 failures and never relabeled as policy decisions.
@@ -114,7 +117,8 @@ failures and never relabeled as policy decisions.
       reasons are immutable and replayable.
 - [ ] Positive, negative, parser-differential, scope, budget, and bypass tests
       cover the exact parser/policy/adapter versions.
-- [ ] Kill switch and in-flight behavior have been exercised.
+- [ ] Connector disable/reenable and in-flight authorization behavior have been
+      exercised.
 
 No native language or connector may become active until every applicable item
 is supported by code, contract tests, and deployment policy.

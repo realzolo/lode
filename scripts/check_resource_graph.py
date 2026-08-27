@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy import func, select
 
 from lode.application.intake import ManualIncidentRequest, normalize_manual
+from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.models import (
     BuildUnit,
     Component,
@@ -17,6 +18,7 @@ from lode.db.models import (
     EvidenceAccessScope,
     GitRepository,
     InvestigationResourceGraphSnapshot,
+    InvestigationPolicyRevision,
     ResourceGraphRevision,
     ResourceGraphRevisionMember,
     IdentityResolution,
@@ -44,6 +46,15 @@ async def _workspace(session) -> Workspace:
         workspace = Workspace(name="Resource graph check", ingestion_topic="resource-graph-check")
         session.add(workspace)
         await session.flush()
+        policy = InvestigationPolicyRevision(
+            workspace_id=workspace.id,
+            profile="balanced",
+            **investigation_policy_columns("balanced"),
+            revision=1,
+        )
+        session.add(policy)
+        await session.flush()
+        workspace.investigation_policy_revision_id = policy.id
     return workspace
 
 
@@ -250,7 +261,7 @@ async def main() -> None:
 
         from lode.api.main import app
 
-        token = create_token(user.id, settings.secret_key)
+        token = create_token(user.id, settings.jwt_signing_key)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://resource.test"
         ) as client:

@@ -1,4 +1,4 @@
-"""Explicit production registry for every enabled native evidence boundary."""
+"""Explicit production registry for every native evidence boundary."""
 
 from __future__ import annotations
 

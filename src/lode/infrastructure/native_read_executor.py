@@ -21,7 +21,6 @@ from lode.db.models import (
 from lode.domain.investigation import OperationResult, PlannedOperation
 from lode.evidence_access.authorizer import EvidenceAccessAuthorizer
 from lode.evidence_access.candidate import NativeReadCandidateInput
-from lode.evidence_access.kill_switch import EvidenceKillSwitch, configured_kill_switch
 from lode.evidence_access.orchestrator import (
     EvidenceExecutionAdapter,
     EvidenceReadOrchestrator,
@@ -44,12 +43,10 @@ class NativeReadOperationExecutor:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         resolver: ConnectorAdapterResolver,
-        kill_switch: EvidenceKillSwitch | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.resolver = resolver
         self.registry = build_native_policy_registry()
-        self.kill_switch = kill_switch or configured_kill_switch()
 
     async def execute(self, operation_id: int, operation: PlannedOperation) -> OperationResult:
         if operation.native_candidate is None:
@@ -118,9 +115,7 @@ class NativeReadOperationExecutor:
                 native_reads_used=used,
                 archived_bytes_used=archived_bytes,
             )
-            authorized = await EvidenceAccessAuthorizer(
-                session, self.registry, self.kill_switch
-            ).authorize(candidate, context)
+            authorized = await EvidenceAccessAuthorizer(session, self.registry).authorize(candidate, context)
             if authorized.outcome != "allow" or authorized.token is None:
                 return OperationResult(
                     "rejected",

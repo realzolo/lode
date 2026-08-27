@@ -22,7 +22,7 @@ WORKDIR /app
 # Build tooling for any wheels that need compilation (asyncpg/aiokafka ship
 # wheels for common platforms, but keep this for safety on exotic arches).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential curl \
+    && apt-get install -y --no-install-recommends build-essential curl git \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy project sources, then install. Copying pyproject + src together keeps the
@@ -32,6 +32,8 @@ COPY src ./src
 COPY scripts ./scripts
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
+COPY contracts ./contracts
+COPY evals ./evals
 COPY --from=logql-parser /usr/local/bin/node /usr/local/bin/node
 COPY --from=logql-parser /parser ./tools/logql_parser
 

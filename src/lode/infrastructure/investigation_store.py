@@ -15,7 +15,6 @@ from lode.application.investigation import (
     PreparedOperation,
     PreparedWave,
 )
-from lode.config import settings
 from lode.db.models import (
     EvidenceArtifact,
     EvidenceAssertion,
@@ -47,6 +46,7 @@ from lode.metrics import (
     OPERATION_DURATION,
     OPERATION_FAILURES,
 )
+from lode.runtime_defaults import SOURCE_GIT_TIMEOUT_SECONDS, SOURCE_MAX_BYTES, SOURCE_MAX_FILES
 
 
 class PostgresInvestigationStore:
@@ -90,9 +90,9 @@ class PostgresInvestigationStore:
                 },
                 resource_key=f"repository:{snapshot.repository_id}",
                 server_cost=0.0,
-                timeout_ms=settings.evidence_git_clone_timeout_seconds * 1_000,
-                result_limit=settings.evidence_git_max_files,
-                output_bytes=settings.evidence_git_max_bytes,
+                timeout_ms=int(SOURCE_GIT_TIMEOUT_SECONDS * 1_000),
+                result_limit=SOURCE_MAX_FILES,
+                output_bytes=SOURCE_MAX_BYTES,
                 data_class="source_code",
                 max_parallelism=1,
             )
@@ -210,6 +210,7 @@ class PostgresInvestigationStore:
                     "evidence_refs": list(evidence_refs),
                     "budget_usage": usage,
                 },
+                max_waves=max_steps,
             )
 
     async def prepare_wave(

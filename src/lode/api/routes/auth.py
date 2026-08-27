@@ -15,6 +15,7 @@ from lode.api.schemas import (
     UserOut,
 )
 from lode.config import settings
+from lode.runtime_defaults import AUTH_TOKEN_TTL_SECONDS
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
 from lode.security import create_token, hash_password, verify_password
@@ -52,7 +53,7 @@ async def login(payload: AuthLoginIn, session: AsyncSession = Depends(get_sessio
         )
         raise HTTPException(status_code=401, detail="invalid credentials")
 
-    token = create_token(user.id, settings.secret_key, settings.jwt_ttl_seconds)
+    token = create_token(user.id, settings.jwt_signing_key, AUTH_TOKEN_TTL_SECONDS)
     await audit_action(
         action="auth.login",
         actor_id=user.id,

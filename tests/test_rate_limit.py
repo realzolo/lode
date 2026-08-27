@@ -84,7 +84,7 @@ def test_default_key_func_no_header_uses_ip():
     assert default_key_func(Request(scope)) == "ip:9.9.9.9"
 
 
-def _build_app(limiter, *, enabled=True, exempt_paths=DEFAULT_EXEMPT_PATHS):
+def _build_app(limiter, *, exempt_paths=DEFAULT_EXEMPT_PATHS):
     def handler(request):
         return JSONResponse({"ok": True})
 
@@ -100,7 +100,6 @@ def _build_app(limiter, *, enabled=True, exempt_paths=DEFAULT_EXEMPT_PATHS):
         limiter=limiter,
         key_func=lambda r: "shared",
         exempt_paths=exempt_paths,
-        enabled=enabled,
     )
 
 
@@ -146,10 +145,3 @@ def test_middleware_security_headers_on_throttled():
     r = client.get("/api/x")  # 429
     assert r.status_code == 429
     assert r.headers.get("x-content-type-options") == "nosniff"
-
-
-def test_middleware_disabled_bypasses_limit():
-    app = _build_app(RateLimiter(limit_per_minute=1), enabled=False)
-    client = TestClient(app)
-    for _ in range(5):
-        assert client.get("/api/x").status_code == 200

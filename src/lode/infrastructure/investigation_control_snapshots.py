@@ -253,7 +253,6 @@ class InvestigationControlSnapshotStore:
             raise ValueError("Workspace context policy ownership is invalid")
         policy_payload = {
             "role_policies": policy.role_policies,
-            "budget_policy": policy.budget_policy,
             "verifier_policy": policy.verifier_policy,
             "eligible_bindings": policy.eligible_bindings,
         }

@@ -35,6 +35,12 @@ from lode.infrastructure.operation_executor import InvestigationOperationExecuto
 from lode.infrastructure.report_store import PostgresReportStore
 from lode.infrastructure.source_executor import SourceReadOperationExecutor
 from lode.metrics import ENGINE_IN_FLIGHT, INVESTIGATION_DURATION, INVESTIGATIONS
+from lode.runtime_defaults import (
+    JOB_BASE_RETRY_DELAY_SECONDS,
+    JOB_MAX_ATTEMPTS,
+    WORKER_LEASE_TTL_SECONDS,
+    WORKER_POLL_INTERVAL_SECONDS,
+)
 
 logger = logging.getLogger("lode.worker")
 WORKER_ID = f"{platform.node()}:{uuid.uuid4().hex[:8]}"
@@ -53,12 +59,12 @@ def lease_store() -> InvestigationLeaseStore:
     return InvestigationLeaseStore(
         AsyncSessionLocal,
         owner=WORKER_ID,
-        lease_ttl_seconds=settings.worker_lease_ttl_seconds,
+        lease_ttl_seconds=WORKER_LEASE_TTL_SECONDS,
     )
 
 
 async def _heartbeat(store: InvestigationLeaseStore, job_id: int) -> None:
-    interval = max(1.0, settings.worker_lease_ttl_seconds / 3)
+    interval = max(1.0, WORKER_LEASE_TTL_SECONDS / 3)
     while True:
         await asyncio.sleep(interval)
         if not await store.heartbeat(job_id):
@@ -98,8 +104,8 @@ async def run_job(
             job.job_id,
             exc,
             retryable=_retryable(exc),
-            max_attempts=settings.job_max_attempts,
-            base_delay_seconds=settings.job_base_retry_delay,
+            max_attempts=JOB_MAX_ATTEMPTS,
+            base_delay_seconds=JOB_BASE_RETRY_DELAY_SECONDS,
         )
         result = outcome
         INVESTIGATIONS.labels(result=outcome).inc()
@@ -119,7 +125,7 @@ async def run_worker(
     stop: asyncio.Event | None = None,
 ) -> None:
     await durable.reclaim_expired()
-    semaphore = asyncio.Semaphore(settings.engine_concurrency)
+    semaphore = asyncio.Semaphore(settings.worker_concurrency)
     running: set[asyncio.Task[None]] = set()
     try:
         while True:
@@ -135,7 +141,7 @@ async def run_worker(
                 semaphore.release()
                 if stop is not None and stop.is_set() and not running:
                     return
-                await asyncio.sleep(settings.worker_poll_interval_seconds)
+                await asyncio.sleep(WORKER_POLL_INTERVAL_SECONDS)
                 continue
             task = asyncio.create_task(run_job(job, handler, store=durable))
             running.add(task)
@@ -168,7 +174,6 @@ def build_handler() -> InvestigationHandler:
         ),
         repository=repository,
         wave_coordinator=DurableWaveCoordinator(repository, executor),
-        max_waves=settings.investigation_max_evidence_steps,
     )
     reporter = AuditedInvestigationReporter(AsyncSessionLocal, runtime)
 

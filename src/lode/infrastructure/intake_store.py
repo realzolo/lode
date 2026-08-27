@@ -13,7 +13,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.application.intake import NormalizedIncident, canonical_hash, mask_failure_payload
-from lode.config import settings
 from lode.crypto import encrypt_value
 from lode.db.models import (
     Alert,
@@ -23,7 +22,9 @@ from lode.db.models import (
     Investigation,
     InvestigationInput,
     InvestigationJob,
+    InvestigationPolicyRevision,
     InvestigationResourceGraphSnapshot,
+    PlatformSettings,
     ResourceGraphRevision,
     SealedEvidenceValue,
     Workspace,
@@ -364,26 +365,47 @@ class PostgresIntakeStore:
         created_by: int | None,
         retry_of_id: int | None = None,
     ) -> IntakeResult:
+        workspace = await self.session.get(Workspace, workspace_id)
+        if workspace is None:
+            raise ValueError("Workspace does not exist")
+        if retry_of_id is None:
+            platform_settings = await self.session.get(PlatformSettings, 1)
+            if platform_settings is None:
+                raise ValueError("Platform settings are unavailable")
+            policy_id = workspace.investigation_policy_revision_id
+            output_language = platform_settings.ai_output_language
+        else:
+            parent = await self.session.get(Investigation, retry_of_id)
+            if parent is None or parent.workspace_id != workspace_id:
+                raise ValueError("Retry investigation ownership is invalid")
+            policy_id = parent.investigation_policy_revision_id
+            output_language = parent.output_language
+        if policy_id is None:
+            raise ValueError("Workspace investigation policy is unavailable")
+        policy = await self.session.get(InvestigationPolicyRevision, policy_id)
+        if policy is None or policy.workspace_id != workspace_id:
+            raise ValueError("Investigation policy ownership is invalid")
         signature_hash = _signature(workspace_id, incident.event, incident.trace_id)
         investigation = Investigation(
             public_id=str(uuid.uuid4()),
             workspace_id=workspace_id,
+            investigation_policy_revision_id=policy.id,
             alert_id=alert_row_id,
             incident_id=incident_id,
             retry_of_id=retry_of_id,
             trigger_signature_hash=signature_hash,
-            output_language="en",
+            output_language=output_language,
             window_started_at=incident.occurred_at
-            - timedelta(seconds=settings.investigation_window_before_seconds),
+            - timedelta(seconds=policy.window_before_seconds),
             window_finished_at=incident.occurred_at
-            + timedelta(seconds=settings.investigation_window_after_seconds),
+            + timedelta(seconds=policy.window_after_seconds),
             execution_budget={
-                "max_evidence_steps": settings.investigation_max_evidence_steps,
-                "max_model_calls": settings.investigation_max_model_calls,
-                "max_native_reads": settings.investigation_max_native_reads,
-                "max_output_bytes": settings.investigation_max_output_bytes,
-                "max_cost": settings.investigation_max_cost,
-                "timeout_seconds": settings.investigation_timeout_seconds,
+                "max_evidence_steps": policy.max_evidence_steps,
+                "max_model_calls": policy.max_model_calls,
+                "max_native_reads": policy.max_native_reads,
+                "max_output_bytes": policy.max_output_bytes,
+                "max_cost": float(policy.max_cost),
+                "timeout_seconds": policy.timeout_seconds,
                 "max_parallel_operations": 4,
             },
             engine_version="lode",

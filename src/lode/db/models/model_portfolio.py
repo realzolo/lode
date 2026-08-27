@@ -206,7 +206,6 @@ class ModelPolicyRevision(CreatedAtMixin, Base):
     )
     eligible_bindings: Mapped[list] = mapped_column(JSONB, nullable=False)
     role_policies: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    budget_policy: Mapped[dict] = mapped_column(JSONB, nullable=False)
     context_policy_revision_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("context_policy_revisions.id", ondelete="RESTRICT"), nullable=False
     )

@@ -14,7 +14,6 @@ REJECTION_CODES = frozenset(
         "write_semantics",
         "scope_violation",
         "budget_violation",
-        "egress_violation",
         "sandbox_violation",
         "preflight_failed",
     }
@@ -28,7 +27,6 @@ EXECUTION_FAILURE_CODES = frozenset(
         "invalid_response",
         "partial_response",
         "cost_exceeded",
-        "egress_violation",
         "sandbox_violation",
     }
 )

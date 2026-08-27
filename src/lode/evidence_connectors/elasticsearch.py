@@ -17,7 +17,6 @@ from lode.evidence_connectors.search import SearchConnectorMechanics
 from lode.evidence_connectors.transport import (
     BoundedHTTPTransport,
     validate_base_url,
-    validate_ip_cidrs,
 )
 from lode.evidence_connectors.types import (
     ProviderExecutionError,
@@ -32,19 +31,12 @@ class ElasticsearchConnectorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_url: str = Field(max_length=1_000)
-    allowed_ip_cidrs: list[str] = Field(min_length=1, max_length=20)
     max_response_bytes: int = Field(default=8 * 1024 * 1024, ge=1, le=16 * 1024 * 1024)
 
     @field_validator("base_url")
     @classmethod
     def base_url_is_origin(cls, value: str) -> str:
         return validate_base_url(value)[0]
-
-    @field_validator("allowed_ip_cidrs")
-    @classmethod
-    def cidrs_are_networks(cls, value: list[str]) -> list[str]:
-        return validate_ip_cidrs(value)
-
 
 class ElasticsearchConnector(SearchConnectorMechanics):
     kind = "elasticsearch"
@@ -64,7 +56,6 @@ class ElasticsearchConnector(SearchConnectorMechanics):
             transport
             or BoundedHTTPTransport(
                 base_url=self.config.base_url,
-                allowed_ip_cidrs=self.config.allowed_ip_cidrs,
                 headers=headers,
                 max_response_bytes=self.config.max_response_bytes,
             )

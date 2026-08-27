@@ -17,7 +17,7 @@ class AuthorizationTokenError(ValueError):
 
 def issue_token(claims: Mapping[str, Any], *, key: str) -> str:
     if not key:
-        raise AuthorizationTokenError("LODE_EVIDENCE_AUTHORIZATION_KEY is required")
+        raise AuthorizationTokenError("evidence authorization key is required")
     payload = dict(claims)
     payload["nonce"] = secrets.token_urlsafe(24)
     encoded = _encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
@@ -27,7 +27,7 @@ def issue_token(claims: Mapping[str, Any], *, key: str) -> str:
 
 def verify_token(token: str, *, key: str, now: datetime | None = None) -> dict[str, Any]:
     if not key:
-        raise AuthorizationTokenError("LODE_EVIDENCE_AUTHORIZATION_KEY is required")
+        raise AuthorizationTokenError("evidence authorization key is required")
     try:
         encoded, signature = token.split(".")
     except ValueError as exc:

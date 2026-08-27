@@ -2,10 +2,16 @@ import type {
   CurrentUser,
   EvidenceConnector,
   InvestigationDetail,
+  InvestigationAuditKind,
+  InvestigationAuditPage,
+  InvestigationListPage,
+  InvestigationOverview,
+  InvestigationPolicy,
   InvestigationSummary,
   Invite,
   ModelBinding,
   ModelDeployment,
+  PlatformSettings,
   ProviderAccount,
   RepositoryBinding,
   Workspace,
@@ -123,6 +129,16 @@ export function resumeIngestion(id: number) {
 export function fetchCapabilities(id: number | string) {
   return get<{ models: number; repositories: number; healthy_connectors: number; gaps: string[] }>(`/workspaces/${id}/capabilities`);
 }
+export function fetchPlatformSettings() { return get<PlatformSettings>('/platform-settings'); }
+export function updatePlatformSettings(input: { ai_output_language: 'en' | 'zh'; expected_revision: number }) {
+  return send<PlatformSettings>('/platform-settings', 'PUT', input);
+}
+export function fetchInvestigationPolicy(workspaceId: number | string) {
+  return get<InvestigationPolicy>(`/workspaces/${workspaceId}/investigation-policy`);
+}
+export function updateInvestigationPolicy(workspaceId: number | string, profile: InvestigationPolicy['profile']) {
+  return send<InvestigationPolicy>(`/workspaces/${workspaceId}/investigation-policy`, 'PUT', { profile });
+}
 
 export function fetchProviderAccounts() { return get<ProviderAccount[]>('/ai-provider-accounts'); }
 export function createProviderAccount(input: Record<string, unknown>) {
@@ -177,15 +193,22 @@ export function fetchResourceView(workspaceId: number | string, resource: string
   return get<Array<Record<string, unknown>>>(`/workspaces/${workspaceId}/${resource}`);
 }
 
-export function fetchInvestigations(workspaceId?: number) {
-  return get<InvestigationSummary[]>(`/investigations${workspaceId ? `?workspace_id=${workspaceId}` : ''}`);
+export function fetchInvestigations(input: { workspaceId?: number; status?: string; q?: string; afterId?: number } = {}) {
+  const query = new URLSearchParams();
+  if (input.workspaceId) query.set('workspace_id', String(input.workspaceId));
+  if (input.status && input.status !== 'all') query.set('status', input.status);
+  if (input.q?.trim()) query.set('q', input.q.trim());
+  if (input.afterId) query.set('after_id', String(input.afterId));
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return get<InvestigationListPage>(`/investigations${suffix}`);
 }
 export function createInvestigation(input: Record<string, unknown>) {
   return send<{ id: string; workspace_id: number; status: string; job_id: number }>('/investigations', 'POST', input);
 }
-export function fetchInvestigation(id: string) { return get<InvestigationDetail>(`/investigations/${encodeURIComponent(id)}`); }
-export function fetchInvestigationAudit(id: string) {
-  return get<Record<string, Array<Record<string, unknown>>>>(`/investigations/${encodeURIComponent(id)}/audit`);
+export function fetchInvestigation(id: string) { return get<InvestigationOverview>(`/investigations/${encodeURIComponent(id)}`); }
+export function fetchInvestigationTechnical(id: string) { return get<InvestigationDetail>(`/investigations/${encodeURIComponent(id)}/technical`); }
+export function fetchInvestigationAudit(id: string, kind: InvestigationAuditKind, afterId = 0) {
+  return get<InvestigationAuditPage>(`/investigations/${encodeURIComponent(id)}/audit?kind=${kind}&after_id=${afterId}`);
 }
 export function retryInvestigation(id: string) {
   return send<{ id: string }>(`/investigations/${encodeURIComponent(id)}/retry`, 'POST');

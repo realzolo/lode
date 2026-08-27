@@ -124,7 +124,7 @@ class SQLPolicy:
             )
             for code in priority:
                 if any(failure.code == code for failure in failures):
-                    raise AccessRejection(code, "SQL is outside the enabled safe subset")
+                    raise AccessRejection(code, "SQL is outside the permitted safe subset")
             raise AccessRejection("invalid_syntax", "SQL is invalid in every supported dialect")
         slots = self._value_slots(next(iter(parsed.values())), set(candidate.value_bindings))
         action = {

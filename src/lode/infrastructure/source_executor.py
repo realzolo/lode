@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from lode.config import settings
 from lode.crypto import decrypt_secret
 from lode.db.models import (
     GitCredential,
@@ -25,6 +24,7 @@ from lode.infrastructure.git_source import (
     GitSourceUnavailable,
 )
 from lode.infrastructure.source_store import PostgresSourceStore
+from lode.runtime_defaults import SOURCE_GIT_TIMEOUT_SECONDS
 
 _ACTION = re.compile(r"^source:(?P<snapshot>[1-9][0-9]*):inspect$")
 
@@ -180,7 +180,7 @@ def _failure(code: str, *, reason: str | None = None) -> OperationResult:
         status="failed",
         result_masked={},
         evidence_refs=(),
-        metrics={"timeout_ms": settings.evidence_git_clone_timeout_seconds * 1_000},
+        metrics={"timeout_ms": int(SOURCE_GIT_TIMEOUT_SECONDS * 1_000)},
         failure_code=code,
         failure_detail={} if reason is None else {"reason": reason},
     )

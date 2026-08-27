@@ -22,7 +22,7 @@ def credential_identity_hash(secrets: Mapping[str, str]) -> str:
     ):
         raise ValueError("provider secrets are invalid")
     payload = "\0".join(f"{key}\0{secrets[key]}" for key in sorted(secrets)).encode()
-    return hmac.new(settings.secret_key.encode(), payload, hashlib.sha256).hexdigest()
+    return hmac.new(settings.credential_identity_key.encode(), payload, hashlib.sha256).hexdigest()
 
 
 def provider_headers(secrets: Mapping[str, str]) -> dict[str, str]:

@@ -1,4 +1,4 @@
-"""Explicit parser/policy registry; missing languages remain disabled."""
+"""Explicit parser/policy registry; unregistered languages are unavailable."""
 
 from __future__ import annotations
 

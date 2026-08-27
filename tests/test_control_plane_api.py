@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from lode.api.main import app
+from lode.config import settings
 from lode.db.models import User, WorkspacePermission
 from lode.db.session import AsyncSessionLocal
 from lode.security import create_token, hash_password
@@ -39,11 +40,11 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
     secret = f"provider-secret-{suffix}"
     admin_headers = {
         "Authorization": "Bearer "
-        + create_token(admin_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3600)
+        + create_token(admin_id, settings.jwt_signing_key, 3600)
     }
     reader_headers = {
         "Authorization": "Bearer "
-        + create_token(reader_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3600)
+        + create_token(reader_id, settings.jwt_signing_key, 3600)
     }
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         provider = await client.post(

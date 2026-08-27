@@ -59,13 +59,15 @@ TabsContent.displayName = TabsPrimitive.Content.displayName;
 export function Tabs({
   items,
   defaultIndex = 0,
+  onValueChange,
 }: {
   items: TabItem[];
   defaultIndex?: number;
+  onValueChange?: (value: string) => void;
 }) {
   const initial = items[defaultIndex]?.value ?? items[0]?.value;
   return (
-    <TabsPrimitive.Root defaultValue={initial} className="w-full">
+    <TabsPrimitive.Root defaultValue={initial} className="w-full" onValueChange={onValueChange}>
       <TabsList>
         {items.map((item) => (
           <TabsTrigger key={item.value} value={item.value}>

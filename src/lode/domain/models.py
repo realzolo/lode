@@ -224,7 +224,6 @@ class ModelPolicyRevision:
     workspace_id: int
     eligible_bindings: tuple[ModelBindingRevisionRef, ...]
     role_policies: Mapping[str, Any]
-    budget_policy: Mapping[str, Any]
     context_policy_revision_id: int
     revision: int = 1
 
@@ -238,7 +237,6 @@ class ModelPolicyRevision:
                 "duplicate_value", "eligible model binding IDs must be unique"
             )
         object.__setattr__(self, "role_policies", _freeze(self.role_policies))
-        object.__setattr__(self, "budget_policy", _freeze(self.budget_policy))
 
 
 @dataclass(frozen=True, slots=True)

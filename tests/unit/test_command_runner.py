@@ -278,26 +278,6 @@ async def test_runner_api_authenticates_and_rejects_replay(
     assert rejected.status_code == 403
 
 
-@pytest.mark.asyncio
-async def test_runner_process_kill_switch_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    executor, value, _ = local_executor(tmp_path)
-    monkeypatch.setenv("LODE_COMMAND_RUNNER_KEY", KEY)
-    monkeypatch.setenv("LODE_COMMAND_RUNNER_ENABLED", "false")
-    monkeypatch.setattr(runner_app, "executor", executor)
-    signed = envelope(value, nonce="c" * 32)
-
-    async with AsyncClient(
-        transport=ASGITransport(app=runner_app.app), base_url="http://runner"
-    ) as client:
-        health = await client.get("/health")
-        preflight = await client.post("/preflight", json=signed.model_dump(mode="json"))
-
-    assert health.status_code == 503
-    assert preflight.status_code == 503
-
-
 def test_runner_deployment_has_private_network_and_minimum_privileges() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     services = compose["services"]

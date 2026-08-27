@@ -10,7 +10,9 @@ from lode.api.control_schemas import (
     ModelBindingInput,
     ModelDeploymentPatch,
     ModelPolicyInput,
+    PlatformSettingsUpdate,
     ProviderAccountPatch,
+    InvestigationPolicyPut,
 )
 
 
@@ -36,7 +38,6 @@ def test_model_policy_rejects_duplicate_immutable_binding_refs() -> None:
         ModelPolicyInput(
             eligible_binding_ids=[1, 1],
             role_policies={},
-            budget_policy={},
             pinned_evidence_kinds=["incident_input"],
             compression_levels=["extractive"],
             minimum_output_tokens=128,
@@ -63,3 +64,12 @@ def test_provider_patch_allows_clearing_optional_scope_references() -> None:
     )
 
     assert patch.model_fields_set == {"organization_ref", "project_ref", "tenant_ref"}
+
+
+def test_investigation_profile_and_ai_output_language_are_closed_sets() -> None:
+    assert InvestigationPolicyPut(profile="balanced").profile == "balanced"
+    assert PlatformSettingsUpdate(ai_output_language="zh", expected_revision=1).ai_output_language == "zh"
+    with pytest.raises(ValidationError):
+        InvestigationPolicyPut(profile="custom")
+    with pytest.raises(ValidationError):
+        PlatformSettingsUpdate(ai_output_language="ja", expected_revision=1)

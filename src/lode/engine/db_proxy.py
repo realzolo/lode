@@ -13,7 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import asyncpg
 
-from lode.config import settings
+from lode.runtime_defaults import DATABASE_LOCK_TIMEOUT_SECONDS
 
 DEFAULT_QUERY_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_ROWS = 1000
@@ -109,7 +109,7 @@ def _tls_context() -> ssl.SSLContext:
 
 
 def _pg_kwargs(config: dict[str, Any], secrets: dict[str, str], timeout: float) -> dict[str, Any]:
-    lock_ms = int(settings.db_proxy_lock_timeout_seconds * 1000)
+    lock_ms = int(DATABASE_LOCK_TIMEOUT_SECONDS * 1000)
     return {
         "host": config["host"], "port": config["port"],
         "database": config["database"], "user": config["username"],

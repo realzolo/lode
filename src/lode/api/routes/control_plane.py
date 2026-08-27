@@ -17,6 +17,8 @@ from lode.api.control_schemas import (
     ConnectorOut,
     ConnectorPatch,
     IngestionStart,
+    InvestigationPolicyOut,
+    InvestigationPolicyPut,
     LocalRepositoryCreate,
     ModelBindingInput,
     ModelBindingOut,
@@ -26,6 +28,8 @@ from lode.api.control_schemas import (
     ModelDeploymentPatch,
     ModelPolicyInput,
     ModelPolicyOut,
+    PlatformSettingsOut,
+    PlatformSettingsUpdate,
     ProviderAccountCreate,
     ProviderAccountOut,
     ProviderAccountPatch,
@@ -36,6 +40,8 @@ from lode.api.control_schemas import (
     WorkspaceOut,
 )
 from lode.api.deps import assert_workspace_permission, require_admin, require_user
+from lode.ai_output import SUPPORTED_AI_OUTPUT_LANGUAGES
+from lode.application.investigation_policy import investigation_policy_columns
 from lode.config import kafka_security_kwargs, settings
 from lode.crypto import decrypt_secret, encrypt_secret
 from lode.db.models import (
@@ -47,9 +53,11 @@ from lode.db.models import (
     GitCredential,
     GitRepository,
     Investigation,
+    InvestigationPolicyRevision,
     ModelDeployment,
     ModelPolicyRevision,
     ModelRoutingDecision,
+    PlatformSettings,
     ProviderModelObservation,
     User,
     Workspace,
@@ -71,6 +79,7 @@ from lode.infrastructure.provider_http import (
     provider_request,
     validate_provider_endpoint,
 )
+from lode.runtime_defaults import LLM_PROBE_TIMEOUT_SECONDS, KAFKA_TOPIC_VALIDATION_TIMEOUT_SECONDS
 
 router = APIRouter(tags=["control-plane"])
 _REQUIRED_MODEL_ROLES = {
@@ -135,6 +144,19 @@ def _binding_out(row: WorkspaceModelBinding) -> ModelBindingOut:
     return ModelBindingOut.model_validate(row)
 
 
+def _investigation_policy_out(row: InvestigationPolicyRevision) -> InvestigationPolicyOut:
+    return InvestigationPolicyOut.model_validate(row)
+
+
+def _platform_settings_out(row: PlatformSettings) -> PlatformSettingsOut:
+    return PlatformSettingsOut(
+        ai_output_language=row.ai_output_language,
+        revision=row.revision,
+        updated_at=row.updated_at,
+        supported_languages=list(SUPPORTED_AI_OUTPUT_LANGUAGES),
+    )
+
+
 def _audit(user: User, action: str, target_type: str, target_id: int, workspace_id=None):
     return AuditEvent(
         actor_id=user.id,
@@ -146,6 +168,44 @@ def _audit(user: User, action: str, target_type: str, target_id: int, workspace_
         result="ok",
         detail={},
     )
+
+
+@router.get("/platform-settings", response_model=PlatformSettingsOut)
+async def get_platform_settings(
+    _: int = Depends(require_admin), session: AsyncSession = Depends(get_session)
+):
+    row = await session.get(PlatformSettings, 1)
+    if row is None:
+        raise _error(503, "platform_settings_unavailable", "Platform settings are unavailable.")
+    return _platform_settings_out(row)
+
+
+@router.put("/platform-settings", response_model=PlatformSettingsOut)
+async def put_platform_settings(
+    payload: PlatformSettingsUpdate,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    row = await session.scalar(
+        select(PlatformSettings).where(PlatformSettings.id == 1).with_for_update()
+    )
+    if row is None:
+        raise _error(503, "platform_settings_unavailable", "Platform settings are unavailable.")
+    if payload.expected_revision != row.revision:
+        raise _error(
+            409,
+            "platform_settings_revision_conflict",
+            "Platform settings changed. Reload and try again.",
+            current_revision=row.revision,
+        )
+    row.ai_output_language = payload.ai_output_language
+    row.revision += 1
+    row.updated_by = user.id
+    session.add(_audit(user, "platform_settings.update", "platform_settings", row.id))
+    await session.commit()
+    await session.refresh(row)
+    return _platform_settings_out(row)
 
 
 @router.get("/ai-provider-accounts", response_model=list[ProviderAccountOut])
@@ -247,7 +307,7 @@ async def _provider_models(row: AIProviderAccount) -> list[dict]:
             "GET",
             provider_endpoint(row.base_url, "/models"),
             headers=headers,
-            timeout_seconds=settings.llm_probe_timeout_seconds,
+            timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
         )
     except (ValueError, ProviderExecutionError) as exc:
         raise _error(
@@ -427,7 +487,7 @@ async def test_model_deployment(
             api_key_ciphertext=provider.credential_ciphertext,
             model=row.provider_model_id,
         ),
-        timeout_seconds=settings.llm_probe_timeout_seconds,
+        timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
     )
     row.availability_state = "healthy" if result.text else "unavailable"
     row.health_checked_at = datetime.now(UTC)
@@ -476,8 +536,21 @@ async def create_workspace(
         raise _error(
             409, "workspace_topic_conflict", "Ingestion topic is already assigned."
         ) from exc
+    policy = InvestigationPolicyRevision(
+        workspace_id=row.id,
+        profile="balanced",
+        **investigation_policy_columns("balanced"),
+        revision=1,
+        created_by=user.id,
+    )
+    session.add(policy)
+    await session.flush()
+    row.investigation_policy_revision_id = policy.id
     session.add(WorkspacePermission(user_id=user.id, workspace_id=row.id, permission="admin"))
     session.add(_audit(user, "workspace.create", "workspace", row.id, row.id))
+    session.add(
+        _audit(user, "investigation_policy.publish", "investigation_policy_revision", policy.id, row.id)
+    )
     await session.commit()
     await session.refresh(row)
     return WorkspaceOut.model_validate(row)
@@ -564,7 +637,7 @@ async def _workspace_readiness(session: AsyncSession, workspace: Workspace) -> l
     try:
         reachable = await asyncio.wait_for(
             _broker_has_topic(workspace.ingestion_topic),
-            timeout=settings.kafka_topic_validation_timeout_seconds,
+            timeout=KAFKA_TOPIC_VALIDATION_TIMEOUT_SECONDS,
         )
     except Exception:
         reachable = False
@@ -639,6 +712,68 @@ async def resume_ingestion(
     if workspace.ingestion_state != "paused":
         raise _error(409, "ingestion_transition_invalid", "Only paused ingestion can resume.")
     return await _set_ingestion(session, user, workspace, "active")
+
+
+@router.get(
+    "/workspaces/{workspace_id}/investigation-policy",
+    response_model=InvestigationPolicyOut,
+)
+async def get_investigation_policy(
+    workspace_id: int,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    _, workspace = await _workspace_access(session, user_id, workspace_id, "read")
+    if workspace.investigation_policy_revision_id is None:
+        raise _error(409, "investigation_policy_missing", "Workspace investigation policy is missing.")
+    row = await session.get(InvestigationPolicyRevision, workspace.investigation_policy_revision_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise _error(409, "investigation_policy_missing", "Workspace investigation policy is missing.")
+    return _investigation_policy_out(row)
+
+
+@router.put(
+    "/workspaces/{workspace_id}/investigation-policy",
+    response_model=InvestigationPolicyOut,
+)
+async def put_investigation_policy(
+    workspace_id: int,
+    payload: InvestigationPolicyPut,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
+    workspace = await session.scalar(
+        select(Workspace).where(Workspace.id == workspace_id).with_for_update()
+    )
+    assert workspace is not None
+    revision = int(
+        (
+            await session.scalar(
+                select(func.coalesce(func.max(InvestigationPolicyRevision.revision), 0)).where(
+                    InvestigationPolicyRevision.workspace_id == workspace_id
+                )
+            )
+            or 0
+        )
+        + 1
+    )
+    row = InvestigationPolicyRevision(
+        workspace_id=workspace_id,
+        profile=payload.profile,
+        **investigation_policy_columns(payload.profile),
+        revision=revision,
+        created_by=user.id,
+    )
+    session.add(row)
+    await session.flush()
+    workspace.investigation_policy_revision_id = row.id
+    session.add(
+        _audit(user, "investigation_policy.publish", "investigation_policy_revision", row.id, workspace_id)
+    )
+    await session.commit()
+    await session.refresh(row)
+    return _investigation_policy_out(row)
 
 
 @router.get("/workspaces/{workspace_id}/model-bindings", response_model=list[ModelBindingOut])
@@ -839,7 +974,6 @@ async def put_model_policy(
             for row in sorted(bindings, key=lambda item: item.id)
         ],
         role_policies=payload.role_policies,
-        budget_policy=payload.budget_policy,
         context_policy_revision_id=context.id,
         verifier_policy=payload.verifier_policy,
         revision=policy_revision,

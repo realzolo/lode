@@ -116,7 +116,6 @@ def test_context_and_model_policy_require_versioned_nonempty_inputs() -> None:
             ModelBindingRevisionRef(binding_id=4, revision=2),
         ),
         role_policies={"planner": {"execution_classes": ["latency_optimized"]}},
-        budget_policy={"max_calls": 10},
         context_policy_revision_id=1,
     )
 

@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import ipaddress
 import json
-import socket
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import httpcore
 import pytest
 
 import lode.evidence_access.orchestrator as orchestrator_module
@@ -23,7 +20,6 @@ from lode.evidence_connectors.registry import (
 )
 from lode.evidence_connectors.transport import (
     BoundedHTTPTransport,
-    PinnedDNSBackend,
     validate_base_url,
 )
 from lode.evidence_connectors.types import (
@@ -85,7 +81,6 @@ def permit(action: Mapping[str, Any]) -> ExecutionPermit:
 def connector_config() -> dict[str, Any]:
     return {
         "base_url": "https://evidence.example.test",
-        "allowed_ip_cidrs": ["10.0.0.0/8"],
         "max_response_bytes": 1_000_000,
     }
 
@@ -291,7 +286,7 @@ async def test_partial_search_and_provider_status_failures_are_stable() -> None:
         assert failure.value.code == code
 
 
-def test_connectors_reject_forged_permits_and_unsafe_origins() -> None:
+def test_connectors_reject_forged_permits_and_invalid_origins() -> None:
     connector = ElasticsearchConnector(connector_config(), {"api_key": "secret"}, FakeTransport([]))
 
     class Forged:
@@ -304,15 +299,7 @@ def test_connectors_reject_forged_permits_and_unsafe_origins() -> None:
         connector._action(Forged())
     with pytest.raises(ValueError):
         validate_base_url("http://logs.example.test")
-    with pytest.raises(ValueError):
-        validate_base_url("https://127.0.0.1")
-    with pytest.raises(ValueError):
-        BoundedHTTPTransport(
-            base_url="https://logs.example.test",
-            allowed_ip_cidrs=[],
-            headers={},
-            max_response_bytes=1024,
-        )
+    assert validate_base_url("https://127.0.0.1") == ("https://127.0.0.1", "127.0.0.1")
     with pytest.raises(ValueError):
         ElasticsearchConnector(
             {**connector_config(), "allowed_ip_cidrs": ["10.0.0.1/8"]},
@@ -322,7 +309,6 @@ def test_connectors_reject_forged_permits_and_unsafe_origins() -> None:
 
     custom_port = BoundedHTTPTransport(
         base_url="https://logs.example.test:8443",
-        allowed_ip_cidrs=["10.0.0.0/8"],
         headers={},
         max_response_bytes=1024,
     )
@@ -361,39 +347,6 @@ async def test_introspection_budgets_reject_unbounded_or_oversized_catalogs() ->
             introspection_budget(),
         )
     assert unsafe_index.value.code == "invalid_response"
-
-
-@pytest.mark.asyncio
-async def test_dns_backend_connects_to_checked_ip_without_second_lookup(monkeypatch) -> None:
-    records = [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.2.3.4", 8443)),
-    ]
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: records)
-    connected: list[tuple[str, int]] = []
-    sentinel = object()
-
-    async def connect(self, host, port, **kwargs):
-        connected.append((host, port))
-        return sentinel
-
-    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", connect)
-    backend = PinnedDNSBackend(
-        hostname="logs.example.test",
-        port=8443,
-        networks=(ipaddress.ip_network("10.0.0.0/8"),),
-    )
-
-    result = await backend.connect_tcp("logs.example.test", 8443)
-
-    assert result is sentinel
-    assert connected == [("10.2.3.4", 8443)]
-
-    records.append((socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8443)))
-    with pytest.raises(ProviderExecutionError) as rebound:
-        await backend.connect_tcp("logs.example.test", 8443)
-    assert rebound.value.code == "egress_violation"
-    assert connected == [("10.2.3.4", 8443)]
-
 
 def test_provider_json_and_registry_are_strict_and_product_neutral() -> None:
     with pytest.raises(ProviderExecutionError) as duplicate:

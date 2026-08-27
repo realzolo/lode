@@ -75,6 +75,8 @@ from lode.db.models.source_report import (
 from lode.db.models.user import Invite, User
 from lode.db.models.workspace import (
     AuditEvent,
+    InvestigationPolicyRevision,
+    PlatformSettings,
     Workspace,
     WorkspaceIngestionOffset,
     WorkspaceIngestionRuntime,
@@ -126,9 +128,11 @@ __all__ = [
     "InvestigationRepositorySnapshot",
     "InvestigationResourceGraphSnapshot",
     "InvestigationStep",
+    "InvestigationPolicyRevision",
     "ModelDeployment",
     "ModelPolicyRevision",
     "ModelRoutingDecision",
+    "PlatformSettings",
     "NativeReadCandidate",
     "ObservedEntity",
     "ObservedEvent",

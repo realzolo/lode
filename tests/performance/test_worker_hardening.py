@@ -9,6 +9,7 @@ import pytest
 
 import lode.worker.main as worker
 from lode.config import settings
+from lode.application.investigation_policy import investigation_policy_values
 from lode.infrastructure.investigation_leases import ClaimedInvestigationJob
 
 
@@ -56,7 +57,7 @@ class FakeLeaseStore:
 
 
 @pytest.mark.asyncio
-async def test_worker_soak_never_preclaims_beyond_engine_concurrency(monkeypatch) -> None:
+async def test_worker_soak_never_preclaims_beyond_worker_concurrency(monkeypatch) -> None:
     stop = asyncio.Event()
     store = FakeLeaseStore(100, stop)
     in_flight = 0
@@ -74,8 +75,8 @@ async def test_worker_soak_never_preclaims_beyond_engine_concurrency(monkeypatch
     async def quiet_heartbeat(_store, _job_id):
         await asyncio.Future()
 
-    monkeypatch.setattr(settings, "engine_concurrency", 5)
-    monkeypatch.setattr(settings, "worker_poll_interval_seconds", 0)
+    monkeypatch.setattr(settings, "worker_concurrency", 5)
+    monkeypatch.setattr(worker, "WORKER_POLL_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(worker, "_heartbeat", quiet_heartbeat)
 
     await worker.run_worker(handler, store, stop=stop)
@@ -136,8 +137,9 @@ async def test_worker_failure_matrix_preserves_retry_classification(
     assert store.failed == [(job.job_id, retryable)]
 
 
-def test_default_runtime_budgets_match_the_final_plan() -> None:
-    assert settings.investigation_timeout_seconds == 600
-    assert settings.investigation_max_evidence_steps == 12
-    assert settings.investigation_max_model_calls == 10
-    assert settings.engine_concurrency > 0
+def test_balanced_investigation_profile_matches_the_final_plan() -> None:
+    policy = investigation_policy_values("balanced")
+    assert policy.timeout_seconds == 600
+    assert policy.max_evidence_steps == 12
+    assert policy.max_model_calls == 10
+    assert settings.worker_concurrency > 0

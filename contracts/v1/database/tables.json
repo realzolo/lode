@@ -2,6 +2,7 @@
   "schema_version": "lode-database-tables.v1",
   "migration_head": "0001_initial",
   "control_plane": [
+    "platform_settings",
     "workspaces",
     "workspace_ingestion_runtime",
     "workspace_ingestion_offsets",
@@ -24,6 +25,7 @@
     "provider_model_observations",
     "model_deployments",
     "workspace_model_bindings",
+    "investigation_policy_revisions",
     "model_policy_revisions",
     "context_policy_revisions",
     "users",

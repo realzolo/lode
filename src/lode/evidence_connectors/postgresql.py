@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import ssl
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import asyncpg
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from lode.evidence_connectors.sql import SQLBackend, SQLConnectorMechanics
-from lode.evidence_connectors.transport import (
-    resolve_checked_addresses,
-    validate_dns_hostname,
-    validate_ip_cidrs,
-)
 from lode.evidence_connectors.types import ProviderExecutionError
 
 
@@ -27,18 +21,7 @@ class PostgreSQLConnectorConfig(BaseModel):
     port: int = Field(default=5432, ge=1, le=65_535)
     database: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,62}$")
     username: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,62}$")
-    allowed_ip_cidrs: list[str] = Field(min_length=1, max_length=20)
     ca_certificate_pem: str = Field(min_length=1, max_length=100_000)
-
-    @field_validator("host")
-    @classmethod
-    def host_is_dns(cls, value: str) -> str:
-        return validate_dns_hostname(value)
-
-    @field_validator("allowed_ip_cidrs")
-    @classmethod
-    def cidrs_are_networks(cls, value: list[str]) -> list[str]:
-        return validate_ip_cidrs(value)
 
 
 class PostgreSQLBackend(SQLBackend):
@@ -50,7 +33,6 @@ class PostgreSQLBackend(SQLBackend):
         except ssl.SSLError as exc:
             raise ValueError("PostgreSQL CA certificate is invalid") from exc
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        self.networks = tuple(ipaddress.ip_network(item) for item in config.allowed_ip_cidrs)
 
     async def attest(self, timeout_ms: int) -> Mapping[str, Any]:
         async with self._connection(timeout_ms) as connection:
@@ -142,9 +124,6 @@ class PostgreSQLBackend(SQLBackend):
     def _connection(self, timeout_ms: int):
         return _PostgreSQLConnection(self, timeout_ms)
 
-    async def _check_egress(self) -> None:
-        await resolve_checked_addresses(self.config.host, self.config.port, self.networks)
-
     @staticmethod
     async def _set_timeouts(connection: asyncpg.Connection, timeout_ms: int) -> None:
         timeout = str(timeout_ms)
@@ -169,7 +148,6 @@ class _PostgreSQLConnection:
         self.connection: asyncpg.Connection | None = None
 
     async def __aenter__(self) -> asyncpg.Connection:
-        await self.backend._check_egress()
         try:
             self.connection = await asyncpg.connect(
                 host=self.backend.config.host,

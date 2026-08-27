@@ -97,7 +97,7 @@ class EvidenceAccessDecision(CreatedAtMixin, Base):
         CheckConstraint("outcome IN ('allow', 'reject')", name="outcome"),
         CheckConstraint(
             "rejection_code IS NULL OR rejection_code IN ('invalid_syntax', 'unsupported_node', "
-            "'write_semantics', 'scope_violation', 'budget_violation', 'egress_violation', "
+            "'write_semantics', 'scope_violation', 'budget_violation', "
             "'sandbox_violation', 'preflight_failed')",
             name="rejection_code",
         ),

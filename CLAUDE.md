@@ -37,14 +37,14 @@ deployment-canary observations to pass the statistical and non-regression gate.
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
-- The current ORM registry and the only migration register exactly the 67 tables in
+- The current ORM registry and the only migration register exactly the 69 tables in
   `contracts/v1/database/tables.json`. Provider accounts, model deployments,
   Workspace bindings, repositories, build units, components, resource graph
   revisions, connectors, immutable investigation snapshots, the evidence
   graph, native-read audit chain, source assessments, findings, and reports are
   separate final objects. Deprecated global workload identity, single-model,
   and product-specific integration tables and routes are not registered.
-- `contracts/v1/database/invariants.json` freezes 83 required triggers. The
+- `contracts/v1/database/invariants.json` freezes 85 required triggers. The
   migration enforces timestamp updates, secret-free ordinary JSON,
   immutability, archived-investigation read-only behavior, authorization-chain
   integrity, frozen AI routing/context, exact source anchors, and confirmed
@@ -96,19 +96,16 @@ deployment-canary observations to pass the statistical and non-regression gate.
 - Authorization re-reads the Investigation, native-read Operation, Connector
   Snapshot, and native-query AI invocation from PostgreSQL. It intersects
   evidence anchors, frozen scope, absolute investigation window, operation/
-  result/timeout/output budgets, and hierarchical Workspace/connector/language/
-  runner kill switches before any sealed value is opened.
-- Production kill switches are configured by
-  `LODE_EVIDENCE_ACCESS_ENABLED`, comma-separated Workspace/connector ID lists,
-  the closed six-language list, and `LODE_COMMAND_RUNNER_ENABLED`. Invalid IDs
-  or unknown languages fail during worker composition. Every native language
-  is independently rejectable; disabling the runner is an additional
-  command-only boundary.
+  result/timeout/output budgets, and the current Connector lifecycle before any
+  sealed value is opened. All registered native languages and adapters are
+  candidates by default; the planner decides whether they are relevant. A
+  disabled or unhealthy Connector rejects only future authorization, while a
+  frozen snapshot prevents later reactivation from expanding the investigation.
 - ValueRef plaintext is resolved only after policy allow, replaces one parser-
   approved value node, and must preserve the parsed structure. Candidate and
   decision JSON retain sentinels; the exact bound action exists only encrypted
-  in `AuthorizedEvidenceRead`. Authorization capabilities use the independent
-  `LODE_EVIDENCE_AUTHORIZATION_KEY`, expire quickly, bind all hashes, and are
+  in `AuthorizedEvidenceRead`. Authorization capabilities use a domain-separated
+  key derived from `LODE_MASTER_KEY`, expire quickly, bind all hashes, and are
   looked up by token hash.
 - The execution adapter accepts only an internal `ExecutionPermit`, never raw
   candidate or model payload. A PostgreSQL advisory transaction lock plus a
@@ -116,7 +113,7 @@ deployment-canary observations to pass the statistical and non-regression gate.
   replay is rejected. Preflight/execution/cancellation and output byte
   postconditions produce terminal `succeeded`, `failed`, or `interrupted`
   attempts. Stable provider authentication, rate-limit, timeout, availability,
-  partial-response, cost, invalid-response, and egress failures remain distinct
+  partial-response, cost, and invalid-response failures remain distinct
   execution failure codes in the immutable attempt instead of being relabeled
   as policy rejection. A successful normalized result is masked and archived
   as an `EvidenceCollection` and `EvidenceArtifact` in the same transaction
@@ -152,8 +149,8 @@ deployment-canary observations to pass the statistical and non-regression gate.
   must attest a read-only replica and non-write-capable role; MySQL must attest
   both read-only flags and an exact SELECT/SHOW VIEW grant set. Execution uses
   explicit read-only transactions and server timeouts.
-- Generic HTTPS accepts only cataloged GET/HEAD endpoints with canonical
-  lowercase DNS origins, exact ports and typed path/query schemas. It has no
+- Generic HTTPS accepts only cataloged GET/HEAD endpoints with canonical HTTPS
+  origins, exact ports and typed path/query schemas. It has no
   request-body, redirect, proxy, credential-header, arbitrary content-type, or
   unchecked decompression capability. ValueRefs occupy complete query values;
   server-owned window, limit, and constant values cannot be overridden.
@@ -166,27 +163,18 @@ deployment-canary observations to pass the statistical and non-regression gate.
   mounted into the invocation. Compose gives it a private internal network,
   separate numeric uid, no capabilities, no-new-privileges, process/CPU/memory
   limits, a runner-specific seccomp deny profile, and no writable volume.
-  High-risk secret output is discarded with
-  only its SHA-256 and category retained. `LODE_COMMAND_RUNNER_ENABLED=false`
-  is an independent fail-closed process kill switch. The deployment host must
+  High-risk secret output is discarded with only its SHA-256 and category
+  retained. The deployment host must
   permit unprivileged user namespaces for bubblewrap; if it does not, command
   execution fails with `sandbox_violation` rather than falling back.
 - Provider HTTPS transport accepts only adapter-owned relative paths, disables
-  redirects, resolves DNS inside every TCP connection, pins the connection to a
-  checked address while retaining the original TLS identity, checks every address
-  against an explicit CIDR scope, rejects loopback/link-local/multicast/unspecified
-  addresses, limits decompressed response bytes, and injects credentials only
+  redirects, limits decompressed response bytes, and injects credentials only
   inside the adapter. Normalization validates duplicate-free bounded JSON,
   stable pagination and response shape, masks secret patterns, and marks prompt
   injection before evidence leaves the Connector Plane.
-- AI completion and model-catalog traffic share the DNS-pinned provider HTTP
-  adapter. Calls fail closed unless the exact host is in
-  `LODE_AI_PROVIDER_EGRESS_ALLOWLIST` and every resolved address is within
-  `LODE_AI_PROVIDER_ALLOWED_IP_CIDRS`. Remote Git independently requires
-  `LODE_GIT_EGRESS_ALLOWLIST` and `LODE_GIT_ALLOWED_IP_CIDRS`: HTTPS uses
-  `http.curloptResolve` with redirects disabled, while SSH pins the resolved
-  address and retains the original DNS name for host-key validation. Local
-  absolute/file repositories do not use egress.
+- AI completion, model-catalog traffic, and remote Git use their configured
+  endpoint directly. Lode does not impose application-level host, CIDR, DNS,
+  or network-egress restrictions.
 - Current implementation files use unversioned canonical names (`intake.py`,
   `investigation.py`, `check_schema.py`, and so on). The repository maintains
   one current implementation and never creates `_v1`/`_v2` module variants.
@@ -263,8 +251,8 @@ PostgreSQL database whenever intake, encryption, idempotency, or replay changes.
 Run `make resource-check` whenever scanning, identity validation, graph
 publication, derived-resource views, or investigation graph snapshots change.
 Run `make evidence-access-check` whenever candidate validation, policy,
-ValueRef binding, authorization, execution permits, audit, or kill switches
-change. The check writes immutable audit rows, so every invocation creates a
+ValueRef binding, authorization, execution permits, audit, or Connector
+lifecycle checks change. The check writes immutable audit rows, so every invocation creates a
 unique fixture identity and reports counts scoped to that invocation's
 investigation; repeated runs against the same upgraded development database
 must remain valid.
@@ -316,7 +304,7 @@ independent authorization-key deployment requirement and the
 npm parser dependencies, required Compose authorization-key propagation, and
 the `log-connectors-check` workflow. Phase 6 added the fixed SQLGlot runtime
 dependency, SQL/HTTPS/command policies and adapters, the isolated command-runner
-image and private Compose network, independent runner key/kill switch, and the
+image and private Compose network, independent runner key and lifecycle check, and the
 runner-specific `deploy/command-runner-seccomp.json` syscall profile, and the
 `native-connectors-check` workflow. Phase 7 added no dependency; it added the
 dynamic investigation application layer, health-bearing connector snapshots,
@@ -329,9 +317,8 @@ strict synthesis/verifier publication, the default worker composition root, and
 the `analysis-check` workflow. Phase 9 added no dependency; it replaced the API
 and Web surfaces with the final Workspace/model/repository/connector/investigation
 contracts and added the `api-check` and `web-check` workflows.
-Phase 10 adds no dependency. It adds startup key-length/separation validation,
-startup-configured fail-closed evidence/runner kill switches, DNS-pinned
-AI-provider and remote Git egress boundaries, correlation IDs and isolated-
+Phase 10 adds no dependency. It adds startup master-key and Runner-key
+validation, correlation IDs and isolated-
 runner nonces, slot-before-claim worker concurrency, lease-loss cancellation,
 deterministic fuzz/security/performance/soak checks, complete operational and
 canary release evaluation, artifact hash binding, expanded low-cardinality
@@ -356,7 +343,9 @@ trace values, prompts, endpoints, or other unbounded data.
 
 ## Runtime Components
 
-- `src/lode/api`: FastAPI control plane, authorization, manual intake, investigation detail, audit pagination, and SSE.
+- `src/lode/api`: FastAPI control plane, global AI-output-language settings,
+  authorization, manual intake, human-readable investigation detail, explicit
+  technical detail, audit pagination, and SSE.
 - `src/lode/consumer`: strict Kafka `incident.alert.v1` validation and shared intake dispatch.
 - `src/lode/worker`: durable job claiming, investigation-scoped leases, retry, and bounded cross-investigation concurrency.
 - `src/lode/application/intake.py`: strict Kafka/manual validation and canonical normalization.
@@ -378,15 +367,17 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/evidence_connectors/elasticsearch.py`: Elasticsearch 8/9 verification and bounded search adapter.
 - `src/lode/evidence_connectors/opensearch.py`: OpenSearch 2/3 verification and bounded search adapter.
 - `src/lode/evidence_connectors/postgresql.py`: replica/role-attested PostgreSQL read adapter.
-- `src/lode/evidence_connectors/mysql.py`: topology/grant-attested MySQL read adapter with DNS-pinned sockets.
+- `src/lode/evidence_connectors/mysql.py`: topology/grant-attested MySQL read adapter.
 - `src/lode/evidence_connectors/https.py`: generic cataloged GET/HEAD adapter.
 - `src/lode/evidence_connectors/command.py`: signed worker client for the isolated runner.
 - `src/lode/command_runner`: replay-protected protocol, fixed executor, and minimal FastAPI process.
-- `src/lode/evidence_connectors/transport.py`: redirect-free, DNS-pinned/CIDR-checked, byte-bounded HTTPS transport.
+- `src/lode/evidence_connectors/transport.py`: redirect-free, byte-bounded HTTPS transport.
 - `tools/logql_parser/parser.mjs`: credential-free Grafana Lezer LogQL CST helper.
 - `src/lode/application/capabilities.py`: minimal frozen capability catalog and credential-free model view.
 - `src/lode/application/decision_policy.py`: deterministic relevance, dependency, duplicate, resource, counter-evidence, and budget gates.
 - `src/lode/application/investigation.py`: provider-neutral serial-wave orchestration ports and four-operation sibling isolation.
+- `src/lode/application/investigation_policy.py`: server-owned `fast`,
+  `balanced`, and `deep` immutable investigation policy profiles.
 - `src/lode/application/evidence_graph.py`: deterministic timeline, entity matching, observations, and evidence-backed causal projection.
 - `src/lode/infrastructure/investigation_snapshots.py`: immutable active/healthy connector capability freezing.
 - `src/lode/infrastructure/investigation_store.py`: decision, step, operation, event, budget, and replay persistence.
@@ -401,24 +392,27 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/application/conclusion_validation.py`: server-owned confirmation downgrade gates.
 - `src/lode/infrastructure/investigation_control_snapshots.py`: same-transaction repository and model control freezing.
 - `src/lode/infrastructure/model_runtime.py`: immutable routing/context/invocation audit, replay, drift checks, and bounded compaction.
-- `src/lode/infrastructure/git_source.py`: shell-free bounded exact-revision Git reader.
+- `src/lode/infrastructure/git_source.py`: bounded exact-revision Git reader.
 - `src/lode/infrastructure/source_store.py`: masked source artifact, revision, and assessment archival.
 - `src/lode/infrastructure/investigation_reporting.py`: audited synthesis and independent verification roles.
 - `src/lode/infrastructure/report_store.py`: strict semantic validation and immutable report publication.
 - `src/lode/infrastructure/connector_resolver.py`: frozen connector/secret verification and production adapter construction.
 - `src/lode/infrastructure/operation_executor.py`: provider-neutral native/source operation dispatch.
-- `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, UI form metadata, and egress policy.
+- `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, and UI form metadata.
 - `src/lode/engine/integrations.py`: provider adapters for verification and bounded snapshots.
 - `src/lode/engine/evidence/git.py`: stack parsing, exact revision lookup, symbol range extraction, lexical candidates, and related-symbol expansion.
-- `apps/web`: Next.js global model and Workspace control plane plus the single
-  investigation Workbench for manual intake, canonical detail, source authority,
-  model routing/context, evidence, execution audit, retry, archive, and SSE refresh.
+- `apps/web`: Next.js global model/output-language and Workspace control plane
+  plus the investigation Workbench for manual intake, summary-first detail,
+  evidence, execution audit, explicit technical detail, retry, archive, and
+  SSE refresh. All user-visible product text is served through `next-intl`.
 
 PostgreSQL is the source of truth. Kafka consumers only validate and enqueue;
 workers execute investigations. FastAPI exposes health, authentication,
 user/invite administration, global provider/deployment administration,
-Workspace policy/repository/connector/resource control, manual intake, canonical
-investigation reads, audit, retry, archive, and SSE. Model routing is frozen per
+Workspace policy/repository/connector/resource control, manual intake,
+investigation reads, audit, retry, archive, and SSE. The singleton
+`platform_settings` row selects the output language for newly created
+investigations; each investigation freezes that language. Model routing is frozen per
 investigation from its Workspace policy and eligible deployments; there is no
 single-model or global-default fallback.
 
@@ -429,7 +423,7 @@ transition into active Kafka ingestion must fail closed unless all three
 conditions hold:
 
 1. the Workspace has its required globally unique ingestion topic;
-2. its active model policy can route every required role to an enabled,
+2. its active model policy can route every required role to an active,
    protocol-healthy deployment;
 3. the broker can reach the configured topic.
 
@@ -481,16 +475,32 @@ An investigation owns exactly one active decision wave:
    creates direction.
 10. Start the next decision only from evidence committed by the prior wave.
 
-Parallelism is allowed only inside an explicit wave and must remain at or below four operations. Allocate operation IDs/ordinals before launching work, use `return_exceptions=True`, and persist each result separately. Do not overlap decision waves. `engine_concurrency` separately controls how many investigations workers may run.
+Parallelism is allowed only inside an explicit wave and must remain at or below four operations. Allocate operation IDs/ordinals before launching work, use `return_exceptions=True`, and persist each result separately. Do not overlap decision waves. `LODE_WORKER_CONCURRENCY` separately controls how many investigations workers may run.
 
-Limits are configured by:
+Investigation limits are immutable Workspace policy revisions, selected only as
+one of three server-owned profiles: `fast` (6 evidence steps, 5 model calls,
+4 native reads, 2 MiB, cost 25, 300 seconds), `balanced` (12, 10, 8, 8 MiB,
+100, 600 seconds), or `deep` (16, 14, 12, 16 MiB, 200, 900 seconds). New
+investigations freeze the selected revision; no budget is supplied through
+environment variables or model-policy JSON.
 
-- `investigation_max_evidence_steps`, default 12;
-- `investigation_max_model_calls`, default 10;
-- `investigation_max_native_reads`, default 8;
-- `investigation_max_output_bytes`, default 8 MiB;
-- `investigation_max_cost`, default 100;
-- `investigation_timeout_seconds`, default 600.
+## Configuration Authority
+
+`Settings` accepts only required deployment topology and trust-boundary values:
+database/Kafka endpoints, worker process concurrency, source-cache location,
+one master key, and the isolated Runner key. CORS accepts every origin and
+Lode applies no application-level outbound network restrictions. Unknown
+`LODE_*` variables fail startup. Timeouts, retries, parser paths, request-size
+limits, and scheduling intervals are reviewed code constants in
+`src/lode/runtime_defaults.py`; they are not end-user configuration. Functional
+capabilities have no feature-specific boolean switches. Registered abilities are available
+to the planner, and Connector lifecycle/health plus per-read authorization are
+the only execution gates.
+
+`platform_settings` is a singleton revisioned product setting. Its
+`ai_output_language` is restricted to the system-supported language list
+(`en`, `zh`); it applies only to new investigations and is frozen into every
+investigation and all model role prompts.
 
 Every action uses a server-generated fingerprint and may run once. Connector evidence reuse uses the complete immutable query fingerprint, including connector, endpoint, generated query, time window, direction and limit. Steps and operations commit independently. PostgreSQL permits one running step/decision wave while multiple operations in that wave may run. On worker recovery, completed evidence is reused and the first unfinished durable action resumes. Lease cleanup only changes jobs whose own leases expired.
 
@@ -570,11 +580,11 @@ registry, never by an investigation-core product branch. The active kinds are
 `loki`, `elasticsearch`, `opensearch`, `postgresql`, `mysql`, `https`, and
 `command_runner`; each kind declares one native
 language and its own verification, introspection, parser/policy versions, read
-capabilities, adapter, fixture corpus, egress policy, and failure semantics. A
+capabilities, adapter, fixture corpus, and failure semantics. A
 new provider is not active merely because it resembles an existing product: it
 must register a complete independent security profile and contract tests.
 
-Database connectors support PostgreSQL and MySQL through structured DNS host,
+Database connectors support PostgreSQL and MySQL through structured host,
 port, database, username, mandatory TLS, encrypted password, qualified
 allowed-table catalog, AST-validated model candidates, and server-injected
 predicates and budgets. The model never receives credentials or direct database
@@ -582,22 +592,16 @@ access, and an effective action can execute only through a one-use permit.
 Kafka evidence connectors are independent of `Workspace.ingestion_topic` and
 are limited to administrator-allowlisted topics and consumer groups.
 
-All user-managed secrets are submitted as values, encrypted immediately with
-`LODE_DATA_ENCRYPTION_KEY`, stored separately from non-secret config, and never
+All user-managed secrets are submitted as values, encrypted immediately with a
+data-encryption key derived from `LODE_MASTER_KEY`, stored separately from non-secret config, and never
 returned. A Connector secret plaintext is a strict duplicate-free JSON object
 of string keys to string values; adapters receive only that frozen decrypted
 map. Indirect environment-reference syntax is prohibited for integrations, AI
-keys, and Git credentials. JWT, data-encryption, evidence-authorization, and
-configured command-runner keys must each contain at least 32 bytes and all
-differ; startup rejects missing, short, or reused keys. Every external
-integration, AI-provider, and remote-Git endpoint must pass its independent
-process allowlist/CIDR boundary, and deployment network policy must enforce the
-same scope.
-
-`LODE_EVIDENCE_AUTHORIZATION_KEY` is a third independent key and must differ
-from both `LODE_SECRET_KEY` and `LODE_DATA_ENCRYPTION_KEY`. Missing, reused, or
-non-positive-TTL authorization configuration fails before a native-read token
-is issued. Only token hashes are persisted.
+keys, and Git credentials. `LODE_MASTER_KEY` derives independent JWT,
+data-encryption, evidence-authorization, and credential-identity keys using
+HKDF domain separation. The master key and configured command-runner key must
+each contain at least 32 bytes and differ; startup rejects missing, short, or
+reused values. Only token hashes are persisted.
 
 Workspace architecture context is configured beside its model policy. At
 investigation creation, the current ordered context entries are masked and
@@ -653,11 +657,12 @@ External causes can be represented accurately while code diagnosis separately re
 
 HTTP errors use one envelope: `error.code`, a string or HTTP status code; `error.message`, always a string; and optional structured `error.details`. Do not place structured objects in `error.message`.
 
-`GET /investigations/{id}` returns the canonical fields: `input`, `report`,
-ordered `steps`, `decisions`, `operations`, `evidence`, and `code_findings`, plus
-control snapshots, source revisions/assessments, model routing/context, retry
-lineage, and archive state. Secret ciphertext, authorization token hashes, and
-connector secret values are never serialized.
+`GET /investigations/{id}` returns a summary-first investigation overview:
+input metadata, report narrative, typed timeline, safe evidence index, counts,
+language, and archive state. `GET /investigations/{id}/technical` is the
+explicit masked technical snapshot for source authority, routing/context, full
+operations, and raw report structure. Secret ciphertext, authorization token
+hashes, and connector secret values are never serialized.
 
 `POST /investigations/{id}/retry` is valid only for a non-archived terminal
 investigation. It creates a new investigation from the immutable normalized
@@ -667,11 +672,11 @@ Workspace admin permission, is valid only for a terminal run, and permanently
 makes that run read-only. Archived runs remain available to detail, event, SSE,
 and audit reads.
 
-`GET /investigations/{id}/audit` cursor-pages the native candidate, access
-decision, authorized-read, attempt, and AI-invocation audit chains without
-returning encrypted actions or token hashes. Canonical detail separately
-exposes full masked operation purpose, input, progress, result, timing, failure,
-metrics, events, and evidence references rather than a recent-event slice.
+`GET /investigations/{id}/audit` cursor-pages one selected native candidate,
+access decision, authorized-read, attempt, or AI-invocation audit chain without
+returning encrypted actions or token hashes. The technical endpoint exposes
+masked operation purpose, input, progress, result, timing, failure, metrics,
+events, and evidence references when explicitly requested.
 
 SSE replays persisted canonical operation event names, including
 `operation.started`, `operation.progress`, and `operation.finished`, by their
@@ -685,15 +690,15 @@ reconnects with the last observed cursor and preserves the last canonical view.
 
 The project has not released its database baseline.
 `alembic/versions/0001_initial.py` is the only revision and creates exactly the
-67 final business tables. There is one current schema and no parallel version,
+69 final business tables. There is one current schema and no parallel version,
 compatibility view, dual write, backfill, or old-schema adapter; unreleased
 development databases are recreated from the unique initial migration. After
 the first release, schema changes use ordinary forward migrations.
 
 The table inventory and database invariants are frozen independently under
 `contracts/v1/database`. SQLAlchemy metadata must exactly match the migration.
-The schema currently owns 83 explicit non-internal triggers: 35 immutable-row
-triggers, 25 archived-investigation read-only triggers, 16 `updated_at`
+The schema currently owns 85 explicit non-internal triggers: 36 immutable-row
+triggers, 25 archived-investigation read-only triggers, 17 `updated_at`
 triggers, and seven cross-table/security triggers. `set_updated_at()` uses
 `clock_timestamp()` so updates within one transaction still advance the value.
 Ordinary connector/scope JSON is traversed structurally and rejects credential
@@ -713,9 +718,7 @@ Until the first release, model changes are folded into `0001_initial.py`. Verify
 
 ```bash
 LODE_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lode_migration_test \
-LODE_SECRET_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-LODE_DATA_ENCRYPTION_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-LODE_EVIDENCE_AUTHORIZATION_KEY=cccccccccccccccccccccccccccccccc \
+LODE_MASTER_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
 uv run alembic upgrade head
 uv run alembic check
 uv run python scripts/check_schema.py
@@ -744,7 +747,7 @@ control-plane models.
 The evidence-access checker constructs the full snapshot/model/operation/audit
 chain through the production Elasticsearch policy. It verifies exact opaque
 ValueRef round trips, mandatory timestamp/source/sort constraints, budget
-shrinkage, unsupported SQL-node rejection, kill switch rejection, duplicate
+shrinkage, unsupported SQL-node rejection, disabled-Connector rejection, duplicate
 fingerprint rejection, encrypted-only effective actions, signed hash-bound
 tokens, forged permit rejection, one adapter call under concurrent replay, and
 terminal immutable success and provider-rate-limit attempts.
@@ -753,16 +756,17 @@ terminal immutable success and provider-rate-limit attempts.
 JSON policy, provider request/response fixture, version isolation,
 budgeted introspection, stable pagination, partial response, timeout/rate/auth/5xx,
 ValueRef injection, aggregation cost, masking, prompt-injection marking,
-registry, egress-config, and forged-permit tests. Run `make install` first; it
+registry and forged-permit tests. Run `make install` first; it
 performs both `uv sync --all-extras` and the locked, script-disabled npm install
 for `tools/logql_parser`. The backend Docker image builds that parser under
 Node 24 and copies only its runtime plus the Node executable into the Python
-image.
+image. The Python image also installs the `git` runtime required by the exact-
+revision Git source reader.
 
 `make native-connectors-check` additionally runs the PostgreSQL/MySQL AST and
 replica/grant-attestation suites, generic HTTPS canonicalization/SSRF and
 endpoint-schema corpus, command argv/path corpus, signed runner protocol,
-replay and process kill switches, exact-file bubblewrap mapping, high-risk
+replay and Connector lifecycle checks, exact-file bubblewrap mapping, high-risk
 secret hashing, and Compose privilege/network/key-ownership assertions.
 
 ## Frontend Contract
@@ -777,12 +781,14 @@ Workspace administrators manage bindings, immutable model-policy revisions,
 read-only repositories, connector instances, and ingestion transitions.
 
 The only investigation UI lives under `workbench`. Its list supports search,
-state filtering, manual intake, and navigation by opaque public ID. Detail shows
-the incident cause before code diagnosis, followed by timeline, evidence,
-frozen source revisions and runtime assessments, model routing/context, and the
-complete masked execution audit. Terminal runs expose retry and archive actions
-according to backend permission and lifecycle rules. The SSE client reconnects
-with its last canonical cursor and never translates a historical response shape.
+state filtering, manual intake, and navigation by opaque public ID. Detail leads
+with the incident summary, cause, code diagnosis, confirmed facts, evidence gaps,
+and recommended next step; it then presents human-readable timeline, evidence,
+and execution-audit views. Raw source/runtime/model snapshots remain available
+only through the explicit technical view. Terminal runs expose retry and archive
+actions according to backend permission and lifecycle rules. The SSE client
+reconnects with its last canonical cursor and never translates a historical
+response shape.
 
 Wide operational tables scroll inside their own container. Long identifiers
 wrap within table cells; tab lists scroll locally at narrow widths. The shell
@@ -795,10 +801,8 @@ Backend:
 
 ```bash
 make install
-export LODE_SECRET_KEY='replace-with-an-independent-random-secret-at-least-32-bytes'
-export LODE_DATA_ENCRYPTION_KEY='replace-with-an-independent-random-secret'
-export LODE_EVIDENCE_AUTHORIZATION_KEY='replace-with-a-third-independent-random-secret'
-export LODE_COMMAND_RUNNER_KEY='replace-with-a-fourth-independent-random-secret'
+export LODE_MASTER_KEY='replace-with-a-random-secret-at-least-32-bytes'
+export LODE_COMMAND_RUNNER_KEY='replace-with-a-runner-only-secret-at-least-32-bytes'
 make local-release-check
 ```
 
@@ -848,7 +852,7 @@ Evidence-access kernel changes must cover duplicate/oversized/deep/invalid
 candidate JSON, every stable rejection class, snapshot ownership, missing or
 partial parser behavior, scope and budget intersection, arbitrary ValueRef
 strings and injection shapes, authorization key separation, token tamper/
-expiry/replay, fingerprint dedupe, kill switches, forged execution permits,
+expiry/replay, fingerprint dedupe, Connector lifecycle changes, forged execution permits,
 preflight/execution/cancellation terminals, output bounds, and immutable audit.
 
 Log Connector changes must additionally cover complete LogQL CST parsing and
@@ -857,8 +861,8 @@ ValueRef binding, bounded log and metric queries, exact index and field scope,
 recursive Query DSL and aggregation allowlists, bucket/cardinality limits,
 independent Elasticsearch/OpenSearch version proof, schema introspection,
 provider request snapshots, stable pagination/order, partial and malformed
-responses, timeout/429/5xx/auth classification, DNS/CIDR/redirect/byte egress
-controls, secret masking, prompt-injection marking, and provider-neutral core
+responses, timeout/429/5xx/auth classification, redirect/byte controls, secret
+masking, prompt-injection marking, and provider-neutral core
 imports.
 
 SQL/HTTPS/Command changes must additionally cover PostgreSQL and MySQL dialect
@@ -867,7 +871,7 @@ system-catalog rejection, replica and grant attestation, read-only transaction
 and cost budgets, canonical URL/SSRF/DNS/redirect/decompression controls, exact
 endpoint schemas, argv and ValueRef injection, binary attestation, symlink/path
 escape, signed protocol replay, exact-file read-only mounts, empty environment,
-private network and secret ownership, process kill switch, output truncation,
+private network and secret ownership, Connector lifecycle checks, output truncation,
 high-risk secret hashing, and infrastructure behavior when policy input is
 forged.
 

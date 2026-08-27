@@ -15,7 +15,7 @@ from lode.config import settings
 def test_opaque_evidence_value_round_trips_without_normalization(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
-    monkeypatch.setattr(settings, "data_encryption_key", "unit-test-evidence-key")
+    monkeypatch.setattr(settings, "master_key", "unit-test-evidence-key-material-32bytes")
     monkeypatch.setattr(crypto, "_fernet", None)
 
     ciphertext = crypto.encrypt_value(value)

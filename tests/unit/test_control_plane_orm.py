@@ -80,6 +80,16 @@ def test_workspace_activation_schema_has_no_repository_or_component_gate() -> No
     )
 
 
+def test_global_language_and_investigation_profiles_are_first_class_schema() -> None:
+    settings = Base.metadata.tables["platform_settings"]
+    policy = Base.metadata.tables["investigation_policy_revisions"]
+    workspace = Base.metadata.tables["workspaces"]
+
+    assert {"id", "ai_output_language", "revision", "updated_by"}.issubset(settings.c.keys())
+    assert {"profile", "max_evidence_steps", "max_model_calls", "revision"}.issubset(policy.c.keys())
+    assert "investigation_policy_revision_id" in workspace.c
+
+
 def test_repository_build_unit_and_component_identities_are_separate() -> None:
     repository = Base.metadata.tables["git_repositories"]
     binding = Base.metadata.tables["workspace_repository_bindings"]

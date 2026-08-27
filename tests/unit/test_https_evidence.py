@@ -140,7 +140,6 @@ def connector_config() -> dict[str, Any]:
     return {
         "base_url": "https://evidence.example.test",
         "verification_path": "/health/ready",
-        "allowed_ip_cidrs": ["10.0.0.0/8"],
         "max_response_bytes": 100_000,
         "max_decompression_ratio": 10,
     }
@@ -170,8 +169,6 @@ def test_https_policy_matches_catalog_injects_server_query_and_binds_value() -> 
     [
         "http://evidence.example.test/v1/orders/42/events",
         "https://user@evidence.example.test/v1/orders/42/events",
-        "https://127.0.0.1/v1/orders/42/events",
-        "https://169.254.169.254/latest/meta-data",
         "https://evidence.example.test/v1/orders/%2e%2e/admin",
         "https://evidence.example.test/v1//orders/42/events",
         "https://evidence.example.test/v1/orders/42/events?admin=true",
@@ -182,13 +179,13 @@ def test_https_policy_matches_catalog_injects_server_query_and_binds_value() -> 
         "https://evidence.example.test:99999/v1/orders/42/events",
     ],
 )
-def test_https_policy_rejects_ssrf_and_scope_bypass_corpus(url: str) -> None:
+def test_https_policy_rejects_invalid_urls_and_scope_bypass_corpus(url: str) -> None:
     policy = HTTPSPolicy()
     raw = candidate(url=url)
     try:
         parsed = policy.parse(raw)
     except AccessRejection as error:
-        assert error.code == "egress_violation"
+        assert error.code == "invalid_syntax"
         return
     with pytest.raises(AccessRejection) as error:
         policy.evaluate(parsed, raw, context())

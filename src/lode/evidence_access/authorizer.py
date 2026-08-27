@@ -19,18 +19,19 @@ from lode.db.models import (
     AIInvocation,
     AuthorizedEvidenceRead,
     EvidenceAccessDecision,
+    EvidenceConnector,
     Investigation,
     InvestigationConnectorSnapshot,
     InvestigationOperation,
     NativeReadCandidate,
 )
 from lode.evidence_access.candidate import NativeReadCandidateInput
-from lode.evidence_access.kill_switch import EvidenceKillSwitch
 from lode.evidence_access.registry import NativePolicyRegistry
 from lode.evidence_access.tokens import issue_token, token_hash
 from lode.evidence_access.types import AccessContext, AccessRejection, AuthorizedReadResult
 from lode.evidence_access.vault import EvidenceValueVault
 from lode.metrics import EVIDENCE_ACCESS_STAGE_LATENCY, NATIVE_CANDIDATES
+from lode.runtime_defaults import EVIDENCE_AUTHORIZATION_TTL_SECONDS
 
 
 def _call_policy[PolicyResult](
@@ -56,11 +57,9 @@ class EvidenceAccessAuthorizer:
         self,
         session: AsyncSession,
         registry: NativePolicyRegistry,
-        kill_switch: EvidenceKillSwitch | None = None,
     ) -> None:
         self.session = session
         self.registry = registry
-        self.kill_switch = kill_switch or EvidenceKillSwitch()
 
     async def authorize(
         self,
@@ -114,12 +113,6 @@ class EvidenceAccessAuthorizer:
         try:
             await self._check_ownership(candidate, context)
             decisions.append({"check": "snapshot_ownership", "outcome": "allow"})
-            self.kill_switch.check(
-                workspace_id=context.workspace_id,
-                connector_id=context.connector_id,
-                language=candidate.language,
-            )
-            decisions.append({"check": "kill_switch", "outcome": "allow"})
             policy = self.registry.require(candidate.language)
             parser_name = policy.parser_name
             parser_version = policy.parser_version
@@ -261,18 +254,8 @@ class EvidenceAccessAuthorizer:
         self.session.add(decision)
         await self.session.flush()
 
-        if settings.evidence_authorization_ttl_seconds <= 0:
-            raise RuntimeError("LODE_EVIDENCE_AUTHORIZATION_TTL_SECONDS must be positive")
-        if settings.evidence_authorization_key in {
-            "",
-            settings.secret_key,
-            settings.data_encryption_key,
-        }:
-            raise RuntimeError(
-                "LODE_EVIDENCE_AUTHORIZATION_KEY must be independent from signing and encryption keys"
-            )
         issued_at = datetime.now(UTC)
-        expires_at = issued_at + timedelta(seconds=settings.evidence_authorization_ttl_seconds)
+        expires_at = issued_at + timedelta(seconds=EVIDENCE_AUTHORIZATION_TTL_SECONDS)
         claims = {
             "investigation_id": context.investigation_id,
             "candidate_hash": candidate_hash,
@@ -328,6 +311,7 @@ class EvidenceAccessAuthorizer:
         snapshot = await self.session.get(
             InvestigationConnectorSnapshot, context.connector_snapshot_id
         )
+        connector = await self.session.get(EvidenceConnector, context.connector_id)
         invocation = await self.session.get(AIInvocation, context.model_invocation_id)
         if investigation is None or investigation.workspace_id != context.workspace_id:
             raise AccessRejection("scope_violation", "investigation does not belong to Workspace")
@@ -352,6 +336,14 @@ class EvidenceAccessAuthorizer:
         if snapshot is None or snapshot.investigation_id != investigation.id:
             raise AccessRejection(
                 "scope_violation", "connector snapshot does not belong to investigation"
+            )
+        if connector is None or connector.workspace_id != investigation.workspace_id:
+            raise AccessRejection("scope_violation", "connector does not belong to investigation")
+        if connector.state != "active":
+            raise AccessRejection(
+                "scope_violation",
+                "connector is not active for new evidence reads",
+                {"connector_state": connector.state},
             )
         snapshot_values = {
             "connector_id": snapshot.connector_id,

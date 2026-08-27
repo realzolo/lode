@@ -2,25 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
-import ipaddress
 import json
 import re
-import socket
 import ssl
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import asyncmy
 from asyncmy.cursors import DictCursor
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from lode.evidence_connectors.sql import SQLBackend, SQLConnectorMechanics
-from lode.evidence_connectors.transport import (
-    resolve_checked_addresses,
-    validate_dns_hostname,
-    validate_ip_cidrs,
-)
 from lode.evidence_connectors.types import ProviderExecutionError
 
 _GRANT = re.compile(r"^GRANT (?P<privileges>.+) ON (?P<resource>.+) TO ", re.IGNORECASE)
@@ -33,18 +25,7 @@ class MySQLConnectorConfig(BaseModel):
     port: int = Field(default=3306, ge=1, le=65_535)
     database: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,63}$")
     username: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,63}$")
-    allowed_ip_cidrs: list[str] = Field(min_length=1, max_length=20)
     ca_certificate_pem: str = Field(min_length=1, max_length=100_000)
-
-    @field_validator("host")
-    @classmethod
-    def host_is_dns(cls, value: str) -> str:
-        return validate_dns_hostname(value)
-
-    @field_validator("allowed_ip_cidrs")
-    @classmethod
-    def cidrs_are_networks(cls, value: list[str]) -> list[str]:
-        return validate_ip_cidrs(value)
 
 
 class MySQLBackend(SQLBackend):
@@ -56,7 +37,6 @@ class MySQLBackend(SQLBackend):
         except ssl.SSLError as exc:
             raise ValueError("MySQL CA certificate is invalid") from exc
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        self.networks = tuple(ipaddress.ip_network(item) for item in config.allowed_ip_cidrs)
 
     async def attest(self, timeout_ms: int) -> Mapping[str, Any]:
         async with (
@@ -187,33 +167,6 @@ class _MySQLConnection:
         self.connection: asyncmy.Connection | None = None
 
     async def __aenter__(self) -> asyncmy.Connection:
-        addresses = await resolve_checked_addresses(
-            self.backend.config.host,
-            self.backend.config.port,
-            self.backend.networks,
-        )
-        last_error: OSError | None = None
-        raw_socket: socket.socket | None = None
-        for address in addresses:
-            candidate = socket.socket(
-                socket.AF_INET6 if address.version == 6 else socket.AF_INET,
-                socket.SOCK_STREAM,
-            )
-            candidate.setblocking(False)
-            try:
-                async with asyncio.timeout(self.timeout_ms / 1_000):
-                    await asyncio.get_running_loop().sock_connect(
-                        candidate, (str(address), self.backend.config.port)
-                    )
-                raw_socket = candidate
-                break
-            except OSError as exc:
-                last_error = exc
-                candidate.close()
-        if raw_socket is None:
-            raise ProviderExecutionError(
-                "provider_unavailable", "MySQL replica connection failed"
-            ) from last_error
         try:
             self.connection = await asyncmy.connect(
                 host=self.backend.config.host,
@@ -221,7 +174,6 @@ class _MySQLConnection:
                 user=self.backend.config.username,
                 password=self.backend.password,
                 database=self.backend.config.database,
-                sock=raw_socket,
                 ssl=self.backend.ssl_context,
                 autocommit=False,
                 local_infile=False,
@@ -231,7 +183,6 @@ class _MySQLConnection:
             )
             return self.connection
         except (TimeoutError, asyncmy.MySQLError) as exc:
-            raw_socket.close()
             raise ProviderExecutionError(
                 "provider_unavailable", "MySQL replica connection failed"
             ) from exc

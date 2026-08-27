@@ -20,6 +20,7 @@ export interface Workspace {
   name: string;
   ingestion_topic: string;
   model_policy_revision_id: number | null;
+  investigation_policy_revision_id: number | null;
   ingestion_state: 'draft' | 'active' | 'paused';
   ingestion_version: number;
   ingestion_start_position: 'earliest' | 'latest' | null;
@@ -27,6 +28,29 @@ export interface Workspace {
   ingestion_paused_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface PlatformSettings {
+  ai_output_language: 'en' | 'zh';
+  supported_languages: Array<'en' | 'zh'>;
+  revision: number;
+  updated_at: string;
+}
+
+export interface InvestigationPolicy {
+  id: number;
+  workspace_id: number;
+  profile: 'fast' | 'balanced' | 'deep';
+  max_evidence_steps: number;
+  max_model_calls: number;
+  max_native_reads: number;
+  max_output_bytes: number;
+  max_cost: number;
+  timeout_seconds: number;
+  window_before_seconds: number;
+  window_after_seconds: number;
+  revision: number;
+  created_at: string;
 }
 
 export interface ProviderAccount {
@@ -110,10 +134,89 @@ export interface InvestigationSummary {
   workspace_id: number;
   status: 'queued' | 'running' | 'completed' | 'failed';
   result_state: 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
-  retry_of_id: number | null;
+  output_language: 'en' | 'zh';
+  event: string | null;
+  severity: 'CRITICAL' | 'WARNING' | null;
+  headline: string | null;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface InvestigationListPage {
+  items: InvestigationSummary[];
+  next_after_id: number | null;
+}
+
+export interface InvestigationTimelineItem {
+  ordinal: number;
+  kind: string;
+  purpose: string;
+  expected_evidence: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  failure_code: string | null;
+}
+
+export interface EvidenceSummaryItem {
+  id: number;
+  kind: string;
+  evidence_class: string;
+  data_class: string;
+  source_revision: string | null;
+  source_time_start: string | null;
+  source_time_end: string | null;
+}
+
+export interface InvestigationReportSummary {
+  headline: string;
+  summary: string;
+  cause_status: string;
+  cause: string;
+  causal_chain: string[];
+  diagnosis_status: string;
+  diagnosis: string;
+  confirmed_facts: string[];
+  evidence_gaps: string[];
+  next_step: string;
+}
+
+export interface InvestigationOverview {
+  id: number;
+  public_id: string;
+  workspace_id: number;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  result_state: 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
+  output_language: 'en' | 'zh';
+  archived_at: string | null;
+  event: string | null;
+  severity: 'CRITICAL' | 'WARNING' | null;
+  occurred_at: string | null;
+  error_type: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  report: InvestigationReportSummary | null;
+  timeline: InvestigationTimelineItem[];
+  evidence: EvidenceSummaryItem[];
+  operation_count: number;
+  evidence_count: number;
+}
+
+export type InvestigationAuditKind = 'native_read_candidates' | 'access_decisions' | 'authorized_reads' | 'read_attempts' | 'ai_invocations';
+
+export interface InvestigationAuditItem {
+  id: number;
+  kind: InvestigationAuditKind;
+  status: string;
+  summary: string;
+  created_at: string;
+}
+
+export interface InvestigationAuditPage {
+  items: InvestigationAuditItem[];
+  next_after_id: number | null;
 }
 
 export interface InvestigationDetail {

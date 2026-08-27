@@ -34,7 +34,7 @@ class CommandPolicy:
             raise AccessRejection("invalid_syntax", "command requires executable and argv")
         payload = candidate.payload
         if payload.executable != "/usr/bin/rg":
-            raise AccessRejection("unsupported_node", "command executable is not enabled")
+            raise AccessRejection("unsupported_node", "command executable is not permitted")
         if _WORKING_SET.fullmatch(payload.working_set_id) is None:
             raise AccessRejection("sandbox_violation", "command working set ID is invalid")
         if len(payload.argv) < 4 or payload.argv[:2] != ["--fixed-strings", "--"]:

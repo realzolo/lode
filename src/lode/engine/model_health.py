@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from lode.config import settings
 from lode.db.models.ai_model import AiModelConfig
 from lode.engine.llm import ModelConfig, complete_with_usage, model_endpoint
+from lode.runtime_defaults import LLM_PROBE_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ async def probe_model(model: AiModelConfig) -> ModelHealth:
         "You are an API availability probe.",
         "Reply with exactly OK.",
         config,
-        timeout_seconds=settings.llm_probe_timeout_seconds,
+        timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
     )
     return ModelHealth(
         available=bool(result.text and result.text.strip()),

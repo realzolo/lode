@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -19,19 +17,15 @@ class CryptoError(Exception):
 
 
 def _resolve_data_encryption_key() -> bytes:
-    """Derive a Fernet key from the dedicated runtime setting."""
-    if not settings.data_encryption_key:
-        raise CryptoError("LODE_DATA_ENCRYPTION_KEY is required for secret operations")
-    digest = hashlib.sha256(settings.data_encryption_key.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(digest)
+    """Return the domain-separated Fernet key derived from the master key."""
+    return settings.data_encryption_key.encode("ascii")
 
 
 def _get_fernet() -> Fernet:
     global _fernet
     if _fernet is None:
-        # Fernet expects a 32-byte url-safe base64 key. SHA-256 of the resolved
-        # data-encryption key material yields exactly 32 bytes; re-encoding makes
-        # it url-safe base64.
+        # The configuration layer returns 32 bytes of HKDF output in Fernet's
+        # URL-safe base64 representation.
         _fernet = Fernet(_resolve_data_encryption_key())
     return _fernet
 
@@ -63,7 +57,7 @@ def decrypt_secret(ciphertext: str | None) -> str | None:
     """Decrypt a stored secret back to plaintext.
 
     ``None`` / empty input returns ``None``. A malformed or key-mismatched value
-    raises :class:`CryptoError` (e.g. after a ``secret_key`` rotation).
+    raises :class:`CryptoError` (e.g. after a master-key rotation).
     """
     if not ciphertext:
         return None

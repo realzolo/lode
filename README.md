@@ -14,7 +14,8 @@ dual writes, or historical payload converters.
 
 Each investigation freezes its Workspace control state at intake: repository
 bindings, resource graph, Connector scopes and health, model bindings and
-policy, context policy, and immutable normalized input. The worker then runs
+policy, the selected investigation-depth policy revision, output language, and
+immutable normalized input. The worker then runs
 serial decision waves. Independent operations inside one wave may run in
 parallel, with a hard maximum of four.
 
@@ -75,17 +76,18 @@ Provider switches never carry hidden reasoning state.
 Workspace-owned Connectors support Loki, Elasticsearch, OpenSearch,
 PostgreSQL, MySQL, cataloged HTTPS reads, and an isolated command runner. Native
 candidate parsers and policies enforce scope, time, row, byte, cardinality,
-cost, and egress limits before issuing a single-use signed authorization.
+and cost limits before issuing a single-use signed authorization.
 
 PostgreSQL/MySQL adapters require read-only replicas and restricted roles. HTTPS
-uses canonical DNS-pinned, redirect-free, byte-bounded transport. The command
+uses canonical, redirect-free, byte-bounded transport. The command
 runner is a separate process and image with its own key, private network,
 read-only filesystem, fixed executables, empty child environment, resource
-limits, syscall policy, replay protection, and process kill switch.
+limits, syscall policy, replay protection, and a current Connector lifecycle
+check before each new command execution.
 
-All provider, Connector, and Git secrets are encrypted with
-`LODE_DATA_ENCRYPTION_KEY`, stored separately from ordinary config, and never
-returned. Evidence-read authorization and Runner signing use independent keys.
+All provider, Connector, and Git secrets are encrypted with a data-encryption
+key derived from `LODE_MASTER_KEY`, stored separately from ordinary config, and
+never returned. Evidence-read authorization and Runner signing use distinct keys.
 
 ## Kafka Contract
 
@@ -122,8 +124,9 @@ The final FastAPI surface includes:
 - global provider accounts and model deployments;
 - Workspace lifecycle, model bindings/policy, repositories, ResourceGraph
   views, Connector instances, verification, and introspection;
-- manual investigation creation, list, canonical detail, event replay, masked
-  audit, SSE, retry, and archive;
+- manual investigation creation, searchable/paginated list, human-readable
+  canonical detail, explicit technical detail, paginated masked audit, SSE,
+  retry, and archive;
 - authentication, users, invitations, health, and metrics.
 
 `GET /investigations/{id}` is the canonical client state. SSE replays persisted
@@ -131,36 +134,24 @@ operation events by sequence, accepts `Last-Event-ID`, emits
 `investigation.finished` for terminal state, and is used only to trigger a
 canonical reload.
 
-The Next.js Web app provides the global model control plane, Workspace settings,
-manual intake, investigation list, and one responsive investigation detail view
-for timeline, evidence, source authority, model routing/context, and execution
-audit. Wide tables and tab lists scroll locally instead of widening the page.
+The Next.js Web app provides global model and AI-output-language settings,
+Workspace settings including a three-profile investigation-depth selector,
+manual intake, a searchable investigation list, and a responsive investigation
+detail that leads with the incident summary, cause, diagnosis, evidence, and
+next action. Technical snapshots remain available only in an explicit technical
+view. Wide tables and tab lists scroll locally instead of widening the page.
 
 ## Local Development
 
-Required secrets are independent values of at least 32 bytes:
+The master key must contain at least 32 bytes. It derives independent JWT,
+data-encryption, and evidence-authorization keys; the Runner key remains
+isolated from the application key material:
 
 ```bash
-export LODE_SECRET_KEY='replace-with-a-random-secret-at-least-32-bytes'
-export LODE_DATA_ENCRYPTION_KEY='replace-with-an-independent-secret-at-least-32-bytes'
-export LODE_EVIDENCE_AUTHORIZATION_KEY='replace-with-another-secret-at-least-32-bytes'
+export LODE_MASTER_KEY='replace-with-a-random-secret-at-least-32-bytes'
 export LODE_COMMAND_RUNNER_KEY='replace-with-a-runner-only-secret-at-least-32-bytes'
 docker compose up --build
 ```
-
-External AI and remote Git access are disabled until both the exact DNS hosts
-and their permitted address ranges are configured:
-
-```bash
-export LODE_AI_PROVIDER_EGRESS_ALLOWLIST='api.openai.com,api.anthropic.com'
-export LODE_AI_PROVIDER_ALLOWED_IP_CIDRS='deployment-approved-provider-ranges'
-export LODE_GIT_EGRESS_ALLOWLIST='github.com'
-export LODE_GIT_ALLOWED_IP_CIDRS='deployment-approved-git-ranges'
-```
-
-Use actual CIDRs from the deployment network policy; the labels above are
-intentionally not runnable defaults. Local absolute/file Git repositories do
-not require egress configuration.
 
 Web is available at `http://localhost:3000`; the API is available at
 `http://localhost:8000`. Seed only fresh development databases:

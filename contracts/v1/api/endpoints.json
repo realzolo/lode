@@ -6,6 +6,8 @@
     "error_optional": ["details"]
   },
   "endpoints": [
+    ["GET", "/platform-settings"],
+    ["PUT", "/platform-settings"],
     ["GET", "/ai-provider-accounts"],
     ["POST", "/ai-provider-accounts"],
     ["PATCH", "/ai-provider-accounts/{account_id}"],
@@ -23,6 +25,8 @@
     ["POST", "/workspaces/{workspace_id}/ingestion/start"],
     ["POST", "/workspaces/{workspace_id}/ingestion/pause"],
     ["POST", "/workspaces/{workspace_id}/ingestion/resume"],
+    ["GET", "/workspaces/{workspace_id}/investigation-policy"],
+    ["PUT", "/workspaces/{workspace_id}/investigation-policy"],
     ["GET", "/workspaces/{workspace_id}/model-bindings"],
     ["POST", "/workspaces/{workspace_id}/model-bindings"],
     ["PATCH", "/workspaces/{workspace_id}/model-bindings/{binding_id}"],
@@ -51,6 +55,7 @@
     ["POST", "/investigations"],
     ["GET", "/investigations"],
     ["GET", "/investigations/{investigation_id}"],
+    ["GET", "/investigations/{investigation_id}/technical"],
     ["GET", "/investigations/{investigation_id}/events"],
     ["GET", "/investigations/{investigation_id}/audit"],
     ["GET", "/investigations/{investigation_id}/stream"],

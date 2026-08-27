@@ -28,6 +28,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp
 
 from lode.config import settings
+from lode.runtime_defaults import API_RATE_LIMIT_PER_MINUTE
 from lode.security import decode_token
 
 logger = logging.getLogger("lode.api.rate_limit")
@@ -116,7 +117,7 @@ def default_key_func(request: Request) -> str:
     if auth.startswith("Bearer "):
         token = auth.split(" ", 1)[1].strip()
         try:
-            claims = decode_token(token, settings.secret_key)
+            claims = decode_token(token, settings.jwt_signing_key)
             sub = claims.get("sub")
             if isinstance(sub, int):
                 return f"user:{sub}"
@@ -147,13 +148,11 @@ class HardeningMiddleware:
         limiter: Optional[RateLimiter] = None,
         key_func: Callable[[Request], str] = default_key_func,
         exempt_paths: set[str] = DEFAULT_EXEMPT_PATHS,
-        enabled: bool = True,
     ) -> None:
         self.app = app
-        self.limiter = limiter or RateLimiter(settings.rate_limit_per_minute)
+        self.limiter = limiter or RateLimiter(API_RATE_LIMIT_PER_MINUTE)
         self.key_func = key_func
         self.exempt_paths = exempt_paths
-        self.enabled = enabled
 
     async def __call__(
         self, scope, receive: Callable[[], Awaitable[bytes]], send: Callable[[dict], Awaitable[None]]
@@ -165,7 +164,7 @@ class HardeningMiddleware:
         request = Request(scope, receive=receive)
         path = request.url.path
 
-        if not self.enabled or path in self.exempt_paths:
+        if path in self.exempt_paths:
             response_started = {}
 
             async def _send_no_limit(message):

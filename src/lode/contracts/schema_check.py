@@ -86,7 +86,7 @@ async def check_schema(database_url: str) -> dict[str, Any]:
                     )
                 )
             ).all()
-            workspace_policy_fk = (
+            workspace_policy_fks = (
                 await connection.execute(
                     text(
                         "SELECT count(*) FROM pg_catalog.pg_constraint AS con "
@@ -94,10 +94,11 @@ async def check_schema(database_url: str) -> dict[str, Any]:
                         "JOIN pg_catalog.pg_class AS dst ON dst.oid = con.confrelid "
                         "JOIN pg_catalog.pg_namespace AS n ON n.oid = src.relnamespace "
                         "WHERE n.nspname = 'public' AND con.contype = 'f' "
-                        "AND con.conname = "
-                        "'fk_workspaces_model_policy_revision_id_model_policy_revisions' "
+                        "AND con.conname IN ("
+                        "'fk_workspaces_model_policy_revision_id_model_policy_revisions', "
+                        "'fk_workspace_investigation_policy') "
                         "AND src.relname = 'workspaces' "
-                        "AND dst.relname = 'model_policy_revisions'"
+                        "AND dst.relname IN ('model_policy_revisions', 'investigation_policy_revisions')"
                     )
                 )
             ).scalar_one()
@@ -129,11 +130,11 @@ async def check_schema(database_url: str) -> dict[str, Any]:
     }
     if unexpected_triggers:
         raise SchemaInvariantError(f"unexpected triggers are present: {unexpected_triggers}")
-    if workspace_policy_fk != 1:
-        raise SchemaInvariantError("Workspace current policy foreign key is missing")
+    if workspace_policy_fks != 2:
+        raise SchemaInvariantError("Workspace current policy foreign keys are missing")
 
     return {
-        "foreign_keys_checked": 1,
+        "foreign_keys_checked": 2,
         "required_trigger_count": sum(len(names) for names in expected_triggers.values()),
         "table_count": len(actual_tables),
         "trigger_count": len(trigger_rows),

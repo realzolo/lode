@@ -97,7 +97,7 @@ def test_transient_provider_failures_retry_and_record_attempt_count(monkeypatch)
         return _Response({"choices": [{"message": {"content": "OK"}}]})
 
     monkeypatch.setattr("lode.engine.llm.provider_request", request)
-    monkeypatch.setattr("lode.engine.llm.settings.llm_retry_base_delay", 0)
+    monkeypatch.setattr("lode.engine.llm.LLM_RETRY_BASE_DELAY_SECONDS", 0)
     result = asyncio.run(complete_with_usage("system", "user", _config()))
     assert result.text == "OK"
     assert result.attempt_count == 3
@@ -121,20 +121,20 @@ def test_non_json_provider_response_fails_without_pointless_retries(monkeypatch)
     assert attempts == 1
 
 
-def test_egress_rejection_fails_without_retry_and_keeps_stable_code(monkeypatch):
+def test_invalid_provider_response_fails_without_retry_and_keeps_stable_code(monkeypatch):
     attempts = 0
 
     async def request(_method, _endpoint, **_kwargs):
         nonlocal attempts
         attempts += 1
-        raise ProviderExecutionError("egress_violation", "test policy rejection")
+        raise ProviderExecutionError("invalid_response", "test provider response")
 
     monkeypatch.setattr("lode.engine.llm.provider_request", request)
 
     result = asyncio.run(complete_with_usage("system", "user", _config()))
 
     assert result.text is None
-    assert result.error_code == "egress_violation"
+    assert result.error_code == "invalid_response"
     assert result.attempt_count == 1
     assert attempts == 1
 

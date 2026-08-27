@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from lode.ai_output import ai_output_language_instruction, require_ai_output_language
 from lode.application.context import ContextManager, ExactJSONTokenizer, Tokenizer
 from lode.application.context_compaction import (
     ContextSummaryPayload,
@@ -28,6 +29,7 @@ from lode.db.models import (
     AIProviderAccount,
     ContextBundleRevision,
     ContextSummaryArtifact,
+    Investigation,
     InvestigationModelBindingSnapshot,
     ModelDeployment,
     ModelRoutingDecision,
@@ -148,6 +150,14 @@ class PostgresModelRuntime:
     ) -> ModelInvocationResult:
         requested_task = task
         async with self.session_factory() as session:
+            investigation = await session.get(Investigation, investigation_id)
+            if investigation is None:
+                raise RuntimeError("investigation is unavailable")
+            output_language = require_ai_output_language(investigation.output_language)
+            effective_system_prompt = (
+                f"{system_prompt}\n\n{ai_output_language_instruction(output_language)}"
+            )
+            effective_prompt_revision = f"{prompt_revision}.language-{output_language}"
             candidates = await self._candidates(session, investigation_id)
             exact_requirements = []
             for candidate in candidates:
@@ -359,7 +369,7 @@ class PostgresModelRuntime:
                         AIInvocation.investigation_id == investigation_id,
                         AIInvocation.routing_decision_id == route_row.id,
                         AIInvocation.context_bundle_revision_id == context_row.id,
-                        AIInvocation.prompt_revision == prompt_revision,
+                        AIInvocation.prompt_revision == effective_prompt_revision,
                         AIInvocation.schema_revision == schema_revision,
                         AIInvocation.status == "succeeded",
                     )
@@ -383,7 +393,7 @@ class PostgresModelRuntime:
             )
             request_hash = canonical_hash(
                 {
-                    "system_prompt_revision": prompt_revision,
+                    "system_prompt_revision": effective_prompt_revision,
                     "schema_revision": schema_revision,
                     "context_hash": bundle.context_hash,
                 }
@@ -392,7 +402,7 @@ class PostgresModelRuntime:
 
         try:
             completion = await self.gateway.complete(
-                system_prompt,
+                effective_system_prompt,
                 user_prompt,
                 config,
                 response_schema=response_schema,
@@ -440,7 +450,7 @@ class PostgresModelRuntime:
                 provider_account_revision=route.candidate.provider_account_revision,
                 model_deployment_revision=route.candidate.model_deployment_revision,
                 execution_class=route.execution_class.value,
-                prompt_revision=prompt_revision,
+                prompt_revision=effective_prompt_revision,
                 schema_revision=schema_revision,
                 context_hash=bundle.context_hash,
                 request_hash=request_hash,

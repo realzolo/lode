@@ -16,7 +16,6 @@ from lode.engine.db_proxy import verify_database_readonly
 from lode.engine.evidence.secret_mask import mask_secrets
 from lode.integration_policy import (
     IntegrationPolicyError,
-    assert_egress_allowed,
     normalize_integration_config,
 )
 
@@ -81,7 +80,6 @@ def _redacted_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _normalized_config(kind: str, config: dict[str, Any]) -> dict[str, Any]:
     try:
         normalized = normalize_integration_config(kind, config)
-        assert_egress_allowed(normalized)
         return normalized
     except (IntegrationPolicyError, ValueError) as exc:
         raise ReadOnlyVerificationError(str(exc)) from exc

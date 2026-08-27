@@ -260,6 +260,7 @@ def upgrade() -> None:
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column("ingestion_topic", sa.Text(), nullable=False),
         sa.Column("model_policy_revision_id", sa.BigInteger(), nullable=True),
+        sa.Column("investigation_policy_revision_id", sa.BigInteger(), nullable=True),
         sa.Column("ingestion_state", sa.Text(), server_default="draft", nullable=False),
         sa.Column("ingestion_version", sa.Integer(), server_default="0", nullable=False),
         sa.Column("ingestion_start_position", sa.Text(), nullable=True),
@@ -303,6 +304,13 @@ def upgrade() -> None:
             ["model_policy_revision_id"],
             ["model_policy_revisions.id"],
             name="fk_workspaces_model_policy_revision_id_model_policy_revisions",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        sa.ForeignKeyConstraint(
+            ["investigation_policy_revision_id"],
+            ["investigation_policy_revisions.id"],
+            name="fk_workspace_investigation_policy",
             ondelete="SET NULL",
             use_alter=True,
         ),
@@ -482,6 +490,84 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_context_policy_revisions")),
         sa.UniqueConstraint("workspace_id", "revision", name="uq_context_policy_revision"),
+    )
+    op.create_table(
+        "investigation_policy_revisions",
+        sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
+        sa.Column("workspace_id", sa.BigInteger(), nullable=False),
+        sa.Column("profile", sa.Text(), nullable=False),
+        sa.Column("max_evidence_steps", sa.Integer(), nullable=False),
+        sa.Column("max_model_calls", sa.Integer(), nullable=False),
+        sa.Column("max_native_reads", sa.Integer(), nullable=False),
+        sa.Column("max_output_bytes", sa.Integer(), nullable=False),
+        sa.Column("max_cost", sa.Numeric(18, 8), nullable=False),
+        sa.Column("timeout_seconds", sa.Integer(), nullable=False),
+        sa.Column("window_before_seconds", sa.Integer(), nullable=False),
+        sa.Column("window_after_seconds", sa.Integer(), nullable=False),
+        sa.Column("revision", sa.Integer(), nullable=False),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "profile IN ('fast', 'balanced', 'deep')",
+            name=op.f("ck_investigation_policy_revisions_profile"),
+        ),
+        sa.CheckConstraint(
+            "max_evidence_steps > 0",
+            name=op.f("ck_investigation_policy_revisions_max_evidence_steps_positive"),
+        ),
+        sa.CheckConstraint(
+            "max_model_calls > 0",
+            name=op.f("ck_investigation_policy_revisions_max_model_calls_positive"),
+        ),
+        sa.CheckConstraint(
+            "max_native_reads >= 0",
+            name=op.f("ck_investigation_policy_revisions_max_native_reads_nonnegative"),
+        ),
+        sa.CheckConstraint(
+            "max_output_bytes > 0",
+            name=op.f("ck_investigation_policy_revisions_max_output_bytes_positive"),
+        ),
+        sa.CheckConstraint(
+            "max_cost >= 0",
+            name=op.f("ck_investigation_policy_revisions_max_cost_nonnegative"),
+        ),
+        sa.CheckConstraint(
+            "timeout_seconds > 0",
+            name=op.f("ck_investigation_policy_revisions_timeout_seconds_positive"),
+        ),
+        sa.CheckConstraint(
+            "window_before_seconds >= 0",
+            name=op.f("ck_investigation_policy_revisions_window_before_nonnegative"),
+        ),
+        sa.CheckConstraint(
+            "window_after_seconds >= 0",
+            name=op.f("ck_investigation_policy_revisions_window_after_nonnegative"),
+        ),
+        sa.CheckConstraint(
+            "revision > 0",
+            name=op.f("ck_investigation_policy_revisions_revision_positive"),
+        ),
+        sa.ForeignKeyConstraint(
+            ["created_by"],
+            ["users.id"],
+            name=op.f("fk_investigation_policy_revisions_created_by_users"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["workspace_id"],
+            ["workspaces.id"],
+            name=op.f("fk_investigation_policy_revisions_workspace_id_workspaces"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_investigation_policy_revisions")),
+        sa.UniqueConstraint(
+            "workspace_id", "revision", name="uq_investigation_policy_revision"
+        ),
     )
     op.create_table(
         "dead_letters",
@@ -1169,7 +1255,6 @@ def upgrade() -> None:
         sa.Column("workspace_id", sa.BigInteger(), nullable=False),
         sa.Column("eligible_bindings", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("role_policies", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("budget_policy", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("context_policy_revision_id", sa.BigInteger(), nullable=False),
         sa.Column(
             "verifier_policy",
@@ -1429,6 +1514,7 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("public_id", sa.Text(), nullable=False),
         sa.Column("workspace_id", sa.BigInteger(), nullable=False),
+        sa.Column("investigation_policy_revision_id", sa.BigInteger(), nullable=False),
         sa.Column("alert_id", sa.BigInteger(), nullable=True),
         sa.Column("incident_id", sa.BigInteger(), nullable=True),
         sa.Column("retry_of_id", sa.BigInteger(), nullable=True),
@@ -1507,6 +1593,14 @@ def upgrade() -> None:
             ["incidents.id"],
             name=op.f("fk_investigations_incident_id_incidents"),
             ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["investigation_policy_revision_id"],
+            ["investigation_policy_revisions.id"],
+            name=op.f(
+                "fk_investigations_investigation_policy_revision_id_investigation_policy_revisions"
+            ),
+            ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
             ["retry_of_id"],
@@ -3345,7 +3439,7 @@ def upgrade() -> None:
             name=op.f("ck_evidence_access_decisions_parse_tree_hash_sha256"),
         ),
         sa.CheckConstraint(
-            "rejection_code IS NULL OR rejection_code IN ('invalid_syntax', 'unsupported_node', 'write_semantics', 'scope_violation', 'budget_violation', 'egress_violation', 'sandbox_violation', 'preflight_failed')",
+            "rejection_code IS NULL OR rejection_code IN ('invalid_syntax', 'unsupported_node', 'write_semantics', 'scope_violation', 'budget_violation', 'sandbox_violation', 'preflight_failed')",
             name=op.f("ck_evidence_access_decisions_rejection_code"),
         ),
         sa.CheckConstraint(
@@ -3694,6 +3788,54 @@ def upgrade() -> None:
         ["id"],
         ondelete="SET NULL",
     )
+    op.create_foreign_key(
+        "fk_workspace_investigation_policy",
+        "workspaces",
+        "investigation_policy_revisions",
+        ["investigation_policy_revision_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+
+    op.create_table(
+        "platform_settings",
+        sa.Column("id", sa.Integer(), server_default=sa.text("1"), nullable=False),
+        sa.Column("ai_output_language", sa.Text(), server_default="en", nullable=False),
+        sa.Column("revision", sa.Integer(), server_default="1", nullable=False),
+        sa.Column("updated_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint("id = 1", name=op.f("ck_platform_settings_single_row")),
+        sa.CheckConstraint(
+            "ai_output_language IN ('en', 'zh')",
+            name=op.f("ck_platform_settings_output_language"),
+        ),
+        sa.CheckConstraint(
+            "revision > 0", name=op.f("ck_platform_settings_revision_positive")
+        ),
+        sa.ForeignKeyConstraint(
+            ["updated_by"],
+            ["users.id"],
+            name=op.f("fk_platform_settings_updated_by_users"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_platform_settings")),
+    )
+    op.execute(
+        sa.text(
+            "INSERT INTO platform_settings (id, ai_output_language, revision) VALUES (1, 'en', 1)"
+        )
+    )
 
     op.execute(
         sa.text("""
@@ -3707,6 +3849,7 @@ def upgrade() -> None:
     )
     for table_name in (
         "users",
+        "platform_settings",
         "workspaces",
         "workspace_ingestion_runtime",
         "ai_provider_accounts",
@@ -3744,6 +3887,7 @@ def upgrade() -> None:
         "audit_events",
         "provider_model_observations",
         "context_policy_revisions",
+        "investigation_policy_revisions",
         "model_policy_revisions",
         "repository_descriptors",
         "component_descriptors",
@@ -4043,6 +4187,11 @@ def upgrade() -> None:
 def downgrade() -> None:
     # ### commands auto generated by Alembic - please adjust! ###
     op.drop_constraint(
+        "fk_workspace_investigation_policy",
+        "workspaces",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
         "fk_workspaces_model_policy_revision_id_model_policy_revisions",
         "workspaces",
         type_="foreignkey",
@@ -4115,6 +4264,7 @@ def downgrade() -> None:
     op.drop_index("ix_investigations_retry_of", table_name="investigations")
     op.drop_index("ix_investigations_incident", table_name="investigations")
     op.drop_table("investigations")
+    op.drop_table("investigation_policy_revisions")
     op.drop_table("build_units")
     op.drop_index(
         "uq_workspace_repository_binding_active",
@@ -4169,6 +4319,7 @@ def downgrade() -> None:
     op.drop_index("ix_alerts_event", table_name="alerts")
     op.drop_table("alerts")
     op.drop_table("workspaces")
+    op.drop_table("platform_settings")
     op.drop_table("provider_model_observations")
     op.drop_table("model_deployments")
     op.drop_table("invites")

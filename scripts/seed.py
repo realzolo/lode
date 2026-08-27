@@ -14,11 +14,13 @@ from lode.db.models import (
     GitRepository,
     ModelDeployment,
     ModelPolicyRevision,
+    InvestigationPolicyRevision,
     User,
     Workspace,
     WorkspaceModelBinding,
     WorkspaceRepositoryBinding,
 )
+from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.session import AsyncSessionLocal
 from lode.security import hash_password
 
@@ -58,6 +60,16 @@ async def main() -> None:
         )
         session.add(workspace)
         await session.flush()
+        investigation_policy = InvestigationPolicyRevision(
+            workspace_id=workspace.id,
+            profile="balanced",
+            **investigation_policy_columns("balanced"),
+            revision=1,
+            created_by=admin.id,
+        )
+        session.add(investigation_policy)
+        await session.flush()
+        workspace.investigation_policy_revision_id = investigation_policy.id
 
         repository = GitRepository(
             name="checkout",
@@ -140,7 +152,6 @@ async def main() -> None:
                 "synthesizer": {"execution_class": "latency_optimized"},
                 "verifier": {"execution_class": "latency_optimized", "independent": True},
             },
-            budget_policy={"max_calls": 10, "max_cost": "0"},
             context_policy_revision_id=context_policy.id,
             verifier_policy={"required_for_confirmed": True},
             revision=1,

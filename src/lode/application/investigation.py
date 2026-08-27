@@ -33,6 +33,7 @@ class InvestigationState:
     completed_fingerprints: frozenset[str]
     budget: DecisionBudget
     state_packet: Mapping[str, Any] = field(default_factory=dict)
+    max_waves: int = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,22 +176,18 @@ class InvestigationOrchestrator:
         wave_coordinator: DurableWaveCoordinator,
         catalog_builder: CapabilityCatalogBuilder | None = None,
         decision_policy: DecisionPolicyEngine | None = None,
-        max_waves: int = 12,
     ) -> None:
-        if not 1 <= max_waves <= 100:
-            raise ValueError("max_waves is invalid")
         self.planner = planner
         self.repository = repository
         self.wave_coordinator = wave_coordinator
         self.catalog_builder = catalog_builder or CapabilityCatalogBuilder()
         self.decision_policy = decision_policy or DecisionPolicyEngine()
-        self.max_waves = max_waves
 
     async def run(self, investigation_id: int) -> InvestigationRunResult:
         rejections = 0
         while True:
             state = await self.repository.load_state(investigation_id)
-            if state.wave_count >= self.max_waves or state.budget.remaining_operations == 0:
+            if state.wave_count >= state.max_waves or state.budget.remaining_operations == 0:
                 await self.repository.finish_investigation(
                     investigation_id,
                     result_state="insufficient",

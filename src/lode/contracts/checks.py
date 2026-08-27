@@ -7,7 +7,17 @@ import json
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[3]
+_PACKAGE_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _asset_root() -> Path:
+    for candidate in (Path.cwd(), Path("/app"), _PACKAGE_ROOT):
+        if (candidate / "contracts" / "v1").is_dir() and (candidate / "evals" / "v1").is_dir():
+            return candidate
+    return _PACKAGE_ROOT
+
+
+ROOT = _asset_root()
 CONTRACT_ROOT = ROOT / "contracts" / "v1"
 EVAL_ROOT = ROOT / "evals" / "v1"
 

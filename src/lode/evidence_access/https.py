@@ -125,7 +125,7 @@ class HTTPSPolicy:
                 {"check": "https_canonical_url", "outcome": "allow"},
                 {"check": "https_safe_endpoint", "outcome": "allow", "id": endpoint["id"]},
                 {"check": "https_query_schema", "outcome": "allow"},
-                {"check": "https_egress_scope", "outcome": "allow"},
+                {"check": "https_endpoint_scope", "outcome": "allow"},
             ),
             constraint_diff=diff,
             effective_budget=budget,
@@ -161,7 +161,7 @@ class HTTPSPolicy:
         try:
             parsed_port = parsed.port
         except ValueError as exc:
-            raise AccessRejection("egress_violation", "HTTPS URL port is invalid") from exc
+            raise AccessRejection("invalid_syntax", "HTTPS URL port is invalid") from exc
         if (
             parsed.scheme != "https"
             or not parsed.hostname
@@ -175,18 +175,11 @@ class HTTPSPolicy:
             or not _PATH.fullmatch(parsed.path)
             or any(segment in {".", ".."} for segment in parsed.path.split("/"))
         ):
-            raise AccessRejection("egress_violation", "HTTPS URL is not canonical")
+            raise AccessRejection("invalid_syntax", "HTTPS URL is not canonical")
         hostname = parsed.hostname
-        if not re.fullmatch(
-            r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?",
-            hostname,
-        ):
-            raise AccessRejection(
-                "egress_violation", "HTTPS hostname must be lowercase canonical DNS"
-            )
         port = parsed_port or 443
-        origin = f"https://{hostname}" + (f":{port}" if port != 443 else "")
+        rendered_host = f"[{hostname}]" if ":" in hostname else hostname
+        origin = f"https://{rendered_host}" + (f":{port}" if port != 443 else "")
         return origin + (parsed.path or "/")
 
     def _endpoint_matches(
@@ -245,8 +238,10 @@ class HTTPSPolicy:
         ):
             raise AccessRejection("scope_violation", "HTTPS endpoint catalog entry is invalid")
         try:
+            hostname = endpoint["host"]
+            rendered_host = f"[{hostname}]" if ":" in hostname else hostname
             canonical = HTTPSPolicy._canonical_url(
-                f"https://{endpoint['host']}"
+                f"https://{rendered_host}"
                 + (f":{endpoint['port']}" if endpoint["port"] != 443 else "")
                 + endpoint["path_template"]
             )

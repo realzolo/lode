@@ -19,11 +19,16 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from lode.config import settings
 from lode.crypto import decrypt_secret
 from lode.evidence_connectors.types import ProviderExecutionError
 from lode.infrastructure.provider_http import provider_request
 from lode.metrics import LLM_CALLS, LLM_LATENCY
+from lode.runtime_defaults import (
+    LLM_MAX_OUTPUT_TOKENS,
+    LLM_MAX_RETRIES,
+    LLM_REQUEST_TIMEOUT_SECONDS,
+    LLM_RETRY_BASE_DELAY_SECONDS,
+)
 
 logger = logging.getLogger("lode.engine.llm")
 
@@ -107,7 +112,7 @@ async def complete(
 ) -> str | None:
     """Return the assistant message text, or ``None`` if unavailable.
 
-    The call uses the DNS-pinned provider transport. Transient failures
+    The call uses the bounded provider transport. Transient failures
     (network blips, provider 5xx) are retried with bounded
     exponential backoff; after exhausting retries the engine returns an
     unavailable result and does not synthesize a diagnosis.
@@ -210,7 +215,7 @@ async def complete_with_usage(
     headers["Content-Type"] = "application/json"
     headers["Accept"] = "application/json"
     endpoint = model_endpoint(config.provider, config.base_url)
-    request_timeout = max(1.0, timeout_seconds or settings.llm_request_timeout_seconds)
+    request_timeout = max(1.0, timeout_seconds or LLM_REQUEST_TIMEOUT_SECONDS)
 
     async def _post() -> dict[str, Any]:
         response = await provider_request(
@@ -236,8 +241,8 @@ async def complete_with_usage(
             raise TypeError("provider response must be a JSON object")
         return value
 
-    max_retries = max(1, settings.llm_max_retries)
-    base_delay = settings.llm_retry_base_delay
+    max_retries = LLM_MAX_RETRIES
+    base_delay = LLM_RETRY_BASE_DELAY_SECONDS
     last_exc: Exception | None = None
     # Time only the network round-trip(s); retries add their own sleep that is
     # not part of "provider latency". A successful call reports one observation.
@@ -342,7 +347,7 @@ def _openai_payload(
             {"role": "user", "content": user},
         ],
         "temperature": 0.2,
-        "max_completion_tokens": settings.llm_max_output_tokens,
+        "max_completion_tokens": LLM_MAX_OUTPUT_TOKENS,
     }
     if response_schema is not None:
         payload["response_format"] = {
@@ -375,7 +380,7 @@ def _anthropic_payload(
         "model": model,
         "system": system,
         "messages": [{"role": "user", "content": user}],
-        "max_tokens": settings.llm_max_output_tokens,
+        "max_tokens": LLM_MAX_OUTPUT_TOKENS,
     }
     if response_schema is not None:
         payload["tools"] = [

@@ -14,6 +14,7 @@ DECLARE
     workspace_row workspaces%ROWTYPE;
     connector_id bigint;
     scope_id bigint;
+    policy_id bigint;
     investigation_id bigint;
     rejected boolean;
 BEGIN
@@ -79,12 +80,20 @@ BEGIN
         RAISE EXCEPTION 'immutable trigger accepted an update';
     END IF;
 
+    INSERT INTO investigation_policy_revisions (
+        workspace_id, profile, max_evidence_steps, max_model_calls,
+        max_native_reads, max_output_bytes, max_cost, timeout_seconds,
+        window_before_seconds, window_after_seconds, revision
+    ) VALUES (
+        workspace_row.id, 'balanced', 12, 10, 8, 8388608, 100, 600, 900, 900, 1
+    ) RETURNING id INTO policy_id;
+
     INSERT INTO investigations (
-        public_id, workspace_id, trigger_signature_hash, status, result_state,
+        public_id, workspace_id, investigation_policy_revision_id, trigger_signature_hash, status, result_state,
         window_started_at, window_finished_at, execution_budget, engine_version,
         finished_at, archived_at
     ) VALUES (
-        'schema-behavior-investigation', workspace_row.id, repeat('a', 64),
+        'schema-behavior-investigation', workspace_row.id, policy_id, repeat('a', 64),
         'completed', 'insufficient', now() - interval '1 minute', now(),
         '{}'::jsonb, 'schema-behavior', now(), now()
     ) RETURNING id INTO investigation_id;

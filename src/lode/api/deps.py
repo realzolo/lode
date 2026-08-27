@@ -35,7 +35,7 @@ def require_user(authorization: str | None = Header(default=None)) -> int:
         raise HTTPException(status_code=401, detail="missing or invalid Authorization header")
     token = authorization.split(" ", 1)[1].strip()
     try:
-        claims = decode_token(token, settings.secret_key)
+        claims = decode_token(token, settings.jwt_signing_key)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=f"invalid token: {exc}")
     sub = claims.get("sub")
