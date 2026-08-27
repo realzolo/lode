@@ -152,7 +152,6 @@ class Settings(BaseSettings):
     evidence_disabled_workspace_ids: str = ""
     evidence_disabled_connector_ids: str = ""
     evidence_disabled_languages: str = ""
-    evidence_kill_switch_file: str = ""
 
     # Rate limiting (M6 hardening)
     # In-process fixed-window limiter applied to every non-exempt route. The

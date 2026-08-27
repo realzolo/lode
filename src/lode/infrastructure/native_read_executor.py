@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 from sqlalchemy import func, select
@@ -45,19 +45,11 @@ class NativeReadOperationExecutor:
         session_factory: async_sessionmaker[AsyncSession],
         resolver: ConnectorAdapterResolver,
         kill_switch: EvidenceKillSwitch | None = None,
-        kill_switch_provider: Callable[[], EvidenceKillSwitch] | None = None,
     ) -> None:
-        if kill_switch is not None and kill_switch_provider is not None:
-            raise ValueError("provide a fixed kill switch or a dynamic provider, not both")
         self.session_factory = session_factory
         self.resolver = resolver
         self.registry = build_native_policy_registry()
-        if kill_switch_provider is not None:
-            self.kill_switch_provider = kill_switch_provider
-        elif kill_switch is not None:
-            self.kill_switch_provider = lambda: kill_switch
-        else:
-            self.kill_switch_provider = configured_kill_switch
+        self.kill_switch = kill_switch or configured_kill_switch()
 
     async def execute(self, operation_id: int, operation: PlannedOperation) -> OperationResult:
         if operation.native_candidate is None:
@@ -126,12 +118,8 @@ class NativeReadOperationExecutor:
                 native_reads_used=used,
                 archived_bytes_used=archived_bytes,
             )
-            try:
-                kill_switch = self.kill_switch_provider()
-            except RuntimeError:
-                kill_switch = EvidenceKillSwitch(globally_enabled=False)
             authorized = await EvidenceAccessAuthorizer(
-                session, self.registry, kill_switch
+                session, self.registry, self.kill_switch
             ).authorize(candidate, context)
             if authorized.outcome != "allow" or authorized.token is None:
                 return OperationResult(
