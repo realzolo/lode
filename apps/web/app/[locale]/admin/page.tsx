@@ -58,7 +58,7 @@ export default function WorkspacesPage() {
     finally { setTransitioningId(null); }
   }
 
-  return <main className="space-y-6">
+  return <main className="dashboard-page space-y-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div><p className="eyebrow">{t('controlPlane')}</p><h1 className="page-title">{t('workspacesTitle')}</h1><p className="page-subtitle">{t('workspacesSubtitle')}</p></div>
       <div className="flex gap-2"><Button size="icon" variant="outline" aria-label={tc('refresh')} title={tc('refresh')} onClick={() => void load()}><RefreshCw size={16} /></Button><Button variant="primary" onClick={() => setOpen(true)}><Plus size={16} />{t('newWorkspace')}</Button></div>

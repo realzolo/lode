@@ -39,7 +39,13 @@
     "openNavigation": "打开导航",
     "closeNavigation": "关闭导航",
     "primaryNavigation": "主导航",
-    "user": "Lode 用户"
+    "user": "Lode 用户",
+    "find": "查找",
+    "findPlaceholder": "查找页面…",
+    "findResults": "页面搜索结果",
+    "noFindResults": "没有匹配的页面",
+    "findShortcut": "F",
+    "escapeShortcut": "ESC"
   },
   "settings": {
     "title": "全局设置",

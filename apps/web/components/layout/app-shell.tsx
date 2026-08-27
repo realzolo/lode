@@ -11,6 +11,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Topbar } from '@/components/layout/topbar';
+import { DashboardFinder } from '@/components/layout/dashboard-finder';
 import { useRouter } from '@/lib/navigation';
 import { useUser } from '@/lib/user-context';
 
@@ -18,6 +19,7 @@ export type Portal = 'admin' | 'workbench';
 
 export function AppShell({ portal, children }: { portal: Portal; children: ReactNode }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [finderOpen, setFinderOpen] = useState(false);
   const t = useTranslations('navigation');
   const { user, loading } = useUser();
   const router = useRouter();
@@ -35,17 +37,29 @@ export function AppShell({ portal, children }: { portal: Portal; children: React
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [mobileNavOpen]);
 
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (event.key.toLowerCase() !== 'f' || event.metaKey || event.ctrlKey || event.altKey || target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName ?? '')) return;
+      event.preventDefault();
+      setFinderOpen(true);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   return (
     <div className={`shell shell-${portal}`}>
-      <Sidebar portal={portal} />
+      <Sidebar portal={portal} onFind={() => setFinderOpen(true)} />
       <div className="main">
         <Topbar portal={portal} onMenu={() => setMobileNavOpen(true)} />
         <div className="content"><div className="page-frame">{children}</div></div>
       </div>
       <div className={`mobile-nav-drawer ${mobileNavOpen ? 'is-open' : ''}`} role="dialog" aria-label={t('navigation')} aria-modal="true" aria-hidden={!mobileNavOpen}>
         <button className="mobile-nav-backdrop" aria-label={t('closeNavigation')} onClick={() => setMobileNavOpen(false)} />
-        <Sidebar portal={portal} onNavigate={() => setMobileNavOpen(false)} />
+        <Sidebar portal={portal} onFind={() => setFinderOpen(true)} onNavigate={() => setMobileNavOpen(false)} />
       </div>
+      <DashboardFinder portal={portal} open={finderOpen} onOpenChange={setFinderOpen} />
     </div>
   );
 }

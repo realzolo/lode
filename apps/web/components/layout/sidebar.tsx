@@ -1,7 +1,7 @@
 'use client';
 
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { Activity, Boxes, GitFork, Languages, LogOut, Moon, ServerCog, Settings, Sun, Users } from 'lucide-react';
+import { Activity, Boxes, ChevronsUpDown, GitFork, Languages, LogOut, Moon, Search, ServerCog, Settings, Sun, Users } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import { useTheme } from 'next-themes';
 import { Link, usePathname, useRouter } from '@/lib/navigation';
@@ -9,7 +9,7 @@ import { useUser } from '@/lib/user-context';
 import type { Portal } from '@/components/layout/app-shell';
 import { cx } from '@/lib/cn';
 
-export function Sidebar({ portal, onNavigate }: { portal: Portal; onNavigate?: () => void }) {
+export function Sidebar({ portal, onFind, onNavigate }: { portal: Portal; onFind: () => void; onNavigate?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
   const locale = useLocale();
@@ -31,7 +31,13 @@ export function Sidebar({ portal, onNavigate }: { portal: Portal; onNavigate?: (
     <div className="workspace-switcher">
       <Link href={home} className="sidebar-logo" onClick={onNavigate}>Lode</Link>
       <span className="workspace-plan">{portal === 'admin' ? t('controlPlane') : t('workbench')}</span>
+      <ChevronsUpDown className="workspace-switcher-icon" size={14} aria-hidden="true" />
     </div>
+    <button className="sidebar-search" type="button" onClick={() => { onFind(); onNavigate?.(); }}>
+      <Search size={16} aria-hidden="true" />
+      <span>{t('find')}</span>
+      <kbd>{t('findShortcut')}</kbd>
+    </button>
     <nav aria-label={t('primaryNavigation')} className="stack" style={{ gap: 4 }}>
       {nav.map((item) => {
         const active = pathname === item.href || (item.href !== home && pathname.startsWith(`${item.href}/`));

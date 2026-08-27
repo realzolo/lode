@@ -32,9 +32,9 @@ export default function ChangePasswordPage() {
       setBusy(false);
     }
   }
-  return <main className="auth-shell"><Card className="auth-card"><h1 className="login-form-title">{t('title')}</h1><form className="stack" style={{ gap: 16 }} onSubmit={submit}>
-    <Input type="password" autoComplete="current-password" placeholder={t('current')} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
-    <Input type="password" autoComplete="new-password" placeholder={t('new')} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+  return <main className="auth-shell"><Card className="auth-card"><h1 className="login-form-title">{t('title')}</h1><form autoComplete="off" className="stack" style={{ gap: 16 }} onSubmit={submit}>
+    <Input type="password" placeholder={t('current')} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+    <Input type="password" placeholder={t('new')} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
     {error ? <p className="auth-error" role="alert">{error}</p> : null}
     <Button variant="primary" type="submit" disabled={busy || !currentPassword || newPassword.length < 8} loading={busy} loadingText={t('submit')}>{t('submit')}</Button>
   </form></Card></main>;

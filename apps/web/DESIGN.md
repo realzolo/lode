@@ -34,7 +34,7 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 
 ## Layout
 
-- Desktop (`>=1024px`): 248px fixed workspace sidebar and 56px context bar. Page content is fluid and uses a maximum readable frame only when a form or prose surface needs it.
+- Desktop (`>=1024px`): 256px fixed workspace sidebar and 56px context bar. Page content is fluid and uses a maximum readable frame only when a form or prose surface needs it.
 - Tablet (`768-1023px`): 64px icon-only sidebar. Navigation labels become accessible names/tooltips, never hidden semantics.
 - Mobile (`<768px`): a 56px single-line context bar and an off-canvas navigation drawer. The drawer closes by navigation, backdrop click, and Escape.
 - Workspace detail stays inside the global control-plane shell and uses tabs for
@@ -44,14 +44,20 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 ## Navigation
 
 - The top of the sidebar shows Lode workspace identity and the active product context. Do not render a fake workspace switcher when workspace switching is not a supported Lode capability.
-- Do not render a search or command-palette control unless the current product
-  route provides an implemented searchable command surface.
+- The sidebar Find control opens the permission-filtered route finder. It is
+  available by click and the `F` keyboard shortcut, ignores shortcuts while a
+  form control is active, filters immediately, supports arrow-key selection,
+  and opens the active match with Enter.
 - Navigation rows are 36px high with a 6px corner radius, 10px horizontal padding, clear hover and focus-visible states, and neutral active fill.
 - The signed-in user belongs at the sidebar bottom. Locale, theme, and sign-out live in its menu, not in the top bar.
 
 ## Controls
 
 - Inputs, selects, search controls, and standard toolbar buttons share a 36px external height and 6px radius, matching Vercel's compact dashboard controls. A combined search control owns the only border: its nested input has no independent border, padding, or shadow.
+- Shared text inputs and textareas always opt out of browser and password-manager
+  autocomplete. Text inputs load read-only and unlock on the first real user
+  focus so saved credentials cannot be injected before interaction; the focus
+  transition must preserve normal controlled-input typing and keyboard access.
 - A visible field label is 13px with a 20px line box; its input or select starts 12px below it. Use the shared vertical field layout rather than an unscoped `gap` declaration.
 - Toolbar controls use an 8px gap. On narrow screens filter bars wrap into a vertical stack without shrinking important controls below usable width.
 - Icon-only buttons require a tooltip and accessible name. Text buttons are reserved for explicit commands such as Save, Retry, or Clear filters.
@@ -82,6 +88,9 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 ## Authenticated UI Checklist
 
 - Reuse `AppShell`, sidebar, topbar, and shared UI primitives.
+- Keep shared Vercel Dashboard shell/surface rules in `app/dashboard.css`, loaded
+  after `globals.css`; keep investigation-domain visualizations in
+  `globals.css` rather than coupling them to the shell layer.
 - Implement only the frozen current API, localization, permission, and business
   contracts; visual alignment must not replace real behavior.
 - Verify desktop, tablet, and mobile layouts. Verify mobile navigation, account

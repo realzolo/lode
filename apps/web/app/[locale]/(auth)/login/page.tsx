@@ -52,13 +52,12 @@ export default function LoginPage() {
           <h1 className="login-form-title">{t('title')}</h1>
           <p className="login-form-subtitle">{t('subtitle')}</p>
 
-          <form className="stack" style={{ gap: 16 }} onSubmit={handleSubmit}>
+          <form autoComplete="off" className="stack" style={{ gap: 16 }} onSubmit={handleSubmit}>
             <div className="field">
               <label className="field-label" htmlFor="username">{t('username')}</label>
               <Input
                 id="username"
                 placeholder={t('username')}
-                autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
               />
@@ -69,7 +68,6 @@ export default function LoginPage() {
                 id="password"
                 type="password"
                 placeholder={t('password')}
-                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />

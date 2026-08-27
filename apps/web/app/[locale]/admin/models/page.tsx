@@ -88,7 +88,7 @@ export default function ModelsPage() {
   }
 
   return (
-    <main className="space-y-6">
+    <main className="dashboard-page space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div><h1 className="page-title">{t('providerAccounts')}</h1><p className="page-subtitle">{t('modelsSubtitle')}</p></div>
         <div className="flex gap-2">

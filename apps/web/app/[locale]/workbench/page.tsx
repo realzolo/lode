@@ -70,7 +70,7 @@ export default function InvestigationsPage() {
   const names = useMemo(() => new Map(workspaces.map((row) => [row.id, row.name])), [workspaces]);
   const dateLocale = locale === 'zh' ? 'zh-CN' : 'en-US';
 
-  return <main className="space-y-6">
+  return <main className="dashboard-page space-y-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div>
         <p className="eyebrow">{t('eyebrow')}</p>

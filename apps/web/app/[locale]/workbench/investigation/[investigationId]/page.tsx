@@ -125,7 +125,7 @@ export default function InvestigationPage({ params }: { params: { investigationI
       setError(apiErrorMessage(cause, tc('requestFailed')));
     }
   }
-  return <main className="space-y-6">
+  return <main className="dashboard-page investigation-page space-y-6">
     <header className="border-b pb-6">
       <div className="mb-5 flex items-center justify-between">
         <Button size="sm" variant="ghost" asChild><Link href="/workbench"><ArrowLeft size={15} />{t('investigations')}</Link></Button>

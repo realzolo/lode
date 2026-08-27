@@ -47,7 +47,7 @@ export default function UsersPage() {
     finally { setBusyId(null); }
   }
 
-  return <main className="space-y-6">
+  return <main className="dashboard-page space-y-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div><h1 className="page-title">{t('title')}</h1><p className="page-subtitle">{t('subtitle')}</p></div>
       <Button variant="primary" onClick={() => setOpen(true)}>{t('newUser')}</Button>

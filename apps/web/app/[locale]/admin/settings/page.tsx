@@ -38,7 +38,7 @@ export default function SettingsPage() {
     }
   }
   const labels = { en: t('english'), zh: t('chinese') };
-  return <main className="max-w-2xl space-y-6">
+  return <main className="dashboard-page settings-page max-w-2xl space-y-6">
     <header><p className="eyebrow">{t('title')}</p><h1 className="page-title">{t('title')}</h1><p className="page-subtitle">{t('subtitle')}</p></header>
     {error && <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
     {!settings ? <p className="text-sm text-muted-foreground">{tc('loading')}</p> : <section className="space-y-5 border p-5">

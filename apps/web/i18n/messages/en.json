@@ -39,7 +39,13 @@
     "openNavigation": "Open navigation",
     "closeNavigation": "Close navigation",
     "primaryNavigation": "Primary navigation",
-    "user": "Lode user"
+    "user": "Lode user",
+    "find": "Find",
+    "findPlaceholder": "Find a page…",
+    "findResults": "Page search results",
+    "noFindResults": "No matching pages",
+    "findShortcut": "F",
+    "escapeShortcut": "ESC"
   },
   "settings": {
     "title": "Global settings",

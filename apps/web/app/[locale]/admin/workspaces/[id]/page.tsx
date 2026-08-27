@@ -151,9 +151,9 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     { value: 'members', label: t('members'), content: <Members workspaceId={params.id} members={members} users={users} onChanged={load} /> },
   ], [accountModels, bindings, buildUnits, capabilities, components, connectors, grants, investigationPolicy, load, members, params.id, repositories, t, users, workspace]);
 
-  if (loading) return <main className="space-y-6"><div className="h-16 border-b" /><ListSkeleton rows={7} columns={5} /></main>;
+  if (loading) return <main className="dashboard-page space-y-6"><div className="h-16 border-b" /><ListSkeleton rows={7} columns={5} /></main>;
 
-  return <main className="space-y-6">
+  return <main className="dashboard-page workspace-detail-page space-y-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div>
         <p className="mb-2 text-sm text-muted-foreground"><Link href="/admin" className="hover:text-link">{t('workspace')}</Link> / {params.id}</p>

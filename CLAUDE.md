@@ -910,16 +910,24 @@ failure reason, and retry. Loki uses the recursive condition-tree editor. The
 system administrator manages bindings, immutable model-policy revisions,
 read-only repositories, connector instances, and ingestion transitions.
 
-The authenticated shell follows `apps/web/DESIGN.md`: 248px fixed desktop
-sidebar, 56px context bar, neutral one-pixel borders, 6px radii, 36px controls,
-compact tables, and non-nested operational sections in both themes. Shared
+The authenticated shell follows `apps/web/DESIGN.md`: 256px fixed desktop
+sidebar, 64px tablet rail, mobile navigation drawer, 56px context bar, neutral
+one-pixel borders, 6px control radii, 8px operational panels, 36px controls,
+compact tables, and non-nested operational sections in both themes. Shared shell
+fidelity rules live in `apps/web/app/dashboard.css`, imported after the domain
+and Tailwind rules in `globals.css`; investigation-specific visualizations stay
+in `globals.css`. The sidebar Find command supports mouse and `F` keyboard
+navigation while preserving the current permission-filtered route set. Shared
 buttons preserve size while loading, set `aria-busy`, and prevent duplicate
-submissions; row actions have independent state. Lists use structural skeletons
-on first load, retain prior data during refresh, and define empty, filtered-
-empty, inline-error, and retry states. All visible labels, accessibility names,
-enum values, placeholders, validation messages, and client API errors use
-`next-intl`. `npm run check:i18n` enforces English/Chinese key parity and scans
-TSX literals; dates and numbers use the active locale.
+submissions; row actions have independent state. Shared text inputs and
+textareas force autocomplete/password-manager opt-out attributes. Text inputs
+also remain read-only until their first user focus so browsers cannot inject
+saved values during page load, then behave as normal controlled inputs. Lists
+use structural skeletons on first load, retain prior data during refresh, and
+define empty, filtered-empty, inline-error, and retry states. All visible labels,
+accessibility names, enum values, placeholders, validation messages, and client
+API errors use `next-intl`. `npm run check:i18n` enforces English/Chinese key
+parity and scans TSX literals; dates and numbers use the active locale.
 
 Authentication uses normalized lowercase usernames. The initial migration
 creates exactly one system administrator, `admin`, with password `123456` and
