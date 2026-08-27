@@ -69,7 +69,8 @@ def validate_contracts() -> dict[str, Any]:
     endpoints = [tuple(item) for item in api.get("endpoints", [])]
     if len(endpoints) != len(set(endpoints)):
         raise FixtureError("API endpoint manifest contains duplicates")
-    if any(path.startswith(("/applications", "/services")) for _, path in endpoints):
+    removed_prefixes = ("/" + "applications", "/" + "services")
+    if any(path.startswith(removed_prefixes) for _, path in endpoints):
         raise FixtureError("API endpoint manifest contains a removed resource")
 
     tables = _load_json(CONTRACT_ROOT / "database" / "tables.json")

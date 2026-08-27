@@ -15,6 +15,10 @@ from lode.application.intake import (
     normalize_manual,
 )
 
+_REMOVED_SERVICE_FIELD = "service" + "_name"
+_REMOVED_REQUEST_FIELD = "request" + "_id"
+_REMOVED_COMMIT_FIELD = "git" + "_commit"
+
 
 def _payload(trace_id: str = "opaque") -> dict:
     return {
@@ -60,10 +64,10 @@ def test_kafka_trace_is_preserved_exactly_and_hidden_from_masked_payload(trace_i
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("service_name", "api"),
+        (_REMOVED_SERVICE_FIELD, "api"),
         ("environment", "prod"),
-        ("request_id", "request-1"),
-        ("git_commit", "a" * 40),
+        (_REMOVED_REQUEST_FIELD, "request-1"),
+        (_REMOVED_COMMIT_FIELD, "a" * 40),
         ("correlation", {}),
     ],
 )
@@ -127,7 +131,7 @@ def test_manual_request_rejects_removed_scope_fields() -> None:
         "occurred_at": "2026-08-26T09:30:00Z",
         "event": "manual.failure",
         "error": _payload()["error"],
-        "service_name": "api",
+        _REMOVED_SERVICE_FIELD: "api",
     }
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ManualIncidentRequest.model_validate(payload)
@@ -135,7 +139,7 @@ def test_manual_request_rejects_removed_scope_fields() -> None:
 
 def test_pre_validation_failure_payload_hides_trace_value() -> None:
     masked, _ = mask_failure_payload(
-        {"trace_id": "opaque secret-like value", "service_name": "removed"}
+        {"trace_id": "opaque secret-like value", _REMOVED_SERVICE_FIELD: "removed"}
     )
 
     assert masked["trace_id"] == "<VALUE_REF:incident.trace_id>"

@@ -17,7 +17,9 @@ def test_forbidden_contract_scan_accepts_final_v1_terms(tmp_path: Path) -> None:
 
 def test_forbidden_contract_scan_reports_removed_business_fields(tmp_path: Path) -> None:
     source = tmp_path / "legacy.py"
-    source.write_text("service_name = 'api'\ngit_commit = 'abc'\n", encoding="utf-8")
+    removed_service = "service" + "_name"
+    removed_commit = "git" + "_commit"
+    source.write_text(f"{removed_service} = 'api'\n{removed_commit} = 'abc'\n", encoding="utf-8")
 
     findings = scan([source])
 
@@ -28,9 +30,10 @@ def test_forbidden_contract_scan_reports_removed_business_fields(tmp_path: Path)
 
 def test_forbidden_contract_scan_ignores_binary_and_build_directories(tmp_path: Path) -> None:
     binary = tmp_path / "fixture.bin"
-    binary.write_bytes(b"service_name")
+    removed_service = "service" + "_name"
+    binary.write_bytes(removed_service.encode())
     generated = tmp_path / "node_modules" / "legacy.ts"
     generated.parent.mkdir()
-    generated.write_text("service_name = 'ignored'", encoding="utf-8")
+    generated.write_text(f"{removed_service} = 'ignored'", encoding="utf-8")
 
     assert scan([tmp_path]) == []

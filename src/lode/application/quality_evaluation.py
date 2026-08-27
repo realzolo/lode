@@ -28,10 +28,12 @@ class IncidentObservation:
     version_gate_satisfied: bool
     counter_evidence_gate_satisfied: bool
     evidence_refs: tuple[int, ...] = ()
+    observation_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class CaseEvaluation:
+    observation_id: str
     case_id: str
     expected: str
     observed: str
@@ -76,9 +78,9 @@ def proportion_metric(successes: int, total: int) -> ProportionMetric:
 def evaluate_incidents(observations: Sequence[IncidentObservation]) -> QualityEvaluation:
     if not observations:
         raise ValueError("incident observations must not be empty")
-    identifiers = [item.case_id for item in observations]
+    identifiers = [item.observation_id or item.case_id for item in observations]
     if len(identifiers) != len(set(identifiers)):
-        raise ValueError("incident observation case IDs must be unique")
+        raise ValueError("incident observation IDs must be unique")
 
     confirmed = [item for item in observations if item.actual_result_state == "confirmed"]
     non_confirmed_oracles = [
@@ -182,12 +184,14 @@ def observation_from_result(record: Mapping[str, Any]) -> IncidentObservation:
         version_gate_satisfied=_required_bool(record, "version_gate_satisfied"),
         counter_evidence_gate_satisfied=_required_bool(record, "counter_evidence_gate_satisfied"),
         evidence_refs=tuple(refs),
+        observation_id=_required_string(record, "observation_id"),
     )
 
 
 def _evaluate_case(observation: IncidentObservation) -> CaseEvaluation:
     passed = observation.actual_result_state == observation.expected_result_state
     return CaseEvaluation(
+        observation_id=observation.observation_id or observation.case_id,
         case_id=observation.case_id,
         expected=observation.expected_result_state,
         observed=observation.actual_result_state,

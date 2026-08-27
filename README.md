@@ -1,163 +1,224 @@
 # Lode
 
-Lode turns production alerts into evidence-backed incident causes and exact code diagnoses. It accepts strict Kafka `alert.v1` messages or authorized manual input, executes one investigation action at a time, archives every result, and refuses to label a related file as a proven defect.
+Lode turns production incident alerts into evidence-backed incident causes and
+exact code diagnoses. It accepts the strict `incident.alert.v1` Kafka contract
+or authorized manual input, executes bounded read-only investigations, archives
+the complete evidence trail, and refuses to present a related source file as a
+confirmed defect without runtime-authoritative proof.
 
-## Investigation Contract
+The project is unreleased. It maintains one current architecture, one API, and
+one database baseline. There are no compatibility routes, schema adapters,
+dual writes, or historical payload converters.
 
-Every investigation follows this sequence:
+## Investigation Model
 
-1. Normalize and redact the complete incident input.
-2. Parse the error contract and stack frames.
-3. Form a leading mechanism and choose one server-registered read-only action.
-4. Archive the action input, progress, result, duration, failure, and evidence links.
-5. Update supporting facts, counter-evidence, and missing validation.
-6. Produce separate `incident_cause` and `code_diagnosis` results.
+Each investigation freezes its Workspace control state at intake: repository
+bindings, resource graph, Connector scopes and health, model bindings and
+policy, context policy, and immutable normalized input. The worker then runs
+serial decision waves. Independent operations inside one wave may run in
+parallel, with a hard maximum of four.
 
-Actions within one investigation never overlap. Workers may process different investigations concurrently. Each investigation is bounded to 12 evidence actions, 10 model calls, and 10 minutes. Repeating an action fingerprint is rejected, and durable steps allow a worker to resume from the first unfinished action.
+The server owns capability selection, query authorization, budgets,
+counter-evidence requirements, and stopping rules. Model output can propose only
+strict typed candidates. It cannot directly execute SQL, LogQL, JSON queries,
+URLs, commands, paths, or credentials.
 
-### Result States
+Result states are:
 
-- `pending`: no terminal result exists yet.
-- `confirmed`: an incident-version code finding passed structural and independent semantic verification.
-- `hypothesis`: one leading mechanism has supporting evidence but still needs validation.
-- `insufficient`: the available evidence cannot support a single cause.
-- `unavailable`: a required analysis capability was unavailable, or both strict structured-output attempts failed validation. Output-contract failure is explicitly distinguished from insufficient evidence.
+- `pending`: no terminal report exists.
+- `confirmed`: an incident-revision code finding passed structural authority
+  gates and independent semantic verification.
+- `hypothesis`: one supported mechanism remains to be validated.
+- `insufficient`: available evidence cannot support one cause.
+- `unavailable`: a required capability or strict output contract failed.
 
-Lode does not expose a model-generated confidence score. Non-confirmed reports contain evidence requests and test suggestions, not production code change instructions.
+Reports always separate `incident_cause` from `code_diagnosis`. External
+dependency, network, data, and infrastructure failures can be accurate incident
+causes while code diagnosis independently reports `no_defect`, `not_found`, or
+an exact resilience weakness.
 
-### Code Findings
+## Source Authority
 
-A source file is only a candidate. A code finding must identify an immutable artifact with repository ID, full revision SHA, revision role, path, symbol, and an exact line range. It also records:
+A code finding references an immutable source artifact with repository ID, full
+SHA, repository role, path, symbol, and exact line bounds. `confirmed` requires
+the runtime-observed incident SHA and a stack, runtime, dependency, or archived
+alert link to the location. A missing, ambiguous, or unresolvable revision is an
+explicit evidence gap. The default branch never substitutes for incident code.
 
-- faulty behavior, explicit contract violation, and expected behavior;
-- trigger condition and propagation from the code branch to the observed error;
-- incident, supporting, and counter-evidence references;
-- missing validation, a minimal fix direction, and a verification test.
+Repository search in other bound repositories produces candidates only. A
+candidate must independently establish its runtime revision and relationship to
+the incident before it can contribute to a confirmed conclusion. Configuration
+without runtime evidence cannot prove deployed behavior.
 
-`confirmed` additionally requires an immutable incident baseline plus a stack, runtime, dependency, or alert-contract link to the incident. Lode resolves the baseline independently for every bound repository: it first tries the alert deployment revision, then freezes that repository's default branch HEAD if the revision does not belong to that repository. With no deployment revision, the default branch is used directly. The selected basis is recorded in operation and evidence metadata. An independent model pass must still verify the branch, trigger, and propagation. Documentation and lexical matches can provide context but cannot prove a defect.
+## Workspaces And Models
 
-External failures remain valid incident causes. Code diagnosis independently reports `no_defect`, `not_found`, or an exact resilience finding such as missing timeout, retry, validation, or error preservation.
+A Workspace owns one globally unique Kafka ingestion topic. Starting or
+resuming ingestion is allowed only when:
 
-## Applications And Integrations
+1. the topic is configured;
+2. the active model policy covers planner, native query, synthesizer, verifier,
+   and context compactor roles with healthy deployments;
+3. the broker confirms the topic is reachable.
 
-Creating an application atomically requires its name and globally unique Kafka ingestion topic. An application can start or resume Kafka ingestion only when it also has a primary service binding and an explicitly selected AI model that passed a live protocol test. Binding a model tests it before saving; model settings also provide an explicit retest action. The backend checks these requirements in one fail-closed gate and returns HTTP 409 with `error.code = "application_not_ready"` plus `error.details.missing` when configuration is incomplete. A global default model does not replace the required application model selection.
+Repository, ResourceGraph, and evidence capability gaps remain visible but do
+not block intake.
 
-The application dashboard shows the three startup requirements before activation and disables submission while its current application snapshot is incomplete. The API repeats the checks on every start and resume, so stale UI state and direct API calls cannot bypass them.
+Global admins manage encrypted AI provider credentials and model deployments.
+Workspace administrators combine deployments into immutable bindings and
+publish policies that freeze exact binding revisions. Routing chooses a model
+per role and execution class, applies per-binding token/call/cost limits, and
+records every selection, context bundle, invocation, usage result, and failure.
+Provider switches never carry hidden reasoning state.
 
-Database, Kafka evidence, ClickHouse, Loki, and Prometheus connections are peer application integrations. Every kind supports multiple named instances. Kinds are registered in code with versioned config and secret contracts, capabilities, connection verification, evidence adapters, and dynamic form metadata; the database does not constrain the kind values. Redis is not supported.
+## Evidence Access
 
-The investigation engine consumes capabilities such as `snapshot`, `query_catalog`, and `log_search`, not product names. Loki is one built-in log-search adapter and can be replaced by another registered product. PostgreSQL and MySQL database integrations expose only server-owned `sample` and `count` operations over administrator-allowlisted tables. Arbitrary SQL and model-generated external queries are never accepted.
+Workspace-owned Connectors support Loki, Elasticsearch, OpenSearch,
+PostgreSQL, MySQL, cataloged HTTPS reads, and an isolated command runner. Native
+candidate parsers and policies enforce scope, time, row, byte, cardinality,
+cost, and egress limits before issuing a single-use signed authorization.
 
-All submitted integration, model, and Git secrets are encrypted with an independent `LODE_DATA_ENCRYPTION_KEY` and are never returned. Indirect environment references are not accepted. Integration endpoints must use DNS names, TLS, and the deployment egress allowlist.
+PostgreSQL/MySQL adapters require read-only replicas and restricted roles. HTTPS
+uses canonical DNS-pinned, redirect-free, byte-bounded transport. The command
+runner is a separate process and image with its own key, private network,
+read-only filesystem, fixed executables, empty child environment, resource
+limits, syscall policy, replay protection, and process kill switch.
 
-Model selection and application architecture context live on one page. Architecture context is masked and snapshotted when an investigation is created, then supplied to every model phase as untrusted background. It can explain service boundaries and deployment design, but cannot override system rules or serve as incident proof by itself.
+All provider, Connector, and Git secrets are encrypted with
+`LODE_DATA_ENCRYPTION_KEY`, stored separately from ordinary config, and never
+returned. Evidence-read authorization and Runner signing use independent keys.
 
-## Kafka `alert.v1`
+## Kafka Contract
 
-Messages are strict and reject unknown top-level fields. `version` and `git_commit` are top-level deployment fields. The complete `error_log.stack`, recursive `cause`, `properties`, business `fields`, trace context, version, revision, and time window are normalized and archived after secret masking.
+Kafka input uses `incident.alert.v1`. Unknown fields are rejected. The topic,
+not the payload, selects the Workspace. `trace_id` is an opaque optional string
+and is preserved exactly in encrypted storage; source revision is a required
+full lowercase Git SHA used only for source resolution.
 
 ```json
 {
-  "schema_version": "alert.v1",
-  "alert_id": "PB_SlZBH_Wt",
-  "occurred_at": "2026-08-25T10:38:59.522Z",
-  "event_type": "payment.order_create.gateway_failed",
-  "level": "CRITICAL",
-  "title": "Payment order creation failed",
-  "dedupe_key": "alert:payment.order_create.gateway_failed:sha1",
-  "dedupe_ttl_seconds": 300,
-  "version": "1.1.21",
-  "git_commit": "6c36658895cb220b66f89f17718a001f3f9f02e4",
-  "fields": {
-    "providerCode": "Payssion",
-    "methodCode": "enets_sg",
-    "gatewayCode": "PAYMENT_FAILED"
-  },
-  "error_log": {
-    "name": "object",
-    "message": "{\"success\":false,\"code\":\"PAYMENT_FAILED\",\"message\":\"Payment creation failed\"}",
-    "stack": null,
-    "properties": {
-      "value": {
-        "success": false,
-        "code": "PAYMENT_FAILED",
-        "message": "Payment creation failed"
-      }
-    },
+  "schema_version": "incident.alert.v1",
+  "alert_id": "alert-01",
+  "occurred_at": "2026-08-27T10:38:59.522Z",
+  "severity": "CRITICAL",
+  "event": "payment.order_create.failed",
+  "trace_id": "opaque producer value",
+  "source_revision": "6c36658895cb220b66f89f17718a001f3f9f02e4",
+  "error": {
+    "type": "GatewayError",
+    "message": "Payment creation failed",
+    "stack": "GatewayError: Payment creation failed\n    at createOrder (src/order.ts:42:7)",
     "cause": null
   }
 }
 ```
 
-When an error is serialized as an object, Lode promotes the structured `properties.value` contract and JSON message into searchable error code and message fields while retaining the original wire value. Source lookup prioritizes stack locations, incident-revision symbols, error contract identifiers, related symbols, then default-branch reference material.
+Kafka and manual intake use the same normalization, masking, immutable evidence,
+control snapshot, idempotency, and durable job creation path.
 
-## API
+## API And Web
 
-- `POST /investigations`: authorized manual intake with application, error message, stack, occurrence time, deployment version, trace, structured fields, and bounded redacted attachments.
-- `GET /investigations`: investigation list.
-- `GET /investigations/{id}`: normalized input, report, ordered steps, decisions, operations, evidence, and code findings.
-- `GET /investigations/{id}/events`: durable operation event history.
-- `GET /investigations/{id}/audit`: separately paginated operation and AI-call audit streams.
-- `GET /investigations/{id}/stream`: live SSE updates.
-- `POST /investigations/{id}/retry`: create a new run from a terminal run's immutable input after a live model test.
-- `POST /investigations/{id}/archive`: permanently make a terminal run read-only.
+The final FastAPI surface includes:
 
-SSE event names are `step.updated`, `operation.started`, `operation.progress`, `operation.finished`, `decision.recorded`, `code_finding.updated`, `report.updated`, and `investigation.finished`.
+- global provider accounts and model deployments;
+- Workspace lifecycle, model bindings/policy, repositories, ResourceGraph
+  views, Connector instances, verification, and introspection;
+- manual investigation creation, list, canonical detail, event replay, masked
+  audit, SSE, retry, and archive;
+- authentication, users, invitations, health, and metrics.
 
-Kafka and manual intake call the same normalization, evidence archiving, and job creation service.
+`GET /investigations/{id}` is the canonical client state. SSE replays persisted
+operation events by sequence, accepts `Last-Event-ID`, emits
+`investigation.finished` for terminal state, and is used only to trigger a
+canonical reload.
 
-## Data Model
+The Next.js Web app provides the global model control plane, Workspace settings,
+manual intake, investigation list, and one responsive investigation detail view
+for timeline, evidence, source authority, model routing/context, and execution
+audit. Wide tables and tab lists scroll locally instead of widening the page.
 
-`alembic/versions/0001_initial.py` is the only unreleased V1 baseline. Development databases are recreated from it; there is no V2 migration or old-schema adapter.
+## Local Development
 
-There is no historical payload conversion, dual schema, or API adapter. Partial unique indexes enforce at most one running step and one running operation per investigation. Server startup applies pending migrations automatically.
+Required secrets are independent values of at least 32 bytes:
 
 ```bash
-uv sync --extra dev
-export LODE_SECRET_KEY='replace-with-a-random-secret'
-export LODE_DATA_ENCRYPTION_KEY='replace-with-a-different-random-secret'
+export LODE_SECRET_KEY='replace-with-a-random-secret-at-least-32-bytes'
+export LODE_DATA_ENCRYPTION_KEY='replace-with-an-independent-secret-at-least-32-bytes'
+export LODE_EVIDENCE_AUTHORIZATION_KEY='replace-with-another-secret-at-least-32-bytes'
+export LODE_COMMAND_RUNNER_KEY='replace-with-a-runner-only-secret-at-least-32-bytes'
+docker compose up --build
+```
+
+External AI and remote Git access are disabled until both the exact DNS hosts
+and their permitted address ranges are configured:
+
+```bash
+export LODE_AI_PROVIDER_EGRESS_ALLOWLIST='api.openai.com,api.anthropic.com'
+export LODE_AI_PROVIDER_ALLOWED_IP_CIDRS='deployment-approved-provider-ranges'
+export LODE_GIT_EGRESS_ALLOWLIST='github.com'
+export LODE_GIT_ALLOWED_IP_CIDRS='deployment-approved-git-ranges'
+```
+
+Use actual CIDRs from the deployment network policy; the labels above are
+intentionally not runnable defaults. Local absolute/file Git repositories do
+not require egress configuration.
+
+Web is available at `http://localhost:3000`; the API is available at
+`http://localhost:8000`. Seed only fresh development databases:
+
+```bash
+uv sync --all-extras
 uv run alembic upgrade head
 uv run python scripts/seed.py
 ```
 
-The Web app uses pnpm:
+Run processes individually with:
 
 ```bash
-cd apps/web
-pnpm install
-pnpm dev
+make serve
+make consume
+make work
+npm run dev --prefix apps/web
 ```
 
-For the complete local stack:
+## Verification
+
+The complete deterministic local gate, run once against a fresh isolated upgraded
+PostgreSQL database, is:
 
 ```bash
-export LODE_SECRET_KEY='replace-with-a-random-secret'
-export LODE_DATA_ENCRYPTION_KEY='replace-with-a-different-random-secret'
-docker compose up --build
+make local-release-check
 ```
 
-Web is available at `http://localhost:3000`; the API is at `http://localhost:8000`.
-
-## Development
-
-Run the backend services individually:
+Its constituent targets are:
 
 ```bash
-uv run uvicorn lode.api.main:app --reload
-uv run python -m lode.consumer.main
-uv run python -m lode.worker.main
-```
-
-Verification:
-
-```bash
-uv run pytest -q
+make contracts
+make schema-check
+make intake-check
+make resource-check
+make evidence-access-check
+make log-connectors-check
+make native-connectors-check
+make investigation-check
+make analysis-check
+make api-check
+make web-check
 uv run python -m compileall -q src scripts alembic tests
-cd apps/web && pnpm typecheck && pnpm build
+uv run pytest -q
+uv run python scripts/check_forbidden_contracts.py
 ```
 
-Schema verification must run `alembic upgrade head` and `alembic check` against a newly created PostgreSQL database. MySQL integration support uses the `asyncmy` runtime dependency. Source evidence collection needs read access to the repositories configured for the application. All connector inputs are server-controlled and read-only; model output cannot introduce commands, SQL, URLs, paths, or credentials.
+Schema verification must use a fresh PostgreSQL database and run both
+`alembic upgrade head` and `alembic check`. The only migration is
+`alembic/versions/0001_initial.py`.
 
-OpenAI-compatible base URLs are resolved to `/v1/chat/completions`, and Anthropic base URLs to `/v1/messages`. Evidence-rich model calls use provider-enforced strict JSON Schemas, an 8192-token output bound, and a configurable 120-second per-attempt timeout; health probes use 30 seconds. OpenAI-compatible providers use JSON Schema response format and Anthropic uses a forced schema-bound tool result. Transient failures (network, timeout, HTTP 429, and HTTP 5xx) retry with visible progress, while deterministic authentication, request, or non-JSON protocol failures stop immediately. The report and AI audit show the precise failure and actual attempt count instead of a generic unavailable label. Two invalid structured outputs make that run unavailable and explicitly do not imply that its evidence was insufficient.
+`make analysis-check` is a deterministic smoke gate. A release additionally
+requires frozen real-provider observations to pass the quality thresholds and
+Wilson confidence bounds documented in `CLAUDE.md`; the deterministic corpus is
+intentionally too small to claim that statistical release gate.
 
-The workbench only renders code attached to final validated code findings. Intermediate source candidates remain audit metadata, the Monaco viewer follows the dashboard theme, and stable skeletons plus non-blocking SSE reconnect state prevent full-page flicker during live updates.
+```bash
+make provider-release-check \
+  PROVIDER_OBSERVATIONS=/absolute/path/provider-observations.jsonl \
+  PROVIDER_RUN_MANIFEST=/absolute/path/provider-run-manifest.json
+```

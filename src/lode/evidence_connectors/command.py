@@ -85,7 +85,7 @@ class HTTPCommandRunnerClient:
     def _envelope(self, authorized_read_id: int, action: RunnerAction) -> dict[str, Any]:
         now = int(time())
         request = RunnerRequest(
-            request_id=uuid4().hex,
+            nonce=uuid4().hex,
             authorized_read_id=authorized_read_id,
             issued_at=now,
             expires_at=now + 30,

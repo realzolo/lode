@@ -8,8 +8,10 @@ the completed baseline. The Phase 8 implementation candidate is present, but
 Phase 8 remains release-gated until frozen provider-run observations satisfy the
 quality and Wilson confidence thresholds below. The final Phase 9 API and Web
 Workbench implementation is present and passes its deterministic API, database,
-SSE, type, build, and responsive-browser checks. Phase 10 hardening and release
-gates remain outstanding.
+SSE, type, build, and responsive-browser checks. Phase 10 local hardening and
+the deterministic release gate pass on a fresh isolated database; the latest
+full backend run is 340 tests. Final release still requires frozen real-provider
+observations to pass the statistical gate.
 
 - `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
   HTTP-surface, and database-inventory fixtures. These fixtures contain no
@@ -38,9 +40,8 @@ gates remain outstanding.
   Workspace bindings, repositories, build units, components, resource graph
   revisions, connectors, immutable investigation snapshots, the evidence
   graph, native-read audit chain, source assessments, findings, and reports are
-  separate final objects. Removed Application, Service, single-model, and
-  product-specific integration tables are not registered; the standalone
-  Service API and Application Service-binding routes were deleted.
+  separate final objects. Deprecated global workload identity, single-model,
+  and product-specific integration tables and routes are not registered.
 - `contracts/v1/database/invariants.json` freezes 83 required triggers. The
   migration enforces timestamp updates, secret-free ordinary JSON,
   immutability, archived-investigation read-only behavior, authorization-chain
@@ -95,6 +96,12 @@ gates remain outstanding.
   evidence anchors, frozen scope, absolute investigation window, operation/
   result/timeout/output budgets, and hierarchical Workspace/connector/language/
   runner kill switches before any sealed value is opened.
+- Production kill switches are configured by
+  `LODE_EVIDENCE_ACCESS_ENABLED`, comma-separated Workspace/connector ID lists,
+  the closed six-language list, and `LODE_COMMAND_RUNNER_ENABLED`. Invalid IDs
+  or unknown languages fail during worker composition. Every native language
+  is independently rejectable; disabling the runner is an additional
+  command-only boundary.
 - ValueRef plaintext is resolved only after policy allow, replaces one parser-
   approved value node, and must preserve the parsed structure. Candidate and
   decision JSON retain sentinels; the exact bound action exists only encrypted
@@ -170,6 +177,14 @@ gates remain outstanding.
   inside the adapter. Normalization validates duplicate-free bounded JSON,
   stable pagination and response shape, masks secret patterns, and marks prompt
   injection before evidence leaves the Connector Plane.
+- AI completion and model-catalog traffic share the DNS-pinned provider HTTP
+  adapter. Calls fail closed unless the exact host is in
+  `LODE_AI_PROVIDER_EGRESS_ALLOWLIST` and every resolved address is within
+  `LODE_AI_PROVIDER_ALLOWED_IP_CIDRS`. Remote Git independently requires
+  `LODE_GIT_EGRESS_ALLOWLIST` and `LODE_GIT_ALLOWED_IP_CIDRS`: HTTPS uses
+  `http.curloptResolve` with redirects disabled, while SSH pins the resolved
+  address and retains the original DNS name for host-key validation. Local
+  absolute/file repositories do not use egress.
 - Current implementation files use unversioned canonical names (`intake.py`,
   `investigation.py`, `check_schema.py`, and so on). The repository maintains
   one current implementation and never creates `_v1`/`_v2` module variants.
@@ -263,10 +278,12 @@ planner roles, synthesis/verification, authority gates, or report publication
 changes. It runs the deterministic quality smoke suite and a repeatable real-
 database execution checker. `scripts/check_analysis_quality.py --release
 --observations <frozen-results.jsonl> --run-manifest <frozen-run.json>` is the
-strict provider-run release gate;
-the six-case deterministic smoke corpus intentionally reports its Wilson
-confidence as insufficient for release rather than pretending a small sample is
-statistically valid.
+strict provider-run release gate. Each row needs a globally unique
+`observation_id`; repeated independent runs may use the same frozen `case_id`,
+but the observation set must still cover every frozen case. The six-case
+deterministic smoke corpus intentionally reports its Wilson confidence as
+insufficient for release rather than pretending a small sample is statistically
+valid.
 Run
 `uv run python scripts/check_forbidden_contracts.py` as the full-repository
 removal gate; it is expected to become clean as the replacement phases delete
@@ -298,6 +315,12 @@ strict synthesis/verifier publication, the default worker composition root, and
 the `analysis-check` workflow. Phase 9 added no dependency; it replaced the API
 and Web surfaces with the final Workspace/model/repository/connector/investigation
 contracts and added the `api-check` and `web-check` workflows.
+Phase 10 adds no dependency. It adds startup key-length/separation validation,
+production-configured evidence kill switches, DNS-pinned AI-provider and remote
+Git egress boundaries, correlation IDs and isolated-runner nonces, repeated
+provider-observation statistics, and the `local-release-check` plus
+`provider-release-check` workflows. README, environment examples, Compose, and
+this context document must remain synchronized with those deployment changes.
 
 Lode is an evidence-backed production incident investigation service. An
 investigation advances through serial decision waves; independent operations
@@ -532,7 +555,17 @@ access, and an effective action can execute only through a one-use permit.
 Kafka evidence connectors are independent of `Workspace.ingestion_topic` and
 are limited to administrator-allowlisted topics and consumer groups.
 
-All user-managed secrets are submitted as values, encrypted immediately with `LODE_DATA_ENCRYPTION_KEY`, stored separately from non-secret config, and never returned. A Connector secret plaintext is a strict duplicate-free JSON object of string keys to string values; adapters receive only that frozen decrypted map. Indirect environment-reference syntax is prohibited for integrations, AI keys, and Git credentials. The JWT signing key is never reused for encryption. Every integration endpoint must pass the application process egress allowlist and the deployment network policy must enforce the same boundary.
+All user-managed secrets are submitted as values, encrypted immediately with
+`LODE_DATA_ENCRYPTION_KEY`, stored separately from non-secret config, and never
+returned. A Connector secret plaintext is a strict duplicate-free JSON object
+of string keys to string values; adapters receive only that frozen decrypted
+map. Indirect environment-reference syntax is prohibited for integrations, AI
+keys, and Git credentials. JWT, data-encryption, evidence-authorization, and
+configured command-runner keys must each contain at least 32 bytes and all
+differ; startup rejects missing, short, or reused keys. Every external
+integration, AI-provider, and remote-Git endpoint must pass its independent
+process allowlist/CIDR boundary, and deployment network policy must enforce the
+same scope.
 
 `LODE_EVIDENCE_AUTHORIZATION_KEY` is a third independent key and must differ
 from both `LODE_SECRET_KEY` and `LODE_DATA_ENCRYPTION_KEY`. Missing, reused, or
@@ -653,9 +686,9 @@ Until the first release, model changes are folded into `0001_initial.py`. Verify
 
 ```bash
 LODE_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lode_migration_test \
-LODE_SECRET_KEY=test-secret \
-LODE_DATA_ENCRYPTION_KEY=test-data-encryption-key \
-LODE_EVIDENCE_AUTHORIZATION_KEY=test-evidence-authorization-key \
+LODE_SECRET_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+LODE_DATA_ENCRYPTION_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+LODE_EVIDENCE_AUTHORIZATION_KEY=cccccccccccccccccccccccccccccccc \
 uv run alembic upgrade head
 uv run alembic check
 uv run python scripts/check_schema.py
@@ -735,21 +768,21 @@ Backend:
 
 ```bash
 make install
+export LODE_SECRET_KEY='replace-with-an-independent-random-secret-at-least-32-bytes'
 export LODE_DATA_ENCRYPTION_KEY='replace-with-an-independent-random-secret'
 export LODE_EVIDENCE_AUTHORIZATION_KEY='replace-with-a-third-independent-random-secret'
 export LODE_COMMAND_RUNNER_KEY='replace-with-a-fourth-independent-random-secret'
-make contracts
-make intake-check
-make resource-check
-make evidence-access-check
-make log-connectors-check
-make native-connectors-check
-make investigation-check
-make analysis-check
-make api-check
-make web-check
-uv run python -m compileall -q src scripts alembic tests
-uv run pytest -q
+make local-release-check
+```
+
+`make local-release-check` is the complete deterministic gate and must run once
+against a fresh isolated upgraded PostgreSQL database. The external statistical
+gate is:
+
+```bash
+make provider-release-check \
+  PROVIDER_OBSERVATIONS=/absolute/path/provider-observations.jsonl \
+  PROVIDER_RUN_MANIFEST=/absolute/path/provider-run-manifest.json
 ```
 
 Web (or run `make web-check` from the repository root):

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import json
-import urllib.error
 
 from lode.crypto import CryptoError, decrypt_secret, encrypt_secret
-from lode.engine.llm import ModelConfig, ResponseSchema, _usage, complete_with_usage, model_endpoint, resolve_api_key
+from lode.engine.llm import (
+    ModelConfig,
+    ResponseSchema,
+    _usage,
+    complete_with_usage,
+    model_endpoint,
+    resolve_api_key,
+)
+from lode.evidence_connectors.types import ProviderExecutionError, ProviderHTTPResponse
 
 
 def test_resolve_api_key_decrypts_encrypted_literal():
@@ -26,7 +32,13 @@ def test_resolve_api_key_plaintext_literal_raises():
 
 
 def test_usage_records_provider_exact_or_explicit_local_estimate():
-    exact = _usage("openai", {"usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}}, "system", "user", "answer")
+    exact = _usage(
+        "openai",
+        {"usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}},
+        "system",
+        "user",
+        "answer",
+    )
     estimated = _usage("openai", {}, "system", "user", "answer")
     assert exact == (12, 8, 20, "provider")
     assert estimated[3] == "estimated"
@@ -43,25 +55,27 @@ def test_unconfigured_model_is_auditable_fallback_without_token_claims():
 
 
 def test_model_endpoint_normalizes_provider_base_urls():
-    assert model_endpoint("openai", "https://model.example") == "https://model.example/v1/chat/completions"
-    assert model_endpoint("openai", "https://model.example/v1") == "https://model.example/v1/chat/completions"
-    assert model_endpoint("openai", "https://model.example/v1/chat/completions") == "https://model.example/v1/chat/completions"
-    assert model_endpoint("anthropic", "https://model.example") == "https://model.example/v1/messages"
+    assert (
+        model_endpoint("openai", "https://model.example")
+        == "https://model.example/v1/chat/completions"
+    )
+    assert (
+        model_endpoint("openai", "https://model.example/v1")
+        == "https://model.example/v1/chat/completions"
+    )
+    assert (
+        model_endpoint("openai", "https://model.example/v1/chat/completions")
+        == "https://model.example/v1/chat/completions"
+    )
+    assert (
+        model_endpoint("anthropic", "https://model.example") == "https://model.example/v1/messages"
+    )
 
 
-class _Response:
+class _Response(ProviderHTTPResponse):
     def __init__(self, payload: dict | str, content_type: str = "application/json") -> None:
-        self.payload = json.dumps(payload) if isinstance(payload, dict) else payload
-        self.headers = {"content-type": content_type}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return None
-
-    def read(self) -> bytes:
-        return self.payload.encode()
+        raw = json.dumps(payload) if isinstance(payload, dict) else payload
+        super().__init__(200, {"content-type": content_type}, raw.encode())
 
 
 def _config() -> ModelConfig:
@@ -76,13 +90,13 @@ def _config() -> ModelConfig:
 def test_transient_provider_failures_retry_and_record_attempt_count(monkeypatch):
     attempts: list[str] = []
 
-    def urlopen(request, timeout):
-        attempts.append(request.full_url)
+    async def request(_method, endpoint, **_kwargs):
+        attempts.append(endpoint)
         if len(attempts) < 3:
-            raise urllib.error.HTTPError(request.full_url, 503, "unavailable", {}, io.BytesIO())
+            return ProviderHTTPResponse(503, {}, b"")
         return _Response({"choices": [{"message": {"content": "OK"}}]})
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr("lode.engine.llm.provider_request", request)
     monkeypatch.setattr("lode.engine.llm.settings.llm_retry_base_delay", 0)
     result = asyncio.run(complete_with_usage("system", "user", _config()))
     assert result.text == "OK"
@@ -93,13 +107,13 @@ def test_transient_provider_failures_retry_and_record_attempt_count(monkeypatch)
 def test_non_json_provider_response_fails_without_pointless_retries(monkeypatch):
     attempts = 0
 
-    def urlopen(_request, timeout):
+    async def request(_method, _endpoint, **kwargs):
         nonlocal attempts
         attempts += 1
-        assert timeout == 120
+        assert kwargs["timeout_seconds"] == 120
         return _Response("<html>not an API</html>", "text/html")
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr("lode.engine.llm.provider_request", request)
     result = asyncio.run(complete_with_usage("system", "user", _config()))
     assert result.text is None
     assert result.error_code == "invalid_response"
@@ -107,15 +121,44 @@ def test_non_json_provider_response_fails_without_pointless_retries(monkeypatch)
     assert attempts == 1
 
 
+def test_egress_rejection_fails_without_retry_and_keeps_stable_code(monkeypatch):
+    attempts = 0
+
+    async def request(_method, _endpoint, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise ProviderExecutionError("egress_violation", "test policy rejection")
+
+    monkeypatch.setattr("lode.engine.llm.provider_request", request)
+
+    result = asyncio.run(complete_with_usage("system", "user", _config()))
+
+    assert result.text is None
+    assert result.error_code == "egress_violation"
+    assert result.attempt_count == 1
+    assert attempts == 1
+
+
+def test_non_object_provider_json_is_an_invalid_response(monkeypatch):
+    async def request(_method, _endpoint, **_kwargs):
+        return _Response("[]")
+
+    monkeypatch.setattr("lode.engine.llm.provider_request", request)
+
+    result = asyncio.run(complete_with_usage("system", "user", _config()))
+
+    assert result.error_code == "invalid_response"
+
+
 def test_structured_request_sets_json_mode_output_limit_and_custom_timeout(monkeypatch):
     captured: dict = {}
 
-    def urlopen(request, timeout):
-        captured.update(json.loads(request.data))
-        captured["timeout"] = timeout
+    async def request(_method, _endpoint, **kwargs):
+        captured.update(kwargs["json_body"])
+        captured["timeout"] = kwargs["timeout_seconds"]
         return _Response({"choices": [{"message": {"content": "{}"}}]})
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr("lode.engine.llm.provider_request", request)
     result = asyncio.run(
         complete_with_usage(
             "Return JSON.",
@@ -143,12 +186,12 @@ def test_strict_response_schema_replaces_loose_json_mode(monkeypatch):
         },
     )
 
-    def urlopen(request, timeout):
-        assert timeout == 120
-        captured.update(json.loads(request.data))
+    async def request(_method, _endpoint, **kwargs):
+        assert kwargs["timeout_seconds"] == 120
+        captured.update(kwargs["json_body"])
         return _Response({"choices": [{"message": {"content": '{"status":"ok"}'}}]})
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr("lode.engine.llm.provider_request", request)
     result = asyncio.run(
         complete_with_usage("Return JSON.", "{}", _config(), json_mode=True, response_schema=schema)
     )

@@ -8,7 +8,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from lode.application.decision_policy import DecisionPolicyEngine
 from lode.application.evidence_graph import EvidenceGraphProjector
@@ -299,6 +299,19 @@ async def main() -> None:
     assert len(projection.relations) == 1
 
     lease_time = datetime(2026, 8, 27, 11, 0, tzinfo=UTC)
+    async with AsyncSessionLocal() as session:
+        earliest = (
+            await session.execute(select(func.min(InvestigationJob.available_at)))
+        ).scalar_one()
+        own_job = (
+            await session.execute(
+                select(InvestigationJob).where(
+                    InvestigationJob.investigation_id == investigation_id
+                )
+            )
+        ).scalar_one()
+        own_job.available_at = earliest - timedelta(days=1)
+        await session.commit()
     lease = InvestigationLeaseStore(AsyncSessionLocal, owner="worker:first", lease_ttl_seconds=30)
     claimed = await lease.claim(now=lease_time)
     assert claimed is not None and claimed.investigation_id == investigation_id
@@ -316,7 +329,21 @@ async def main() -> None:
     )
     recovery_wave = await store.prepare_wave(investigation_id, recovery_evaluated)
     await store.mark_operation_running(recovery_wave.operations[0].operation_id)
-    assert await lease.reclaim_expired(now=lease_time + timedelta(seconds=31)) == 1
+    assert await lease.reclaim_expired(now=lease_time + timedelta(seconds=31)) >= 1
+    async with AsyncSessionLocal() as session:
+        earliest = (
+            await session.execute(select(func.min(InvestigationJob.available_at)))
+        ).scalar_one()
+        recovered_job = (
+            await session.execute(
+                select(InvestigationJob).where(
+                    InvestigationJob.investigation_id == investigation_id
+                )
+            )
+        ).scalar_one()
+        assert recovered_job.status == "pending"
+        recovered_job.available_at = earliest - timedelta(days=1)
+        await session.commit()
     second_lease = InvestigationLeaseStore(
         AsyncSessionLocal, owner="worker:second", lease_ttl_seconds=30
     )

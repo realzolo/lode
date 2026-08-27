@@ -2,33 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 from lode.api.routes import control_plane
-
-
-class _Client:
-    last_headers: dict[str, str] = {}
-
-    def __init__(self, **_kwargs) -> None:
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args) -> None:
-        return None
-
-    async def get(self, url: str, *, headers: dict[str, str]) -> httpx.Response:
-        self.__class__.last_headers = headers
-        return httpx.Response(
-            200,
-            request=httpx.Request("GET", url),
-            json={"data": [{"id": "available-model", "owned_by": "provider"}]},
-        )
+from lode.evidence_connectors.types import ProviderHTTPResponse
 
 
 @pytest.mark.asyncio
@@ -63,8 +43,18 @@ async def test_provider_inventory_uses_provider_specific_authentication(
     expected: dict[str, str],
     absent: set[str],
 ) -> None:
+    captured: dict[str, object] = {}
+
+    async def request(method, endpoint, **kwargs):
+        captured.update(method=method, endpoint=endpoint, headers=kwargs["headers"])
+        return ProviderHTTPResponse(
+            200,
+            {"content-type": "application/json"},
+            json.dumps({"data": [{"id": "available-model", "owned_by": "provider"}]}).encode(),
+        )
+
     monkeypatch.setattr(control_plane, "decrypt_secret", lambda _value: "provider-secret")
-    monkeypatch.setattr(control_plane.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(control_plane, "provider_request", request)
     provider = SimpleNamespace(
         provider_kind=kind,
         credential_ciphertext="encrypted",
@@ -76,5 +66,7 @@ async def test_provider_inventory_uses_provider_specific_authentication(
     models = await control_plane._provider_models(provider)
 
     assert models == [{"id": "available-model", "owned_by": "provider"}]
-    assert _Client.last_headers.items() >= expected.items()
-    assert absent.isdisjoint(_Client.last_headers)
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "https://models.example.invalid/v1/models"
+    assert captured["headers"].items() >= expected.items()
+    assert absent.isdisjoint(captured["headers"])

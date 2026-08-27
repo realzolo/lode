@@ -86,8 +86,9 @@ def main() -> None:
     if args.observations is not None:
         observations = [observation_from_result(record) for record in _jsonl(args.observations)]
         expected = {record["case_id"]: record["result_state"] for record in corpus}
-        if {item.case_id for item in observations} != expected.keys():
-            raise ValueError("release observations must cover the exact versioned corpus case set")
+        observed_cases = {item.case_id for item in observations}
+        if observed_cases != expected.keys():
+            raise ValueError("release observations must cover every case in the versioned corpus")
         observations = [
             replace(item, expected_result_state=str(expected[item.case_id]))
             for item in observations

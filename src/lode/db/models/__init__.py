@@ -1,11 +1,27 @@
 """Final ORM registry.
 
-Only final-schema models are imported here. Removed Application, Service,
+Only final-schema models are imported here. Deprecated identity,
 single-model configuration, and product-specific integration tables must never
 be registered alongside this metadata.
 """
 
 from lode.db.models.connectors import EvidenceAccessScope, EvidenceConnector
+from lode.db.models.evidence_access_audit import (
+    AuthorizedEvidenceRead,
+    EvidenceAccessDecision,
+    EvidenceReadAttempt,
+    NativeReadCandidate,
+    SealedEvidenceValue,
+)
+from lode.db.models.evidence_graph import (
+    EvidenceArtifact,
+    EvidenceAssertion,
+    EvidenceCollection,
+    EvidenceLink,
+    ObservedEntity,
+    ObservedEvent,
+    ObservedRelation,
+)
 from lode.db.models.intake import Alert, DeadLetter, Incident, IngestionEvent, InvestigationJob
 from lode.db.models.investigation import (
     ContextBundleRevision,
@@ -25,22 +41,6 @@ from lode.db.models.investigation import (
     InvestigationResourceGraphSnapshot,
     InvestigationStep,
     ModelRoutingDecision,
-)
-from lode.db.models.evidence_access_audit import (
-    AuthorizedEvidenceRead,
-    EvidenceAccessDecision,
-    EvidenceReadAttempt,
-    NativeReadCandidate,
-    SealedEvidenceValue,
-)
-from lode.db.models.evidence_graph import (
-    EvidenceArtifact,
-    EvidenceAssertion,
-    EvidenceCollection,
-    EvidenceLink,
-    ObservedEntity,
-    ObservedEvent,
-    ObservedRelation,
 )
 from lode.db.models.model_portfolio import (
     AIProviderAccount,
@@ -65,7 +65,6 @@ from lode.db.models.resources import (
     SemanticAnnotation,
     WorkspaceRepositoryBinding,
 )
-from lode.db.models.user import Invite, User
 from lode.db.models.source_report import (
     AIInvocation,
     InvestigationCodeFinding,
@@ -73,6 +72,7 @@ from lode.db.models.source_report import (
     SourceAssessment,
     SourceRevision,
 )
+from lode.db.models.user import Invite, User
 from lode.db.models.workspace import (
     AuditEvent,
     Workspace,

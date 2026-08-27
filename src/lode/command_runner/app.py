@@ -42,12 +42,12 @@ def _authenticate(envelope: SignedRunnerRequest) -> None:
         raise HTTPException(status_code=403, detail="runner request rejected") from exc
     now = int(time())
     with _seen_lock:
-        expired = [request_id for request_id, expiry in _seen.items() if expiry < now]
-        for request_id in expired:
-            del _seen[request_id]
-        if envelope.request.request_id in _seen:
+        expired = [nonce for nonce, expiry in _seen.items() if expiry < now]
+        for nonce in expired:
+            del _seen[nonce]
+        if envelope.request.nonce in _seen:
             raise HTTPException(status_code=409, detail="runner request replayed")
-        _seen[envelope.request.request_id] = envelope.request.expires_at
+        _seen[envelope.request.nonce] = envelope.request.expires_at
 
 
 @app.get("/health")

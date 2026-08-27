@@ -3,7 +3,7 @@
 # which uses the project .venv created by `make install` (uv sync). `make` itself
 # does NOT read .env — only the Python app does via pydantic-settings.
 
-.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check investigation-check analysis-check api-check web-check
+.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check investigation-check analysis-check api-check web-check local-release-check provider-release-check
 
 # uv binary to use. Override from the shell if it is not on PATH, e.g.
 #   make serve UV=/Users/lixm/.local/bin/uv
@@ -98,6 +98,29 @@ api-check:
 web-check:
 	npm run typecheck --prefix apps/web
 	npm run build --prefix apps/web
+
+# Run every deterministic local release gate. Use a fresh isolated upgraded database.
+local-release-check:
+	$(MAKE) contracts
+	$(MAKE) schema-check
+	$(MAKE) intake-check
+	$(MAKE) resource-check
+	$(MAKE) evidence-access-check
+	$(MAKE) log-connectors-check
+	$(MAKE) native-connectors-check
+	$(MAKE) investigation-check
+	$(MAKE) analysis-check
+	$(MAKE) api-check
+	$(UV) run python -m compileall -q src scripts alembic tests
+	$(UV) run pytest -q
+	$(UV) run python scripts/check_forbidden_contracts.py
+	$(MAKE) web-check
+
+# Enforce the statistical AI gate over repeated frozen real-provider observations.
+provider-release-check:
+	@test -n "$(PROVIDER_OBSERVATIONS)" || (echo "PROVIDER_OBSERVATIONS is required" >&2; exit 2)
+	@test -n "$(PROVIDER_RUN_MANIFEST)" || (echo "PROVIDER_RUN_MANIFEST is required" >&2; exit 2)
+	$(UV) run python scripts/check_analysis_quality.py --release --observations "$(PROVIDER_OBSERVATIONS)" --run-manifest "$(PROVIDER_RUN_MANIFEST)"
 
 # Build and run the full stack (postgres, kafka, api, web) via Docker.
 up:

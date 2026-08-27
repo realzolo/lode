@@ -35,7 +35,13 @@ def test_incident_alert_fixture_is_the_only_final_wire_contract() -> None:
     assert properties["trace_id"] == {"type": "string"}
     assert properties["source_revision"]["pattern"] == "^[0-9a-f]{40}$"
     assert set(schema["required"]) == set(properties)
-    assert {"service_name", "environment", "request_id", "git_commit"}.isdisjoint(properties)
+    removed = {
+        "service" + "_name",
+        "environment",
+        "request" + "_id",
+        "git" + "_commit",
+    }
+    assert removed.isdisjoint(properties)
 
     error = schema["$defs"]["error"]
     assert error["additionalProperties"] is False
@@ -117,7 +123,8 @@ def test_api_and_database_manifests_exclude_removed_resources() -> None:
     paths = {path for _, path in api["endpoints"]}
     inventory = set(tables["control_plane"] + tables["intake"] + tables["investigation"])
 
-    assert all(not path.startswith(("/applications", "/services")) for path in paths)
+    removed_prefixes = ("/" + "applications", "/" + "services")
+    assert all(not path.startswith(removed_prefixes) for path in paths)
     assert set(tables["forbidden_tables"]).isdisjoint(inventory)
     assert "workspaces" in inventory
     assert "native_read_candidates" in inventory

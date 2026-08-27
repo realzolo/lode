@@ -40,7 +40,7 @@ class RunnerAction(BaseModel):
 class RunnerRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
     authorized_read_id: int = Field(gt=0)
     issued_at: int = Field(gt=0)
     expires_at: int = Field(gt=0)

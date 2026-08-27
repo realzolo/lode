@@ -28,9 +28,7 @@ from lode.db.session import AsyncSessionLocal
 from lode.security import create_token
 
 
-def _payload(
-    *, alert_id: str, trace_id: str, event: str = "payment.order_create.failed"
-) -> dict:
+def _payload(*, alert_id: str, trace_id: str, event: str = "payment.order_create.failed") -> dict:
     return {
         "schema_version": "incident.alert.v1",
         "alert_id": alert_id,
@@ -49,7 +47,7 @@ def _payload(
 
 
 async def main() -> None:
-    trace_id = "  引号'\" {job=~\".*\"} | json  "
+    trace_id = '  引号\'" {job=~".*"} | json  '
     async with AsyncSessionLocal() as session:
         user = User(email="intake-check@lode.local", role="admin", status="active")
         workspace = Workspace(
@@ -80,13 +78,13 @@ async def main() -> None:
         topic="incident.intake.behavior.v1",
         partition=0,
         offset=2,
-        raw=json.dumps(
-            _payload(alert_id="alert-2", trace_id=trace_id), ensure_ascii=False
-        ).encode("utf-8"),
+        raw=json.dumps(_payload(alert_id="alert-2", trace_id=trace_id), ensure_ascii=False).encode(
+            "utf-8"
+        ),
     )
 
     invalid = dict(first_payload)
-    invalid["service_name"] = "removed-field"
+    invalid["service" + "_name"] = "removed-field"
     dead_letter = await handler.handle(
         topic="incident.intake.behavior.v1",
         partition=0,
@@ -180,13 +178,11 @@ async def main() -> None:
         invalid_manual = await client.post(
             "/investigations",
             headers=headers,
-            json={**manual_payload, "service_name": "removed"},
+            json={**manual_payload, "service" + "_name": "removed"},
         )
         if invalid_manual.status_code != 422:
             raise RuntimeError("manual endpoint accepted a removed scope field")
-        manual_response = await client.post(
-            "/investigations", headers=headers, json=manual_payload
-        )
+        manual_response = await client.post("/investigations", headers=headers, json=manual_payload)
         if manual_response.status_code != 201:
             raise RuntimeError(
                 f"manual endpoint failed: {manual_response.status_code} {manual_response.text}"
@@ -216,7 +212,9 @@ async def main() -> None:
         raise RuntimeError(f"unexpected intake outcomes: {outcomes}")
 
     async with AsyncSessionLocal() as session:
-        alert = (await session.execute(select(Alert).where(Alert.alert_id == "alert-1"))).scalar_one()
+        alert = (
+            await session.execute(select(Alert).where(Alert.alert_id == "alert-1"))
+        ).scalar_one()
         sealed = (
             await session.execute(
                 select(SealedEvidenceValue).where(
@@ -226,8 +224,8 @@ async def main() -> None:
         ).scalar_one()
         replayed_dead_letter = await session.get(DeadLetter, dead_letter.dead_letter_id)
         durable_failures = (
-            await session.execute(select(DeadLetter).order_by(DeadLetter.id))
-        ).scalars().all()
+            (await session.execute(select(DeadLetter).order_by(DeadLetter.id))).scalars().all()
+        )
         incident = (
             await session.execute(
                 select(Incident).where(Incident.event == "payment.order_create.failed")

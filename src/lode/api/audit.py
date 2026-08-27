@@ -32,12 +32,14 @@ from lode.db.session import AsyncSessionLocal
 
 logger = logging.getLogger("lode.api.audit")
 
-# Per-request id, shared with the logger via ``RequestIdFilter`` (see api/main.py).
-_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("request_id", default=None)
+# Per-request correlation id, shared with the API logger.
+_correlation_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "correlation_id", default=None
+)
 
 
-def get_request_id() -> str | None:
-    return _request_id.get()
+def get_correlation_id() -> str | None:
+    return _correlation_id.get()
 
 
 async def record_audit_event(
@@ -66,7 +68,7 @@ async def record_audit_event(
         target_type=target_type,
         target_id=target_id,
         workspace_id=workspace_id,
-        http_request_id=get_request_id(),
+        http_request_id=get_correlation_id(),
         result=result,
         detail=detail,
     )

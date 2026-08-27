@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from lode.api.audit import _request_id
+from lode.api.audit import _correlation_id
 from lode.api.deps import require_user
 from lode.api.rate_limit import HardeningMiddleware, RateLimiter
 from lode.api.routes.auth import router as auth_router
@@ -37,21 +37,21 @@ from lode.api.routes.users import router as users_router
 from lode.config import settings
 from lode.migrations import run_migrations
 
-# Note: ``_request_id`` lives in ``lode.api.audit`` so audit records and the
+# Note: ``_correlation_id`` lives in ``lode.api.audit`` so audit records and the
 # logger share one source of truth. Re-exported here for the request middleware.
 
 
-class RequestIdFilter(logging.Filter):
+class CorrelationIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = _request_id.get() or "-"
+        record.correlation_id = _correlation_id.get() or "-"
         return True
 
 
 _log_handler = logging.StreamHandler()
-_log_handler.addFilter(RequestIdFilter())
+_log_handler.addFilter(CorrelationIdFilter())
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s",
+    format="%(asctime)s %(levelname)s %(name)s [%(correlation_id)s] %(message)s",
     handlers=[_log_handler],
 )
 logger = logging.getLogger("lode.api")
@@ -92,12 +92,12 @@ async def request_context(request: Request, call_next):
         rid = str(incoming) if incoming.version == 4 else str(uuid.uuid4())
     except ValueError:
         rid = str(uuid.uuid4())
-    request.state.request_id = rid
-    token = _request_id.set(rid)
+    request.state.correlation_id = rid
+    token = _correlation_id.set(rid)
     try:
         response = await call_next(request)
     finally:
-        _request_id.reset(token)
+        _correlation_id.reset(token)
     response.headers["x-request-id"] = rid
     return response
 

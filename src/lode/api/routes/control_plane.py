@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlsplit
 
-import httpx
 from aiokafka.admin import AIOKafkaAdminClient
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
@@ -67,8 +64,13 @@ from lode.evidence_connectors.registry import (
     create_evidence_connector,
     native_connector_capabilities,
 )
-from lode.evidence_connectors.types import IntrospectionBudget
+from lode.evidence_connectors.types import IntrospectionBudget, ProviderExecutionError
 from lode.infrastructure.git_source import validate_git_remote
+from lode.infrastructure.provider_http import (
+    provider_endpoint,
+    provider_request,
+    validate_provider_endpoint,
+)
 
 router = APIRouter(tags=["control-plane"])
 _REQUIRED_MODEL_ROLES = {
@@ -111,27 +113,14 @@ async def _workspace_access(
 
 
 def _validate_provider_url(value: str) -> str:
-    parsed = urlsplit(value.strip())
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
+    try:
+        return validate_provider_endpoint(value)
+    except ValueError as exc:
         raise _error(
             422,
             "invalid_provider_endpoint",
             "Provider endpoints must be credential-free HTTPS URLs.",
-        )
-    try:
-        ipaddress.ip_address(parsed.hostname)
-    except ValueError:
-        pass
-    else:
-        raise _error(422, "invalid_provider_endpoint", "Provider endpoints require a DNS host.")
-    return value.strip().rstrip("/")
+        ) from exc
 
 
 def _provider_out(row: AIProviderAccount) -> ProviderAccountOut:
@@ -253,18 +242,22 @@ async def _provider_models(row: AIProviderAccount) -> list[dict]:
             headers["OpenAI-Organization"] = row.organization_ref
         if row.project_ref:
             headers["OpenAI-Project"] = row.project_ref
-    async with httpx.AsyncClient(
-        timeout=settings.llm_probe_timeout_seconds, follow_redirects=False
-    ) as client:
-        response = await client.get(
-            f"{row.base_url.rstrip('/')}/models",
+    try:
+        response = await provider_request(
+            "GET",
+            provider_endpoint(row.base_url, "/models"),
             headers=headers,
+            timeout_seconds=settings.llm_probe_timeout_seconds,
         )
+    except (ValueError, ProviderExecutionError) as exc:
+        raise _error(
+            502, "provider_probe_failed", "Provider model inventory request failed."
+        ) from exc
     if response.status_code >= 400:
         raise _error(502, "provider_probe_failed", "Provider model inventory request failed.")
     try:
-        value = response.json()
-    except ValueError as exc:
+        value = json.loads(response.body)
+    except (UnicodeDecodeError, ValueError) as exc:
         raise _error(
             502, "provider_protocol_invalid", "Provider model inventory is invalid."
         ) from exc

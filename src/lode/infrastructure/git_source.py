@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
+import re
 import stat
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
@@ -15,6 +17,11 @@ from urllib.parse import urlsplit
 
 from lode.config import settings
 from lode.engine.evidence.git import related_symbol_hits, search_tree, stack_hits
+from lode.evidence_connectors.transport import (
+    resolve_checked_addresses,
+    validate_dns_hostname,
+    validate_ip_cidrs,
+)
 
 
 class GitSourceUnavailable(RuntimeError):
@@ -36,6 +43,19 @@ class GitSourceHit:
     end_line: int
     content: str
     selection_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _GitEgressPolicy:
+    git_options: tuple[str, ...] = ()
+    ssh_options: tuple[str, ...] = ()
+
+    def environment(self, value: Mapping[str, str]) -> dict[str, str]:
+        result = dict(value)
+        if self.ssh_options:
+            command = result.get("GIT_SSH_COMMAND", "ssh")
+            result["GIT_SSH_COMMAND"] = " ".join((command, *self.ssh_options))
+        return result
 
 
 class GitRevisionResolver(Protocol):
@@ -73,13 +93,15 @@ class GitRemoteRevisionResolver:
     ) -> str | None:
         validate_git_remote(repo_url)
         _validate_branch(branch)
+        policy = await _git_egress_policy(repo_url)
         with _git_auth(credential) as environment:
             result = await _run_git(
+                *policy.git_options,
                 "ls-remote",
                 "--refs",
                 repo_url,
                 f"refs/heads/{branch}",
-                environment=environment,
+                environment=policy.environment(environment),
                 timeout_seconds=self.timeout_seconds,
             )
         if result.returncode != 0:
@@ -100,6 +122,7 @@ class GitRemoteRevisionResolver:
         validate_git_remote(repo_url)
         if not _is_sha(revision):
             raise ValueError("source revision must be a complete lowercase SHA")
+        policy = await _git_egress_policy(repo_url)
         base = Path(settings.evidence_git_cache_dir).resolve()
         base.mkdir(mode=0o700, parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="revision-", dir=base) as temporary:
@@ -120,8 +143,9 @@ class GitRemoteRevisionResolver:
                     ),
                 ):
                     result = await _run_git(
+                        *policy.git_options,
                         *arguments,
-                        environment=environment,
+                        environment=policy.environment(environment),
                         timeout_seconds=self.timeout_seconds,
                     )
                     if result.returncode != 0:
@@ -159,13 +183,14 @@ class GitSourceReader:
         validate_git_remote(repo_url)
         if not _is_sha(revision):
             raise ValueError("source revision must be a complete lowercase SHA")
+        policy = await _git_egress_policy(repo_url)
         base = Path(settings.evidence_git_cache_dir).resolve()
         base.mkdir(mode=0o700, parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="source-", dir=base) as temporary:
             root = Path(temporary).resolve()
             if not root.is_relative_to(base):
                 raise RuntimeError("temporary Git workspace escaped its configured root")
-            await self._checkout(root, repo_url, revision, credential)
+            await self._checkout(root, repo_url, revision, credential, policy)
             maximum_files = settings.evidence_git_max_files
             maximum_bytes = settings.evidence_git_max_bytes
             primary = stack_hits(
@@ -198,6 +223,7 @@ class GitSourceReader:
         repo_url: str,
         revision: str,
         credential: GitCredentialMaterial | None,
+        policy: _GitEgressPolicy,
     ) -> None:
         with _git_auth(credential) as environment:
             for arguments in (
@@ -216,8 +242,9 @@ class GitSourceReader:
                 ("-C", str(root), "checkout", "--quiet", "--detach", "FETCH_HEAD"),
             ):
                 result = await _run_git(
+                    *policy.git_options,
                     *arguments,
-                    environment=environment,
+                    environment=policy.environment(environment),
                     timeout_seconds=self.timeout_seconds,
                 )
                 if result.returncode != 0:
@@ -314,6 +341,65 @@ def validate_git_remote(repo_url: str) -> None:
         raise ValueError("Git remote scheme is not allowed")
     if parsed.scheme == "https" and (parsed.username is not None or parsed.password is not None):
         raise ValueError("Git credentials must not be embedded in repository URLs")
+
+
+async def _git_egress_policy(repo_url: str) -> _GitEgressPolicy:
+    remote = _remote_endpoint(repo_url)
+    if remote is None:
+        return _GitEgressPolicy()
+    scheme, hostname, port = remote
+    try:
+        allowed_hosts = {
+            validate_dns_hostname(item.strip())
+            for item in settings.git_egress_allowlist.split(",")
+            if item.strip()
+        }
+        cidrs = validate_ip_cidrs(
+            [item.strip() for item in settings.git_allowed_ip_cidrs.split(",") if item.strip()]
+        )
+    except ValueError as exc:
+        raise ValueError("Git egress policy is invalid") from exc
+    if hostname not in allowed_hosts:
+        raise ValueError("Git remote hostname is outside the configured egress allowlist")
+    networks = tuple(ipaddress.ip_network(item) for item in cidrs)
+    addresses = await resolve_checked_addresses(hostname, port, networks)
+    if scheme == "https":
+        resolution = f"{hostname}:{port}:{','.join(str(item) for item in addresses)}"
+        return _GitEgressPolicy(
+            git_options=(
+                "-c",
+                "http.followRedirects=false",
+                "-c",
+                f"http.curloptResolve={resolution}",
+            )
+        )
+    return _GitEgressPolicy(
+        ssh_options=(
+            "-o",
+            f"Hostname={addresses[0]}",
+            "-o",
+            f"HostKeyAlias={hostname}",
+        )
+    )
+
+
+def _remote_endpoint(repo_url: str) -> tuple[str, str, int] | None:
+    value = repo_url.strip()
+    parsed = urlsplit(value)
+    if parsed.scheme in {"", "file"} and not value.startswith("git@"):
+        return None
+    if parsed.scheme == "https":
+        if not parsed.hostname:
+            raise ValueError("Git HTTPS remote requires a DNS hostname")
+        return "https", validate_dns_hostname(parsed.hostname), parsed.port or 443
+    if parsed.scheme == "ssh":
+        if not parsed.hostname or parsed.password is not None:
+            raise ValueError("Git SSH remote requires a credential-free DNS hostname")
+        return "ssh", validate_dns_hostname(parsed.hostname), parsed.port or 22
+    match = re.fullmatch(r"[^@/:]+@([^/:]+):.+", value)
+    if match is None:
+        raise ValueError("Git SSH remote is invalid")
+    return "ssh", validate_dns_hostname(match.group(1)), 22
 
 
 def _validate_branch(branch: str) -> None:

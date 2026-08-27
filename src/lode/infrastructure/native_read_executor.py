@@ -21,6 +21,7 @@ from lode.db.models import (
 from lode.domain.investigation import OperationResult, PlannedOperation
 from lode.evidence_access.authorizer import EvidenceAccessAuthorizer
 from lode.evidence_access.candidate import NativeReadCandidateInput
+from lode.evidence_access.kill_switch import EvidenceKillSwitch, configured_kill_switch
 from lode.evidence_access.orchestrator import (
     EvidenceExecutionAdapter,
     EvidenceReadOrchestrator,
@@ -43,14 +44,14 @@ class NativeReadOperationExecutor:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         resolver: ConnectorAdapterResolver,
+        kill_switch: EvidenceKillSwitch | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.resolver = resolver
         self.registry = build_native_policy_registry()
+        self.kill_switch = kill_switch or configured_kill_switch()
 
-    async def execute(
-        self, operation_id: int, operation: PlannedOperation
-    ) -> OperationResult:
+    async def execute(self, operation_id: int, operation: PlannedOperation) -> OperationResult:
         if operation.native_candidate is None:
             return _failure("native_candidate_missing")
         async with self.session_factory() as session:
@@ -61,8 +62,7 @@ class NativeReadOperationExecutor:
             snapshot = (
                 await session.execute(
                     select(InvestigationConnectorSnapshot).where(
-                        InvestigationConnectorSnapshot.investigation_id
-                        == row.investigation_id,
+                        InvestigationConnectorSnapshot.investigation_id == row.investigation_id,
                         InvestigationConnectorSnapshot.connector_id
                         == int(operation.native_candidate["connector_id"]),
                     )
@@ -87,10 +87,7 @@ class NativeReadOperationExecutor:
                     await session.execute(
                         select(func.count())
                         .select_from(NativeReadCandidate)
-                        .where(
-                            NativeReadCandidate.investigation_id
-                            == row.investigation_id
-                        )
+                        .where(NativeReadCandidate.investigation_id == row.investigation_id)
                     )
                 ).scalar_one()
             )
@@ -122,7 +119,7 @@ class NativeReadOperationExecutor:
                 archived_bytes_used=archived_bytes,
             )
             authorized = await EvidenceAccessAuthorizer(
-                session, self.registry
+                session, self.registry, self.kill_switch
             ).authorize(candidate, context)
             if authorized.outcome != "allow" or authorized.token is None:
                 return OperationResult(
@@ -143,10 +140,7 @@ class NativeReadOperationExecutor:
             attempt = (
                 await session.execute(
                     select(EvidenceReadAttempt)
-                    .where(
-                        EvidenceReadAttempt.authorized_read_id
-                        == authorized.authorized_read_id
-                    )
+                    .where(EvidenceReadAttempt.authorized_read_id == authorized.authorized_read_id)
                     .order_by(EvidenceReadAttempt.attempt.desc())
                     .limit(1)
                 )

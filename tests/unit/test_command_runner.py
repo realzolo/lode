@@ -62,10 +62,10 @@ def action(binary_hash: str, **overrides: Any) -> RunnerAction:
     return RunnerAction.model_validate(value)
 
 
-def envelope(value: RunnerAction, *, request_id: str = "a" * 32) -> SignedRunnerRequest:
+def envelope(value: RunnerAction, *, nonce: str = "a" * 32) -> SignedRunnerRequest:
     now = int(time())
     request = RunnerRequest(
-        request_id=request_id,
+        nonce=nonce,
         authorized_read_id=42,
         issued_at=now,
         expires_at=now + 30,
@@ -113,7 +113,7 @@ def test_runner_protocol_rejects_tampering_and_invalid_validity_windows(tmp_path
         verify_request(tampered, KEY)
 
     expired_request = signed.request.model_copy(
-        update={"issued_at": 10, "expires_at": 20, "request_id": "b" * 32}
+        update={"issued_at": 10, "expires_at": 20, "nonce": "b" * 32}
     )
     expired = SignedRunnerRequest(
         request=expired_request,
@@ -286,7 +286,7 @@ async def test_runner_process_kill_switch_fails_closed(
     monkeypatch.setenv("LODE_COMMAND_RUNNER_KEY", KEY)
     monkeypatch.setenv("LODE_COMMAND_RUNNER_ENABLED", "false")
     monkeypatch.setattr(runner_app, "executor", executor)
-    signed = envelope(value, request_id="c" * 32)
+    signed = envelope(value, nonce="c" * 32)
 
     async with AsyncClient(
         transport=ASGITransport(app=runner_app.app), base_url="http://runner"

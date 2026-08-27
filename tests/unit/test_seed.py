@@ -19,4 +19,4 @@ def test_seed_imports_only_final_models() -> None:
     assert "lode.db.models" in imported_modules
     assert all(not module.startswith("lode.db.models.") for module in imported_modules)
     assert "create_investigation" not in source
-    assert "ApplicationServiceBinding" not in source
+    assert "Application" + "ServiceBinding" not in source

@@ -11,12 +11,9 @@ attribution could not run instead of manufacturing a root cause.
 from __future__ import annotations
 
 import asyncio
-import http.client
 import json
 import logging
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -24,6 +21,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from lode.config import settings
 from lode.crypto import decrypt_secret
+from lode.evidence_connectors.types import ProviderExecutionError
+from lode.infrastructure.provider_http import provider_request
 from lode.metrics import LLM_CALLS, LLM_LATENCY
 
 logger = logging.getLogger("lode.engine.llm")
@@ -63,6 +62,12 @@ class CompletionResult:
 RetryCallback = Callable[[int, int, str, float], Awaitable[None]]
 
 
+class ProviderHTTPError(Exception):
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__(f"provider returned HTTP {status_code}")
+
+
 def model_endpoint(provider: str, base_url: str) -> str:
     """Resolve a configured API base URL to the provider's completion endpoint."""
     parsed = urlsplit(base_url.strip())
@@ -88,12 +93,11 @@ def _is_retryable(exc: Exception) -> bool:
     * HTTP 4xx are client errors (bad key, bad request) — retrying cannot fix
       them, so we fail closed immediately.
     """
-    if isinstance(exc, urllib.error.HTTPError):
-        return getattr(exc, "code", 0) == 429 or 500 <= getattr(exc, "code", 0) <= 599
-    return isinstance(
-        exc,
-        (TimeoutError, ConnectionError, urllib.error.URLError, http.client.HTTPException),
-    )
+    if isinstance(exc, ProviderHTTPError):
+        return exc.status_code == 429 or 500 <= exc.status_code <= 599
+    if isinstance(exc, ProviderExecutionError):
+        return exc.code in {"provider_timeout", "provider_unavailable", "rate_limited"}
+    return isinstance(exc, (TimeoutError, ConnectionError))
 
 
 async def complete(
@@ -103,8 +107,8 @@ async def complete(
 ) -> str | None:
     """Return the assistant message text, or ``None`` if unavailable.
 
-    The call is executed in a worker thread because ``urllib`` is blocking.
-    Transient failures (network blips, provider 5xx) are retried with bounded
+    The call uses the DNS-pinned provider transport. Transient failures
+    (network blips, provider 5xx) are retried with bounded
     exponential backoff; after exhausting retries the engine returns an
     unavailable result and does not synthesize a diagnosis.
     """
@@ -205,23 +209,32 @@ async def complete_with_usage(
 
     headers["Content-Type"] = "application/json"
     headers["Accept"] = "application/json"
-    data = json.dumps(payload).encode("utf-8")
     endpoint = model_endpoint(config.provider, config.base_url)
     request_timeout = max(1.0, timeout_seconds or settings.llm_request_timeout_seconds)
 
-    def _post() -> dict[str, Any]:
-        req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=request_timeout) as resp:
-            raw = resp.read().decode("utf-8")
-            try:
-                return json.loads(raw)
-            except json.JSONDecodeError as exc:
-                content_type = resp.headers.get("content-type", "unknown")
-                raise json.JSONDecodeError(
-                    f"provider returned non-JSON content ({content_type})",
-                    exc.doc,
-                    exc.pos,
-                ) from exc
+    async def _post() -> dict[str, Any]:
+        response = await provider_request(
+            "POST",
+            endpoint,
+            headers=headers,
+            timeout_seconds=request_timeout,
+            json_body=payload,
+        )
+        if response.status_code >= 400:
+            raise ProviderHTTPError(response.status_code)
+        raw = response.body.decode("utf-8")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            content_type = response.headers.get("content-type", "unknown")
+            raise json.JSONDecodeError(
+                f"provider returned non-JSON content ({content_type})",
+                exc.doc,
+                exc.pos,
+            ) from exc
+        if not isinstance(value, dict):
+            raise TypeError("provider response must be a JSON object")
+        return value
 
     max_retries = max(1, settings.llm_max_retries)
     base_delay = settings.llm_retry_base_delay
@@ -230,7 +243,7 @@ async def complete_with_usage(
     # not part of "provider latency". A successful call reports one observation.
     for attempt in range(1, max_retries + 1):
         try:
-            body = await _run_blocking(_post)
+            body = await _post()
             text = _extract_text(config.provider, body, response_schema=response_schema)
             elapsed = time.monotonic() - started
             input_tokens, output_tokens, total_tokens, token_source = _usage(
@@ -271,17 +284,22 @@ async def complete_with_usage(
     )
     error_code = _error_code(last_exc)
     error_detail = f"Provider request failed at {endpoint}: {type(last_exc).__name__}."
-    if isinstance(last_exc, urllib.error.HTTPError):
-        error_code = f"http_{last_exc.code}"
-        error_detail = f"Provider rejected the request at {endpoint} with HTTP {last_exc.code} {last_exc.reason}."
-    elif isinstance(last_exc, json.JSONDecodeError):
+    if isinstance(last_exc, ProviderHTTPError):
+        error_code = f"http_{last_exc.status_code}"
+        error_detail = (
+            f"Provider rejected the request at {endpoint} with HTTP {last_exc.status_code}."
+        )
+    elif isinstance(last_exc, (json.JSONDecodeError, UnicodeDecodeError, TypeError)):
         error_code = "invalid_response"
         error_detail = f"Provider returned a non-JSON response from {endpoint}."
     elif isinstance(last_exc, TimeoutError):
-        error_detail = f"Provider request to {endpoint} timed out after {request_timeout:g}s on {attempt} attempt(s)."
-    elif isinstance(last_exc, urllib.error.URLError):
-        error_code = "network_error"
-        error_detail = f"Provider endpoint {endpoint} could not be reached."
+        error_detail = (
+            f"Provider request to {endpoint} timed out after {request_timeout:g}s "
+            f"on {attempt} attempt(s)."
+        )
+    elif isinstance(last_exc, ProviderExecutionError):
+        error_code = last_exc.code
+        error_detail = f"Provider endpoint {endpoint} failed the outbound request policy."
     return CompletionResult(
         None,
         int(elapsed * 1000),
@@ -296,14 +314,14 @@ async def complete_with_usage(
 
 
 def _error_code(exc: Exception | None) -> str:
-    if isinstance(exc, urllib.error.HTTPError):
-        return f"http_{exc.code}"
-    if isinstance(exc, json.JSONDecodeError):
+    if isinstance(exc, ProviderHTTPError):
+        return f"http_{exc.status_code}"
+    if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError, TypeError)):
         return "invalid_response"
     if isinstance(exc, TimeoutError):
         return "timeout"
-    if isinstance(exc, urllib.error.URLError):
-        return "network_error"
+    if isinstance(exc, ProviderExecutionError):
+        return exc.code
     return "provider_error"
 
 
@@ -397,10 +415,3 @@ def _extract_text(
     if not choices:
         return ""
     return choices[0].get("message", {}).get("content", "")
-
-
-async def _run_blocking(fn) -> str:
-    import asyncio
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, fn)

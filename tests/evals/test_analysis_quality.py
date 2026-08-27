@@ -55,6 +55,40 @@ def test_release_gate_requires_enough_confirmed_successes_for_confidence() -> No
     assert large.release_gate_passed
 
 
+def test_release_gate_accepts_repeated_corpus_cases_with_unique_observation_ids() -> None:
+    repeated = tuple(
+        IncidentObservation(
+            case_id="confirmed-source",
+            observation_id=f"confirmed-source-run-{index}",
+            expected_result_state="confirmed",
+            actual_result_state="confirmed",
+            cause_correct=True,
+            causal_relation_correct=True,
+            evidence_references_complete=True,
+            version_gate_satisfied=True,
+            counter_evidence_gate_satisfied=True,
+        )
+        for index in range(73)
+    ) + tuple(
+        IncidentObservation(
+            case_id="abstention",
+            observation_id=f"abstention-run-{index}",
+            expected_result_state="hypothesis",
+            actual_result_state="hypothesis",
+            cause_correct=True,
+            causal_relation_correct=True,
+            evidence_references_complete=True,
+            version_gate_satisfied=True,
+            counter_evidence_gate_satisfied=True,
+        )
+        for index in range(100)
+    )
+
+    result = evaluate_incidents(repeated)
+
+    assert result.release_gate_passed
+
+
 def test_false_confirmation_and_missing_provenance_block_release() -> None:
     observations = tuple(
         observation(f"confirmed-{index}", "confirmed", "confirmed") for index in range(73)

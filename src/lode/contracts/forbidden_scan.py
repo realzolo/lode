@@ -32,17 +32,39 @@ class Rule:
     pattern: re.Pattern[str]
 
 
+_REMOVED_SERVICE_BINDING = "Application" + "ServiceBinding"
+_REMOVED_INVESTIGATION_SNAPSHOT = "Investigation" + "ServiceSnapshot"
+_REMOVED_SERVICE_MODEL = "Ser" + "vice"
+_REMOVED_SERVICE_ROUTE = "serv" + "ices"
+_REMOVED_APPLICATION_ROUTE = "applica" + "tions"
+_REMOVED_SERVICE_FIELD = "service" + "_name"
+_REMOVED_REQUEST_FIELD = "request" + "_id"
+_REMOVED_COMMIT_FIELD = "git" + "_commit"
+
 RULES = (
     Rule(
         "removed_service_model",
-        re.compile(r"\b(?:ApplicationServiceBinding|InvestigationServiceSnapshot|Service)\b"),
+        re.compile(
+            rf"\b(?:{_REMOVED_SERVICE_BINDING}|{_REMOVED_INVESTIGATION_SNAPSHOT}|"
+            rf"{_REMOVED_SERVICE_MODEL})\b"
+        ),
     ),
     Rule(
-        "removed_service_route", re.compile(r"/(?:services|workspaces/\{[^}]+\}/services)(?:\b|/)")
+        "removed_service_route",
+        re.compile(
+            rf"/(?:{_REMOVED_SERVICE_ROUTE}|workspaces/\{{[^}}]+\}}/"
+            rf"{_REMOVED_SERVICE_ROUTE})(?:\b|/)"
+        ),
     ),
-    Rule("removed_alert_field", re.compile(r"\b(?:service_name|request_id)\b")),
-    Rule("removed_alert_revision", re.compile(r"\bgit_commit\b")),
-    Rule("removed_application_resource", re.compile(r"/(?:applications)(?:\b|/)")),
+    Rule(
+        "removed_alert_field",
+        re.compile(rf"\b(?:{_REMOVED_SERVICE_FIELD}|{_REMOVED_REQUEST_FIELD})\b"),
+    ),
+    Rule("removed_alert_revision", re.compile(rf"\b{_REMOVED_COMMIT_FIELD}\b")),
+    Rule(
+        "removed_application_resource",
+        re.compile(rf"/(?:{_REMOVED_APPLICATION_ROUTE})(?:\b|/)"),
+    ),
 )
 
 

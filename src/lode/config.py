@@ -10,6 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolve `.env` against the project root rather than the current working
@@ -113,6 +114,14 @@ class Settings(BaseSettings):
     # list (for example through an egress gateway) to prevent DNS rebinding.
     integration_egress_allowlist: str = ""
     integration_collect_timeout_seconds: float = 12.0
+    # AI provider traffic has an independent allowlist because model credentials
+    # must never be reusable against a generic integration endpoint. Both the DNS
+    # hostname and every resolved address must be explicitly in scope.
+    ai_provider_egress_allowlist: str = ""
+    ai_provider_allowed_ip_cidrs: str = ""
+    ai_provider_max_response_bytes: int = 2 * 1024 * 1024
+    git_egress_allowlist: str = ""
+    git_allowed_ip_cidrs: str = ""
 
     # Security / auth
     # Required (no default): a missing signing key must fail fast rather than
@@ -138,6 +147,11 @@ class Settings(BaseSettings):
     # API and consumer processes must not receive this key.
     command_runner_url: str = "http://command-runner:8080"
     command_runner_key: str = ""
+    command_runner_enabled: bool = True
+    evidence_access_enabled: bool = True
+    evidence_disabled_workspace_ids: str = ""
+    evidence_disabled_connector_ids: str = ""
+    evidence_disabled_languages: str = ""
 
     # Rate limiting (M6 hardening)
     # In-process fixed-window limiter applied to every non-exempt route. The
@@ -158,6 +172,33 @@ class Settings(BaseSettings):
     llm_request_timeout_seconds: float = 120.0
     llm_probe_timeout_seconds: float = 30.0
     llm_max_output_tokens: int = 8_192
+
+    @model_validator(mode="after")
+    def validate_key_separation(self):
+        required = {
+            "LODE_SECRET_KEY": self.secret_key,
+            "LODE_DATA_ENCRYPTION_KEY": self.data_encryption_key,
+            "LODE_EVIDENCE_AUTHORIZATION_KEY": self.evidence_authorization_key,
+        }
+        configured = {
+            **required,
+            **(
+                {"LODE_COMMAND_RUNNER_KEY": self.command_runner_key}
+                if self.command_runner_key
+                else {}
+            ),
+        }
+        invalid = [name for name, value in required.items() if len(value.encode()) < 32]
+        invalid.extend(
+            name
+            for name, value in configured.items()
+            if name not in required and len(value.encode()) < 32
+        )
+        if invalid:
+            raise ValueError(f"security keys must contain at least 32 bytes: {sorted(invalid)}")
+        if len(configured.values()) != len(set(configured.values())):
+            raise ValueError("security keys must be independent values")
+        return self
 
 
 @lru_cache

@@ -6,10 +6,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
+from lode.config import settings
 from lode.evidence_access.authorizer import _call_policy
 from lode.evidence_access.budget import intersect_budget
 from lode.evidence_access.candidate import NativeReadCandidateInput, parse_candidate_json
-from lode.evidence_access.kill_switch import EvidenceKillSwitch
+from lode.evidence_access.kill_switch import EvidenceKillSwitch, configured_kill_switch
 from lode.evidence_access.mock import MockTreePolicy
 from lode.evidence_access.registry import NativePolicyRegistry
 from lode.evidence_access.tokens import AuthorizationTokenError, issue_token, verify_token
@@ -163,6 +164,51 @@ def test_kill_switches_fail_closed(switch: EvidenceKillSwitch) -> None:
     with pytest.raises(AccessRejection, match="authorization is disabled") as rejected:
         switch.check(workspace_id=5, connector_id=7, language="elasticsearch_query_dsl")
     assert rejected.value.code == "scope_violation"
+
+
+@pytest.mark.parametrize(
+    "language",
+    ["logql", "elasticsearch_query_dsl", "opensearch_query_dsl", "sql", "https", "command"],
+)
+def test_every_native_language_kill_switch_fails_closed(language: str) -> None:
+    switch = EvidenceKillSwitch(disabled_languages={language})
+
+    with pytest.raises(AccessRejection) as rejected:
+        switch.check(workspace_id=5, connector_id=7, language=language)
+
+    assert rejected.value.detail == {"kill_switch": "language"}
+
+
+def test_production_kill_switch_configuration_is_strict(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "evidence_access_enabled", True)
+    monkeypatch.setattr(settings, "evidence_disabled_workspace_ids", "5, 9")
+    monkeypatch.setattr(settings, "evidence_disabled_connector_ids", "7")
+    monkeypatch.setattr(settings, "evidence_disabled_languages", "sql,https")
+    monkeypatch.setattr(settings, "command_runner_enabled", False)
+
+    switch = configured_kill_switch()
+
+    assert switch.disabled_workspaces == {5, 9}
+    assert switch.disabled_connectors == {7}
+    assert switch.disabled_languages == {"sql", "https"}
+    assert not switch.runner_enabled
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("evidence_disabled_workspace_ids", "0"),
+        ("evidence_disabled_connector_ids", "seven"),
+        ("evidence_disabled_languages", "graphql"),
+    ],
+)
+def test_production_kill_switch_rejects_invalid_configuration(
+    monkeypatch, field: str, value: str
+) -> None:
+    monkeypatch.setattr(settings, field, value)
+
+    with pytest.raises(RuntimeError):
+        configured_kill_switch()
 
 
 def test_registry_never_falls_back_to_partial_parser() -> None:

@@ -174,6 +174,7 @@ class BoundedHTTPTransport:
         headers: Mapping[str, str],
         max_response_bytes: int,
         max_decompression_ratio: int = 20,
+        max_timeout_ms: int = 60_000,
     ) -> None:
         self.base_url, self.hostname = validate_base_url(base_url)
         self.port = urlsplit(self.base_url).port or 443
@@ -184,6 +185,9 @@ class BoundedHTTPTransport:
         )
         self.headers = dict(headers)
         self.max_response_bytes = max_response_bytes
+        if not 1 <= max_timeout_ms <= 300_000:
+            raise ValueError("provider maximum timeout is invalid")
+        self.max_timeout_ms = max_timeout_ms
         if not 1 <= max_decompression_ratio <= 100:
             raise ValueError("provider max_decompression_ratio is invalid")
         self.max_decompression_ratio = max_decompression_ratio
@@ -207,7 +211,7 @@ class BoundedHTTPTransport:
             or "#" in path
         ):
             raise ProviderExecutionError("egress_violation", "provider request path is invalid")
-        if isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= 60_000:
+        if isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= self.max_timeout_ms:
             raise ProviderExecutionError("cost_exceeded", "provider timeout is invalid")
         backend = PinnedDNSBackend(
             hostname=self.hostname,

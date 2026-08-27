@@ -8,7 +8,9 @@ description: Operational dashboard design language inspired by the structure and
 
 ## Product Principles
 
-- The interface is a dense operational workspace for incident investigation and application administration. Information discovery, status, and safe actions take priority over decoration.
+- The interface is a dense operational workspace for incident investigation,
+  Workspace administration, and global model administration. Information
+  discovery, status, and safe actions take priority over decoration.
 - Use the structure of Vercel Dashboard, not its brand assets, proprietary copy, data, or identity. Lode retains its own product name and domain terms.
 - Light and dark themes preserve geometry, hierarchy, keyboard behavior, and status meaning. Theme changes never rearrange information.
 - Do not use marketing gradients, hero bands, oversized headlines, illustration cards, or pill-shaped CTAs on authenticated product routes.
@@ -35,12 +37,15 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 - Desktop (`>=1024px`): 256px fixed workspace sidebar and 56px context bar. Page content is fluid and uses a maximum readable frame only when a form or prose surface needs it.
 - Tablet (`768-1023px`): 64px icon-only sidebar. Navigation labels become accessible names/tooltips, never hidden semantics.
 - Mobile (`<768px`): a 56px single-line context bar and an off-canvas navigation drawer. The drawer closes by navigation, backdrop click, and Escape.
-- Application detail routes use an application-scoped sidebar only: a return link, current application label, and application pages. Global admin items must not appear in this context.
+- Workspace detail stays inside the global control-plane shell and uses tabs for
+  model policy, repositories, Connectors, and ResourceGraph views. Investigation
+  routes use the separate Workbench shell.
 
 ## Navigation
 
 - The top of the sidebar shows Lode workspace identity and the active product context. Do not render a fake workspace switcher when workspace switching is not a supported Lode capability.
-- The sidebar Find control is 40px high. It opens the shared command palette; `F` opens it outside editable controls, and `Cmd/Ctrl+K` toggles it.
+- Do not render a search or command-palette control unless the current product
+  route provides an implemented searchable command surface.
 - Navigation rows are 36px high with a 6px corner radius, 10px horizontal padding, clear hover and focus-visible states, and neutral active fill.
 - The signed-in user belongs at the sidebar bottom. Locale, theme, and sign-out live in its menu, not in the top bar.
 
@@ -69,5 +74,8 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 ## Authenticated UI Checklist
 
 - Reuse `AppShell`, sidebar, topbar, and shared UI primitives.
-- Preserve existing API contracts, routes, localization, permissions, and business workflows; visual alignment must not replace real behavior.
-- Verify desktop, tablet, and mobile layouts. Verify sidebar search, account menu, language/theme switching, row detail navigation, form submission, and horizontal table scrolling after each shared-shell change.
+- Implement only the frozen current API, localization, permission, and business
+  contracts; visual alignment must not replace real behavior.
+- Verify desktop, tablet, and mobile layouts. Verify mobile navigation, account
+  menu, row detail navigation, form submission, localized table/tab scrolling,
+  and canonical SSE reload after each shared-shell change.
