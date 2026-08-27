@@ -24,16 +24,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from lode.api.audit import _request_id
 from lode.api.deps import require_user
-from lode.api.routes.investigations import router as investigations_router
+from lode.api.rate_limit import HardeningMiddleware, RateLimiter
 from lode.api.routes.auth import router as auth_router
+from lode.api.routes.control_plane import router as control_plane_router
 from lode.api.routes.health import router as health_router
+from lode.api.routes.investigations import router as investigations_router
 from lode.api.routes.invites import router as invites_router
 from lode.api.routes.resources import router as resources_router
 from lode.api.routes.users import router as users_router
 from lode.config import settings
 from lode.migrations import run_migrations
-from lode.api.audit import _request_id
 
 # Note: ``_request_id`` lives in ``lode.api.audit`` so audit records and the
 # logger share one source of truth. Re-exported here for the request middleware.
@@ -74,11 +76,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# M6 hardening: rate limiting + baseline security headers. CORS is added last
-# (below) so it remains the outermost layer and still stamps CORS headers on
-# rate-limited (429) responses.
-from lode.api.rate_limit import HardeningMiddleware, RateLimiter  # noqa: E402
-
+# Rate limiting and baseline security headers. CORS is added last so it remains
+# outermost and stamps CORS headers on rate-limited responses.
 app.add_middleware(
     HardeningMiddleware,
     limiter=RateLimiter(settings.rate_limit_per_minute),
@@ -109,9 +108,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         business_code = exc.detail.get("code", exc.status_code)
         message = exc.detail.get("message", "request failed")
         details = {
-            key: value
-            for key, value in exc.detail.items()
-            if key not in {"code", "message"}
+            key: value for key, value in exc.detail.items() if key not in {"code", "message"}
         }
         error: dict[str, object] = {
             "code": business_code,
@@ -133,10 +130,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     # e.g. a ValueError from a model_validator) so the 422 payload itself never
     # fails to serialize. Keep loc / msg / type which are what clients need.
     raw = exc.errors()
-    details = [
-        {k: v for k, v in err.items() if k not in ("ctx", "input")}
-        for err in raw
-    ]
+    details = [{k: v for k, v in err.items() if k not in ("ctx", "input")} for err in raw]
     return JSONResponse(
         status_code=422,
         content={
@@ -165,6 +159,7 @@ app.include_router(auth_router)
 # Protected business routes (require a valid bearer token).
 _protected = [Depends(require_user)]
 app.include_router(investigations_router, dependencies=_protected)
+app.include_router(control_plane_router, dependencies=_protected)
 app.include_router(resources_router, dependencies=_protected)
 app.include_router(users_router, dependencies=_protected)
 

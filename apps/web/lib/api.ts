@@ -1,48 +1,30 @@
-// Thin client for the Lode backend API.
-//
-// The backend speaks snake_case and uses DB-native statuses
-// (queued/running/completed/failed). Result maturity is a separate contract.
-// All mapping happens here so page components stay presentational.
-
 import type {
-  AiModelConfig,
-  Application,
-  AuditEvent,
-  AuditEventList,
   CurrentUser,
-  DeadLetter,
-  ReplayOut,
+  EvidenceConnector,
+  InvestigationDetail,
+  InvestigationSummary,
   Invite,
-  Level,
+  ModelBinding,
+  ModelDeployment,
+  ProviderAccount,
+  RepositoryBinding,
+  Workspace,
 } from '@/lib/types';
 
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
-
-// The session JWT lives in a cookie (not localStorage) so the auth gate in
-// `middleware.ts` can read it on the server and redirect unauthenticated
-// requests *before* any HTML is sent — eliminating the client-side flash-of-white.
-// It is a readable (non-HttpOnly) cookie because the cross-origin FastAPI backend
-// is authorized via the `Authorization: Bearer` header (read here), not cookies.
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
 const TOKEN_KEY = 'lode_token';
 export const SESSION_EXPIRED_EVENT = 'lode:session-expired';
 
 export function getToken(): string | null {
   if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(
-    new RegExp('(^|;\\s*)' + TOKEN_KEY + '=([^;]*)')
-  );
+  const match = document.cookie.match(new RegExp(`(^|;\\s*)${TOKEN_KEY}=([^;]*)`));
   return match ? decodeURIComponent(match[2]) : null;
 }
 
 export function setToken(token: string): void {
   if (typeof document === 'undefined') return;
-  const maxAge = tokenMaxAgeSeconds(token);
-  const secure =
-    typeof window !== 'undefined' && window.location.protocol === 'https:'
-      ? '; Secure'
-      : '';
-  document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; SameSite=Lax${secure}`;
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; Path=/; Max-Age=${tokenMaxAge(token)}; SameSite=Lax${secure}`;
 }
 
 export function clearToken(): void {
@@ -50,884 +32,209 @@ export function clearToken(): void {
   document.cookie = `${TOKEN_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
 }
 
-function rejectExpiredSession(): never {
-  clearToken();
-  if (typeof window !== 'undefined') {
+function tokenMaxAge(token: string): number {
+  try {
+    const segment = token.split('.')[1] ?? '';
+    const payload = JSON.parse(atob(segment.replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof payload.exp === 'number'
+      ? Math.max(0, payload.exp - Math.floor(Date.now() / 1000))
+      : 604800;
+  } catch {
+    return 604800;
+  }
+}
+
+function authHeaders(json = false): HeadersInit {
+  const token = getToken();
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(json ? { 'Content-Type': 'application/json' } : {}),
+  };
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, { cache: 'no-store', ...init });
+  } catch {
+    throw new Error(`Network error: ${API_BASE}${path}`);
+  }
+  if (response.status === 401) {
+    clearToken();
     window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
   }
-  throw new Error('unauthorized');
-}
-
-function assertAuthenticated(response: Response): void {
-  if (response.status === 401) rejectExpiredSession();
-}
-
-async function responseErrorMessage(response: Response, fallback: string): Promise<string> {
-  const body: unknown = await response.json().catch(() => null);
-  if (!body || typeof body !== 'object') return fallback;
-
-  const payload = body as {
-    error?: { message?: unknown };
-    detail?: unknown;
-  };
-  if (typeof payload.error?.message === 'string' && payload.error.message.trim()) {
-    return payload.error.message;
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as {
+      error?: { message?: string; details?: unknown };
+    } | null;
+    throw new Error(body?.error?.message || `Request failed (${response.status})`);
   }
-  if (typeof payload.detail === 'string' && payload.detail.trim()) {
-    return payload.detail;
-  }
-  if (Array.isArray(payload.detail)) {
-    const messages = payload.detail
-      .map((item) => (
-        item && typeof item === 'object' && typeof (item as { msg?: unknown }).msg === 'string'
-          ? (item as { msg: string }).msg
-          : null
-      ))
-      .filter((item): item is string => Boolean(item));
-    if (messages.length) return messages.join('; ');
-  }
-  if (payload.detail && typeof payload.detail === 'object') {
-    const detail = payload.detail as { message?: unknown; missing?: unknown };
-    if (typeof detail.message === 'string' && detail.message.trim()) {
-      return detail.message;
-    }
-  }
-  return fallback;
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
 }
 
-// Derive cookie lifetime from the JWT `exp` claim so the cookie expires with the
-// token. Falls back to 7 days if the claim is missing or unreadable.
-function tokenMaxAgeSeconds(token: string): number {
-  const exp = jwtExp(token);
-  if (typeof exp === 'number') {
-    return Math.max(0, exp - Math.floor(Date.now() / 1000));
-  }
-  return 60 * 60 * 24 * 7;
+function get<T>(path: string): Promise<T> {
+  return request<T>(path, { headers: authHeaders() });
 }
 
-// Decode the JWT `exp` claim. Returns undefined on any parse failure — callers
-// treat that as "not valid" (fail-safe) rather than trusting an unreadable token.
-function jwtExp(token: string): number | undefined {
-  try {
-    const payload = JSON.parse(base64UrlDecode(token.split('.')[1] ?? ''));
-    return typeof payload?.exp === 'number' ? payload.exp : undefined;
-  } catch {
-    return undefined;
-  }
+function send<T>(path: string, method: string, body?: unknown): Promise<T> {
+  return request<T>(path, {
+    method,
+    headers: authHeaders(body !== undefined),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
 }
 
-function base64UrlDecode(input: string): string {
-  const b64 = input.replace(/-/g, '+').replace(/_/g, '/');
-  if (typeof atob === 'function') return atob(b64);
-  // Node fallback (SSR/tests) — never reached in the browser.
-  return Buffer.from(b64, 'base64').toString('utf-8');
+export function login(email: string, password: string) {
+  return send<{ token: string; user: CurrentUser }>('/auth/login', 'POST', { email, password });
+}
+export function fetchCurrentUser() { return get<CurrentUser>('/auth/me'); }
+export function fetchUsers() { return get<CurrentUser[]>('/users'); }
+export function createUser(input: { email: string; name: string; role: string; password: string }) {
+  return send<CurrentUser>('/users', 'POST', input);
+}
+export function updateUser(id: number, input: { name?: string; role?: string; status?: string }) {
+  return send<CurrentUser>(`/users/${id}`, 'PUT', input);
+}
+export function deleteUser(id: number) { return send<void>(`/users/${id}`, 'DELETE'); }
+export function resetUserPassword(id: number, password: string) {
+  return send(`/users/${id}/reset-password`, 'POST', { password });
+}
+export function fetchInvites() { return get<Invite[]>('/invites'); }
+export function createInvite(email: string) { return send<Invite>('/invites', 'POST', { email }); }
+export function acceptInvite(token: string, password: string, name: string) {
+  return send('/invites/accept', 'POST', { token, password, name });
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+export function fetchWorkspaces() { return get<Workspace[]>('/workspaces'); }
+export function fetchWorkspace(id: number | string) { return get<Workspace>(`/workspaces/${id}`); }
+export function createWorkspace(input: { name: string; ingestion_topic: string }) {
+  return send<Workspace>('/workspaces', 'POST', input);
+}
+export function startIngestion(id: number, startPosition: 'earliest' | 'latest') {
+  return send<Workspace>(`/workspaces/${id}/ingestion/start`, 'POST', { start_position: startPosition });
+}
+export function pauseIngestion(id: number) {
+  return send<Workspace>(`/workspaces/${id}/ingestion/pause`, 'POST');
+}
+export function resumeIngestion(id: number) {
+  return send<Workspace>(`/workspaces/${id}/ingestion/resume`, 'POST');
+}
+export function fetchCapabilities(id: number | string) {
+  return get<{ models: number; repositories: number; healthy_connectors: number; gaps: string[] }>(`/workspaces/${id}/capabilities`);
 }
 
-// ---------------------------------------------------------------------------
-// Fetch helpers
-// ---------------------------------------------------------------------------
-
-async function apiFetch(path: string, init: RequestInit): Promise<Response> {
-  try {
-    return await fetch(`${API_BASE}${path}`, init);
-  } catch {
-    throw new Error(`network error: ${API_BASE}${path}`);
-  }
+export function fetchProviderAccounts() { return get<ProviderAccount[]>('/ai-provider-accounts'); }
+export function createProviderAccount(input: Record<string, unknown>) {
+  return send<ProviderAccount>('/ai-provider-accounts', 'POST', input);
+}
+export function testProviderAccount(id: number) {
+  return send<Record<string, unknown>>(`/ai-provider-accounts/${id}/test`, 'POST');
+}
+export function introspectProviderModels(id: number) {
+  return send<{ models: Array<{ id: string }> }>(`/ai-provider-accounts/${id}/introspect-models`, 'POST');
+}
+export function fetchModelDeployments() { return get<ModelDeployment[]>('/ai-model-deployments'); }
+export function createModelDeployment(providerId: number, input: Record<string, unknown>) {
+  return send<ModelDeployment>(`/ai-provider-accounts/${providerId}/model-deployments`, 'POST', input);
+}
+export function testModelDeployment(id: number) {
+  return send<Record<string, unknown>>(`/ai-model-deployments/${id}/test`, 'POST');
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await apiFetch(path, { cache: 'no-store', headers: authHeaders() });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `request failed: ${res.status} ${path}`));
-  }
-  return (await res.json()) as T;
+export function fetchModelBindings(workspaceId: number | string) {
+  return get<ModelBinding[]>(`/workspaces/${workspaceId}/model-bindings`);
+}
+export function createModelBinding(workspaceId: number | string, input: Record<string, unknown>) {
+  return send<ModelBinding>(`/workspaces/${workspaceId}/model-bindings`, 'POST', input);
+}
+export function publishModelPolicy(workspaceId: number | string, input: Record<string, unknown>) {
+  return send<Record<string, unknown>>(`/workspaces/${workspaceId}/model-policy`, 'PUT', input);
 }
 
-// ---------------------------------------------------------------------------
-// Shapes returned by the API (snake_case)
-// ---------------------------------------------------------------------------
-
-interface ApiApplication {
-  id: number;
-  name: string;
-  ingestion_topic: string;
-  latest_level: string;
-  service_count: number;
-  primary_service_configured: boolean;
-  model_configured: boolean;
-  model_available: boolean;
-  ingestion_state: 'draft' | 'active' | 'paused';
-  ingestion_observed_state: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
-  ingestion_start_position: 'earliest' | 'latest' | null;
-  my_perm: string | null;
-  created_at: string;
+export function fetchRepositories(workspaceId: number | string) {
+  return get<RepositoryBinding[]>(`/workspaces/${workspaceId}/repositories`);
+}
+export function createLocalRepository(workspaceId: number | string, input: Record<string, unknown>) {
+  return send<RepositoryBinding>(`/workspaces/${workspaceId}/repositories/local`, 'POST', input);
+}
+export function fetchConnectorKinds() {
+  return get<Array<{ kind: string; language: string; capabilities: string[]; secret_fields: string[] }>>('/evidence-connector-kinds');
+}
+export function fetchConnectors(workspaceId: number | string) {
+  return get<EvidenceConnector[]>(`/workspaces/${workspaceId}/evidence-connectors`);
+}
+export function createConnector(workspaceId: number | string, input: Record<string, unknown>) {
+  return send<EvidenceConnector>(`/workspaces/${workspaceId}/evidence-connectors`, 'POST', input);
+}
+export function testConnector(workspaceId: number | string, connectorId: number) {
+  return send<Record<string, unknown>>(`/workspaces/${workspaceId}/evidence-connectors/${connectorId}/test`, 'POST');
+}
+export function introspectConnector(workspaceId: number | string, connectorId: number) {
+  return send<Record<string, unknown>>(`/workspaces/${workspaceId}/evidence-connectors/${connectorId}/introspect`, 'POST');
+}
+export function fetchResourceView(workspaceId: number | string, resource: string) {
+  return get<Array<Record<string, unknown>>>(`/workspaces/${workspaceId}/${resource}`);
 }
 
-// ---------------------------------------------------------------------------
-// Public client functions
-// ---------------------------------------------------------------------------
+export function fetchInvestigations(workspaceId?: number) {
+  return get<InvestigationSummary[]>(`/investigations${workspaceId ? `?workspace_id=${workspaceId}` : ''}`);
+}
+export function createInvestigation(input: Record<string, unknown>) {
+  return send<{ id: string; workspace_id: number; status: string; job_id: number }>('/investigations', 'POST', input);
+}
+export function fetchInvestigation(id: string) { return get<InvestigationDetail>(`/investigations/${encodeURIComponent(id)}`); }
+export function fetchInvestigationAudit(id: string) {
+  return get<Record<string, Array<Record<string, unknown>>>>(`/investigations/${encodeURIComponent(id)}/audit`);
+}
+export function retryInvestigation(id: string) {
+  return send<{ id: string }>(`/investigations/${encodeURIComponent(id)}/retry`, 'POST');
+}
+export function archiveInvestigation(id: string) {
+  return send(`/investigations/${encodeURIComponent(id)}/archive`, 'POST');
+}
 
-export type InvestigationStatus = 'queued' | 'running' | 'completed' | 'failed';
-export type InvestigationResultState = 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
-export type InvestigationStepStatus = 'queued' | 'running' | 'succeeded' | 'partial' | 'blocked' | 'failed' | 'canceled';
-export interface InvestigationSummary { id: string; application_id: number; application_name: string; title: string; level: string; status: InvestigationStatus; result_state: InvestigationResultState; review_required: boolean; archived_at: string | null; retry_of: number | null; created_at: string; }
-export interface InvestigationEvidence { id: number; type: string; source: string; locator: string | null; content_hash: string; excerpt: string; metadata: Record<string, unknown>; collected_at: string; code?: { language: string; content: string; highlight_start: number; highlight_end: number; anchor: { repo_id: number | null; path: string; revision: string; revision_role: 'incident' | 'latest'; symbol: string | null; start_line: number; end_line: number } }; }
-export interface InvestigationOperationEvent { sequence: number; kind: 'started' | 'progress' | 'finished'; message: string; detail: Record<string, unknown>; evidence_refs: number[]; occurred_at: string; }
-export interface InvestigationOperation { id: string; step_id: number; ordinal: number; kind: string; actor: 'engine' | 'ai' | 'collector'; title: string; purpose: string; input: Record<string, unknown>; status: InvestigationStepStatus; result: string; metrics: Record<string, unknown>; evidence_refs: number[]; failure: { code: string; detail: string | null } | null; started_at: string | null; finished_at: string | null; duration_ms: number | null; events: InvestigationOperationEvent[]; }
-export interface InvestigationStep { id: string; db_id: number; ordinal: number; kind: string; title: string; objective: string; selection_reason: string; expected_evidence: string; tool_name: string | null; tool_input: Record<string, unknown>; status: InvestigationStepStatus; input_refs: number[]; output_refs: number[]; result: string; failure: { code: string; detail: string | null } | null; started_at: string | null; finished_at: string | null; duration_ms: number | null; }
-export interface InvestigationCodeFinding { id: number; artifact_id: number | null; status: 'confirmed' | 'hypothesis' | 'no_defect' | 'not_found'; repo_id: number | null; revision: string | null; revision_role: 'incident' | 'latest' | null; path: string | null; symbol: string | null; start_line: number | null; end_line: number | null; issue_type: string | null; faulty_behavior: string; why_wrong: string; expected_behavior: string; trigger_condition: string; causal_chain: string[]; incident_evidence_refs: number[]; supporting_evidence_refs: number[]; counter_evidence_refs: number[]; missing_validation: string[]; fix_direction: string; test_scenario: string; created_at: string; }
-export interface InvestigationReport { result_state: Exclude<InvestigationResultState, 'pending'>; headline: string; summary: string; incident_cause: { status: string; mechanism: string; why: string; causal_chain: string[]; evidence_refs: number[] }; code_diagnosis: { status: string; summary: string; findings: unknown[] }; confirmed_facts: { text: string; evidence_refs: number[] }[]; counter_evidence: ({ text: string; evidence_refs: number[] } | string)[]; evidence_gaps: string[]; next_step: { type?: string; text?: string }; evidence_refs: number[]; }
-export interface InvestigationDetail { id: string; application_id: number; application_name: string; status: InvestigationStatus; result_state: InvestigationResultState; output_language: 'en' | 'zh'; scope: { service: string | null; environment: string | null; request_id: string | null; deployment_sha: string | null; sources: Record<string, string | null>; window_started_at: string; window_finished_at: string }; review_required: boolean; review_reasons: string[]; engine_version: string | null; created_at: string; started_at: string | null; finished_at: string | null; retry_of: string | null; archived_at: string | null; archived_by: number | null; input: { source_type: string; title: string; severity: string; occurred_at: string; error: { name: string; message: string; stack: string | null; cause: unknown; properties: Record<string, unknown> }; fields: Record<string, unknown> } | null; report: InvestigationReport | null; steps: InvestigationStep[]; decisions: { id: number; ordinal: number; after_step_id: number | null; action: string; selected_tool: string | null; rationale: string; hypothesis: Record<string, unknown>; evidence_refs: number[]; created_at: string }[]; operations: InvestigationOperation[]; evidence: InvestigationEvidence[]; code_findings: InvestigationCodeFinding[]; event_cursor: number; }
-export interface InvestigationLiveEvent { type: string; sequence?: number; payload: Record<string, unknown>; }
-export interface InvestigationCreateInput { application_id: number; title: string; severity: 'CRITICAL' | 'WARNING'; occurred_at: string; error: { name: string; message: string; stack?: string; cause?: unknown; properties?: Record<string, unknown> }; service_name: string; environment?: string; request_id?: string; deployment_sha?: string; fields?: Record<string, unknown>; attachments?: { kind: 'log' | 'trace' | 'dependency' | 'gateway_response'; label: string; content: string }[]; }
-export interface ApplicationServiceBinding { id: number; application_id: number; service_name: string; repo_id: number; state: 'active' | 'disabled'; role: 'primary' | 'shared'; }
-export interface InvestigationAuditCall { id: number; step_id: number | null; purpose: string; provider: string | null; model: string | null; status: string; prompt_template_version: string; input_hash: string; output_hash: string | null; latency_ms: number; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; token_source: string; error_code: string | null; error_detail: string | null; attempt_count: number; summary: string; evidence_refs: number[]; created_at: string; }
-export interface InvestigationAuditPage { operations: { items: InvestigationOperation[]; next_cursor: number | null }; ai_calls: { items: InvestigationAuditCall[]; next_cursor: number | null }; }
-
-export async function fetchInvestigations(): Promise<InvestigationSummary[]> { return getJson('/investigations'); }
-export async function fetchInvestigation(id: string): Promise<InvestigationDetail> { return getJson('/investigations/' + encodeURIComponent(id)); }
-export async function createInvestigation(body: InvestigationCreateInput): Promise<{ id: string; job_id: string; status: 'queued' }> { return postJson('/investigations', body); }
-export async function fetchApplicationServices(applicationId: string | number): Promise<ApplicationServiceBinding[]> { return getJson(`/applications/${applicationId}/services`); }
-export async function retryInvestigation(id: string): Promise<{ id: string; job_id: string; status: 'queued'; retry_of: string }> { return postJson(`/investigations/${encodeURIComponent(id)}/retry`, {}); }
-export async function archiveInvestigation(id: string): Promise<{ id: string; archived_at: string; read_only: true }> { return postJson(`/investigations/${encodeURIComponent(id)}/archive`, {}); }
-export async function fetchInvestigationAudit(id: string, operationCursor = 0, aiCursor = 0): Promise<InvestigationAuditPage> { return getJson(`/investigations/${encodeURIComponent(id)}/audit?operation_cursor=${operationCursor}&ai_cursor=${aiCursor}&limit=50`); }
-
-export function openInvestigationStream(id: string, after: number, handlers: { onEvent: (event: InvestigationLiveEvent) => void; onClose: () => void; onError: (message: string) => void }): () => void {
+export function openInvestigationStream(
+  id: string,
+  after: number,
+  onEvent: (event: Record<string, unknown>) => void,
+): () => void {
   const controller = new AbortController();
   void (async () => {
-    try {
-      const response = await apiFetch('/investigations/' + encodeURIComponent(id) + '/stream?after=' + encodeURIComponent(String(after)), { headers: authHeaders(), signal: controller.signal, cache: 'no-store' });
-      assertAuthenticated(response);
-      if (!response.ok || !response.body) throw new Error(await responseErrorMessage(response, '实时调查连接失败'));
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (!controller.signal.aborted) {
-        const next = await reader.read();
-        if (next.done) break;
-        buffer += decoder.decode(next.value, { stream: true });
-        const frames = buffer.split(/\r?\n\r?\n/);
-        buffer = frames.pop() ?? '';
-        for (const frame of frames) {
-          const lines = frame.split(/\r?\n/);
-          const eventName = lines.find((line) => line.startsWith('event:'))?.slice(6).trim();
-          const body = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
-          if (!eventName || !body) continue;
-          const payload: unknown = JSON.parse(body);
-          if (payload && typeof payload === 'object') handlers.onEvent({ type: eventName, sequence: typeof (payload as { sequence?: unknown }).sequence === 'number' ? (payload as { sequence: number }).sequence : undefined, payload: payload as Record<string, unknown> });
+    let cursor = after;
+    while (!controller.signal.aborted) {
+      let terminal = false;
+      try {
+        const response = await fetch(
+          `${API_BASE}/investigations/${encodeURIComponent(id)}/stream?after=${cursor}`,
+          { headers: authHeaders(), signal: controller.signal },
+        );
+        if (!response.ok || !response.body) throw new Error('Stream unavailable');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (!controller.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split('\n\n');
+          buffer = blocks.pop() ?? '';
+          for (const block of blocks) {
+            const idLine = block.split('\n').find((line) => line.startsWith('id: '));
+            if (idLine) cursor = Math.max(cursor, Number(idLine.slice(4)) || 0);
+            const data = block.split('\n').find((line) => line.startsWith('data: '));
+            if (!data) continue;
+            const event = JSON.parse(data.slice(6)) as Record<string, unknown>;
+            terminal = event.status === 'completed' || event.status === 'failed';
+            onEvent(event);
+          }
         }
+      } catch (error) {
+        if (!controller.signal.aborted) onEvent({ stream_error: String(error) });
       }
-      if (!controller.signal.aborted) handlers.onClose();
-    } catch (cause) {
-      if (!controller.signal.aborted) handlers.onError(String(cause));
+      if (terminal || controller.signal.aborted) break;
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
   })();
   return () => controller.abort();
-}
-
-
-export interface LoginResult {
-  token: string;
-  user: CurrentUser;
-}
-
-export async function login(email: string, password: string): Promise<LoginResult> {
-  const res = await apiFetch('/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, 'login failed'));
-  }
-  return (await res.json()) as LoginResult;
-}
-
-export async function fetchApplications(): Promise<Application[]> {
-  const rows = await getJson<ApiApplication[]>('/applications');
-  return rows.map((r) => ({
-    id: String(r.id),
-    name: r.name,
-    ingestionTopic: r.ingestion_topic,
-    level: (r.latest_level as Level) ?? 'WARNING',
-    serviceCount: r.service_count,
-    primaryServiceConfigured: r.primary_service_configured,
-    modelConfigured: r.model_configured,
-    modelAvailable: r.model_available,
-    ingestionState: r.ingestion_state,
-    ingestionObservedState: r.ingestion_observed_state,
-    ingestionStartPosition: r.ingestion_start_position,
-    myPerm: r.my_perm,
-    createdAt: r.created_at,
-  }));
-}
-
-export async function fetchApplication(id: string): Promise<{
-  id: number;
-  name: string;
-  ingestion_topic: string;
-  model_config_id: number | null;
-  ingestion_state: 'draft' | 'active' | 'paused';
-  my_perm: string | null;
-  repos: {
-    id: number;
-    repo_id: number;
-    name: string;
-    url: string;
-    scope: string;
-    repo_type: string;
-    default_branch: string;
-    description: string;
-  }[];
-  architecture_contexts: { id: number; content: string }[];
-  integrations: ApplicationIntegrationRow[];
-}> {
-  return getJson(`/applications/${id}`);
-}
-
-export interface IngestionStatus {
-  application_id: number;
-  ingestion_topic: string;
-  desired_state: 'draft' | 'active' | 'paused';
-  observed_state: 'draft' | 'starting' | 'listening' | 'paused' | 'error';
-  ingestion_version: number;
-  start_position: 'earliest' | 'latest' | null;
-  assigned_partitions: number;
-  backlog: number | null;
-  last_heartbeat_at: string | null;
-  last_error: string | null;
-}
-
-export async function fetchApplicationIngestion(id: string | number): Promise<IngestionStatus> {
-  return getJson(`/applications/${id}/ingestion`);
-}
-
-export async function startApplicationIngestion(
-  id: string | number,
-  startPosition: 'earliest' | 'latest'
-): Promise<IngestionStatus> {
-  return postJson(`/applications/${id}/ingestion/start`, { start_position: startPosition });
-}
-
-export async function pauseApplicationIngestion(id: string | number): Promise<IngestionStatus> {
-  return postJson(`/applications/${id}/ingestion/pause`, {});
-}
-
-export async function resumeApplicationIngestion(id: string | number): Promise<IngestionStatus> {
-  return postJson(`/applications/${id}/ingestion/resume`, {});
-}
-
-// ---------------------------------------------------------------------------
-// Per-application admin writes
-// ---------------------------------------------------------------------------
-//
-// These back the per-application settings (Kafka topic, repositories, model
-// context, and integrations). Every call requires an application admin; the backend
-// enforces this with ``Depends(require_admin)`` and the 403 surfaces here as a
-// thrown ``Error``.
-
-export async function setApplicationTopic(
-  applicationId: string | number,
-  ingestionTopic: string
-): Promise<{ application_id: number; ingestion_topic: string }> {
-  return putJson(`/applications/${applicationId}/ingestion-topic`, {
-    ingestion_topic: ingestionTopic.trim(),
-  });
-}
-
-export interface BindRepoInput {
-  repo_id: number;
-  description: string;
-}
-
-export interface ApplicationRepoRow {
-  id: number;
-  application_id: number;
-  repo_id: number;
-  repo_name: string;
-  repo_url: string;
-  repo_scope: string;
-  repo_type: string;
-  default_branch: string;
-  description: string;
-}
-
-export async function bindRepo(
-  applicationId: string | number,
-  input: BindRepoInput
-): Promise<ApplicationRepoRow> {
-  return postJson(`/applications/${applicationId}/repos`, input);
-}
-
-export interface CreateLocalRepoInput {
-  name: string;
-  repo_url: string;
-  default_branch: string;
-  repo_type: string;
-  credential_id: number | null;
-  description: string;
-}
-
-export async function createLocalRepo(
-  applicationId: string | number,
-  input: CreateLocalRepoInput
-): Promise<ApplicationRepoRow> {
-  return postJson(`/applications/${applicationId}/repos/local`, input);
-}
-
-export async function unbindRepo(
-  applicationId: string | number,
-  repoId: number
-): Promise<void> {
-  const res = await apiFetch(
-    `/applications/${applicationId}/repos/${repoId}`,
-    {
-      method: 'DELETE',
-      headers: authHeaders(),
-    }
-  );
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `unbind repo failed: ${res.status}`));
-  }
-}
-
-export interface ApplicationIntegrationRow {
-  id: number;
-  application_id: number;
-  name: string;
-  kind: string;
-  kind_version: number;
-  revision: number;
-  state: 'active' | 'disabled';
-  verification_status: 'verified' | 'failed';
-  verified_at: string | null;
-  last_collected_at: string | null;
-  last_error: string | null;
-  configured_secret_fields: string[];
-}
-
-export interface ApplicationIntegrationInput {
-    name: string;
-    kind: string;
-    config: Record<string, unknown>;
-    secrets: Record<string, string>;
-}
-
-export interface IntegrationKind {
-  kind: string;
-  version: number;
-  label: string;
-  capabilities: string[];
-  form: { key: string; input: 'text' | 'number' | 'password' | 'select' | 'string-list'; required: boolean; secret?: boolean; options?: string[] }[];
-}
-
-export interface ApplicationIntegrationConfiguration extends ApplicationIntegrationRow {
-  config: Record<string, unknown>;
-}
-
-export async function testApplicationIntegration(applicationId: string | number, input: ApplicationIntegrationInput): Promise<{ ok: boolean; error: string | null }> {
-  return postJson(`/applications/${applicationId}/integrations/test`, input);
-}
-
-export async function createApplicationIntegration(applicationId: string | number, input: ApplicationIntegrationInput): Promise<ApplicationIntegrationRow> {
-  return postJson(`/applications/${applicationId}/integrations`, input);
-}
-
-export async function getApplicationIntegration(applicationId: string | number, integrationId: number): Promise<ApplicationIntegrationConfiguration> {
-  return getJson(`/applications/${applicationId}/integrations/${integrationId}`);
-}
-
-export async function updateApplicationIntegration(applicationId: string | number, integrationId: number, input: Partial<ApplicationIntegrationInput> & { state?: 'active' | 'disabled' }): Promise<ApplicationIntegrationRow> {
-  return putJson(`/applications/${applicationId}/integrations/${integrationId}`, input);
-}
-
-export async function deleteApplicationIntegration(applicationId: string | number, integrationId: number): Promise<void> {
-  const res = await apiFetch(`/applications/${applicationId}/integrations/${integrationId}`, { method: 'DELETE', headers: authHeaders() });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `delete integration failed: ${res.status}`));
-  }
-}
-
-export async function fetchIntegrationKinds(): Promise<IntegrationKind[]> {
-  return getJson('/integration-kinds');
-}
-
-// ---------------------------------------------------------------------------
-// Read-only query console
-// ---------------------------------------------------------------------------
-
-export interface QueryResult {
-  source_id?: number;
-  source_name?: string;
-  columns: string[];
-  rows: Record<string, unknown>[];
-  row_count: number;
-  truncated: boolean;
-  desensitized: boolean;
-  allowed_tables: string[];
-}
-
-export interface RunQueryInput {
-  table: string;
-  operation: 'sample' | 'count';
-}
-
-export async function executeQuery(
-  applicationId: string | number,
-  integrationId: number,
-  input: RunQueryInput
-): Promise<QueryResult> {
-  return postJson<QueryResult>(`/applications/${applicationId}/integrations/${integrationId}/query`, input);
-}
-
-export async function setApplicationModel(
-  applicationId: string | number,
-  modelConfigId: number | null
-): Promise<{ application_id: number; model_config_id: number | null; model_test: ModelAvailability | null }> {
-  return putJson(`/applications/${applicationId}/model`, {
-    model_config_id: modelConfigId,
-  });
-}
-
-export interface CreateApplicationArchitectureContextInput {
-  content: string;
-}
-
-export interface ApplicationArchitectureContextRow {
-  id: number;
-  application_id: number;
-  content: string;
-}
-
-export async function createApplicationArchitectureContext(
-  applicationId: string | number,
-  input: CreateApplicationArchitectureContextInput
-): Promise<ApplicationArchitectureContextRow> {
-  return postJson(`/applications/${applicationId}/architecture-contexts`, input);
-}
-
-export async function deleteApplicationArchitectureContext(
-  applicationId: string | number,
-  contextId: number
-): Promise<void> {
-  const res = await apiFetch(
-    `/applications/${applicationId}/architecture-contexts/${contextId}`,
-    { method: 'DELETE', headers: authHeaders() }
-  );
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `delete architecture context failed: ${res.status}`));
-  }
-}
-
-export interface CreateApplicationInput {
-  name: string;
-  ingestion_topic: string;
-}
-
-export async function createApplication(input: CreateApplicationInput): Promise<Application> {
-  const row = await postJson<ApiApplication>('/applications', input);
-  return {
-    id: String(row.id),
-    name: row.name,
-    ingestionTopic: row.ingestion_topic,
-    level: (row.latest_level as Level) ?? 'WARNING',
-    serviceCount: row.service_count,
-    primaryServiceConfigured: row.primary_service_configured,
-    modelConfigured: row.model_configured,
-    modelAvailable: row.model_available,
-    ingestionState: row.ingestion_state,
-    ingestionObservedState: row.ingestion_observed_state,
-    ingestionStartPosition: row.ingestion_start_position,
-    myPerm: row.my_perm,
-    createdAt: row.created_at,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Application membership (admin / app-admin)
-// ---------------------------------------------------------------------------
-
-export type AppPerm = 'read' | 'analyze' | 'admin';
-
-export interface AppMember {
-  user_id: number;
-  email: string;
-  name: string;
-  role: string;
-  status: string;
-  perm: AppPerm;
-}
-
-export async function fetchAppMembers(appId: string | number): Promise<AppMember[]> {
-  return getJson<AppMember[]>(`/applications/${appId}/members`);
-}
-
-export async function fetchAppMemberCandidates(appId: string | number): Promise<CurrentUser[]> {
-  return getJson<CurrentUser[]>(`/applications/${appId}/member-candidates`);
-}
-
-export async function addAppMember(
-  appId: string | number,
-  userId: number,
-  perm: AppPerm
-): Promise<AppMember> {
-  return postJson<AppMember>(`/applications/${appId}/members`, {
-    user_id: userId,
-    perm,
-  });
-}
-
-export async function updateAppMember(
-  appId: string | number,
-  userId: number,
-  perm: AppPerm
-): Promise<AppMember> {
-  return putJson<AppMember>(`/applications/${appId}/members/${userId}`, { perm });
-}
-
-export async function removeAppMember(
-  appId: string | number,
-  userId: number
-): Promise<void> {
-  const res = await apiFetch(
-    `/applications/${appId}/members/${userId}`,
-    { method: 'DELETE', headers: authHeaders() }
-  );
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `remove member failed: ${res.status}`));
-  }
-}
-
-export interface GlobalSettings {
-  ai_output_language: 'en' | 'zh';
-  supported_ai_output_languages: ('en' | 'zh')[];
-  git_credentials: { id: number; auth_type: string; username: string; readonly: boolean; note: string; has_secret: boolean }[];
-  git_repos: { id: number; name: string; repo_url: string; default_branch: string; scope: string; application_id: number | null; repo_type: string; credential_id: number | null }[];
-  ai_model_configs: {
-    id: number;
-    provider: string;
-    base_url: string;
-    model: string;
-    is_default: boolean;
-    has_key: boolean;
-    last_test_status: 'untested' | 'available' | 'unavailable';
-    last_tested_at: string | null;
-    last_test_latency_ms: number | null;
-    last_test_error_code: string | null;
-    last_test_error_detail: string | null;
-  }[];
-}
-
-export async function fetchSettings(): Promise<GlobalSettings> {
-  return getJson<GlobalSettings>('/settings');
-}
-
-export async function updateAiOutputLanguage(
-  language: GlobalSettings['ai_output_language']
-): Promise<{ language: GlobalSettings['ai_output_language'] }> {
-  return putJson('/settings/ai-output-language', { language });
-}
-
-export interface AiModelInput {
-  provider: string;
-  base_url: string;
-  api_key: string;
-  model: string;
-  is_default: boolean;
-}
-
-export interface ModelAvailability {
-  available: boolean;
-  endpoint: string;
-  latency_ms: number;
-  error_code: string | null;
-  error_detail: string | null;
-}
-
-export async function createAiModel(input: AiModelInput): Promise<AiModelConfig> {
-  return postJson<AiModelConfig>('/settings/ai-models', input);
-}
-
-export async function fetchAiModelConfigs(): Promise<AiModelConfig[]> {
-  return getJson<AiModelConfig[]>('/settings/ai-models');
-}
-
-export async function testAiModel(id: number): Promise<ModelAvailability> {
-  return postJson<ModelAvailability>(`/settings/ai-models/${id}/test`, {});
-}
-
-export async function updateAiModel(id: number, input: AiModelInput): Promise<AiModelConfig> {
-  return putJson<AiModelConfig>(`/settings/ai-models/${id}`, input);
-}
-
-export async function deleteAiModel(id: number): Promise<void> {
-  const res = await apiFetch(`/settings/ai-models/${id}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) throw new Error(await responseErrorMessage(res, `delete ai model failed: ${res.status}`));
-}
-
-// ---------------------------------------------------------------------------
-// Git credentials (admin)
-// ---------------------------------------------------------------------------
-
-export interface GitCredentialInput {
-  auth_type: string;
-  username: string;
-  secret: string;
-  readonly: boolean;
-  note: string;
-}
-
-export interface GitCredentialRow {
-  id: number;
-  auth_type: string;
-  username: string;
-  readonly: boolean;
-  note: string;
-  has_secret: boolean;
-}
-
-export async function createGitCredential(input: GitCredentialInput): Promise<GitCredentialRow> {
-  return postJson<GitCredentialRow>('/settings/git-credentials', input);
-}
-
-export async function updateGitCredential(id: number, input: Partial<GitCredentialInput>): Promise<GitCredentialRow> {
-  return putJson<GitCredentialRow>(`/settings/git-credentials/${id}`, input);
-}
-
-export async function deleteGitCredential(id: number): Promise<void> {
-  const res = await apiFetch(`/settings/git-credentials/${id}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) throw new Error(await responseErrorMessage(res, `delete git credential failed: ${res.status}`));
-}
-
-// ---------------------------------------------------------------------------
-// Git repository registry (admin)
-// ---------------------------------------------------------------------------
-
-export interface GitRepoInput {
-  name: string;
-  repo_url: string;
-  default_branch: string;
-  repo_type: string;
-  credential_id: number | null;
-}
-
-export interface GitRepoRow {
-  id: number;
-  name: string;
-  repo_url: string;
-  default_branch: string;
-  scope: string;
-  application_id: number | null;
-  repo_type: string;
-  credential_id: number | null;
-}
-
-export async function createGitRepo(input: GitRepoInput): Promise<GitRepoRow> {
-  return postJson<GitRepoRow>('/settings/git-repos', input);
-}
-
-export async function updateGitRepo(id: number, input: Partial<GitRepoInput>): Promise<GitRepoRow> {
-  return putJson<GitRepoRow>(`/settings/git-repos/${id}`, input);
-}
-
-export async function deleteGitRepo(id: number): Promise<void> {
-  const res = await apiFetch(`/settings/git-repos/${id}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) throw new Error(await responseErrorMessage(res, `delete git repo failed: ${res.status}`));
-}
-
-// ---------------------------------------------------------------------------
-// Current user / account
-// ---------------------------------------------------------------------------
-
-export async function fetchCurrentUser(): Promise<CurrentUser> {
-  return getJson<CurrentUser>('/auth/me');
-}
-
-export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  const res = await apiFetch('/auth/change-password', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `change password failed: ${res.status}`));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// User administration (admin)
-// ---------------------------------------------------------------------------
-
-export interface UserInput {
-  email?: string;
-  name?: string;
-  role?: string;
-  password?: string;
-  status?: string;
-}
-
-export async function fetchUsers(): Promise<CurrentUser[]> {
-  return getJson<CurrentUser[]>('/users');
-}
-
-export async function createUser(input: UserInput): Promise<CurrentUser> {
-  return postJson<CurrentUser>('/users', input);
-}
-
-export async function updateUser(id: number, input: UserInput): Promise<CurrentUser> {
-  return putJson<CurrentUser>(`/users/${id}`, input);
-}
-
-export async function deleteUser(id: number): Promise<void> {
-  const res = await apiFetch(`/users/${id}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `delete user failed: ${res.status}`));
-  }
-}
-
-export async function resetUserPassword(id: number, password: string): Promise<void> {
-  const res = await apiFetch(`/users/${id}/reset-password`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ password }),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `reset password failed: ${res.status}`));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Invitations (admin create/list, open accept)
-// ---------------------------------------------------------------------------
-
-export async function createInvite(email: string): Promise<Invite> {
-  return postJson<Invite>('/invites', { email });
-}
-
-export async function fetchInvites(): Promise<Invite[]> {
-  return getJson<Invite[]>('/invites');
-}
-
-export async function acceptInvite(token: string, password: string, name: string): Promise<void> {
-  const res = await apiFetch('/invites/accept', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, password, name }),
-  });
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `accept invite failed: ${res.status}`));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Audit log (admin read)
-// ---------------------------------------------------------------------------
-
-export interface AuditQuery {
-  action?: string;
-  actor_id?: number;
-  actor_email?: string;
-  target_type?: string;
-  target_id?: string;
-  application_id?: number;
-  result?: 'ok' | 'error';
-  since?: string;
-  until?: string;
-  limit?: number;
-  offset?: number;
-}
-
-export async function fetchAuditEvents(query: AuditQuery = {}): Promise<AuditEventList> {
-  const params = new URLSearchParams();
-  (Object.entries(query) as [string, unknown][]).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
-  });
-  const qs = params.toString();
-  return getJson<AuditEventList>(`/audit${qs ? `?${qs}` : ''}`);
-}
-
-// ---------------------------------------------------------------------------
-// Dead-letter queue (admin read + replay)
-// ---------------------------------------------------------------------------
-//
-// These back the admin Dead Letters console. `list` reads rejected messages
-// (parse failures / schema errors / unmapped topics); `replay` re-injects a
-// message onto its source Kafka topic so the consumer re-processes it. Both are
-// admin-only on the backend (`require_admin`).
-
-export async function fetchDeadLetters(
-  kind?: 'dlq' | 'unassigned'
-): Promise<DeadLetter[]> {
-  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
-  return getJson<DeadLetter[]>(`/dead-letters${qs}`);
-}
-
-export async function replayDeadLetter(id: number): Promise<ReplayOut> {
-  const res = await apiFetch(`/dead-letters/${id}/replay`, {
-    method: 'POST',
-    headers: authHeaders(),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `replay failed: ${res.status}`));
-  }
-  return (await res.json()) as ReplayOut;
-}
-
-// ---------------------------------------------------------------------------
-// Private JSON helpers (POST/PUT with auth)
-// ---------------------------------------------------------------------------
-
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await apiFetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify(body),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `request failed: ${res.status} ${path}`));
-  }
-  return (await res.json()) as T;
-}
-
-async function putJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await apiFetch(path, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify(body),
-  });
-  assertAuthenticated(res);
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, `request failed: ${res.status} ${path}`));
-  }
-  return (await res.json()) as T;
 }

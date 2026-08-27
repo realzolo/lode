@@ -17,7 +17,7 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      'inline-flex h-8 items-center justify-center rounded-sm bg-muted p-1 text-muted-foreground',
+      'flex h-8 w-max max-w-full items-center justify-start overflow-x-auto rounded-sm bg-muted p-1 text-muted-foreground',
       className,
     )}
     {...props}
@@ -55,9 +55,7 @@ const TabsContent = React.forwardRef<
 ));
 TabsContent.displayName = TabsPrimitive.Content.displayName;
 
-// The app's previous API: `<Tabs items={[{value,label,content}]} defaultIndex={n} />`.
-// Built on Radix primitives (animated, accessible) but exposes the simple list
-// call sites already used across pages.
+// Current item-based API shared by control-plane and investigation pages.
 export function Tabs({
   items,
   defaultIndex = 0,

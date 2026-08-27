@@ -3,7 +3,7 @@
 # which uses the project .venv created by `make install` (uv sync). `make` itself
 # does NOT read .env — only the Python app does via pydantic-settings.
 
-.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check investigation-check analysis-check
+.PHONY: install migrate serve consume dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check investigation-check analysis-check api-check web-check
 
 # uv binary to use. Override from the shell if it is not on PATH, e.g.
 #   make serve UV=/Users/lixm/.local/bin/uv
@@ -89,6 +89,15 @@ analysis-check:
 	$(UV) run pytest -q tests/unit/test_model_routing.py tests/unit/test_context_manager.py tests/unit/test_context_compaction.py tests/unit/test_conclusion_authority.py tests/unit/test_model_planner.py tests/unit/test_git_source.py tests/evals/test_analysis_quality.py
 	$(UV) run python scripts/check_analysis_quality.py
 	$(UV) run python scripts/check_analysis_execution.py
+
+# Verify the frozen API surface, control-plane permissions, secret redaction, and SSE lifecycle.
+api-check:
+	$(UV) run pytest -q tests/contract/test_api_surface.py tests/unit/test_control_api_schemas.py tests/unit/test_provider_introspection.py tests/test_control_plane_api.py tests/test_investigation_api.py
+
+# Type-check and produce the deployable Workbench build.
+web-check:
+	npm run typecheck --prefix apps/web
+	npm run build --prefix apps/web
 
 # Build and run the full stack (postgres, kafka, api, web) via Docker.
 up:

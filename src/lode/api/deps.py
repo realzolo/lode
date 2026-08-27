@@ -17,10 +17,10 @@ from fastapi.security import SecurityScopes
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lode.config import settings
 from lode.db.models import User, WorkspacePermission
 from lode.db.session import AsyncSessionLocal
 from lode.security import decode_token
-from lode.config import settings
 
 # Permission hierarchy: a higher rank satisfies any lower requirement.
 PERM_RANK = {"read": 1, "analyze": 2, "admin": 3}
@@ -62,7 +62,7 @@ async def assert_workspace_permission(
     """Raise unless ``user`` has the required Workspace permission."""
     if user.role == "admin":
         return
-    row = await session.get(WorkspacePermission, (workspace_id, user.id))
+    row = await session.get(WorkspacePermission, (user.id, workspace_id))
     if row is None or _rank(row.permission) < _rank(required_perm):
         raise HTTPException(
             status_code=403,
@@ -92,10 +92,14 @@ async def permitted_workspace_ids(
     if role == "admin":
         return None
     rows = (
-        await session.execute(
-            select(WorkspacePermission.workspace_id).where(
-                WorkspacePermission.user_id == user_id
+        (
+            await session.execute(
+                select(WorkspacePermission.workspace_id).where(
+                    WorkspacePermission.user_id == user_id
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return set(rows)

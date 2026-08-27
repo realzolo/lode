@@ -333,6 +333,7 @@ class PostgresIntakeStore:
         workspace_id: int,
         incident: NormalizedIncident,
         created_by: int,
+        retry_of_id: int | None = None,
     ) -> IntakeResult:
         trace_ciphertext = (
             encrypt_value(incident.trace_id) if incident.trace_id is not None else None
@@ -346,6 +347,7 @@ class PostgresIntakeStore:
             trace_ciphertext=trace_ciphertext,
             trace_hash=trace_hash,
             created_by=created_by,
+            retry_of_id=retry_of_id,
         )
         await self.session.commit()
         return result
@@ -360,6 +362,7 @@ class PostgresIntakeStore:
         trace_ciphertext: str | None,
         trace_hash: str | None,
         created_by: int | None,
+        retry_of_id: int | None = None,
     ) -> IntakeResult:
         signature_hash = _signature(workspace_id, incident.event, incident.trace_id)
         investigation = Investigation(
@@ -367,6 +370,7 @@ class PostgresIntakeStore:
             workspace_id=workspace_id,
             alert_id=alert_row_id,
             incident_id=incident_id,
+            retry_of_id=retry_of_id,
             trigger_signature_hash=signature_hash,
             output_language="en",
             window_started_at=incident.occurred_at
@@ -382,7 +386,7 @@ class PostgresIntakeStore:
                 "timeout_seconds": settings.investigation_timeout_seconds,
                 "max_parallel_operations": 4,
             },
-            engine_version="lode-v1",
+            engine_version="lode",
         )
         self.session.add(investigation)
         await self.session.flush()

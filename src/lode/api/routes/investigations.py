@@ -1,19 +1,61 @@
-"""Manual investigation intake endpoint."""
+"""Current manual intake, investigation read model, replay stream, and lifecycle API."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+import json
+from datetime import UTC, datetime
+from typing import Any
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lode.api.deps import require_user
-from lode.application.intake import ManualIncidentRequest, normalize_manual
-from lode.db.models import AuditEvent, User, Workspace, WorkspacePermission
+from lode.api.deps import assert_workspace_permission, permitted_workspace_ids, require_user
+from lode.application.intake import ManualIncidentRequest, NormalizedIncident, normalize_manual
+from lode.crypto import decrypt_value
+from lode.db.models import (
+    AIInvocation,
+    AuditEvent,
+    AuthorizedEvidenceRead,
+    ContextBundleRevision,
+    EvidenceAccessDecision,
+    EvidenceArtifact,
+    EvidenceAssertion,
+    EvidenceCollection,
+    EvidenceReadAttempt,
+    Investigation,
+    InvestigationCodeFinding,
+    InvestigationConnectorSnapshot,
+    InvestigationDecision,
+    InvestigationInput,
+    InvestigationModelBindingSnapshot,
+    InvestigationModelPolicySnapshot,
+    InvestigationOperation,
+    InvestigationOperationEvent,
+    InvestigationReport,
+    InvestigationRepositorySnapshot,
+    InvestigationResourceGraphSnapshot,
+    InvestigationStep,
+    ModelRoutingDecision,
+    NativeReadCandidate,
+    ObservedEntity,
+    ObservedEvent,
+    ObservedRelation,
+    SealedEvidenceValue,
+    SourceAssessment,
+    SourceRevision,
+    User,
+    Workspace,
+)
 from lode.db.session import AsyncSessionLocal
 from lode.infrastructure.intake_store import PostgresIntakeStore
 
 router = APIRouter(prefix="/investigations", tags=["investigations"])
+_TERMINAL_STATUSES = {"completed", "failed"}
 
 
 class ManualInvestigationCreated(BaseModel):
@@ -28,25 +70,72 @@ async def get_session() -> AsyncSession:
         yield session
 
 
-async def _require_analyze(
-    session: AsyncSession, *, user_id: int, workspace_id: int
-) -> User:
+def _error(status: int, code: str, message: str, **details: Any) -> HTTPException:
+    return HTTPException(
+        status_code=status,
+        detail={"code": code, "message": message, **details},
+    )
+
+
+async def _active_user(session: AsyncSession, user_id: int) -> User:
     user = await session.get(User, user_id)
     if user is None or user.status != "active":
-        raise HTTPException(status_code=401, detail="active user required")
-    if await session.get(Workspace, workspace_id) is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    if user.role == "admin":
-        return user
-    permission = await session.scalar(
-        select(WorkspacePermission.permission).where(
-            WorkspacePermission.workspace_id == workspace_id,
-            WorkspacePermission.user_id == user_id,
-        )
-    )
-    if permission not in {"analyze", "admin"}:
-        raise HTTPException(status_code=403, detail="Workspace analyze permission required")
+        raise _error(401, "active_user_required", "An active user is required.")
     return user
+
+
+async def _require_workspace(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    workspace_id: int,
+    permission: str,
+) -> User:
+    user = await _active_user(session, user_id)
+    if await session.get(Workspace, workspace_id) is None:
+        raise _error(404, "workspace_not_found", "Workspace not found.")
+    await assert_workspace_permission(session, user, workspace_id, permission)
+    return user
+
+
+async def _investigation_access(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    public_id: str,
+    permission: str,
+) -> tuple[User, Investigation]:
+    user = await _active_user(session, user_id)
+    row = await session.scalar(select(Investigation).where(Investigation.public_id == public_id))
+    if row is None:
+        raise _error(404, "investigation_not_found", "Investigation not found.")
+    await assert_workspace_permission(session, user, row.workspace_id, permission)
+    return user, row
+
+
+def _row(row: Any, *, exclude: frozenset[str] = frozenset()) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        column.name: getattr(row, column.name)
+        for column in row.__table__.columns
+        if column.name not in exclude
+    }
+
+
+async def _rows(
+    session: AsyncSession,
+    model: Any,
+    investigation_id: int,
+    *,
+    order_by: Any | None = None,
+    exclude: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    statement = select(model).where(model.investigation_id == investigation_id)
+    if order_by is not None:
+        statement = statement.order_by(order_by)
+    values = (await session.execute(statement)).scalars()
+    return [_row(value, exclude=exclude) or {} for value in values]
 
 
 @router.post("", response_model=ManualInvestigationCreated, status_code=201)
@@ -55,8 +144,11 @@ async def create_manual_investigation(
     user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> ManualInvestigationCreated:
-    user = await _require_analyze(
-        session, user_id=user_id, workspace_id=payload.workspace_id
+    user = await _require_workspace(
+        session,
+        user_id=user_id,
+        workspace_id=payload.workspace_id,
+        permission="analyze",
     )
     result = await PostgresIntakeStore(session).persist_manual(
         workspace_id=payload.workspace_id,
@@ -82,3 +174,370 @@ async def create_manual_investigation(
         status="queued",
         job_id=result.job_id or 0,
     )
+
+
+@router.get("")
+async def list_investigations(
+    workspace_id: int | None = Query(default=None, gt=0),
+    status: str | None = Query(default=None),
+    result_state: str | None = Query(default=None),
+    include_archived: bool = Query(default=False),
+    after_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    allowed = await permitted_workspace_ids(session, user.id, user.role)
+    statement = select(Investigation).where(Investigation.id > after_id)
+    if allowed is not None:
+        if not allowed:
+            return []
+        statement = statement.where(Investigation.workspace_id.in_(allowed))
+    if workspace_id is not None:
+        if allowed is not None and workspace_id not in allowed:
+            raise _error(403, "workspace_read_forbidden", "Workspace read permission required.")
+        statement = statement.where(Investigation.workspace_id == workspace_id)
+    if status is not None:
+        statement = statement.where(Investigation.status == status)
+    if result_state is not None:
+        statement = statement.where(Investigation.result_state == result_state)
+    if not include_archived:
+        statement = statement.where(Investigation.archived_at.is_(None))
+    values = (await session.execute(statement.order_by(Investigation.id).limit(limit))).scalars()
+    return [_row(value) for value in values]
+
+
+@router.get("/{investigation_id}")
+async def get_investigation(
+    investigation_id: str,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    _, investigation = await _investigation_access(
+        session,
+        user_id=user_id,
+        public_id=investigation_id,
+        permission="read",
+    )
+    internal_id = investigation.id
+    input_row = await session.get(InvestigationInput, internal_id)
+    graph_snapshot = await session.get(InvestigationResourceGraphSnapshot, internal_id)
+    policy_snapshot = await session.get(InvestigationModelPolicySnapshot, internal_id)
+    report = await session.get(InvestigationReport, internal_id)
+    return {
+        "investigation": _row(investigation),
+        "input": _row(input_row),
+        "snapshot_summary": {
+            "resource_graph": _row(graph_snapshot),
+            "model_policy": _row(policy_snapshot),
+            "repositories": await _rows(
+                session,
+                InvestigationRepositorySnapshot,
+                internal_id,
+                order_by=InvestigationRepositorySnapshot.id,
+                exclude=frozenset({"credential_id"}),
+            ),
+            "connectors": await _rows(
+                session,
+                InvestigationConnectorSnapshot,
+                internal_id,
+                order_by=InvestigationConnectorSnapshot.id,
+                exclude=frozenset({"secret_ciphertext"}),
+            ),
+            "model_bindings": await _rows(
+                session,
+                InvestigationModelBindingSnapshot,
+                internal_id,
+                order_by=InvestigationModelBindingSnapshot.id,
+            ),
+        },
+        "context_revisions": await _rows(
+            session, ContextBundleRevision, internal_id, order_by=ContextBundleRevision.id
+        ),
+        "model_routing": await _rows(
+            session, ModelRoutingDecision, internal_id, order_by=ModelRoutingDecision.id
+        ),
+        "steps": await _rows(
+            session, InvestigationStep, internal_id, order_by=InvestigationStep.ordinal
+        ),
+        "decisions": await _rows(
+            session, InvestigationDecision, internal_id, order_by=InvestigationDecision.ordinal
+        ),
+        "operations": await _rows(
+            session, InvestigationOperation, internal_id, order_by=InvestigationOperation.ordinal
+        ),
+        "evidence": {
+            "collections": await _rows(
+                session, EvidenceCollection, internal_id, order_by=EvidenceCollection.id
+            ),
+            "artifacts": await _rows(
+                session, EvidenceArtifact, internal_id, order_by=EvidenceArtifact.id
+            ),
+            "assertions": await _rows(
+                session, EvidenceAssertion, internal_id, order_by=EvidenceAssertion.id
+            ),
+            "entities": await _rows(
+                session, ObservedEntity, internal_id, order_by=ObservedEntity.id
+            ),
+            "events": await _rows(
+                session, ObservedEvent, internal_id, order_by=ObservedEvent.occurred_at
+            ),
+            "relations": await _rows(
+                session, ObservedRelation, internal_id, order_by=ObservedRelation.id
+            ),
+        },
+        "source_revisions": await _rows(
+            session, SourceRevision, internal_id, order_by=SourceRevision.id
+        ),
+        "source_assessments": await _rows(
+            session, SourceAssessment, internal_id, order_by=SourceAssessment.id
+        ),
+        "code_findings": await _rows(
+            session,
+            InvestigationCodeFinding,
+            internal_id,
+            order_by=InvestigationCodeFinding.id,
+        ),
+        "report": _row(report),
+    }
+
+
+@router.get("/{investigation_id}/events")
+async def get_investigation_events(
+    investigation_id: str,
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    _, investigation = await _investigation_access(
+        session, user_id=user_id, public_id=investigation_id, permission="read"
+    )
+    values = (
+        await session.execute(
+            select(InvestigationOperationEvent)
+            .where(
+                InvestigationOperationEvent.investigation_id == investigation.id,
+                InvestigationOperationEvent.sequence > after,
+            )
+            .order_by(InvestigationOperationEvent.sequence)
+            .limit(limit)
+        )
+    ).scalars()
+    return [_row(value) for value in values]
+
+
+@router.get("/{investigation_id}/audit")
+async def get_investigation_audit(
+    investigation_id: str,
+    after_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    _, investigation = await _investigation_access(
+        session, user_id=user_id, public_id=investigation_id, permission="read"
+    )
+
+    async def audit_rows(model: Any, exclude: frozenset[str] = frozenset()):
+        values = (
+            await session.execute(
+                select(model)
+                .where(model.investigation_id == investigation.id, model.id > after_id)
+                .order_by(model.id)
+                .limit(limit)
+            )
+        ).scalars()
+        return [_row(value, exclude=exclude) for value in values]
+
+    return {
+        "native_read_candidates": await audit_rows(NativeReadCandidate),
+        "access_decisions": await audit_rows(EvidenceAccessDecision),
+        "authorized_reads": await audit_rows(
+            AuthorizedEvidenceRead,
+            frozenset({"effective_action_ciphertext", "token_hash"}),
+        ),
+        "read_attempts": await audit_rows(EvidenceReadAttempt),
+        "ai_invocations": await audit_rows(AIInvocation),
+    }
+
+
+@router.get("/{investigation_id}/stream")
+async def stream_investigation(
+    investigation_id: str,
+    request: Request,
+    after: int = Query(default=0, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    user_id: int = Depends(require_user),
+):
+    async with AsyncSessionLocal() as access_session:
+        _, investigation = await _investigation_access(
+            access_session,
+            user_id=user_id,
+            public_id=investigation_id,
+            permission="read",
+        )
+    try:
+        header_cursor = int(last_event_id or "0")
+    except ValueError as exc:
+        raise _error(422, "event_cursor_invalid", "Last-Event-ID must be an integer.") from exc
+    cursor = max(after, header_cursor)
+    internal_id = investigation.id
+
+    async def events():
+        nonlocal cursor
+        while not await request.is_disconnected():
+            async with AsyncSessionLocal() as stream_session:
+                values = tuple(
+                    (
+                        await stream_session.execute(
+                            select(InvestigationOperationEvent)
+                            .where(
+                                InvestigationOperationEvent.investigation_id == internal_id,
+                                InvestigationOperationEvent.sequence > cursor,
+                            )
+                            .order_by(InvestigationOperationEvent.sequence)
+                            .limit(100)
+                        )
+                    ).scalars()
+                )
+                current = await stream_session.get(Investigation, internal_id)
+            for value in values:
+                cursor = value.sequence
+                payload = json.dumps(jsonable_encoder(_row(value)), separators=(",", ":"))
+                yield f"id: {cursor}\nevent: {value.event_name}\ndata: {payload}\n\n"
+            if values:
+                continue
+            if current is None:
+                return
+            if current.status in _TERMINAL_STATUSES:
+                state = json.dumps(
+                    jsonable_encoder(
+                        {
+                            "public_id": current.public_id,
+                            "status": current.status,
+                            "result_state": current.result_state,
+                            "event_cursor": current.event_cursor,
+                        }
+                    ),
+                    separators=(",", ":"),
+                )
+                yield f"event: investigation.finished\ndata: {state}\n\n"
+                return
+            yield ": keepalive\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post(
+    "/{investigation_id}/retry", response_model=ManualInvestigationCreated, status_code=201
+)
+async def retry_investigation(
+    investigation_id: str,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    user, investigation = await _investigation_access(
+        session, user_id=user_id, public_id=investigation_id, permission="analyze"
+    )
+    if investigation.status not in _TERMINAL_STATUSES:
+        raise _error(409, "investigation_not_terminal", "Only a terminal investigation can retry.")
+    if investigation.archived_at is not None:
+        raise _error(409, "investigation_archived", "An archived investigation cannot retry.")
+    input_row = await session.get(InvestigationInput, investigation.id)
+    if input_row is None:
+        raise _error(
+            409, "investigation_input_missing", "Immutable investigation input is missing."
+        )
+    trace_id = None
+    if input_row.trace_value_ref is not None:
+        sealed = await session.scalar(
+            select(SealedEvidenceValue).where(
+                SealedEvidenceValue.investigation_id == investigation.id,
+                SealedEvidenceValue.value_ref == input_row.trace_value_ref,
+            )
+        )
+        if sealed is None:
+            raise _error(409, "investigation_trace_missing", "Immutable trace input is missing.")
+        trace_id = decrypt_value(sealed.value_ciphertext)
+    incident = NormalizedIncident(
+        source_type=input_row.source_type,
+        alert_id=None,
+        occurred_at=input_row.occurred_at,
+        severity=input_row.severity,
+        event=input_row.event,
+        trace_id=trace_id,
+        source_revision=input_row.source_revision,
+        error_masked=input_row.error,
+        raw_payload_masked=input_row.raw_payload_masked,
+        attachments_masked=tuple(input_row.attachments_masked),
+        masking_categories=(),
+    )
+    result = await PostgresIntakeStore(session).persist_manual(
+        workspace_id=investigation.workspace_id,
+        incident=incident,
+        created_by=user.id,
+        retry_of_id=investigation.id,
+    )
+    session.add(
+        AuditEvent(
+            actor_id=user.id,
+            actor_email=user.email,
+            action="investigation.retry",
+            target_type="investigation",
+            target_id=result.investigation_public_id,
+            workspace_id=investigation.workspace_id,
+            result="ok",
+            detail={"retry_of": investigation.public_id},
+        )
+    )
+    await session.commit()
+    return ManualInvestigationCreated(
+        id=result.investigation_public_id or "",
+        workspace_id=investigation.workspace_id,
+        status="queued",
+        job_id=result.job_id or 0,
+    )
+
+
+@router.post("/{investigation_id}/archive")
+async def archive_investigation(
+    investigation_id: str,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    user, investigation = await _investigation_access(
+        session, user_id=user_id, public_id=investigation_id, permission="admin"
+    )
+    if investigation.status not in _TERMINAL_STATUSES:
+        raise _error(
+            409, "investigation_not_terminal", "Only a terminal investigation can archive."
+        )
+    if investigation.archived_at is not None:
+        raise _error(409, "investigation_already_archived", "Investigation is already archived.")
+    investigation.archived_at = datetime.now(UTC)
+    investigation.archived_by = user.id
+    session.add(
+        AuditEvent(
+            actor_id=user.id,
+            actor_email=user.email,
+            action="investigation.archive",
+            target_type="investigation",
+            target_id=investigation.public_id,
+            workspace_id=investigation.workspace_id,
+            result="ok",
+            detail={},
+        )
+    )
+    await session.commit()
+    return {
+        "id": investigation.public_id,
+        "archived_at": investigation.archived_at,
+        "archived_by": investigation.archived_by,
+    }

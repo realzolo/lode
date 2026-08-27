@@ -1,462 +1,71 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useLocale, useTranslations } from 'next-intl';
-import { CheckCircle2, ChevronRight, CircleAlert } from 'lucide-react';
-import { Card } from '@/components/ui/card';
+import { useCallback, useEffect, useState } from 'react';
+import { ArrowUpRight, CirclePause, CirclePlay, Plus, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Skeleton } from '@/components/ui/skeleton';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogFooter,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog';
-import { Link, useRouter } from '@/lib/navigation';
-import type { Application } from '@/lib/types';
-import {
-  fetchApplications,
-  createApplication,
-  pauseApplicationIngestion,
-  resumeApplicationIngestion,
-  startApplicationIngestion,
-} from '@/lib/api';
-import { relativeTime } from '@/lib/utils';
-import { IconPlus } from '@/components/icons';
+import { createWorkspace, fetchWorkspaces, pauseIngestion, resumeIngestion, startIngestion } from '@/lib/api';
+import { Link } from '@/lib/navigation';
+import type { Workspace } from '@/lib/types';
 
-// Geist avatar: a neutral grayscale tile showing the app's initial. Geist reserves
-// color for status/meaning, never decoration — so the tile stays monochrome and the
-// level badge (red/amber) carries the status color.
-function AppAvatar({ name }: { name: string }) {
-  return (
-    <div
-      aria-hidden="true"
-      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[var(--color-4)] bg-[var(--color-2)] text-[14px] font-semibold leading-none text-[var(--color-10)]"
-    >
-      {name.charAt(0).toUpperCase()}
-    </div>
-  );
-}
-
-export default function DashboardPage() {
-  const t = useTranslations('dashboard');
-  const tc = useTranslations('common');
-  const locale = useLocale();
-  const [apps, setApps] = useState<Application[]>([]);
+export default function WorkspacesPage() {
+  const [rows, setRows] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const router = useRouter();
-  const [newOpen, setNewOpen] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [newTopic, setNewTopic] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [startTarget, setStartTarget] = useState<Application | null>(null);
-  const [startPosition, setStartPosition] = useState<'latest' | 'earliest'>('latest');
-  const [startError, setStartError] = useState<string | null>(null);
-  const [actionAppId, setActionAppId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  // Polling may overlap with a lifecycle mutation. A response that started
-  // before the mutation must not replace the backend-confirmed local state.
-  const applicationsRequestRef = useRef(0);
-
-  const loadApplications = useCallback(async (showLoading = false) => {
-    const requestId = ++applicationsRequestRef.current;
-    if (showLoading) setLoading(true);
-    setError(null);
-    try {
-      const nextApps = await fetchApplications();
-      if (requestId === applicationsRequestRef.current) setApps(nextApps);
-    } catch (e) {
-      if (requestId === applicationsRequestRef.current) setError(String(e));
-    } finally {
-      if (showLoading && requestId === applicationsRequestRef.current) setLoading(false);
-    }
+  const [error, setError] = useState('');
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [topic, setTopic] = useState('');
+  const [position, setPosition] = useState<'earliest' | 'latest'>('latest');
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setRows(await fetchWorkspaces()); setError(''); }
+    catch (cause) { setError(String(cause)); }
+    finally { setLoading(false); }
   }, []);
+  useEffect(() => { void load(); }, [load]);
 
-  useEffect(() => {
-    void loadApplications(true);
-  }, [loadApplications]);
-
-  const shouldPollIngestion = apps.some((app) => app.ingestionState === 'active');
-  useEffect(() => {
-    if (!shouldPollIngestion) return;
-    const timer = window.setInterval(() => void loadApplications(), 5000);
-    return () => window.clearInterval(timer);
-  }, [loadApplications, shouldPollIngestion]);
-
-  async function handleCreate() {
-    const name = newName.trim();
-    const ingestionTopic = newTopic.trim();
-    if (!name || !ingestionTopic || submitting) return;
-    setSubmitting(true);
-    setFormError(null);
+  async function create() {
     try {
-      const created = await createApplication({ name, ingestion_topic: ingestionTopic });
-      applicationsRequestRef.current += 1;
-      setApps((prev) => [created, ...prev]);
-      setNewOpen(false);
-      setNewName('');
-      setNewTopic('');
-      router.push(`/admin/applications/${created.id}`);
-    } catch (e) {
-      setFormError(String(e));
-    } finally {
-      setSubmitting(false);
-    }
+      const row = await createWorkspace({ name, ingestion_topic: topic });
+      setRows((current) => [...current, row]);
+      setOpen(false); setName(''); setTopic('');
+      toast.success('Workspace created');
+    } catch (cause) { setError(String(cause)); }
   }
 
-  function updateIngestion(
-    appId: string,
-    ingestionState: Application['ingestionState'],
-    ingestionObservedState: Application['ingestionObservedState'],
-    ingestionStartPosition: Application['ingestionStartPosition'],
-  ) {
-    applicationsRequestRef.current += 1;
-    setApps((previous) => previous.map((app) => (
-      app.id === appId
-        ? { ...app, ingestionState, ingestionObservedState, ingestionStartPosition }
-        : app
-    )));
-  }
-
-  async function handleStart() {
-    if (!startTarget) return;
-    setActionAppId(startTarget.id);
-    setStartError(null);
+  async function transition(row: Workspace) {
     try {
-      const status = await startApplicationIngestion(startTarget.id, startPosition);
-      updateIngestion(
-        startTarget.id,
-        status.desired_state,
-        status.observed_state,
-        status.start_position,
-      );
-      setStartTarget(null);
-    } catch (e) {
-      setStartError(String(e));
-    } finally {
-      setActionAppId(null);
-    }
+      const updated = row.ingestion_state === 'draft'
+        ? await startIngestion(row.id, position)
+        : row.ingestion_state === 'active'
+          ? await pauseIngestion(row.id)
+          : await resumeIngestion(row.id);
+      setRows((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (cause) { setError(String(cause)); }
   }
 
-  async function handleLifecycle(app: Application, action: 'pause' | 'resume') {
-    setActionAppId(app.id);
-    setActionError(null);
-    try {
-      const status = action === 'pause'
-        ? await pauseApplicationIngestion(app.id)
-        : await resumeApplicationIngestion(app.id);
-      updateIngestion(
-        app.id,
-        status.desired_state,
-        status.observed_state,
-        status.start_position,
-      );
-    } catch (e) {
-      setActionError(String(e));
-    } finally {
-      setActionAppId(null);
-    }
-  }
-
-  return (
-    <div className="space-y-8">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-[32px] font-semibold tracking-normal leading-[1.15] text-foreground">
-            {t('title')}
-          </h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">{t('subtitle')}</p>
-        </div>
-        <Button variant="primary" className="shrink-0" onClick={() => setNewOpen(true)}>
-          <IconPlus size={16} />
-          {t('newApplication')}
-        </Button>
-      </div>
-
-      {loading && apps.length === 0 && (
-        <div
-          className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3"
-          aria-busy="true"
-        >
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Card
-              key={i}
-              className="flex h-full flex-col gap-3.5 p-6 shadow-none"
-            >
-              <div className="flex items-start gap-3.5">
-                <Skeleton variant="rounded" className="h-10 w-10 shrink-0" />
-                <div className="min-w-0 flex-1 space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <Skeleton className="h-4 w-32" />
-                    <Skeleton className="h-5 w-12" />
-                  </div>
-                  <Skeleton className="h-3.5 w-full max-w-[200px]" />
-                </div>
-              </div>
-              <div className="mt-auto space-y-2.5 border-t border-[var(--color-4)] pt-3.5">
-                <Skeleton className="h-3.5 w-40" />
-              </div>
-            </Card>
-          ))}
-        </div>
-      )}
-      {error && (
-        <div className="dashboard-error" role="alert">
-          <p className="text-sm text-destructive">{error}</p>
-          <Button variant="outline" size="sm" onClick={() => void loadApplications(true)}>
-            {tc('retry')}
-          </Button>
-        </div>
-      )}
-      {actionError && (
-        <p className="text-sm text-destructive">{actionError}</p>
-      )}
-      {!loading && !error && apps.length === 0 && (
-        <p className="text-sm text-muted-foreground">{tc('empty')}</p>
-      )}
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {apps.map((app) => {
-          const needsFirstStart = app.ingestionState === 'draft'
-            || (app.ingestionState === 'paused' && !app.ingestionStartPosition);
-          const canManage = app.myPerm === 'admin';
-          const stateVariant = app.ingestionObservedState === 'listening'
-            ? 'success'
-            : app.ingestionObservedState === 'paused'
-              ? 'warning'
-              : app.ingestionObservedState === 'error'
-                ? 'danger'
-              : 'default';
-
-          return (
-            <Card key={app.id} className="flex h-full flex-col gap-3.5 p-6 shadow-none">
-              <Link
-                href={`/admin/applications/${app.id}`}
-                className="group block rounded-md outline-none transition focus-visible:shadow-geist-focus"
-              >
-              <div className="flex items-start gap-3.5">
-                <AppAvatar name={app.name} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-[16px] font-semibold leading-none text-foreground">
-                      {app.name}
-                    </span>
-                    <Badge
-                      variant={app.level === 'CRITICAL' ? 'danger' : 'warning'}
-                      className="shrink-0"
-                    >
-                      {app.level}
-                    </Badge>
-                  </div>
-                  <div className="mono mt-2 truncate text-[13px] text-muted-foreground">
-                    {app.ingestionTopic}
-                  </div>
-                </div>
-              </div>
-              <div className="mt-3.5 flex items-center gap-1.5 text-[13px] text-muted-foreground">
-                <span>
-                  {app.serviceCount} {app.serviceCount === 1 ? 'service' : 'services'}
-                </span>
-                <span aria-hidden="true" className="text-[var(--color-6)]">
-                  ·
-                </span>
-                <span>Created {relativeTime(app.createdAt, locale)}</span>
-                <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
-              </div>
-              </Link>
-              <div className="mt-auto flex items-center justify-between gap-3 border-t border-[var(--color-4)] pt-3.5">
-                <Badge variant={stateVariant}>
-                  {t(`ingestionObserved.${app.ingestionObservedState}`)}
-                </Badge>
-                {canManage && needsFirstStart && (
-                  app.ingestionTopic ? (
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => {
-                        setActionError(null);
-                        setStartError(null);
-                        setStartPosition('latest');
-                        setStartTarget(app);
-                      }}
-                      disabled={actionAppId === app.id}
-                    >
-                      {t('startIngestion')}
-                    </Button>
-                  ) : (
-                    <Button asChild variant="secondary" size="sm">
-                      <Link href={`/admin/applications/${app.id}`}>{t('configureTopic')}</Link>
-                    </Button>
-                  )
-                )}
-                {canManage && app.ingestionState === 'active' && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void handleLifecycle(app, 'pause')}
-                    disabled={actionAppId === app.id}
-                  >
-                    {t('pauseIngestion')}
-                  </Button>
-                )}
-                {canManage && app.ingestionState === 'paused' && !needsFirstStart && (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => void handleLifecycle(app, 'resume')}
-                    disabled={actionAppId === app.id}
-                  >
-                    {t('resumeIngestion')}
-                  </Button>
-                )}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-
-      <Dialog
-        open={startTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !actionAppId) {
-            setStartTarget(null);
-            setStartError(null);
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('startIngestion')}</DialogTitle>
-            <DialogDescription>
-              {t('startIngestionDesc', { name: startTarget?.name ?? '' })}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2" aria-label={t('startRequirements')}>
-            {[
-              { ready: Boolean(startTarget?.primaryServiceConfigured), label: t('primaryServiceRequired') },
-              { ready: Boolean(startTarget?.ingestionTopic), label: t('topicRequired') },
-              { ready: Boolean(startTarget?.modelAvailable), label: t('modelRequired') },
-            ].map((requirement) => (
-              <div
-                key={requirement.label}
-                className="flex items-center gap-2 text-sm text-foreground"
-              >
-                {requirement.ready ? (
-                  <CheckCircle2
-                    className="h-4 w-4 shrink-0"
-                    style={{ color: 'var(--success)' }}
-                    aria-hidden="true"
-                  />
-                ) : (
-                  <CircleAlert className="h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
-                )}
-                <span>{requirement.label}</span>
-              </div>
-            ))}
-          </div>
-          <label className="form-field text-sm font-medium text-foreground">
-            {t('startPosition')}
-            <Select
-              value={startPosition}
-              onChange={(event) => setStartPosition(event.target.value as 'latest' | 'earliest')}
-              disabled={actionAppId !== null}
-              aria-label={t('startPosition')}
-            >
-              <option value="latest">{t('startLatest')}</option>
-              <option value="earliest">{t('startEarliest')}</option>
-            </Select>
-          </label>
-          {startError && <p className="text-sm text-destructive">{startError}</p>}
-          <DialogFooter>
-            <Button
-              variant="default"
-              onClick={() => {
-                setStartTarget(null);
-                setStartError(null);
-              }}
-              disabled={actionAppId !== null}
-            >
-              {tc('cancel')}
-            </Button>
-            <Button
-              variant="primary"
-              onClick={() => void handleStart()}
-              disabled={
-                actionAppId !== null
-                || !startTarget
-                || !startTarget.primaryServiceConfigured
-                || !startTarget.ingestionTopic
-                || !startTarget.modelAvailable
-              }
-            >
-              {t('startIngestion')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={newOpen}
-        onOpenChange={(o) => {
-          setNewOpen(o);
-          if (!o) {
-            setNewName('');
-            setNewTopic('');
-            setFormError(null);
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('newApplication')}</DialogTitle>
-            <DialogDescription>{t('subtitle')}</DialogDescription>
-          </DialogHeader>
-          <Input
-            autoFocus
-            value={newName}
-            placeholder={t('namePlaceholder')}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleCreate();
-            }}
-            disabled={submitting}
-          />
-          <Input
-            value={newTopic}
-            placeholder={t('topicRequired')}
-            onChange={(e) => setNewTopic(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
-            disabled={submitting}
-          />
-          {formError && (
-            <p className="text-sm text-destructive">{formError}</p>
-          )}
-          <DialogFooter>
-            <Button
-              variant="default"
-              onClick={() => setNewOpen(false)}
-              disabled={submitting}
-            >
-              {tc('cancel')}
-            </Button>
-            <Button
-              variant="primary"
-              onClick={handleCreate}
-              disabled={submitting || !newName.trim() || !newTopic.trim()}
-            >
-              {t('newApplication')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+  return <main className="space-y-6">
+    <header className="flex flex-wrap items-end justify-between gap-4">
+      <div><p className="eyebrow">CONTROL PLANE</p><h1 className="page-title">Workspaces</h1><p className="page-subtitle">Ingestion ownership, model policy, sources, and evidence access.</p></div>
+      <div className="flex gap-2"><Button size="icon" variant="outline" aria-label="Refresh" onClick={() => void load()}><RefreshCw size={16} /></Button><Button variant="primary" onClick={() => setOpen(true)}><Plus size={16} />New workspace</Button></div>
+    </header>
+    {error && <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{error}</div>}
+    <div className="operational-table">
+      <div className="table-wrap"><table className="table"><thead><tr><th>Name</th><th>Kafka topic</th><th>Policy</th><th>Ingestion</th><th>Updated</th><th /></tr></thead>
+        <tbody>{rows.map((row) => <tr key={row.id}>
+          <td><Link href={`/admin/workspaces/${row.id}`} className="font-medium hover:text-link">{row.name}</Link></td>
+          <td className="mono text-xs">{row.ingestion_topic}</td>
+          <td>{row.model_policy_revision_id ? `Revision ${row.model_policy_revision_id}` : <span className="text-warning">Not published</span>}</td>
+          <td><span className={`table-status table-status-${row.ingestion_state === 'active' ? 'success' : row.ingestion_state === 'paused' ? 'warning' : 'neutral'}`}><i />{row.ingestion_state}</span></td>
+          <td className="text-xs text-muted-foreground">{new Date(row.updated_at).toLocaleString()}</td>
+          <td><div className="flex justify-end gap-1"><Button size="icon" variant="ghost" aria-label={`${row.ingestion_state} ingestion`} onClick={() => void transition(row)}>{row.ingestion_state === 'active' ? <CirclePause size={16} /> : <CirclePlay size={16} />}</Button><Button size="icon" variant="ghost" asChild><Link href={`/admin/workspaces/${row.id}`} aria-label="Open workspace"><ArrowUpRight size={16} /></Link></Button></div></td>
+        </tr>)}</tbody></table></div>
+      {!loading && rows.length === 0 && <p className="p-8 text-center text-muted-foreground">No workspaces.</p>}
+      {loading && <p className="p-8 text-center text-muted-foreground">Loading...</p>}
     </div>
-  );
+    <Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogHeader><DialogTitle>New workspace</DialogTitle></DialogHeader><div className="space-y-4"><label className="field"><span className="field-label">Name</span><Input value={name} onChange={(event) => setName(event.target.value)} /></label><label className="field"><span className="field-label">Kafka topic</span><Input className="mono" value={topic} onChange={(event) => setTopic(event.target.value)} /></label><label className="field"><span className="field-label">Initial position</span><Select value={position} onChange={(event) => setPosition(event.target.value as 'earliest' | 'latest')}><option value="latest">Latest</option><option value="earliest">Earliest</option></Select></label></div><DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button variant="primary" disabled={!name.trim() || !topic.trim()} onClick={() => void create()}>Create</Button></DialogFooter></DialogContent></Dialog>
+  </main>;
 }

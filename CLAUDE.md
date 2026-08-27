@@ -6,7 +6,10 @@ The final replacement is being implemented from
 `workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-7 are
 the completed baseline. The Phase 8 implementation candidate is present, but
 Phase 8 remains release-gated until frozen provider-run observations satisfy the
-quality and Wilson confidence thresholds below:
+quality and Wilson confidence thresholds below. The final Phase 9 API and Web
+Workbench implementation is present and passes its deterministic API, database,
+SSE, type, build, and responsive-browser checks. Phase 10 hardening and release
+gates remain outstanding.
 
 - `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
   HTTP-surface, and database-inventory fixtures. These fixtures contain no
@@ -270,10 +273,10 @@ removal gate; it is expected to become clean as the replacement phases delete
 the currently implemented pre-final runtime contracts. Do not add an allowlist
 or compatibility adapter to make this gate pass.
 
-The sections below include final contracts for later implementation phases.
-Phases 1-8 changed the database/control-plane identity architecture, the
-migration/seed verification workflow, Kafka/manual intake, automatic resource
-understanding, and the currently assembled API routes. Phase 3 added the direct
+The sections below describe the current implementation and the remaining release
+requirements. Phases 1-9 changed the database/control-plane identity
+architecture, migration/seed verification workflow, Kafka/manual intake,
+automatic resource understanding, API surface, and Web Workbench. Phase 3 added the direct
 `PyYAML` dependency and the `resource-check` workflow. Phase 4 added an
 independent authorization-key deployment requirement and the
 `evidence-access-check` workflow, but no dependency. Phase 5 added the
@@ -292,9 +295,9 @@ Phase 8 added no dependency; it added same-transaction repository/connector/mode
 control snapshots, exact Git source reads, authority assessment, frozen multi-
 model routing, exact context and validated compaction, audited role isolation,
 strict synthesis/verifier publication, the default worker composition root, and
-the `analysis-check` workflow. Remaining API and Web modules are not a supported
-final execution path while their owning phase replaces them; they must be
-rewritten without adapters.
+the `analysis-check` workflow. Phase 9 added no dependency; it replaced the API
+and Web surfaces with the final Workspace/model/repository/connector/investigation
+contracts and added the `api-check` and `web-check` workflows.
 
 Lode is an evidence-backed production incident investigation service. An
 investigation advances through serial decision waves; independent operations
@@ -357,14 +360,17 @@ historical protocol or execution-path adapters.
 - `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, UI form metadata, and egress policy.
 - `src/lode/engine/integrations.py`: provider adapters for verification and bounded snapshots.
 - `src/lode/engine/evidence/git.py`: stack parsing, exact revision lookup, symbol range extraction, lexical candidates, and related-symbol expansion.
-- `apps/web`: Next.js workbench with manual intake, wave/operation execution track, final-finding code viewer, and paginated audit drawer.
+- `apps/web`: Next.js global model and Workspace control plane plus the single
+  investigation Workbench for manual intake, canonical detail, source authority,
+  model routing/context, evidence, execution audit, retry, archive, and SSE refresh.
 
 PostgreSQL is the source of truth. Kafka consumers only validate and enqueue;
-workers execute investigations. The currently assembled FastAPI application
-contains health, authentication, user/invite administration, and final manual
-intake routes; later phases add the final investigation and Workspace control
-surfaces. Model routing is frozen per investigation from its Workspace policy
-and eligible deployments; there is no single-model or global-default fallback.
+workers execute investigations. FastAPI exposes health, authentication,
+user/invite administration, global provider/deployment administration,
+Workspace policy/repository/connector/resource control, manual intake, canonical
+investigation reads, audit, retry, archive, and SSE. Model routing is frozen per
+investigation from its Workspace policy and eligible deployments; there is no
+single-model or global-default fallback.
 
 ## Workspace Activation
 
@@ -587,24 +593,33 @@ External causes can be represented accurately while code diagnosis separately re
 
 HTTP errors use one envelope: `error.code`, a string or HTTP status code; `error.message`, always a string; and optional structured `error.details`. Do not place structured objects in `error.message`.
 
-`GET /investigations/{id}` returns the canonical fields: `input`, `report`, ordered `steps`, `decisions`, `operations`, `evidence`, and `code_findings`, plus retry lineage and archive state.
+`GET /investigations/{id}` returns the canonical fields: `input`, `report`,
+ordered `steps`, `decisions`, `operations`, `evidence`, and `code_findings`, plus
+control snapshots, source revisions/assessments, model routing/context, retry
+lineage, and archive state. Secret ciphertext, authorization token hashes, and
+connector secret values are never serialized.
 
-`POST /investigations/{id}/retry` is valid only for a non-archived terminal investigation. It live-tests the application-bound model, creates a new investigation from the immutable normalized input, and records `retry_of`; it never mutates or reuses the old run. `POST /investigations/{id}/archive` is valid only for a terminal run and permanently makes that run read-only. Archived runs remain available to detail, event, SSE, and audit reads.
+`POST /investigations/{id}/retry` is valid only for a non-archived terminal
+investigation. It creates a new investigation from the immutable normalized
+input, restores the sealed opaque trace, and records `retry_of`; it never
+mutates or reuses the old run. `POST /investigations/{id}/archive` requires
+Workspace admin permission, is valid only for a terminal run, and permanently
+makes that run read-only. Archived runs remain available to detail, event, SSE,
+and audit reads.
 
-`GET /investigations/{id}/audit` returns separately paginated operation and AI-call summaries. The audit UI must expose the full masked operation purpose, input, progress, result, timing, failure, metrics, events, and evidence references rather than a recent-event slice.
+`GET /investigations/{id}/audit` cursor-pages the native candidate, access
+decision, authorized-read, attempt, and AI-invocation audit chains without
+returning encrypted actions or token hashes. Canonical detail separately
+exposes full masked operation purpose, input, progress, result, timing, failure,
+metrics, events, and evidence references rather than a recent-event slice.
 
-SSE event names are:
-
-- `step.updated`
-- `operation.started`
-- `operation.progress`
-- `operation.finished`
-- `decision.recorded`
-- `code_finding.updated`
-- `report.updated`
-- `investigation.finished`
-
-Operation event rows have monotonically increasing sequence values and support replay. Clients treat SSE as an invalidation/event channel and reload canonical state from the detail API.
+SSE replays persisted canonical operation event names, including
+`operation.started`, `operation.progress`, and `operation.finished`, by their
+monotonically increasing sequence. A terminal stream emits
+`investigation.finished`. Both the `after` cursor and `Last-Event-ID` are
+accepted; the greater cursor wins. Clients use SSE only as an invalidation
+channel and reload canonical state from the detail API. A transient disconnect
+reconnects with the last observed cursor and preserves the last canonical view.
 
 ## Database
 
@@ -692,15 +707,27 @@ secret hashing, and Compose privilege/network/key-ownership assertions.
 
 ## Frontend Contract
 
-Application creation atomically requires both name and Kafka ingestion topic; the topic cannot be cleared later. The application settings navigation exposes one `Integrations` page rather than a top-level database page. It renders a dense, filterable instance list and builds create/edit forms from `GET /integration-kinds`, so a new kind does not require a frontend conditional. Each row exposes kind, capabilities, revision, verification/state, and instance operations without showing secrets. Application admins, not only global admins, may manage their application's integrations.
+Global admins manage write-only AI provider credentials and model deployments at
+`/[locale]/admin/models`. Workspace creation atomically requires name and the
+globally unique Kafka topic. `admin/workspaces/[id]` provides Overview, Model
+policy, Repositories, Connectors, and Resources tabs. Connector forms use
+`GET /evidence-connector-kinds` for the current kind/capability/secret metadata;
+secret values are password inputs and are never rendered after submission.
+Workspace administrators manage bindings, immutable model-policy revisions,
+read-only repositories, connector instances, and ingestion transitions.
 
-Model selection and architecture context share one `Model & Context` page. There is no standalone descriptions route or navigation item. Application admins manage both controls in this workspace; context is presented as model background rather than as a peer application resource.
+The only investigation UI lives under `workbench`. Its list supports search,
+state filtering, manual intake, and navigation by opaque public ID. Detail shows
+the incident cause before code diagnosis, followed by timeline, evidence,
+frozen source revisions and runtime assessments, model routing/context, and the
+complete masked execution audit. Terminal runs expose retry and archive actions
+according to backend permission and lifecycle rules. The SSE client reconnects
+with its last canonical cursor and never translates a historical response shape.
 
-The investigation workbench displays the incident cause first and code diagnosis second. Only source artifacts referenced by final validated code findings may appear in the main code viewer; lexical, context, and intermediate source candidates remain available only as masked audit references. The code viewer is read-only, follows the current application theme, and highlights the exact finding range alongside where it is wrong, why, trigger, propagation, expected behavior, missing validation, and test.
-
-Execution uses a vertical decision-wave track and shows sibling operations within each wave. Every operation exposes its purpose, masked input, progress events, actual result, duration, failure, metrics, and evidence links. Running states use restrained motion with a reduced-motion fallback. Initial data and Monaco loading surfaces reserve stable dimensions, and transient SSE refresh failures preserve the last canonical result instead of replacing the page. Waiting and running states have stable dimensions on desktop, tablet, and mobile.
-
-Do not restore a second investigation UI or translate historical response shapes.
+Wide operational tables scroll inside their own container. Long identifiers
+wrap within table cells; tab lists scroll locally at narrow widths. The shell
+uses a mobile navigation dialog, and browser checks cover 1440px desktop, 768px
+tablet, and 390px phone widths without page-level overflow or occlusion.
 
 ## Development And Verification
 
@@ -719,11 +746,13 @@ make log-connectors-check
 make native-connectors-check
 make investigation-check
 make analysis-check
+make api-check
+make web-check
 uv run python -m compileall -q src scripts alembic tests
 uv run pytest -q
 ```
 
-Web:
+Web (or run `make web-check` from the repository root):
 
 ```bash
 cd apps/web

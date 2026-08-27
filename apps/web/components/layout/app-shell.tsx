@@ -10,7 +10,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Topbar } from '@/components/layout/topbar';
-import { CommandPalette } from '@/components/cmdk';
 import { useRouter } from '@/lib/navigation';
 import { useUser } from '@/lib/user-context';
 
@@ -45,7 +44,6 @@ export function AppShell({ portal, children }: { portal: Portal; children: React
         <button className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />
         <Sidebar portal={portal} onNavigate={() => setMobileNavOpen(false)} />
       </div>
-      <CommandPalette showTrigger={false} />
     </div>
   );
 }

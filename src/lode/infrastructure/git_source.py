@@ -71,7 +71,7 @@ class GitRemoteRevisionResolver:
         branch: str,
         credential: GitCredentialMaterial | None,
     ) -> str | None:
-        _validate_remote(repo_url)
+        validate_git_remote(repo_url)
         _validate_branch(branch)
         with _git_auth(credential) as environment:
             result = await _run_git(
@@ -97,7 +97,7 @@ class GitRemoteRevisionResolver:
         revision: str,
         credential: GitCredentialMaterial | None,
     ) -> str | None:
-        _validate_remote(repo_url)
+        validate_git_remote(repo_url)
         if not _is_sha(revision):
             raise ValueError("source revision must be a complete lowercase SHA")
         base = Path(settings.evidence_git_cache_dir).resolve()
@@ -156,7 +156,7 @@ class GitSourceReader:
         stack: str,
         query_terms: Sequence[str],
     ) -> tuple[GitSourceHit, ...]:
-        _validate_remote(repo_url)
+        validate_git_remote(repo_url)
         if not _is_sha(revision):
             raise ValueError("source revision must be a complete lowercase SHA")
         base = Path(settings.evidence_git_cache_dir).resolve()
@@ -305,7 +305,7 @@ def _git_auth(
     raise ValueError("unsupported Git credential type")
 
 
-def _validate_remote(repo_url: str) -> None:
+def validate_git_remote(repo_url: str) -> None:
     value = repo_url.strip()
     parsed = urlsplit(value)
     is_scp = value.startswith("git@") and ":" in value

@@ -2,9 +2,8 @@
 
 // Admin Console shell. Middleware only checks for a session cookie, so this
 // layout applies the role boundary from the backend-derived user context.
-// Application admins can use the application list, their own overview, and
-// Members; platform-wide operational and configuration screens stay global-admin
-// only.
+// Workspace admins can use their Workspace control plane. Global provider and
+// user administration remains restricted to global admins.
 
 import { useEffect, type ReactNode } from 'react';
 import { usePathname, useRouter } from '@/lib/navigation';
@@ -15,14 +14,14 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   const { isAdmin, loading, user } = useUser();
   const router = useRouter();
   const pathname = usePathname();
-  const isAppAdminRoute = pathname === '/admin'
-    || /^\/admin\/applications\/[^/]+(?:\/(?:members|integrations|repos|model))?\/?$/.test(pathname);
+  const isWorkspaceAdminRoute = pathname === '/admin'
+    || /^\/admin\/workspaces\/[^/]+\/?$/.test(pathname);
 
   useEffect(() => {
-    if (!loading && !isAdmin && !isAppAdminRoute) {
+    if (!loading && !isAdmin && !isWorkspaceAdminRoute) {
       router.replace(user ? '/workbench' : '/login');
     }
-  }, [isAdmin, isAppAdminRoute, loading, router, user]);
+  }, [isAdmin, isWorkspaceAdminRoute, loading, router, user]);
 
   if (loading) {
     // Render the chrome without children until the role is known, so we don't
@@ -35,7 +34,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       </div>
     );
   }
-  if (!isAdmin && !isAppAdminRoute) return null;
+  if (!isAdmin && !isWorkspaceAdminRoute) return null;
 
   return <AppShell portal="admin">{children}</AppShell>;
 }
