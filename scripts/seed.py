@@ -12,7 +12,7 @@ from lode.db.models import (
     AIProviderAccount,
     ContextPolicyRevision,
     GitRepository,
-    ModelDeployment,
+    ProviderAccountModel,
     ModelPolicyRevision,
     InvestigationPolicyRevision,
     User,
@@ -20,6 +20,7 @@ from lode.db.models import (
     WorkspaceModelBinding,
     WorkspaceRepositoryBinding,
 )
+from lode.model_catalog import require_openai_model
 from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.session import AsyncSessionLocal
 from lode.security import hash_password
@@ -96,35 +97,26 @@ async def main() -> None:
             base_url="https://example.invalid/v1",
             credential_ciphertext="seed-disabled-ciphertext",
             state="disabled",
-            data_processing_policy_revision="seed-v1",
-            data_residency="unspecified",
-            retention_mode="provider_default",
         )
         session.add(provider)
         await session.flush()
-        deployment = ModelDeployment(
+        profile = require_openai_model("gpt-5.6-sol")
+        deployment = ProviderAccountModel(
             provider_account_id=provider.id,
-            provider_model_id="seed-model",
-            display_name="Seed model (disabled)",
-            max_input_tokens=32768,
-            max_output_tokens=4096,
-            tokenizer_id="cl100k_base",
-            provider_revision="seed-v1",
-            quality_baseline_revision="phase0-deterministic-oracle",
-            cost_policy_revision="seed-v1",
-            rate_limit_policy_revision="seed-v1",
+            provider_model_id=profile.model_id,
+            catalog_revision=profile.catalog_revision,
+            catalog_profile_hash=profile.profile_hash,
+            discovery_state="manual",
             state="disabled",
         )
         session.add(deployment)
         await session.flush()
         binding = WorkspaceModelBinding(
             workspace_id=workspace.id,
-            model_deployment_id=deployment.id,
+            provider_account_model_id=deployment.id,
             execution_classes=["latency_optimized"],
             allowed_roles=["planner", "synthesizer", "verifier"],
             max_calls=10,
-            max_input_tokens=24576,
-            max_output_tokens=4096,
             max_cost_per_call=Decimal(0),
             timeout_ms=120000,
             allowed_data_classes=["masked_incident", "source_code"],

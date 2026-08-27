@@ -43,16 +43,18 @@ def _refs(values: tuple[int, ...], name: str, *, allow_empty: bool = True) -> No
 class ModelCandidate:
     binding_snapshot_id: int
     workspace_model_binding_id: int
-    model_deployment_id: int
+    provider_account_model_id: int
     provider_account_id: int
     provider_account_revision: int
-    model_deployment_revision: int
+    provider_account_model_revision: int
+    provider_model_id: str
     execution_classes: tuple[ExecutionClass, ...]
     allowed_roles: tuple[ModelRole, ...]
     allowed_data_classes: tuple[str, ...]
     tokenizer_id: str
-    max_input_tokens: int
+    context_window_tokens: int
     max_output_tokens: int
+    provider_safety_margin_tokens: int
     max_cost_per_call: float
     max_context_utilization: float
     priority: int
@@ -67,12 +69,13 @@ class ModelCandidate:
         numeric = (
             self.binding_snapshot_id,
             self.workspace_model_binding_id,
-            self.model_deployment_id,
+            self.provider_account_model_id,
             self.provider_account_id,
             self.provider_account_revision,
-            self.model_deployment_revision,
-            self.max_input_tokens,
+            self.provider_account_model_revision,
+            self.context_window_tokens,
             self.max_output_tokens,
+            self.provider_safety_margin_tokens,
         )
         if min(numeric) < 1 or self.priority < 0:
             raise DomainValidationError("invalid_reference", "model candidate limits are invalid")
@@ -89,6 +92,7 @@ class ModelCandidate:
         if min(self.max_cost_per_call, self.predicted_cost, self.quality_score) < 0:
             raise DomainValidationError("invalid_model_limit", "model cost or quality is invalid")
         _required(self.tokenizer_id, "tokenizer_id", 200)
+        _required(self.provider_model_id, "provider_model_id", 200)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +108,7 @@ class ModelTask:
     causal_depth: int = 1
     conclusion_risk: Literal["low", "medium", "high"] = "low"
     requested_execution_class: ExecutionClass | None = None
-    prior_synthesizer_deployment_id: int | None = None
+    prior_synthesizer_account_model_id: int | None = None
     prior_synthesizer_provider_id: int | None = None
 
     def __post_init__(self) -> None:

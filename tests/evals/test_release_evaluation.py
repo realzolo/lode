@@ -227,8 +227,8 @@ def test_complete_release_bundle_cli_is_executable_and_tamper_evident(tmp_path: 
     gold_hash = _sha256(EVAL_ROOT / "gold-incidents.jsonl")
     common_manifest = {
         "provider_account_class": "release-test-provider",
-        "model_deployment": "release-test-model",
-        "model_deployment_revision": "1",
+        "provider_account_model": "release-test-model",
+        "provider_account_model_revision": "1",
         "role": "complete-pipeline",
         "execution_class": "mixed",
         "schema_revision": "current-report-schema",
@@ -250,8 +250,8 @@ def test_complete_release_bundle_cli_is_executable_and_tamper_evident(tmp_path: 
             "name": "synthetic-mechanism-test-only",
             "eval_corpus_sha256": _eval_corpus_sha256(),
             "provider_account_class": "release-test-provider",
-            "model_deployment": "release-test-model",
-            "model_deployment_revision": "0",
+            "provider_account_model": "release-test-model",
+            "provider_account_model_revision": "0",
             "prompt_revision": "baseline-prompt",
             "schema_revision": "current-report-schema",
             "policy_revision": "current-policy",

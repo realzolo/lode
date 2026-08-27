@@ -77,7 +77,7 @@ class ModelRoutingDecision:
     investigation_id: int
     role: ModelRole
     workspace_model_binding_revision_id: int
-    model_deployment_revision_id: int
+    provider_account_model_revision_id: int
     execution_class: ExecutionClass
     required_context_tokens: int
     allowed_input_tokens: int
@@ -90,7 +90,7 @@ class ModelRoutingDecision:
     def __post_init__(self) -> None:
         if min(
             self.investigation_id, self.workspace_model_binding_revision_id,
-            self.model_deployment_revision_id, self.required_context_tokens,
+            self.provider_account_model_revision_id, self.required_context_tokens,
             self.allowed_input_tokens, self.allowed_output_tokens,
         ) < 1:
             raise DomainValidationError("invalid_reference", "routing references and limits must be positive")

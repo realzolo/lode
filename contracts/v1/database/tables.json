@@ -23,7 +23,7 @@
     "evidence_access_scopes",
     "ai_provider_accounts",
     "provider_model_observations",
-    "model_deployments",
+    "provider_account_models",
     "workspace_model_bindings",
     "investigation_policy_revisions",
     "model_policy_revisions",

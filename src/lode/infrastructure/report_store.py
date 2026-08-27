@@ -488,8 +488,8 @@ class PostgresReportStore:
         policy = await self.session.get(InvestigationModelPolicySnapshot, investigation_id)
         verifier_policy = policy.policy.get("verifier_policy", {}) if policy else {}
         if (
-            verifier_policy.get("separate_deployment", False)
-            and verifier_row.model_deployment_id == synthesizer.model_deployment_id
+            verifier_policy.get("separate_account_model", False)
+            and verifier_row.provider_account_model_id == synthesizer.provider_account_model_id
         ):
             return "rejected"
         if (

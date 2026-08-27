@@ -38,7 +38,7 @@ deployment-canary observations to pass the statistical and non-regression gate.
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
 - The current ORM registry and the only migration register exactly the 69 tables in
-  `contracts/v1/database/tables.json`. Provider accounts, model deployments,
+  `contracts/v1/database/tables.json`. Provider accounts, account models,
   Workspace bindings, repositories, build units, components, resource graph
   revisions, connectors, immutable investigation snapshots, the evidence
   graph, native-read audit chain, source assessments, findings, and reports are
@@ -212,17 +212,18 @@ deployment-canary observations to pass the statistical and non-regression gate.
 - `src/lode/application/model_routing.py`, `context.py`, and
   `context_compaction.py` plus `src/lode/infrastructure/model_runtime.py` own
   frozen role/execution-class routing, per-investigation and per-binding call/
-  cost limits, exact tokenizer admission, immutable context bundles, audited
+  cost limits, `tiktoken` counting of the complete serialized OpenAI request,
+  immutable context bundles, audited
   replay, and one bounded compaction retry. Pinned input and counter-evidence are
   never tail-truncated. Compaction rejects reference, number, timestamp, SHA, or
   identity drift; hidden reasoning, raw provider output, sessions, and provider
   caches never cross role/model boundaries.
 - Planner, synthesizer, verifier, and context compactor are separate audited
-  invocations. Simple tasks route to eligible latency deployments; conflict,
+  invocations. Simple tasks route to eligible latency account models; conflict,
   multi-component/repository, deep causal, synthesis, and verification tasks
-  require reasoning deployments. A route with no eligible frozen candidate is
+  require reasoning account models. A route with no eligible frozen candidate is
   persisted with every exclusion and zero capacity before returning unavailable.
-  Provider/deployment drift cannot silently admit a replacement model.
+  Provider/account-model drift cannot silently admit a replacement model.
 - `src/lode/infrastructure/report_store.py` is the sole report publisher. It
   validates strict structured synthesis/verifier payloads, investigation-owned
   evidence, exact source provenance, runtime configuration authority, frozen
@@ -327,6 +328,13 @@ Prometheus metrics, and the `hardening-check`, `local-release-check`, and
 environment examples, Compose, and this context document must remain
 synchronized with those deployment changes.
 
+The account-model revision adds the direct `tiktoken` runtime dependency. It
+replaces standalone model deployments and product-specific AI protocols with
+OpenAI-compatible provider accounts, reviewed catalog-backed account models,
+and the `discover-models`/account-model health control-plane workflows. It
+also requires `make contracts`, `make schema-check`, `make api-check`,
+`make analysis-check`, and `make web-check` for changes in this surface.
+
 Lode is an evidence-backed production incident investigation service. An
 investigation advances through serial decision waves; independent operations
 inside one wave may run concurrently with a hard limit of four. There are no
@@ -408,12 +416,12 @@ trace values, prompts, endpoints, or other unbounded data.
 
 PostgreSQL is the source of truth. Kafka consumers only validate and enqueue;
 workers execute investigations. FastAPI exposes health, authentication,
-user/invite administration, global provider/deployment administration,
+user/invite administration, global provider-account/model administration,
 Workspace policy/repository/connector/resource control, manual intake,
 investigation reads, audit, retry, archive, and SSE. The singleton
 `platform_settings` row selects the output language for newly created
 investigations; each investigation freezes that language. Model routing is frozen per
-investigation from its Workspace policy and eligible deployments; there is no
+investigation from its Workspace policy and eligible account models; there is no
 single-model or global-default fallback.
 
 ## Workspace Activation
@@ -424,7 +432,7 @@ conditions hold:
 
 1. the Workspace has its required globally unique ingestion topic;
 2. its active model policy can route every required role to an active,
-   protocol-healthy deployment;
+   protocol-healthy account model;
 3. the broker can reach the configured topic.
 
 Initial start and resume call the same backend readiness gate. Repository,
@@ -444,7 +452,7 @@ envelope:
 ```
 
 The Web start dialog displays the actual requirements and capability gaps. A
-model deployment must pass its provider protocol probe before becoming routing
+account model must pass its provider protocol probe before becoming routing
 eligible; editing endpoint, credential, provider, or model resets its health to
 `untested`. The backend gate remains authoritative for stale clients and direct
 API callers.
@@ -512,7 +520,37 @@ ValueRef, authorization, preflight, execution, masking, and archive chain. The
 model may never create credentials, connector configuration, access scope, or
 repository authorization.
 
-OpenAI-compatible base URLs are normalized to `/v1/chat/completions`; Anthropic base URLs are normalized to `/v1/messages`. Investigation requests use the frozen deployment, binding, policy, prompt, schema, provider/deployment revisions, and registered tokenizer. Provider-enforced strict JSON Schemas and the binding's reserved output/headroom limits are mandatory. Health probes keep a separate timeout. OpenAI-compatible providers use `response_format.json_schema`, while Anthropic uses a forced schema-bound tool result. Calls automatically retry only transient network failures, timeouts, HTTP 429, and HTTP 5xx with bounded exponential backoff. Authentication, request validation, and non-JSON protocol responses fail immediately. Each retry emits operation progress, and AI audit rows retain the actionable error classification and actual attempt count. Provider-reported usage is retained; a post-call estimate is audit metadata only and never admits an oversized context. Do not collapse a timeout or protocol error into a generic "model unavailable" message. If structured output validation fails, report the analysis as unavailable with the exact contract error; never relabel output-format failure as insufficient evidence.
+Only OpenAI-compatible HTTPS base URLs are supported and are normalized to
+`/v1/chat/completions`. An account has a write-only key plus optional OpenAI
+organization and project IDs. `POST /ai-provider-accounts/discover-models`
+uses an unpersisted draft key for `GET /models`; account create/update repeats
+that discovery before atomically saving a selected model set. The only routing
+targets are reviewed fixed catalog IDs. Each account model records
+`synced`/`manual`/`missing` discovery and
+`untested`/`healthy`/`unavailable` protocol health; an upstream disappearance
+soft-disables a synced model without removing the audit record, while a manual
+model remains until explicit removal or a failed probe. `List models` never
+proves completion compatibility: `POST /ai-provider-accounts/{id}/models/{model_id}/test`
+uses Chat Completions and must succeed before routing can select it.
+
+The catalog, not user input, owns `context_window_tokens`,
+`max_output_tokens`, tokenizer encoding, safety margin, capabilities, catalog
+revision, and profile hash. Investigation snapshots freeze the account-model
+ID and revision, account revision, and all catalog values. Runtime uses
+`tiktoken` to count the full compact serialized OpenAI request and passes the
+routed `allowed_output_tokens` as `max_completion_tokens`; no global output
+limit, user tokenizer ID, or user model token limits exist. Provider-enforced
+strict JSON Schemas and the selected model's output/headroom limits are
+mandatory. Calls automatically retry only transient network failures, timeouts,
+HTTP 429, and HTTP 5xx with bounded exponential backoff. Authentication,
+request validation, and non-JSON protocol responses fail immediately. Each
+retry emits operation progress, and AI audit rows retain the actionable error
+classification and actual attempt count. Provider-reported usage is retained;
+a post-call estimate is audit metadata only and never admits an oversized
+context. Do not collapse a timeout or protocol error into a generic "model
+unavailable" message. If structured output validation fails, report the
+analysis as unavailable with the exact contract error; never relabel
+output-format failure as insufficient evidence.
 
 ## Input Contract
 
@@ -771,8 +809,11 @@ secret hashing, and Compose privilege/network/key-ownership assertions.
 
 ## Frontend Contract
 
-Global admins manage write-only AI provider credentials and model deployments at
-`/[locale]/admin/models`. Workspace creation atomically requires name and the
+Global admins manage write-only OpenAI-compatible account credentials and their
+account-model selections at `/[locale]/admin/models`. The account dialog
+synchronizes supported upstream models after Base URL/key entry and can add a
+reviewed catalog model manually; it has no separate model-deployment form and
+never renders token or tokenizer configuration. Workspace creation atomically requires name and the
 globally unique Kafka topic. `admin/workspaces/[id]` provides Overview, Model
 policy, Repositories, Connectors, and Resources tabs. Connector forms use
 `GET /evidence-connector-kinds` for the current kind/capability/secret metadata;

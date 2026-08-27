@@ -1,0 +1,16 @@
+from __future__ import annotations
+
+from lode.model_catalog import CATALOG_REVISION, find_openai_model, require_openai_model
+
+
+def test_catalog_accepts_only_reviewed_fixed_openai_model_ids() -> None:
+    profile = require_openai_model("gpt-5.6-sol")
+
+    assert profile.catalog_revision == CATALOG_REVISION
+    assert profile.context_window_tokens == 1_050_000
+    assert profile.max_output_tokens == 128_000
+    assert profile.tokenizer_id == "tiktoken:o200k_base"
+    assert len(profile.profile_hash) == 64
+    assert find_openai_model("gpt-5.6") is None
+    assert find_openai_model("gpt-4o") is None
+    assert find_openai_model("gpt-image-1") is None

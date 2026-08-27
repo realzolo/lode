@@ -29,25 +29,9 @@ def upgrade() -> None:
         sa.Column("credential_ciphertext", sa.Text(), nullable=False),
         sa.Column("organization_ref", sa.Text(), nullable=True),
         sa.Column("project_ref", sa.Text(), nullable=True),
-        sa.Column("tenant_ref", sa.Text(), nullable=True),
         sa.Column("state", sa.Text(), server_default="active", nullable=False),
         sa.Column("verification_status", sa.Text(), server_default="untested", nullable=False),
         sa.Column("verified_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "rate_limit_policy",
-            postgresql.JSONB(astext_type=sa.Text()),
-            server_default=sa.text("'{}'::jsonb"),
-            nullable=False,
-        ),
-        sa.Column(
-            "cost_policy",
-            postgresql.JSONB(astext_type=sa.Text()),
-            server_default=sa.text("'{}'::jsonb"),
-            nullable=False,
-        ),
-        sa.Column("data_processing_policy_revision", sa.Text(), nullable=False),
-        sa.Column("data_residency", sa.Text(), nullable=False),
-        sa.Column("retention_mode", sa.Text(), nullable=False),
         sa.Column("revision", sa.Integer(), server_default="1", nullable=False),
         sa.Column(
             "created_at",
@@ -63,6 +47,9 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "state IN ('active', 'disabled')", name=op.f("ck_ai_provider_accounts_state")
+        ),
+        sa.CheckConstraint(
+            "provider_kind = 'openai_compatible'", name=op.f("ck_ai_provider_accounts_provider_kind")
         ),
         sa.CheckConstraint(
             "verification_status IN ('untested', 'healthy', 'unavailable')",
@@ -154,26 +141,15 @@ def upgrade() -> None:
         sa.UniqueConstraint("token", name=op.f("uq_invites_token")),
     )
     op.create_table(
-        "model_deployments",
+        "provider_account_models",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("provider_account_id", sa.BigInteger(), nullable=False),
         sa.Column("provider_model_id", sa.Text(), nullable=False),
-        sa.Column("display_name", sa.Text(), nullable=False),
-        sa.Column(
-            "capabilities",
-            postgresql.JSONB(astext_type=sa.Text()),
-            server_default=sa.text("'{}'::jsonb"),
-            nullable=False,
-        ),
-        sa.Column("max_input_tokens", sa.Integer(), nullable=False),
-        sa.Column("max_output_tokens", sa.Integer(), nullable=False),
-        sa.Column("tokenizer_id", sa.Text(), nullable=False),
-        sa.Column("provider_revision", sa.Text(), nullable=False),
+        sa.Column("catalog_revision", sa.Text(), nullable=False),
+        sa.Column("catalog_profile_hash", sa.Text(), nullable=False),
+        sa.Column("discovery_state", sa.Text(), nullable=False),
         sa.Column("availability_state", sa.Text(), server_default="untested", nullable=False),
         sa.Column("health_checked_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("quality_baseline_revision", sa.Text(), nullable=False),
-        sa.Column("cost_policy_revision", sa.Text(), nullable=False),
-        sa.Column("rate_limit_policy_revision", sa.Text(), nullable=False),
         sa.Column("state", sa.Text(), server_default="active", nullable=False),
         sa.Column("revision", sa.Integer(), server_default="1", nullable=False),
         sa.Column(
@@ -190,26 +166,28 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "availability_state IN ('untested', 'healthy', 'unavailable')",
-            name=op.f("ck_model_deployments_availability_state"),
+            name=op.f("ck_provider_account_models_availability_state"),
         ),
         sa.CheckConstraint(
-            "state IN ('active', 'disabled')", name=op.f("ck_model_deployments_state")
+            "state IN ('active', 'disabled')", name=op.f("ck_provider_account_models_state")
         ),
         sa.CheckConstraint(
-            "max_input_tokens > 0", name=op.f("ck_model_deployments_max_input_tokens_positive")
+            "catalog_profile_hash ~ '^[0-9a-f]{64}$'",
+            name=op.f("ck_provider_account_models_catalog_profile_hash_sha256"),
         ),
         sa.CheckConstraint(
-            "max_output_tokens > 0", name=op.f("ck_model_deployments_max_output_tokens_positive")
+            "discovery_state IN ('synced', 'manual', 'missing')",
+            name=op.f("ck_provider_account_models_discovery_state"),
         ),
-        sa.CheckConstraint("revision > 0", name=op.f("ck_model_deployments_revision_positive")),
+        sa.CheckConstraint("revision > 0", name=op.f("ck_provider_account_models_revision_positive")),
         sa.ForeignKeyConstraint(
             ["provider_account_id"],
             ["ai_provider_accounts.id"],
-            name=op.f("fk_model_deployments_provider_account_id_ai_provider_accounts"),
+            name=op.f("fk_provider_account_models_provider_account_id_ai_provider_accounts"),
             ondelete="RESTRICT",
         ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_model_deployments")),
-        sa.UniqueConstraint("provider_account_id", "provider_model_id", name="uq_model_deployment"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_provider_account_models")),
+        sa.UniqueConstraint("provider_account_id", "provider_model_id", name="uq_provider_account_model"),
     )
     op.create_table(
         "provider_model_observations",
@@ -991,13 +969,11 @@ def upgrade() -> None:
         "workspace_model_bindings",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("workspace_id", sa.BigInteger(), nullable=False),
-        sa.Column("model_deployment_id", sa.BigInteger(), nullable=False),
+        sa.Column("provider_account_model_id", sa.BigInteger(), nullable=False),
         sa.Column("execution_classes", postgresql.ARRAY(sa.Text()), nullable=False),
         sa.Column("allowed_roles", postgresql.ARRAY(sa.Text()), nullable=False),
         sa.Column("priority", sa.Integer(), server_default="0", nullable=False),
         sa.Column("max_calls", sa.Integer(), nullable=False),
-        sa.Column("max_input_tokens", sa.Integer(), nullable=False),
-        sa.Column("max_output_tokens", sa.Integer(), nullable=False),
         sa.Column("max_cost_per_call", sa.Numeric(precision=18, scale=8), nullable=False),
         sa.Column("timeout_ms", sa.Integer(), nullable=False),
         sa.Column("allowed_data_classes", postgresql.ARRAY(sa.Text()), nullable=False),
@@ -1042,14 +1018,6 @@ def upgrade() -> None:
             "max_cost_per_call >= 0", name=op.f("ck_workspace_model_bindings_max_cost_nonnegative")
         ),
         sa.CheckConstraint(
-            "max_input_tokens > 0",
-            name=op.f("ck_workspace_model_bindings_max_input_tokens_positive"),
-        ),
-        sa.CheckConstraint(
-            "max_output_tokens > 0",
-            name=op.f("ck_workspace_model_bindings_max_output_tokens_positive"),
-        ),
-        sa.CheckConstraint(
             "priority >= 0", name=op.f("ck_workspace_model_bindings_priority_nonnegative")
         ),
         sa.CheckConstraint(
@@ -1059,9 +1027,9 @@ def upgrade() -> None:
             "timeout_ms > 0", name=op.f("ck_workspace_model_bindings_timeout_positive")
         ),
         sa.ForeignKeyConstraint(
-            ["model_deployment_id"],
-            ["model_deployments.id"],
-            name=op.f("fk_workspace_model_bindings_model_deployment_id_model_deployments"),
+            ["provider_account_model_id"],
+            ["provider_account_models.id"],
+            name=op.f("fk_workspace_model_bindings_provider_account_model_id_provider_account_models"),
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
@@ -1075,7 +1043,7 @@ def upgrade() -> None:
     op.create_index(
         "uq_workspace_model_binding_active",
         "workspace_model_bindings",
-        ["workspace_id", "model_deployment_id"],
+        ["workspace_id", "provider_account_model_id"],
         unique=True,
         postgresql_where=sa.text("state = 'active'"),
     )
@@ -2061,10 +2029,10 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("investigation_id", sa.BigInteger(), nullable=False),
         sa.Column("workspace_model_binding_id", sa.BigInteger(), nullable=False),
-        sa.Column("model_deployment_id", sa.BigInteger(), nullable=False),
+        sa.Column("provider_account_model_id", sa.BigInteger(), nullable=False),
         sa.Column("provider_account_id", sa.BigInteger(), nullable=False),
         sa.Column("binding_revision", sa.Integer(), nullable=False),
-        sa.Column("model_deployment_revision", sa.Integer(), nullable=False),
+        sa.Column("provider_account_model_revision", sa.Integer(), nullable=False),
         sa.Column("provider_account_revision", sa.Integer(), nullable=False),
         sa.Column("execution_classes", postgresql.ARRAY(sa.Text()), nullable=False),
         sa.Column("allowed_roles", postgresql.ARRAY(sa.Text()), nullable=False),
@@ -2093,8 +2061,8 @@ def upgrade() -> None:
             name=op.f("ck_investigation_model_binding_snapshots_classes_nonempty"),
         ),
         sa.CheckConstraint(
-            "model_deployment_revision > 0",
-            name=op.f("ck_investigation_model_binding_snapshots_deployment_rev_pos"),
+            "provider_account_model_revision > 0",
+            name=op.f("ck_investigation_model_binding_snapshots_account_model_rev_pos"),
         ),
         sa.CheckConstraint(
             "provider_account_revision > 0",
@@ -2107,10 +2075,10 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
-            ["model_deployment_id"],
-            ["model_deployments.id"],
+            ["provider_account_model_id"],
+            ["provider_account_models.id"],
             name=op.f(
-                "fk_investigation_model_binding_snapshots_model_deployment_id_model_deployments"
+                "fk_investigation_model_binding_snapshots_provider_account_model_id_provider_account_models"
             ),
             ondelete="RESTRICT",
         ),
@@ -2961,9 +2929,9 @@ def upgrade() -> None:
         sa.Column("context_bundle_revision_id", sa.BigInteger(), nullable=False),
         sa.Column("role", sa.Text(), nullable=False),
         sa.Column("provider_account_id", sa.BigInteger(), nullable=False),
-        sa.Column("model_deployment_id", sa.BigInteger(), nullable=False),
+        sa.Column("provider_account_model_id", sa.BigInteger(), nullable=False),
         sa.Column("provider_account_revision", sa.Integer(), nullable=False),
-        sa.Column("model_deployment_revision", sa.Integer(), nullable=False),
+        sa.Column("provider_account_model_revision", sa.Integer(), nullable=False),
         sa.Column("execution_class", sa.Text(), nullable=False),
         sa.Column("prompt_revision", sa.Text(), nullable=False),
         sa.Column("schema_revision", sa.Text(), nullable=False),
@@ -3015,8 +2983,8 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("latency_ms >= 0", name=op.f("ck_ai_invocations_latency_nonnegative")),
         sa.CheckConstraint(
-            "model_deployment_revision > 0",
-            name=op.f("ck_ai_invocations_deployment_revision_positive"),
+            "provider_account_model_revision > 0",
+            name=op.f("ck_ai_invocations_account_model_revision_positive"),
         ),
         sa.CheckConstraint(
             "provider_account_revision > 0",
@@ -3035,9 +3003,9 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
-            ["model_deployment_id"],
-            ["model_deployments.id"],
-            name=op.f("fk_ai_invocations_model_deployment_id_model_deployments"),
+            ["provider_account_model_id"],
+            ["provider_account_models.id"],
+            name=op.f("fk_ai_invocations_provider_account_model_id_provider_account_models"),
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
@@ -3853,7 +3821,7 @@ def upgrade() -> None:
         "workspaces",
         "workspace_ingestion_runtime",
         "ai_provider_accounts",
-        "model_deployments",
+        "provider_account_models",
         "workspace_model_bindings",
         "git_credentials",
         "git_repositories",
@@ -4034,9 +4002,9 @@ def upgrade() -> None:
             SELECT * INTO binding_row FROM investigation_model_binding_snapshots
             WHERE id = route_row.model_binding_snapshot_id;
             IF binding_row.id IS NULL OR binding_row.investigation_id <> NEW.investigation_id
-               OR binding_row.model_deployment_id <> NEW.model_deployment_id
+               OR binding_row.provider_account_model_id <> NEW.provider_account_model_id
                OR binding_row.provider_account_id <> NEW.provider_account_id
-               OR binding_row.model_deployment_revision <> NEW.model_deployment_revision
+               OR binding_row.provider_account_model_revision <> NEW.provider_account_model_revision
                OR binding_row.provider_account_revision <> NEW.provider_account_revision THEN
                 RAISE EXCEPTION 'AI invocation model is outside its frozen snapshot';
             END IF;
@@ -4321,7 +4289,7 @@ def downgrade() -> None:
     op.drop_table("workspaces")
     op.drop_table("platform_settings")
     op.drop_table("provider_model_observations")
-    op.drop_table("model_deployments")
+    op.drop_table("provider_account_models")
     op.drop_table("invites")
     op.drop_table("users")
     op.drop_table("git_credentials")

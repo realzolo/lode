@@ -23,9 +23,10 @@ from lode.api.control_schemas import (
     ModelBindingInput,
     ModelBindingOut,
     ModelBindingPatch,
-    ModelDeploymentCreate,
-    ModelDeploymentOut,
-    ModelDeploymentPatch,
+    ProviderAccountModelOut,
+    ProviderAccountModelSelection,
+    ProviderModelDiscoveryInput,
+    ProviderModelDiscoveryOut,
     ModelPolicyInput,
     ModelPolicyOut,
     PlatformSettingsOut,
@@ -54,7 +55,7 @@ from lode.db.models import (
     GitRepository,
     Investigation,
     InvestigationPolicyRevision,
-    ModelDeployment,
+    ProviderAccountModel,
     ModelPolicyRevision,
     ModelRoutingDecision,
     PlatformSettings,
@@ -79,6 +80,7 @@ from lode.infrastructure.provider_http import (
     provider_request,
     validate_provider_endpoint,
 )
+from lode.model_catalog import find_openai_model, require_openai_model
 from lode.runtime_defaults import LLM_PROBE_TIMEOUT_SECONDS, KAFKA_TOPIC_VALIDATION_TIMEOUT_SECONDS
 
 router = APIRouter(tags=["control-plane"])
@@ -132,12 +134,51 @@ def _validate_provider_url(value: str) -> str:
         ) from exc
 
 
-def _provider_out(row: AIProviderAccount) -> ProviderAccountOut:
-    return ProviderAccountOut.model_validate(row)
+def _account_model_out(row: ProviderAccountModel) -> ProviderAccountModelOut:
+    profile = require_openai_model(row.provider_model_id)
+    return ProviderAccountModelOut(
+        id=row.id,
+        provider_account_id=row.provider_account_id,
+        provider_model_id=row.provider_model_id,
+        display_name=profile.display_name,
+        capabilities=dict(profile.capabilities),
+        discovery_state=row.discovery_state,
+        availability_state=row.availability_state,
+        health_checked_at=row.health_checked_at,
+        state=row.state,
+        revision=row.revision,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
 
 
-def _deployment_out(row: ModelDeployment) -> ModelDeploymentOut:
-    return ModelDeploymentOut.model_validate(row)
+async def _provider_out(session: AsyncSession, row: AIProviderAccount) -> ProviderAccountOut:
+    models = tuple(
+        (
+            await session.execute(
+                select(ProviderAccountModel)
+                .where(ProviderAccountModel.provider_account_id == row.id)
+                .order_by(ProviderAccountModel.provider_model_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return ProviderAccountOut(
+        id=row.id,
+        name=row.name,
+        provider_kind="openai_compatible",
+        base_url=row.base_url,
+        organization_ref=row.organization_ref,
+        project_ref=row.project_ref,
+        state=row.state,
+        verification_status=row.verification_status,
+        verified_at=row.verified_at,
+        models=[_account_model_out(model) for model in models],
+        revision=row.revision,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
 
 
 def _binding_out(row: WorkspaceModelBinding) -> ModelBindingOut:
@@ -215,7 +256,7 @@ async def list_provider_accounts(
     rows = (
         await session.execute(select(AIProviderAccount).order_by(AIProviderAccount.id))
     ).scalars()
-    return [_provider_out(row) for row in rows]
+    return [await _provider_out(session, row) for row in rows]
 
 
 @router.post("/ai-provider-accounts", response_model=ProviderAccountOut, status_code=201)
@@ -225,19 +266,22 @@ async def create_provider_account(
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
+    base_url = _validate_provider_url(payload.base_url)
+    discovered = await _discover_provider_models(
+        base_url=base_url,
+        credential=payload.credential,
+        organization_ref=payload.organization_ref,
+        project_ref=payload.project_ref,
+    )
     row = AIProviderAccount(
         name=payload.name.strip(),
-        provider_kind=payload.provider_kind,
-        base_url=_validate_provider_url(payload.base_url),
+        provider_kind="openai_compatible",
+        base_url=base_url,
         credential_ciphertext=encrypt_secret(payload.credential) or "",
         organization_ref=payload.organization_ref,
         project_ref=payload.project_ref,
-        tenant_ref=payload.tenant_ref,
-        rate_limit_policy=payload.rate_limit_policy,
-        cost_policy=payload.cost_policy,
-        data_processing_policy_revision=payload.data_processing_policy_revision,
-        data_residency=payload.data_residency,
-        retention_mode=payload.retention_mode,
+        verification_status="healthy",
+        verified_at=datetime.now(UTC),
     )
     session.add(row)
     try:
@@ -247,10 +291,19 @@ async def create_provider_account(
         raise _error(
             409, "provider_name_conflict", "Provider account name is already used."
         ) from exc
+    await _record_model_observations(session, row, discovered.raw_models)
+    await _apply_model_selection(
+        session,
+        row,
+        model_ids=payload.model_ids,
+        manual_model_ids=payload.manual_model_ids,
+        discovered_ids=discovered.ids,
+        reset_health=True,
+    )
     session.add(_audit(user, "provider_account.create", "ai_provider_account", row.id))
     await session.commit()
     await session.refresh(row)
-    return _provider_out(row)
+    return await _provider_out(session, row)
 
 
 @router.patch("/ai-provider-accounts/{account_id}", response_model=ProviderAccountOut)
@@ -266,46 +319,89 @@ async def patch_provider_account(
         raise _error(404, "provider_account_not_found", "Provider account not found.")
     values = payload.model_dump(exclude_unset=True)
     credential = values.pop("credential", None)
+    model_ids = values.pop("model_ids", None)
+    manual_model_ids = values.pop("manual_model_ids", ())
     if "base_url" in values:
         values["base_url"] = _validate_provider_url(values["base_url"])
-    health_changed = (
-        bool(
-            {"base_url", "data_processing_policy_revision", "data_residency", "retention_mode"}
-            & values.keys()
+    connection_changed = "base_url" in values or credential is not None
+    if connection_changed and model_ids is None:
+        raise _error(
+            422,
+            "model_selection_required",
+            "Changing a provider connection requires a refreshed model selection.",
         )
-        or credential is not None
-    )
+    base_url = values.get("base_url", row.base_url)
+    effective_credential = credential or decrypt_secret(row.credential_ciphertext)
+    discovered = None
+    if model_ids is not None:
+        if not effective_credential:
+            raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
+        discovered = await _discover_provider_models(
+            base_url=base_url,
+            credential=effective_credential,
+            organization_ref=values.get("organization_ref", row.organization_ref),
+            project_ref=values.get("project_ref", row.project_ref),
+        )
     for key, value in values.items():
         setattr(row, key, value)
     if credential is not None:
         row.credential_ciphertext = encrypt_secret(credential) or ""
     row.revision += 1
-    if health_changed:
-        row.verification_status = "untested"
-        row.verified_at = None
+    if discovered is not None:
+        row.verification_status = "healthy"
+        row.verified_at = datetime.now(UTC)
+        await _record_model_observations(session, row, discovered.raw_models)
+        await _apply_model_selection(
+            session,
+            row,
+            model_ids=model_ids,
+            manual_model_ids=manual_model_ids,
+            discovered_ids=discovered.ids,
+            reset_health=connection_changed,
+        )
     session.add(_audit(user, "provider_account.update", "ai_provider_account", row.id))
     await session.commit()
     await session.refresh(row)
-    return _provider_out(row)
+    return await _provider_out(session, row)
 
 
-async def _provider_models(row: AIProviderAccount) -> list[dict]:
-    credential = decrypt_secret(row.credential_ciphertext)
-    if not credential:
-        raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
+class _DiscoveredModels:
+    def __init__(self, raw_models: list[dict]) -> None:
+        self.raw_models = raw_models
+        self.ids = frozenset(
+            model["id"] for model in raw_models if find_openai_model(str(model["id"])) is not None
+        )
+
+    def response(self) -> list[ProviderModelDiscoveryOut]:
+        return [
+            ProviderModelDiscoveryOut(
+                provider_model_id=profile.model_id,
+                display_name=profile.display_name,
+            )
+            for profile in sorted(
+                (require_openai_model(model_id) for model_id in self.ids),
+                key=lambda profile: profile.display_name,
+            )
+        ]
+
+
+async def _discover_provider_models(
+    *,
+    base_url: str,
+    credential: str,
+    organization_ref: str | None,
+    project_ref: str | None,
+) -> _DiscoveredModels:
     headers = {"accept": "application/json"}
-    if row.provider_kind == "anthropic":
-        headers.update({"x-api-key": credential, "anthropic-version": "2023-06-01"})
-    else:
-        headers["authorization"] = f"Bearer {credential}"
-        if row.organization_ref:
-            headers["OpenAI-Organization"] = row.organization_ref
-        if row.project_ref:
-            headers["OpenAI-Project"] = row.project_ref
+    headers["authorization"] = f"Bearer {credential}"
+    if organization_ref:
+        headers["OpenAI-Organization"] = organization_ref
+    if project_ref:
+        headers["OpenAI-Project"] = project_ref
     try:
         response = await provider_request(
             "GET",
-            provider_endpoint(row.base_url, "/models"),
+            provider_endpoint(base_url, "/models"),
             headers=headers,
             timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
         )
@@ -324,54 +420,25 @@ async def _provider_models(row: AIProviderAccount) -> list[dict]:
     models = value.get("data") if isinstance(value, dict) else None
     if not isinstance(models, list) or len(models) > 200:
         raise _error(502, "provider_protocol_invalid", "Provider model inventory is invalid.")
-    output = []
+    output: list[dict] = []
     for item in models:
         if isinstance(item, dict) and isinstance(item.get("id"), str):
             output.append({"id": item["id"], "owned_by": item.get("owned_by")})
     if not output:
         raise _error(502, "provider_protocol_invalid", "Provider returned no usable models.")
-    return output
+    return _DiscoveredModels(output)
 
 
-@router.post("/ai-provider-accounts/{account_id}/test")
-async def test_provider_account(
-    account_id: int,
-    _: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    row = await session.get(AIProviderAccount, account_id)
-    if row is None:
-        raise _error(404, "provider_account_not_found", "Provider account not found.")
-    try:
-        models = await _provider_models(row)
-    except HTTPException:
-        row.verification_status = "unavailable"
-        row.verified_at = None
-        await session.commit()
-        raise
-    row.verification_status = "healthy"
-    row.verified_at = datetime.now(UTC)
-    await session.commit()
-    return {"available": True, "model_count": len(models), "verified_at": row.verified_at}
-
-
-@router.post("/ai-provider-accounts/{account_id}/introspect-models")
-async def introspect_provider_models(
-    account_id: int,
-    _: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    row = await session.get(AIProviderAccount, account_id)
-    if row is None:
-        raise _error(404, "provider_account_not_found", "Provider account not found.")
-    models = await _provider_models(row)
+async def _record_model_observations(
+    session: AsyncSession, account: AIProviderAccount, models: list[dict]
+) -> None:
     observed_at = datetime.now(UTC)
     for model in models:
         payload = {"provider_model_id": model["id"], "owned_by": model.get("owned_by")}
         response_hash = canonical_hash(payload)
         existing = await session.scalar(
             select(ProviderModelObservation.id).where(
-                ProviderModelObservation.provider_account_id == row.id,
+                ProviderModelObservation.provider_account_id == account.id,
                 ProviderModelObservation.provider_model_id == model["id"],
                 ProviderModelObservation.response_hash == response_hash,
             )
@@ -379,7 +446,7 @@ async def introspect_provider_models(
         if existing is None:
             session.add(
                 ProviderModelObservation(
-                    provider_account_id=row.id,
+                    provider_account_id=account.id,
                     provider_model_id=model["id"],
                     capability_hints={},
                     provider_payload_masked=payload,
@@ -387,8 +454,200 @@ async def introspect_provider_models(
                     response_hash=response_hash,
                 )
             )
+
+
+async def _apply_model_selection(
+    session: AsyncSession,
+    account: AIProviderAccount,
+    *,
+    model_ids: tuple[str, ...],
+    manual_model_ids: tuple[str, ...],
+    discovered_ids: frozenset[str],
+    reset_health: bool,
+) -> None:
+    selected = set(model_ids)
+    manual = set(manual_model_ids)
+    rows = tuple(
+        (
+            await session.execute(
+                select(ProviderAccountModel).where(ProviderAccountModel.provider_account_id == account.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    existing = {row.provider_model_id: row for row in rows}
+    for model_id in selected:
+        if find_openai_model(model_id) is None:
+            raise _error(422, "unsupported_model", "Model is not in the supported OpenAI catalog.")
+        if model_id not in discovered_ids and model_id not in manual:
+            existing_row = existing.get(model_id)
+            if existing_row is not None and existing_row.discovery_state == "synced":
+                continue
+            raise _error(
+                422,
+                "model_not_discovered",
+                "Selected models must be discovered or explicitly added from the catalog.",
+            )
+    for model_id in selected:
+        profile = require_openai_model(model_id)
+        row = existing.get(model_id)
+        missing_upstream = model_id not in discovered_ids and model_id not in manual
+        discovery_state = "manual" if model_id in manual else "missing" if missing_upstream else "synced"
+        if row is None:
+            session.add(
+                ProviderAccountModel(
+                    provider_account_id=account.id,
+                    provider_model_id=model_id,
+                    catalog_revision=profile.catalog_revision,
+                    catalog_profile_hash=profile.profile_hash,
+                    discovery_state=discovery_state,
+                    availability_state="untested",
+                    state="disabled" if missing_upstream else "active",
+                )
+            )
+            continue
+        changed = (
+            row.catalog_revision != profile.catalog_revision
+            or row.catalog_profile_hash != profile.profile_hash
+            or row.discovery_state != discovery_state
+            or row.state != ("disabled" if missing_upstream else "active")
+        )
+        row.catalog_revision = profile.catalog_revision
+        row.catalog_profile_hash = profile.profile_hash
+        row.discovery_state = discovery_state
+        row.state = "disabled" if missing_upstream else "active"
+        if changed or reset_health:
+            row.availability_state = "untested"
+            row.health_checked_at = None
+            row.revision += 1
+    for row in rows:
+        if row.provider_model_id in selected:
+            continue
+        active_binding = await session.scalar(
+            select(WorkspaceModelBinding.id).where(
+                WorkspaceModelBinding.provider_account_model_id == row.id,
+                WorkspaceModelBinding.state == "active",
+            )
+        )
+        if active_binding is not None:
+            raise _error(
+                409,
+                "account_model_in_use",
+                "Disable the active Workspace binding before removing this account model.",
+            )
+        if row.state != "disabled":
+            row.state = "disabled"
+            row.revision += 1
+
+
+async def _reconcile_discovered_models(
+    session: AsyncSession,
+    account: AIProviderAccount,
+    discovered_ids: frozenset[str],
+) -> None:
+    """Record upstream disappearance without re-enabling an admin selection."""
+    rows = tuple(
+        (
+            await session.execute(
+                select(ProviderAccountModel).where(
+                    ProviderAccountModel.provider_account_id == account.id,
+                    ProviderAccountModel.discovery_state == "synced",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        if row.provider_model_id in discovered_ids:
+            continue
+        row.discovery_state = "missing"
+        row.state = "disabled"
+        row.revision += 1
+
+
+@router.post("/ai-provider-accounts/discover-models", response_model=list[ProviderModelDiscoveryOut])
+async def discover_draft_provider_models(
+    payload: ProviderModelDiscoveryInput, _: int = Depends(require_admin)
+):
+    discovered = await _discover_provider_models(
+        base_url=_validate_provider_url(payload.base_url),
+        credential=payload.credential,
+        organization_ref=payload.organization_ref,
+        project_ref=payload.project_ref,
+    )
+    return discovered.response()
+
+
+@router.post(
+    "/ai-provider-accounts/{account_id}/discover-models",
+    response_model=list[ProviderModelDiscoveryOut],
+)
+async def discover_provider_models(
+    account_id: int,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    row = await session.get(AIProviderAccount, account_id)
+    if row is None:
+        raise _error(404, "provider_account_not_found", "Provider account not found.")
+    credential = decrypt_secret(row.credential_ciphertext)
+    if not credential:
+        raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
+    discovered = await _discover_provider_models(
+        base_url=row.base_url,
+        credential=credential,
+        organization_ref=row.organization_ref,
+        project_ref=row.project_ref,
+    )
+    await _record_model_observations(session, row, discovered.raw_models)
+    await _reconcile_discovered_models(session, row, discovered.ids)
+    row.verification_status = "healthy"
+    row.verified_at = datetime.now(UTC)
+    row.revision += 1
+    session.add(_audit(user, "provider_account.models.discover", "ai_provider_account", row.id))
     await session.commit()
-    return {"observed_at": observed_at, "models": models}
+    return discovered.response()
+
+
+@router.put("/ai-provider-accounts/{account_id}/models", response_model=ProviderAccountOut)
+async def update_provider_account_models(
+    account_id: int,
+    payload: ProviderAccountModelSelection,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    row = await session.get(AIProviderAccount, account_id)
+    if row is None:
+        raise _error(404, "provider_account_not_found", "Provider account not found.")
+    credential = decrypt_secret(row.credential_ciphertext)
+    if not credential:
+        raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
+    discovered = await _discover_provider_models(
+        base_url=row.base_url,
+        credential=credential,
+        organization_ref=row.organization_ref,
+        project_ref=row.project_ref,
+    )
+    await _record_model_observations(session, row, discovered.raw_models)
+    await _apply_model_selection(
+        session,
+        row,
+        model_ids=payload.model_ids,
+        manual_model_ids=payload.manual_model_ids,
+        discovered_ids=discovered.ids,
+        reset_health=False,
+    )
+    row.verification_status = "healthy"
+    row.verified_at = datetime.now(UTC)
+    row.revision += 1
+    session.add(_audit(user, "provider_account.models.update", "ai_provider_account", row.id))
+    await session.commit()
+    await session.refresh(row)
+    return await _provider_out(session, row)
 
 
 @router.delete("/ai-provider-accounts/{account_id}", status_code=204)
@@ -408,88 +667,43 @@ async def disable_provider_account(
     return Response(status_code=204)
 
 
-@router.get("/ai-model-deployments", response_model=list[ModelDeploymentOut])
-async def list_model_deployments(
-    _: int = Depends(require_admin), session: AsyncSession = Depends(get_session)
-):
-    rows = (await session.execute(select(ModelDeployment).order_by(ModelDeployment.id))).scalars()
-    return [_deployment_out(row) for row in rows]
-
-
-@router.post(
-    "/ai-provider-accounts/{account_id}/model-deployments",
-    response_model=ModelDeploymentOut,
-    status_code=201,
-)
-async def create_model_deployment(
+@router.post("/ai-provider-accounts/{account_id}/models/{account_model_id}/test")
+async def test_provider_account_model(
     account_id: int,
-    payload: ModelDeploymentCreate,
-    user_id: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    provider = await session.get(AIProviderAccount, account_id)
-    if provider is None or provider.state != "active":
-        raise _error(404, "active_provider_not_found", "Active provider account not found.")
-    row = ModelDeployment(provider_account_id=account_id, **payload.model_dump())
-    session.add(row)
-    try:
-        await session.flush()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise _error(409, "model_deployment_conflict", "Model deployment already exists.") from exc
-    session.add(_audit(user, "model_deployment.create", "model_deployment", row.id))
-    await session.commit()
-    await session.refresh(row)
-    return _deployment_out(row)
-
-
-@router.patch("/ai-model-deployments/{deployment_id}", response_model=ModelDeploymentOut)
-async def patch_model_deployment(
-    deployment_id: int,
-    payload: ModelDeploymentPatch,
-    user_id: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    row = await session.get(ModelDeployment, deployment_id)
-    if row is None:
-        raise _error(404, "model_deployment_not_found", "Model deployment not found.")
-    values = payload.model_dump(exclude_unset=True)
-    for key, value in values.items():
-        setattr(row, key, value)
-    row.revision += 1
-    if set(values) - {"display_name", "state"}:
-        row.availability_state = "untested"
-        row.health_checked_at = None
-    session.add(_audit(user, "model_deployment.update", "model_deployment", row.id))
-    await session.commit()
-    await session.refresh(row)
-    return _deployment_out(row)
-
-
-@router.post("/ai-model-deployments/{deployment_id}/test")
-async def test_model_deployment(
-    deployment_id: int,
+    account_model_id: int,
     _: int = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    row = await session.get(ModelDeployment, deployment_id)
-    provider = await session.get(AIProviderAccount, row.provider_account_id) if row else None
-    if row is None or provider is None:
-        raise _error(404, "model_deployment_not_found", "Model deployment not found.")
+    row = await session.get(ProviderAccountModel, account_model_id)
+    provider = await session.get(AIProviderAccount, account_id)
+    if row is None or provider is None or row.provider_account_id != provider.id:
+        raise _error(404, "provider_account_model_not_found", "Account model not found.")
+    if row.state != "active" or provider.state != "active":
+        raise _error(422, "account_model_ineligible", "An active account model is required.")
+    profile = require_openai_model(row.provider_model_id)
+    if (
+        row.catalog_revision != profile.catalog_revision
+        or row.catalog_profile_hash != profile.profile_hash
+    ):
+        raise _error(409, "model_catalog_changed", "Resync the account model after catalog changes.")
     result = await complete_with_usage(
         "You are a protocol health probe.",
         "Reply with OK.",
         ModelConfig(
-            provider=provider.provider_kind,
+            provider="openai_compatible",
             base_url=provider.base_url,
             api_key_ciphertext=provider.credential_ciphertext,
             model=row.provider_model_id,
+            max_completion_tokens=16,
+            organization_ref=provider.organization_ref,
+            project_ref=provider.project_ref,
         ),
         timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
     )
     row.availability_state = "healthy" if result.text else "unavailable"
+    if not result.text and row.discovery_state == "manual":
+        row.state = "disabled"
+    row.revision += 1
     row.health_checked_at = datetime.now(UTC)
     await session.commit()
     return {
@@ -497,23 +711,6 @@ async def test_model_deployment(
         "latency_ms": result.latency_ms,
         "error_code": result.error_code,
     }
-
-
-@router.delete("/ai-model-deployments/{deployment_id}", status_code=204)
-async def disable_model_deployment(
-    deployment_id: int,
-    user_id: int = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    row = await session.get(ModelDeployment, deployment_id)
-    if row is None:
-        raise _error(404, "model_deployment_not_found", "Model deployment not found.")
-    row.state = "disabled"
-    row.revision += 1
-    session.add(_audit(user, "model_deployment.disable", "model_deployment", row.id))
-    await session.commit()
-    return Response(status_code=204)
 
 
 @router.post("/workspaces", response_model=WorkspaceOut, status_code=201)
@@ -608,14 +805,14 @@ async def _workspace_readiness(session: AsyncSession, workspace: Workspace) -> l
         bindings = tuple(
             (
                 await session.execute(
-                    select(WorkspaceModelBinding, ModelDeployment, AIProviderAccount)
+                    select(WorkspaceModelBinding, ProviderAccountModel, AIProviderAccount)
                     .join(
-                        ModelDeployment,
-                        ModelDeployment.id == WorkspaceModelBinding.model_deployment_id,
+                        ProviderAccountModel,
+                        ProviderAccountModel.id == WorkspaceModelBinding.provider_account_model_id,
                     )
                     .join(
                         AIProviderAccount,
-                        AIProviderAccount.id == ModelDeployment.provider_account_id,
+                        AIProviderAccount.id == ProviderAccountModel.provider_account_id,
                     )
                     .where(WorkspaceModelBinding.id.in_(binding_ids))
                 )
@@ -805,9 +1002,9 @@ async def create_model_binding(
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
-    deployment = await session.get(ModelDeployment, payload.model_deployment_id)
+    deployment = await session.get(ProviderAccountModel, payload.provider_account_model_id)
     if deployment is None or deployment.state != "active":
-        raise _error(422, "model_deployment_ineligible", "Active model deployment required.")
+        raise _error(422, "provider_account_model_ineligible", "Active account model required.")
     row = WorkspaceModelBinding(
         workspace_id=workspace_id,
         **payload.model_dump(mode="json"),
@@ -844,19 +1041,17 @@ async def patch_model_binding(
     values = payload.model_dump(exclude_unset=True, mode="json")
     state = values.pop("state", None)
     effective = ModelBindingInput(
-        model_deployment_id=row.model_deployment_id,
+        provider_account_model_id=row.provider_account_model_id,
         execution_classes=values.get("execution_classes", row.execution_classes),
         allowed_roles=values.get("allowed_roles", row.allowed_roles),
         priority=values.get("priority", row.priority),
         max_calls=values.get("max_calls", row.max_calls),
-        max_input_tokens=values.get("max_input_tokens", row.max_input_tokens),
-        max_output_tokens=values.get("max_output_tokens", row.max_output_tokens),
         max_cost_per_call=values.get("max_cost_per_call", row.max_cost_per_call),
         timeout_ms=values.get("timeout_ms", row.timeout_ms),
         allowed_data_classes=values.get("allowed_data_classes", row.allowed_data_classes),
         max_context_utilization=values.get("max_context_utilization", row.max_context_utilization),
     ).model_dump(mode="json")
-    effective.pop("model_deployment_id")
+    effective.pop("provider_account_model_id")
     for key, value in effective.items():
         setattr(row, key, value)
     if state is not None:

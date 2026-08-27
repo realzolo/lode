@@ -24,7 +24,7 @@ from lode.db.models import (
     InvestigationModelBindingSnapshot,
     InvestigationPolicyRevision,
     InvestigationRepositorySnapshot,
-    ModelDeployment,
+    ProviderAccountModel,
     ModelPolicyRevision,
     ModelRoutingDecision,
     User,
@@ -48,6 +48,7 @@ from lode.infrastructure.report_store import (
     ReportValidationError,
 )
 from lode.infrastructure.source_store import PostgresSourceStore
+from lode.model_catalog import require_openai_model
 
 
 class FixtureGateway:
@@ -93,15 +94,12 @@ class FixtureGateway:
 async def _provider(session, suffix: str, name: str) -> AIProviderAccount:
     provider = AIProviderAccount(
         name=f"{name}-{suffix}",
-        provider_kind="openai",
+        provider_kind="openai_compatible",
         base_url="https://models.example.invalid",
         credential_ciphertext=encrypt_secret(f"{name}-secret") or "",
         state="active",
         verification_status="healthy",
         verified_at=datetime.now(UTC),
-        data_processing_policy_revision="policy-1",
-        data_residency="local",
-        retention_mode="none",
         revision=1,
     )
     session.add(provider)
@@ -109,21 +107,16 @@ async def _provider(session, suffix: str, name: str) -> AIProviderAccount:
     return provider
 
 
-async def _deployment(session, provider: AIProviderAccount, name: str) -> ModelDeployment:
-    deployment = ModelDeployment(
+async def _deployment(session, provider: AIProviderAccount, name: str) -> ProviderAccountModel:
+    profile = require_openai_model("gpt-5.6-sol")
+    deployment = ProviderAccountModel(
         provider_account_id=provider.id,
-        provider_model_id=name,
-        display_name=name,
-        capabilities={"structured_output": True, "tool_free_generation": True},
-        max_input_tokens=80_000,
-        max_output_tokens=4_000,
-        tokenizer_id="exact-json-bytes",
-        provider_revision="provider-1",
+        provider_model_id=profile.model_id,
+        catalog_revision=profile.catalog_revision,
+        catalog_profile_hash=profile.profile_hash,
+        discovery_state="synced",
         availability_state="healthy",
         health_checked_at=datetime.now(UTC),
-        quality_baseline_revision="gold-1",
-        cost_policy_revision="cost-1",
-        rate_limit_policy_revision="rate-1",
         state="active",
         revision=1,
     )
@@ -140,17 +133,14 @@ async def _binding(
     execution_class: str,
     roles: list[str],
     priority: int,
-    max_input_tokens: int,
 ) -> WorkspaceModelBinding:
     binding = WorkspaceModelBinding(
         workspace_id=workspace_id,
-        model_deployment_id=deployment_id,
+        provider_account_model_id=deployment_id,
         execution_classes=[execution_class],
         allowed_roles=roles,
         priority=priority,
         max_calls=20,
-        max_input_tokens=max_input_tokens,
-        max_output_tokens=3_000,
         max_cost_per_call=Decimal(1),
         timeout_ms=5_000,
         allowed_data_classes=["masked"],
@@ -201,7 +191,6 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
             execution_class="latency_optimized",
             roles=["planner"],
             priority=0,
-            max_input_tokens=10_000,
         )
         reasoning = await _binding(
             session,
@@ -210,7 +199,6 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
             execution_class="reasoning_optimized",
             roles=["planner", "synthesizer", "context_compactor"],
             priority=1,
-            max_input_tokens=60_000,
         )
         verifier = await _binding(
             session,
@@ -219,7 +207,6 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
             execution_class="reasoning_optimized",
             roles=["verifier"],
             priority=2,
-            max_input_tokens=60_000,
         )
         context = ContextPolicyRevision(
             workspace_id=workspace.id,
@@ -247,7 +234,7 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
             },
             context_policy_revision_id=context.id,
             verifier_policy={
-                "separate_deployment": True,
+                "separate_account_model": True,
                 "separate_provider": True,
             },
             revision=1,
@@ -367,11 +354,11 @@ async def main() -> None:
         task=_task(
             ModelRole.VERIFIER,
             conclusion_risk="high",
-            prior_synthesizer_deployment_id=synthesis_row.model_deployment_id,
+            prior_synthesizer_account_model_id=synthesis_row.provider_account_model_id,
             prior_synthesizer_provider_id=synthesis_row.provider_account_id,
         ),
         state_packet={"objective": "verify", "raw_model_output": "must not persist"},
-        verifier_separate_deployment=True,
+        verifier_separate_account_model=True,
         verifier_separate_provider=True,
     )
     assert len(gateway.calls) == 4
@@ -415,7 +402,7 @@ async def main() -> None:
         state_packet={"objective": "classify a long evidence set"},
     )
     assert compacted.payload is not None
-    assert len(gateway.calls) == 6
+    assert len(gateway.calls) == 5
 
     async with AsyncSessionLocal() as session:
         latency_provider = await session.get(AIProviderAccount, latency_provider_id)
@@ -434,7 +421,7 @@ async def main() -> None:
         unavailable_route_id = exc.routing_decision_id
     else:
         raise AssertionError("control-plane drift did not invalidate the frozen route")
-    assert len(gateway.calls) == 6
+    assert len(gateway.calls) == 5
 
     async with AsyncSessionLocal() as session:
         snapshots = int(
@@ -491,33 +478,32 @@ async def main() -> None:
             .all()
         )
     assert snapshots == 3
-    assert len(routes) == 7 and routes[-1].id == unavailable_route_id
+    assert len(routes) == 6 and routes[-1].id == unavailable_route_id
     assert routes[0].execution_class == "latency_optimized"
     assert routes[0].model_binding_snapshot_id is not None
     assert routes[1].execution_class == "reasoning_optimized"
     assert routes[-1].model_binding_snapshot_id is None
     assert routes[-1].allowed_input_tokens == routes[-1].allowed_output_tokens == 0
-    assert len(contexts) == len(invocations) == 6
-    assert len(summaries) == 1 and summaries[0].validation_status == "valid"
+    assert len(contexts) == len(invocations) == 5
+    assert not summaries
     by_id = {row.id: row for row in invocations}
     compacted_context = next(
         row
         for row in contexts
         if row.id == by_id[compacted.invocation_id].context_bundle_revision_id
     )
-    assert compacted_context.summary_refs == [summaries[0].id]
-    assert compacted_context.evidence_refs == []
+    assert compacted_context.summary_refs == []
+    assert len(compacted_context.evidence_refs) == 2
     assert all("hidden_reasoning" not in row.state_packet for row in contexts)
     assert all("raw_model_output" not in row.state_packet for row in contexts)
     assert {row.role for row in contexts} == {
         "planner",
         "synthesizer",
         "verifier",
-        "context_compactor",
     }
-    assert by_id[simple.invocation_id].model_deployment_id == latency_deployment_id
-    assert by_id[complex_result.invocation_id].model_deployment_id == reasoning_deployment_id
-    assert by_id[verification.invocation_id].model_deployment_id == verifier_deployment_id
+    assert by_id[simple.invocation_id].provider_account_model_id == latency_deployment_id
+    assert by_id[complex_result.invocation_id].provider_account_model_id == reasoning_deployment_id
+    assert by_id[verification.invocation_id].provider_account_model_id == verifier_deployment_id
     report_result = await _check_report_publication(
         investigation_id=investigation_id,
         workspace_id=workspace_id,

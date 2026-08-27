@@ -14,7 +14,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from lode.ai_output import ai_output_language_instruction, require_ai_output_language
-from lode.application.context import ContextManager, ExactJSONTokenizer, Tokenizer
+from lode.application.context import (
+    ContextManager,
+    ExactJSONTokenizer,
+    TiktokenJSONTokenizer,
+    Tokenizer,
+)
 from lode.application.context_compaction import (
     ContextSummaryPayload,
     ContextSummaryValidator,
@@ -31,7 +36,7 @@ from lode.db.models import (
     ContextSummaryArtifact,
     Investigation,
     InvestigationModelBindingSnapshot,
-    ModelDeployment,
+    ProviderAccountModel,
     ModelRoutingDecision,
 )
 from lode.domain.investigation import canonical_hash
@@ -53,6 +58,7 @@ from lode.metrics import (
     MODEL_ROUTING,
     MODEL_TOKENS,
 )
+from lode.model_catalog import find_openai_model, supported_openai_models
 
 
 class ModelGateway(Protocol):
@@ -104,6 +110,9 @@ class TokenizerRegistry:
     def __init__(self, tokenizers: Sequence[Tokenizer] = ()) -> None:
         default = ExactJSONTokenizer()
         self._values = {default.tokenizer_id: default}
+        for profile in supported_openai_models():
+            tokenizer = TiktokenJSONTokenizer(profile.tokenizer_encoding)
+            self._values.setdefault(tokenizer.tokenizer_id, tokenizer)
         self._values.update({value.tokenizer_id: value for value in tokenizers})
 
     def require(self, tokenizer_id: str) -> Tokenizer:
@@ -143,7 +152,7 @@ class PostgresModelRuntime:
         schema_revision: str,
         remaining_calls: int,
         remaining_cost: float,
-        verifier_separate_deployment: bool = False,
+        verifier_separate_account_model: bool = False,
         verifier_separate_provider: bool = False,
         _allow_compaction: bool = True,
         _summary_refs: Sequence[int] = (),
@@ -164,11 +173,25 @@ class PostgresModelRuntime:
                 if candidate.health_status != "healthy":
                     continue
                 candidate_tokenizer = self.tokenizers.require(candidate.tokenizer_id)
-                exact_requirements.append(
-                    candidate_tokenizer.count_json(_plain(state_packet))
-                    + sum(
-                        candidate_tokenizer.count_json(_plain(item.content))
+                user_payload = {
+                    "state_packet": _plain(state_packet),
+                    "evidence": [
+                        {"artifact_id": item.artifact_id, "content": _plain(item.content)}
                         for item in {value.artifact_id: value for value in evidence}.values()
+                    ],
+                    "summary_refs": list(_summary_refs),
+                }
+                exact_requirements.append(
+                    candidate_tokenizer.count_json(
+                        _serialized_openai_request(
+                            model=candidate.provider_model_id,
+                            system_prompt=effective_system_prompt,
+                            user_payload=user_payload,
+                            max_completion_tokens=min(
+                                candidate.max_output_tokens, task.reserved_output_tokens
+                            ),
+                            response_schema=response_schema,
+                        )
                     )
                 )
             if exact_requirements:
@@ -184,7 +207,7 @@ class PostgresModelRuntime:
                     candidates,
                     remaining_calls=remaining_calls,
                     remaining_cost=remaining_cost,
-                    verifier_separate_deployment=verifier_separate_deployment,
+                    verifier_separate_account_model=verifier_separate_account_model,
                     verifier_separate_provider=verifier_separate_provider,
                 )
             except ModelCapabilityUnavailable as exc:
@@ -205,7 +228,7 @@ class PostgresModelRuntime:
                         schema_revision=schema_revision,
                         remaining_calls=remaining_calls,
                         remaining_cost=remaining_cost,
-                        verifier_separate_deployment=verifier_separate_deployment,
+                        verifier_separate_account_model=verifier_separate_account_model,
                         verifier_separate_provider=verifier_separate_provider,
                     )
                     if compacted is not None:
@@ -274,8 +297,21 @@ class PostgresModelRuntime:
                 tokenizer=tokenizer,
                 allowed_input_tokens=route.allowed_input_tokens,
                 reserved_output_tokens=route.allowed_output_tokens,
-                provider_safety_margin_tokens=task.provider_safety_margin_tokens,
+                provider_safety_margin_tokens=route.candidate.provider_safety_margin_tokens,
                 summary_refs=_summary_refs,
+                request_token_count=lambda context_payload: tokenizer.count_json(
+                    _serialized_openai_request(
+                        model=route.candidate.provider_model_id,
+                        system_prompt=effective_system_prompt,
+                        user_payload={
+                            "state_packet": context_payload["state_packet"],
+                            "evidence": context_payload["evidence"],
+                            "summary_refs": context_payload["summary_refs"],
+                        },
+                        max_completion_tokens=route.allowed_output_tokens,
+                        response_schema=response_schema,
+                    )
+                ),
             )
             MODEL_CONTEXT_UTILIZATION.labels(
                 role=task.role.value,
@@ -380,13 +416,16 @@ class PostgresModelRuntime:
             if completed is not None and isinstance(completed.output_masked, dict):
                 await session.commit()
                 return ModelInvocationResult(completed.id, completed.output_masked, None)
-            config = await self._config(session, route.candidate)
+            config = await self._config(
+                session, route.candidate, max_completion_tokens=route.allowed_output_tokens
+            )
             user_payload = {
                 "state_packet": _plain(bundle.state_packet),
                 "evidence": [
                     {"artifact_id": item.artifact_id, "content": _plain(item.content)}
                     for item in bundle.evidence
                 ],
+                "summary_refs": list(bundle.summary_refs),
             }
             user_prompt = json.dumps(
                 user_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -446,9 +485,9 @@ class PostgresModelRuntime:
                 context_bundle_revision_id=context_row.id,
                 role=task.role.value,
                 provider_account_id=route.candidate.provider_account_id,
-                model_deployment_id=route.candidate.model_deployment_id,
+                provider_account_model_id=route.candidate.provider_account_model_id,
                 provider_account_revision=route.candidate.provider_account_revision,
-                model_deployment_revision=route.candidate.model_deployment_revision,
+                provider_account_model_revision=route.candidate.provider_account_model_revision,
                 execution_class=route.execution_class.value,
                 prompt_revision=effective_prompt_revision,
                 schema_revision=schema_revision,
@@ -529,7 +568,7 @@ class PostgresModelRuntime:
         schema_revision: str,
         remaining_calls: int,
         remaining_cost: float,
-        verifier_separate_deployment: bool,
+        verifier_separate_account_model: bool,
         verifier_separate_provider: bool,
     ) -> ModelInvocationResult | None:
         optional = tuple(item for item in evidence if not item.pinned)
@@ -654,7 +693,7 @@ class PostgresModelRuntime:
             schema_revision=schema_revision,
             remaining_calls=remaining_calls - 1,
             remaining_cost=remaining_cost,
-            verifier_separate_deployment=verifier_separate_deployment,
+            verifier_separate_account_model=verifier_separate_account_model,
             verifier_separate_provider=verifier_separate_provider,
             _allow_compaction=False,
             _summary_refs=(summary_id,),
@@ -677,8 +716,9 @@ class PostgresModelRuntime:
         values: list[ModelCandidate] = []
         for snapshot in snapshots:
             policy = snapshot.routing_policy
-            deployment = await session.get(ModelDeployment, snapshot.model_deployment_id)
+            deployment = await session.get(ProviderAccountModel, snapshot.provider_account_model_id)
             provider = await session.get(AIProviderAccount, snapshot.provider_account_id)
+            profile = find_openai_model(str(policy.get("provider_model_id", "")))
             current_credential_hash = (
                 hashlib.sha256(provider.credential_ciphertext.encode()).hexdigest()
                 if provider is not None
@@ -687,10 +727,16 @@ class PostgresModelRuntime:
             healthy = (
                 deployment is not None
                 and provider is not None
-                and deployment.revision == snapshot.model_deployment_revision
+                and deployment.revision == snapshot.provider_account_model_revision
                 and provider.revision == snapshot.provider_account_revision
+                and deployment.state == "active"
+                and deployment.discovery_state != "missing"
+                and provider.state == "active"
                 and deployment.availability_state == "healthy"
                 and provider.verification_status == "healthy"
+                and profile is not None
+                and deployment.catalog_revision == policy.get("model_catalog_revision")
+                and deployment.catalog_profile_hash == policy.get("model_catalog_profile_hash")
                 and current_credential_hash == policy.get("credential_identity_hash")
                 and self.tokenizers.supports(str(policy["tokenizer_id"]))
             )
@@ -714,18 +760,20 @@ class PostgresModelRuntime:
                 ModelCandidate(
                     binding_snapshot_id=snapshot.id,
                     workspace_model_binding_id=snapshot.workspace_model_binding_id,
-                    model_deployment_id=snapshot.model_deployment_id,
+                    provider_account_model_id=snapshot.provider_account_model_id,
                     provider_account_id=snapshot.provider_account_id,
                     provider_account_revision=snapshot.provider_account_revision,
-                    model_deployment_revision=snapshot.model_deployment_revision,
+                    provider_account_model_revision=snapshot.provider_account_model_revision,
+                    provider_model_id=str(policy["provider_model_id"]),
                     execution_classes=tuple(
                         ExecutionClass(value) for value in snapshot.execution_classes
                     ),
                     allowed_roles=tuple(ModelRole(value) for value in snapshot.allowed_roles),
                     allowed_data_classes=tuple(policy["allowed_data_classes"]),
                     tokenizer_id=str(policy["tokenizer_id"]),
-                    max_input_tokens=int(policy["max_input_tokens"]),
+                    context_window_tokens=int(policy["context_window_tokens"]),
                     max_output_tokens=int(policy["max_output_tokens"]),
+                    provider_safety_margin_tokens=int(policy["provider_safety_margin_tokens"]),
                     max_cost_per_call=float(policy["max_cost_per_call"]),
                     max_context_utilization=float(policy["max_context_utilization"]),
                     priority=int(policy["priority"]),
@@ -739,7 +787,11 @@ class PostgresModelRuntime:
         return tuple(values)
 
     async def _config(
-        self, session: AsyncSession, candidate: ModelCandidate
+        self,
+        session: AsyncSession,
+        candidate: ModelCandidate,
+        *,
+        max_completion_tokens: int,
     ) -> ModelConfigWithTimeout:
         snapshot = await session.get(
             InvestigationModelBindingSnapshot, candidate.binding_snapshot_id
@@ -753,6 +805,9 @@ class PostgresModelRuntime:
             base_url=str(policy["provider_base_url"]),
             api_key_ciphertext=provider.credential_ciphertext,
             model=str(policy["provider_model_id"]),
+            max_completion_tokens=max_completion_tokens,
+            organization_ref=provider.organization_ref,
+            project_ref=provider.project_ref,
             timeout_ms=int(policy["timeout_ms"]),
         )
 
@@ -760,6 +815,40 @@ class PostgresModelRuntime:
 @dataclass
 class ModelConfigWithTimeout(ModelConfig):
     timeout_ms: int = 120_000
+
+
+def _serialized_openai_request(
+    *,
+    model: str,
+    system_prompt: str,
+    user_payload: Mapping[str, Any],
+    max_completion_tokens: int,
+    response_schema: ResponseSchema,
+) -> dict[str, Any]:
+    """Return the exact JSON body shape passed to the OpenAI-compatible gateway."""
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    user_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+                ),
+            },
+        ],
+        "temperature": 0.2,
+        "max_completion_tokens": max_completion_tokens,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": response_schema.name,
+                "strict": True,
+                "schema": response_schema.schema,
+            },
+        },
+    }
+    return payload
 
 
 def _plain(value: Any) -> Any:

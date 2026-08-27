@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from lode.api.main import app
+from lode.api.routes import control_plane
 from lode.config import settings
 from lode.db.models import User, WorkspacePermission
 from lode.db.session import AsyncSessionLocal
@@ -15,7 +16,7 @@ from lode.security import create_token, hash_password
 
 
 @pytest.mark.asyncio
-async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions() -> None:
+async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(monkeypatch) -> None:
     suffix = uuid.uuid4().hex
     async with AsyncSessionLocal() as session:
         admin = User(
@@ -38,6 +39,10 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
         reader_id = reader.id
 
     secret = f"provider-secret-{suffix}"
+    async def discover(**_kwargs):
+        return control_plane._DiscoveredModels([{"id": "gpt-5.6-sol", "owned_by": "openai"}])
+
+    monkeypatch.setattr(control_plane, "_discover_provider_models", discover)
     admin_headers = {
         "Authorization": "Bearer "
         + create_token(admin_id, settings.jwt_signing_key, 3600)
@@ -52,14 +57,10 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
             headers=admin_headers,
             json={
                 "name": f"provider-{suffix}",
-                "provider_kind": "anthropic",
-                "base_url": "https://api.anthropic.com/v1",
+                "base_url": "https://api.openai.com/v1",
                 "credential": secret,
-                "rate_limit_policy": {},
-                "cost_policy": {},
-                "data_processing_policy_revision": "policy-current",
-                "data_residency": "global",
-                "retention_mode": "provider-default",
+                "model_ids": ["gpt-5.6-sol"],
+                "manual_model_ids": [],
             },
         )
         assert provider.status_code == 201
@@ -105,3 +106,117 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
             json={"start_position": "latest"},
         )
         assert still_forbidden.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_account_model_sync_manual_selection_and_active_binding_guard(monkeypatch) -> None:
+    suffix = uuid.uuid4().hex
+    async with AsyncSessionLocal() as session:
+        admin = User(
+            email=f"model-admin-{suffix}@lode.local",
+            name="Model Admin",
+            password_hash=hash_password("correct-horse-battery"),
+            role="admin",
+            status="active",
+        )
+        session.add(admin)
+        await session.commit()
+        admin_id = admin.id
+
+    upstream_ids = {"gpt-5.6-sol", "gpt-5.6-terra"}
+
+    async def discover(**_kwargs):
+        return control_plane._DiscoveredModels(
+            [{"id": model_id, "owned_by": "openai"} for model_id in sorted(upstream_ids)]
+        )
+
+    monkeypatch.setattr(control_plane, "_discover_provider_models", discover)
+    headers = {"Authorization": "Bearer " + create_token(admin_id, settings.jwt_signing_key, 3600)}
+    secret = f"draft-secret-{suffix}"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        draft = await client.post(
+            "/ai-provider-accounts/discover-models",
+            headers=headers,
+            json={"base_url": "https://api.openai.com/v1", "credential": secret},
+        )
+        assert draft.status_code == 200
+        assert secret not in draft.text
+        assert {item["provider_model_id"] for item in draft.json()} == upstream_ids
+
+        created = await client.post(
+            "/ai-provider-accounts",
+            headers=headers,
+            json={
+                "name": f"account-{suffix}",
+                "base_url": "https://api.openai.com/v1",
+                "credential": secret,
+                "model_ids": sorted(upstream_ids),
+                "manual_model_ids": [],
+            },
+        )
+        assert created.status_code == 201
+        account = created.json()
+        account_id = account["id"]
+        sol_id = next(item["id"] for item in account["models"] if item["provider_model_id"] == "gpt-5.6-sol")
+
+        workspace = await client.post(
+            "/workspaces",
+            headers=headers,
+            json={"name": f"models-{suffix}", "ingestion_topic": f"models-{suffix}"},
+        )
+        assert workspace.status_code == 201
+        binding = await client.post(
+            f"/workspaces/{workspace.json()['id']}/model-bindings",
+            headers=headers,
+            json={
+                "provider_account_model_id": sol_id,
+                "execution_classes": ["latency_optimized"],
+                "allowed_roles": ["planner"],
+                "max_calls": 1,
+                "max_cost_per_call": 0,
+                "timeout_ms": 1000,
+                "allowed_data_classes": ["masked"],
+                "max_context_utilization": 0.8,
+            },
+        )
+        assert binding.status_code == 201
+
+        blocked = await client.put(
+            f"/ai-provider-accounts/{account_id}/models",
+            headers=headers,
+            json={"model_ids": ["gpt-5.6-terra"], "manual_model_ids": []},
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "account_model_in_use"
+
+        upstream_ids.remove("gpt-5.6-sol")
+        missing = await client.put(
+            f"/ai-provider-accounts/{account_id}/models",
+            headers=headers,
+            json={"model_ids": ["gpt-5.6-sol", "gpt-5.6-terra"], "manual_model_ids": []},
+        )
+        assert missing.status_code == 200
+        sol = next(item for item in missing.json()["models"] if item["provider_model_id"] == "gpt-5.6-sol")
+        assert sol["discovery_state"] == "missing"
+        assert sol["state"] == "disabled"
+
+        manual = await client.post(
+            "/ai-provider-accounts",
+            headers=headers,
+            json={
+                "name": f"manual-{suffix}",
+                "base_url": "https://api.openai.com/v1",
+                "credential": f"manual-secret-{suffix}",
+                "model_ids": ["gpt-5.6-luna"],
+                "manual_model_ids": ["gpt-5.6-luna"],
+            },
+        )
+        assert manual.status_code == 201
+        assert manual.json()["models"][0]["discovery_state"] == "manual"
+        unknown = await client.put(
+            f"/ai-provider-accounts/{account_id}/models",
+            headers=headers,
+            json={"model_ids": ["not-supported"], "manual_model_ids": ["not-supported"]},
+        )
+        assert unknown.status_code == 422
+        assert unknown.json()["error"]["code"] == "unsupported_model"

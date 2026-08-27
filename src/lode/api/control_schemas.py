@@ -34,101 +34,97 @@ class _ORMOutput(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class ProviderAccountCreate(_StrictInput):
-    name: str = Field(min_length=1, max_length=200)
-    provider_kind: Literal["openai", "openai_compatible", "anthropic"]
+class _ModelSelection(_StrictInput):
+    model_ids: tuple[str, ...] = Field(max_length=100)
+    manual_model_ids: tuple[str, ...] = Field(default=(), max_length=100)
+
+    @model_validator(mode="after")
+    def valid_model_selection(self):
+        if len(self.model_ids) != len(set(self.model_ids)):
+            raise ValueError("model IDs must be unique")
+        if len(self.manual_model_ids) != len(set(self.manual_model_ids)):
+            raise ValueError("manual model IDs must be unique")
+        if not set(self.manual_model_ids).issubset(self.model_ids):
+            raise ValueError("manual model IDs must be selected")
+        if any(not value or value != value.strip() for value in self.model_ids):
+            raise ValueError("model IDs must be trimmed and nonempty")
+        return self
+
+
+class ProviderModelDiscoveryInput(_StrictInput):
     base_url: str = Field(min_length=1, max_length=2_000)
     credential: str = Field(min_length=1, max_length=8_000)
     organization_ref: str | None = Field(default=None, max_length=500)
     project_ref: str | None = Field(default=None, max_length=500)
-    tenant_ref: str | None = Field(default=None, max_length=500)
-    rate_limit_policy: dict[str, Any] = Field(default_factory=dict)
-    cost_policy: dict[str, Any] = Field(default_factory=dict)
-    data_processing_policy_revision: str = Field(min_length=1, max_length=200)
-    data_residency: str = Field(min_length=1, max_length=200)
-    retention_mode: str = Field(min_length=1, max_length=200)
+
+
+class ProviderAccountCreate(ProviderModelDiscoveryInput, _ModelSelection):
+    name: str = Field(min_length=1, max_length=200)
+    model_ids: tuple[str, ...] = Field(min_length=1, max_length=100)
 
 
 class ProviderAccountPatch(_StrictPatch):
-    nullable_fields = frozenset({"organization_ref", "project_ref", "tenant_ref"})
+    nullable_fields = frozenset({"organization_ref", "project_ref"})
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
     base_url: str | None = Field(default=None, min_length=1, max_length=2_000)
     credential: str | None = Field(default=None, min_length=1, max_length=8_000)
     organization_ref: str | None = Field(default=None, max_length=500)
     project_ref: str | None = Field(default=None, max_length=500)
-    tenant_ref: str | None = Field(default=None, max_length=500)
-    rate_limit_policy: dict[str, Any] | None = None
-    cost_policy: dict[str, Any] | None = None
-    data_processing_policy_revision: str | None = Field(default=None, min_length=1)
-    data_residency: str | None = Field(default=None, min_length=1)
-    retention_mode: str | None = Field(default=None, min_length=1)
+    model_ids: tuple[str, ...] | None = Field(default=None, max_length=100)
+    manual_model_ids: tuple[str, ...] | None = Field(default=None, max_length=100)
     state: Literal["active", "disabled"] | None = None
 
+    @model_validator(mode="after")
+    def valid_model_selection(self):
+        if self.model_ids is None:
+            if self.manual_model_ids is not None:
+                raise ValueError("manual model IDs require model IDs")
+            return self
+        selection = _ModelSelection(
+            model_ids=self.model_ids,
+            manual_model_ids=self.manual_model_ids or (),
+        )
+        self.model_ids = selection.model_ids
+        self.manual_model_ids = selection.manual_model_ids
+        return self
 
-class ProviderAccountOut(_ORMOutput):
+
+class ProviderAccountModelSelection(_ModelSelection):
+    pass
+
+
+class ProviderAccountModelOut(_ORMOutput):
     id: int
-    name: str
-    provider_kind: str
-    base_url: str
-    organization_ref: str | None
-    project_ref: str | None
-    tenant_ref: str | None
-    state: str
-    verification_status: str
-    verified_at: datetime | None
-    rate_limit_policy: dict[str, Any]
-    cost_policy: dict[str, Any]
-    data_processing_policy_revision: str
-    data_residency: str
-    retention_mode: str
+    provider_account_id: int
+    provider_model_id: str
+    display_name: str
+    capabilities: dict[str, bool]
+    discovery_state: Literal["synced", "manual", "missing"]
+    availability_state: Literal["untested", "healthy", "unavailable"]
+    health_checked_at: datetime | None
+    state: Literal["active", "disabled"]
     revision: int
     created_at: datetime
     updated_at: datetime
 
 
-class ModelDeploymentCreate(_StrictInput):
-    provider_model_id: str = Field(min_length=1, max_length=500)
-    display_name: str = Field(min_length=1, max_length=500)
-    capabilities: dict[str, Any] = Field(default_factory=dict)
-    max_input_tokens: int = Field(gt=0)
-    max_output_tokens: int = Field(gt=0)
-    tokenizer_id: str = Field(min_length=1, max_length=200)
-    provider_revision: str = Field(min_length=1, max_length=200)
-    quality_baseline_revision: str = Field(min_length=1, max_length=200)
-    cost_policy_revision: str = Field(min_length=1, max_length=200)
-    rate_limit_policy_revision: str = Field(min_length=1, max_length=200)
-
-
-class ModelDeploymentPatch(_StrictPatch):
-    display_name: str | None = Field(default=None, min_length=1, max_length=500)
-    capabilities: dict[str, Any] | None = None
-    max_input_tokens: int | None = Field(default=None, gt=0)
-    max_output_tokens: int | None = Field(default=None, gt=0)
-    tokenizer_id: str | None = Field(default=None, min_length=1, max_length=200)
-    provider_revision: str | None = Field(default=None, min_length=1, max_length=200)
-    quality_baseline_revision: str | None = Field(default=None, min_length=1)
-    cost_policy_revision: str | None = Field(default=None, min_length=1)
-    rate_limit_policy_revision: str | None = Field(default=None, min_length=1)
-    state: Literal["active", "disabled"] | None = None
-
-
-class ModelDeploymentOut(_ORMOutput):
-    id: int
-    provider_account_id: int
+class ProviderModelDiscoveryOut(_StrictInput):
     provider_model_id: str
     display_name: str
-    capabilities: dict[str, Any]
-    max_input_tokens: int
-    max_output_tokens: int
-    tokenizer_id: str
-    provider_revision: str
-    availability_state: str
-    health_checked_at: datetime | None
-    quality_baseline_revision: str
-    cost_policy_revision: str
-    rate_limit_policy_revision: str
+
+
+class ProviderAccountOut(_ORMOutput):
+    id: int
+    name: str
+    provider_kind: Literal["openai_compatible"]
+    base_url: str
+    organization_ref: str | None
+    project_ref: str | None
     state: str
+    verification_status: str
+    verified_at: datetime | None
+    models: list[ProviderAccountModelOut]
     revision: int
     created_at: datetime
     updated_at: datetime
@@ -167,13 +163,11 @@ class IngestionStart(_StrictInput):
 
 
 class ModelBindingInput(_StrictInput):
-    model_deployment_id: int = Field(gt=0)
+    provider_account_model_id: int = Field(gt=0)
     execution_classes: tuple[ExecutionClassValue, ...] = Field(min_length=1)
     allowed_roles: tuple[ModelRoleValue, ...] = Field(min_length=1)
     priority: int = Field(default=0, ge=0)
     max_calls: int = Field(gt=0)
-    max_input_tokens: int = Field(gt=0)
-    max_output_tokens: int = Field(gt=0)
     max_cost_per_call: float = Field(ge=0)
     timeout_ms: int = Field(gt=0, le=600_000)
     allowed_data_classes: tuple[str, ...] = Field(min_length=1)
@@ -188,8 +182,6 @@ class ModelBindingInput(_StrictInput):
         ):
             if len(values) != len(set(values)):
                 raise ValueError("binding list values must be unique")
-        if self.max_output_tokens >= self.max_input_tokens:
-            raise ValueError("binding output capacity must be smaller than input capacity")
         return self
 
 
@@ -198,8 +190,6 @@ class ModelBindingPatch(_StrictPatch):
     allowed_roles: tuple[ModelRoleValue, ...] | None = Field(default=None, min_length=1)
     priority: int | None = Field(default=None, ge=0)
     max_calls: int | None = Field(default=None, gt=0)
-    max_input_tokens: int | None = Field(default=None, gt=0)
-    max_output_tokens: int | None = Field(default=None, gt=0)
     max_cost_per_call: float | None = Field(default=None, ge=0)
     timeout_ms: int | None = Field(default=None, gt=0, le=600_000)
     allowed_data_classes: tuple[str, ...] | None = Field(default=None, min_length=1)
@@ -210,13 +200,11 @@ class ModelBindingPatch(_StrictPatch):
 class ModelBindingOut(_ORMOutput):
     id: int
     workspace_id: int
-    model_deployment_id: int
+    provider_account_model_id: int
     execution_classes: list[str]
     allowed_roles: list[str]
     priority: int
     max_calls: int
-    max_input_tokens: int
-    max_output_tokens: int
     max_cost_per_call: float
     timeout_ms: int
     allowed_data_classes: list[str]

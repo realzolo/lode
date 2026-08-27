@@ -64,7 +64,7 @@ def test_model_route_cannot_select_a_model_that_cannot_fit_context() -> None:
             investigation_id=1,
             role=ModelRole.PLANNER,
             workspace_model_binding_revision_id=2,
-            model_deployment_revision_id=3,
+            provider_account_model_revision_id=3,
             execution_class=ExecutionClass.LATENCY_OPTIMIZED,
             required_context_tokens=9000,
             allowed_input_tokens=8000,

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from lode.domain.errors import DomainValidationError
 from lode.domain.types import (
@@ -99,9 +99,6 @@ class ProviderAccount:
     name: str
     provider_kind: str
     base_url: str
-    data_processing_policy_revision: str
-    data_residency: str
-    retention_mode: str
     state: LifecycleState = LifecycleState.ACTIVE
     verification_status: HealthState = HealthState.UNTESTED
     revision: int = 1
@@ -111,24 +108,21 @@ class ProviderAccount:
             "name",
             "provider_kind",
             "base_url",
-            "data_processing_policy_revision",
-            "data_residency",
-            "retention_mode",
         ):
             _required(getattr(self, field_name), field_name)
+        if self.provider_kind != "openai_compatible":
+            raise DomainValidationError("unsupported_provider", "only OpenAI-compatible accounts are supported")
         if self.revision < 1:
             raise DomainValidationError("invalid_revision", "revision must be positive")
 
 
 @dataclass(frozen=True, slots=True)
-class ModelDeployment:
+class ProviderAccountModel:
     provider_account_id: int
     provider_model_id: str
-    display_name: str
-    capabilities: Mapping[str, Any]
-    max_input_tokens: int
-    max_output_tokens: int
-    tokenizer_id: str
+    catalog_revision: str
+    catalog_profile_hash: str
+    discovery_state: Literal["synced", "manual", "missing"]
     availability_state: HealthState = HealthState.UNTESTED
     state: LifecycleState = LifecycleState.ACTIVE
     revision: int = 1
@@ -137,26 +131,23 @@ class ModelDeployment:
         if self.provider_account_id < 1:
             raise DomainValidationError("invalid_reference", "provider account must be positive")
         _required(self.provider_model_id, "provider_model_id")
-        _required(self.display_name, "display_name")
-        _required(self.tokenizer_id, "tokenizer_id")
-        if min(self.max_input_tokens, self.max_output_tokens, self.revision) < 1:
+        _required(self.catalog_revision, "catalog_revision")
+        _required(self.catalog_profile_hash, "catalog_profile_hash")
+        if not _SHA256.fullmatch(self.catalog_profile_hash) or self.revision < 1:
             raise DomainValidationError(
-                "invalid_model_limit", "model limits and revision must be positive"
+                "invalid_model_catalog", "account model catalog data is invalid"
             )
-        object.__setattr__(self, "capabilities", _freeze(self.capabilities))
 
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceModelBinding:
     workspace_id: int
-    model_deployment_id: int
+    provider_account_model_id: int
     execution_classes: tuple[ExecutionClass, ...]
     allowed_roles: tuple[ModelRole, ...]
     allowed_data_classes: tuple[str, ...]
     priority: int
     max_calls: int
-    max_input_tokens: int
-    max_output_tokens: int
     max_cost_per_call: float
     timeout_ms: int
     max_context_utilization: float
@@ -164,7 +155,7 @@ class WorkspaceModelBinding:
     revision: int = 1
 
     def __post_init__(self) -> None:
-        if min(self.workspace_id, self.model_deployment_id) < 1:
+        if min(self.workspace_id, self.provider_account_model_id) < 1:
             raise DomainValidationError("invalid_reference", "binding references must be positive")
         _unique_nonempty(self.execution_classes, "execution_classes")
         _unique_nonempty(self.allowed_roles, "allowed_roles")
@@ -173,8 +164,6 @@ class WorkspaceModelBinding:
             self.priority < 0
             or min(
                 self.max_calls,
-                self.max_input_tokens,
-                self.max_output_tokens,
                 self.timeout_ms,
                 self.revision,
             )

@@ -28,8 +28,8 @@ _RUN_MANIFEST_FIELDS = frozenset(
     {
         "run_id",
         "provider_account_class",
-        "model_deployment",
-        "model_deployment_revision",
+        "provider_account_model",
+        "provider_account_model_revision",
         "role",
         "execution_class",
         "prompt_revision",
@@ -95,8 +95,8 @@ def _operational_baseline(path: Path, eval_corpus_sha256: str) -> dict[str, Any]
         "name",
         "eval_corpus_sha256",
         "provider_account_class",
-        "model_deployment",
-        "model_deployment_revision",
+        "provider_account_model",
+        "provider_account_model_revision",
         "prompt_revision",
         "schema_revision",
         "policy_revision",
@@ -228,8 +228,8 @@ def main() -> None:
         if manifest is None or manifest["run_id"] == canary_manifest["run_id"]:
             raise ValueError("candidate and canary baseline must be distinct frozen runs")
         version_fields = {
-            "model_deployment",
-            "model_deployment_revision",
+            "provider_account_model",
+            "provider_account_model_revision",
             "prompt_revision",
             "schema_revision",
             "policy_revision",

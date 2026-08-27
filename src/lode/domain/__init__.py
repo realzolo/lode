@@ -22,7 +22,7 @@ from lode.domain.models import (  # noqa: F401
     EvidenceConnector,
     IdentityResolution,
     ModelBindingRevisionRef,
-    ModelDeployment,
+    ProviderAccountModel,
     ModelPolicyRevision,
     ObservedRelation,
     ProviderAccount,

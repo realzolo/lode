@@ -33,24 +33,15 @@ class AIProviderAccount(TimestampMixin, Base):
     credential_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     organization_ref: Mapped[str | None] = mapped_column(Text)
     project_ref: Mapped[str | None] = mapped_column(Text)
-    tenant_ref: Mapped[str | None] = mapped_column(Text)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
     verification_status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="untested"
     )
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    rate_limit_policy: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
-    cost_policy: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
-    data_processing_policy_revision: Mapped[str] = mapped_column(Text, nullable=False)
-    data_residency: Mapped[str] = mapped_column(Text, nullable=False)
-    retention_mode: Mapped[str] = mapped_column(Text, nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
 
     __table_args__ = (
+        CheckConstraint("provider_kind = 'openai_compatible'", name="provider_kind"),
         CheckConstraint("state IN ('active', 'disabled')", name="state"),
         CheckConstraint(
             "verification_status IN ('untested', 'healthy', 'unavailable')",
@@ -88,34 +79,30 @@ class ProviderModelObservation(CreatedAtMixin, Base):
     )
 
 
-class ModelDeployment(TimestampMixin, Base):
-    __tablename__ = "model_deployments"
+class ProviderAccountModel(TimestampMixin, Base):
+    __tablename__ = "provider_account_models"
 
     id: Mapped[int] = identity_pk()
     provider_account_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("ai_provider_accounts.id", ondelete="RESTRICT"), nullable=False
     )
     provider_model_id: Mapped[str] = mapped_column(Text, nullable=False)
-    display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    capabilities: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
-    max_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    tokenizer_id: Mapped[str] = mapped_column(Text, nullable=False)
-    provider_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    catalog_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    catalog_profile_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    discovery_state: Mapped[str] = mapped_column(Text, nullable=False)
     availability_state: Mapped[str] = mapped_column(Text, nullable=False, server_default="untested")
     health_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    quality_baseline_revision: Mapped[str] = mapped_column(Text, nullable=False)
-    cost_policy_revision: Mapped[str] = mapped_column(Text, nullable=False)
-    rate_limit_policy_revision: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
 
     __table_args__ = (
-        UniqueConstraint("provider_account_id", "provider_model_id", name="uq_model_deployment"),
-        CheckConstraint("max_input_tokens > 0", name="max_input_tokens_positive"),
-        CheckConstraint("max_output_tokens > 0", name="max_output_tokens_positive"),
+        UniqueConstraint("provider_account_id", "provider_model_id", name="uq_provider_account_model"),
+        CheckConstraint(
+            "catalog_profile_hash ~ '^[0-9a-f]{64}$'", name="catalog_profile_hash_sha256"
+        ),
+        CheckConstraint(
+            "discovery_state IN ('synced', 'manual', 'missing')", name="discovery_state"
+        ),
         CheckConstraint(
             "availability_state IN ('untested', 'healthy', 'unavailable')",
             name="availability_state",
@@ -155,15 +142,13 @@ class WorkspaceModelBinding(TimestampMixin, Base):
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    model_deployment_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("model_deployments.id", ondelete="RESTRICT"), nullable=False
+    provider_account_model_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("provider_account_models.id", ondelete="RESTRICT"), nullable=False
     )
     execution_classes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     allowed_roles: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     max_calls: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     max_cost_per_call: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
     timeout_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     allowed_data_classes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
@@ -177,8 +162,6 @@ class WorkspaceModelBinding(TimestampMixin, Base):
         CheckConstraint("cardinality(allowed_data_classes) > 0", name="data_classes_nonempty"),
         CheckConstraint("priority >= 0", name="priority_nonnegative"),
         CheckConstraint("max_calls > 0", name="max_calls_positive"),
-        CheckConstraint("max_input_tokens > 0", name="max_input_tokens_positive"),
-        CheckConstraint("max_output_tokens > 0", name="max_output_tokens_positive"),
         CheckConstraint("max_cost_per_call >= 0", name="max_cost_nonnegative"),
         CheckConstraint("timeout_ms > 0", name="timeout_positive"),
         CheckConstraint(
@@ -190,7 +173,7 @@ class WorkspaceModelBinding(TimestampMixin, Base):
         Index(
             "uq_workspace_model_binding_active",
             "workspace_id",
-            "model_deployment_id",
+            "provider_account_model_id",
             unique=True,
             postgresql_where=text("state = 'active'"),
         ),

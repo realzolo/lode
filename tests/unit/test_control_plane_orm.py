@@ -42,9 +42,9 @@ def test_removed_control_plane_tables_are_not_registered() -> None:
     assert removed.isdisjoint(Base.metadata.tables)
 
 
-def test_provider_credentials_are_separate_from_model_deployments() -> None:
+def test_provider_credentials_are_separate_from_provider_account_models() -> None:
     accounts = Base.metadata.tables["ai_provider_accounts"]
-    deployments = Base.metadata.tables["model_deployments"]
+    deployments = Base.metadata.tables["provider_account_models"]
 
     assert "credential_ciphertext" in accounts.c
     assert "credential_ciphertext" not in deployments.c

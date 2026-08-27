@@ -33,13 +33,12 @@ def test_resolve_api_key_plaintext_literal_raises():
 
 def test_usage_records_provider_exact_or_explicit_local_estimate():
     exact = _usage(
-        "openai",
         {"usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}},
         "system",
         "user",
         "answer",
     )
-    estimated = _usage("openai", {}, "system", "user", "answer")
+    estimated = _usage({}, "system", "user", "answer")
     assert exact == (12, 8, 20, "provider")
     assert estimated[3] == "estimated"
     assert estimated[2] == estimated[0] + estimated[1]
@@ -66,9 +65,6 @@ def test_model_endpoint_normalizes_provider_base_urls():
     assert (
         model_endpoint("openai", "https://model.example/v1/chat/completions")
         == "https://model.example/v1/chat/completions"
-    )
-    assert (
-        model_endpoint("anthropic", "https://model.example") == "https://model.example/v1/messages"
     )
 
 
@@ -150,7 +146,7 @@ def test_non_object_provider_json_is_an_invalid_response(monkeypatch):
     assert result.error_code == "invalid_response"
 
 
-def test_structured_request_sets_json_mode_output_limit_and_custom_timeout(monkeypatch):
+def test_structured_request_sets_json_mode_routed_output_limit_and_custom_timeout(monkeypatch):
     captured: dict = {}
 
     async def request(_method, _endpoint, **kwargs):
@@ -159,18 +155,25 @@ def test_structured_request_sets_json_mode_output_limit_and_custom_timeout(monke
         return _Response({"choices": [{"message": {"content": "{}"}}]})
 
     monkeypatch.setattr("lode.engine.llm.provider_request", request)
+    config = ModelConfig(
+        provider="openai_compatible",
+        base_url="https://model.example",
+        api_key_ciphertext=encrypt_secret("test-key"),
+        model="test-model",
+        max_completion_tokens=321,
+    )
     result = asyncio.run(
         complete_with_usage(
             "Return JSON.",
             "{}",
-            _config(),
+            config,
             json_mode=True,
             timeout_seconds=45,
         )
     )
     assert result.text == "{}"
     assert captured["response_format"] == {"type": "json_object"}
-    assert captured["max_completion_tokens"] == 8_192
+    assert captured["max_completion_tokens"] == 321
     assert captured["timeout"] == 45
 
 
@@ -201,3 +204,24 @@ def test_strict_response_schema_replaces_loose_json_mode(monkeypatch):
         "type": "json_schema",
         "json_schema": {"name": "strict_result", "strict": True, "schema": schema.schema},
     }
+
+
+def test_openai_organization_and_project_are_forwarded(monkeypatch):
+    captured: dict = {}
+
+    async def request(_method, _endpoint, **kwargs):
+        captured.update(kwargs["headers"])
+        return _Response({"choices": [{"message": {"content": "OK"}}]})
+
+    monkeypatch.setattr("lode.engine.llm.provider_request", request)
+    config = ModelConfig(
+        provider="openai_compatible",
+        base_url="https://model.example",
+        api_key_ciphertext=encrypt_secret("test-key"),
+        model="test-model",
+        organization_ref="org-test",
+        project_ref="proj-test",
+    )
+    assert asyncio.run(complete_with_usage("system", "user", config)).text == "OK"
+    assert captured["OpenAI-Organization"] == "org-test"
+    assert captured["OpenAI-Project"] == "proj-test"

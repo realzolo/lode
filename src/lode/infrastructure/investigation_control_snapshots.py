@@ -21,7 +21,7 @@ from lode.db.models import (
     InvestigationModelBindingSnapshot,
     InvestigationModelPolicySnapshot,
     InvestigationRepositorySnapshot,
-    ModelDeployment,
+    ProviderAccountModel,
     ModelPolicyRevision,
     RepositoryDescriptor,
     Workspace,
@@ -33,6 +33,7 @@ from lode.infrastructure.git_source import (
     GitRemoteRevisionResolver,
     GitRevisionResolver,
 )
+from lode.model_catalog import require_openai_model
 
 
 class InvestigationControlSnapshotStore:
@@ -304,40 +305,50 @@ class InvestigationControlSnapshotStore:
         for binding in bindings:
             if binding.revision != eligible_bindings[binding.id]:
                 raise ValueError("eligible model binding revision changed")
-            deployment = await self.session.get(ModelDeployment, binding.model_deployment_id)
+            deployment = await self.session.get(ProviderAccountModel, binding.provider_account_model_id)
             if deployment is None:
                 raise ValueError("model binding deployment is missing")
+            profile = require_openai_model(deployment.provider_model_id)
+            if (
+                deployment.catalog_revision != profile.catalog_revision
+                or deployment.catalog_profile_hash != profile.profile_hash
+            ):
+                raise ValueError("account model catalog specification is stale")
             provider = await self.session.get(AIProviderAccount, deployment.provider_account_id)
             if provider is None:
-                raise ValueError("model deployment provider is missing")
+                raise ValueError("account model provider is missing")
             routing_policy = {
                 "priority": binding.priority,
                 "max_calls": binding.max_calls,
-                "max_input_tokens": min(binding.max_input_tokens, deployment.max_input_tokens),
-                "max_output_tokens": min(binding.max_output_tokens, deployment.max_output_tokens),
+                "context_window_tokens": profile.context_window_tokens,
+                "max_output_tokens": profile.max_output_tokens,
+                "provider_safety_margin_tokens": profile.provider_safety_margin_tokens,
                 "max_cost_per_call": float(binding.max_cost_per_call),
                 "timeout_ms": binding.timeout_ms,
                 "allowed_data_classes": list(binding.allowed_data_classes),
                 "max_context_utilization": float(binding.max_context_utilization),
-                "tokenizer_id": deployment.tokenizer_id,
-                "model_capabilities": deployment.capabilities,
+                "tokenizer_id": profile.tokenizer_id,
+                "model_capabilities": dict(profile.capabilities),
+                "model_catalog_revision": profile.catalog_revision,
+                "model_catalog_profile_hash": profile.profile_hash,
+                "model_context_window_tokens": profile.context_window_tokens,
+                "model_max_output_tokens": profile.max_output_tokens,
+                "model_tokenizer_encoding": profile.tokenizer_encoding,
                 "model_health": deployment.availability_state,
                 "provider_health": provider.verification_status,
                 "provider_kind": provider.provider_kind,
                 "provider_base_url": provider.base_url,
                 "provider_model_id": deployment.provider_model_id,
-                "provider_data_residency": provider.data_residency,
-                "provider_retention_mode": provider.retention_mode,
                 "credential_identity_hash": hashlib.sha256(
                     provider.credential_ciphertext.encode()
                 ).hexdigest(),
             }
             payload = {
                 "workspace_model_binding_id": binding.id,
-                "model_deployment_id": deployment.id,
+                "provider_account_model_id": deployment.id,
                 "provider_account_id": provider.id,
                 "binding_revision": binding.revision,
-                "model_deployment_revision": deployment.revision,
+                "provider_account_model_revision": deployment.revision,
                 "provider_account_revision": provider.revision,
                 "execution_classes": binding.execution_classes,
                 "allowed_roles": binding.allowed_roles,

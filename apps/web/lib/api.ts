@@ -10,7 +10,7 @@ import type {
   InvestigationSummary,
   Invite,
   ModelBinding,
-  ModelDeployment,
+  ProviderAccountModel,
   PlatformSettings,
   ProviderAccount,
   RepositoryBinding,
@@ -141,21 +141,23 @@ export function updateInvestigationPolicy(workspaceId: number | string, profile:
 }
 
 export function fetchProviderAccounts() { return get<ProviderAccount[]>('/ai-provider-accounts'); }
+export function discoverProviderModels(input: { base_url: string; credential: string; organization_ref?: string; project_ref?: string }) {
+  return send<Array<{ provider_model_id: string; display_name: string }>>('/ai-provider-accounts/discover-models', 'POST', input);
+}
+export function discoverSavedProviderModels(id: number) {
+  return send<Array<{ provider_model_id: string; display_name: string }>>(`/ai-provider-accounts/${id}/discover-models`, 'POST');
+}
 export function createProviderAccount(input: Record<string, unknown>) {
   return send<ProviderAccount>('/ai-provider-accounts', 'POST', input);
 }
-export function testProviderAccount(id: number) {
-  return send<Record<string, unknown>>(`/ai-provider-accounts/${id}/test`, 'POST');
+export function updateProviderAccount(id: number, input: Record<string, unknown>) {
+  return send<ProviderAccount>(`/ai-provider-accounts/${id}`, 'PATCH', input);
 }
-export function introspectProviderModels(id: number) {
-  return send<{ models: Array<{ id: string }> }>(`/ai-provider-accounts/${id}/introspect-models`, 'POST');
+export function updateProviderAccountModels(id: number, input: { model_ids: string[]; manual_model_ids: string[] }) {
+  return send<ProviderAccount>(`/ai-provider-accounts/${id}/models`, 'PUT', input);
 }
-export function fetchModelDeployments() { return get<ModelDeployment[]>('/ai-model-deployments'); }
-export function createModelDeployment(providerId: number, input: Record<string, unknown>) {
-  return send<ModelDeployment>(`/ai-provider-accounts/${providerId}/model-deployments`, 'POST', input);
-}
-export function testModelDeployment(id: number) {
-  return send<Record<string, unknown>>(`/ai-model-deployments/${id}/test`, 'POST');
+export function testProviderAccountModel(accountId: number, accountModelId: number) {
+  return send<Record<string, unknown>>(`/ai-provider-accounts/${accountId}/models/${accountModelId}/test`, 'POST');
 }
 
 export function fetchModelBindings(workspaceId: number | string) {

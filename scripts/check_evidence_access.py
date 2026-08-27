@@ -32,7 +32,7 @@ from lode.db.models import (
     InvestigationModelPolicySnapshot,
     InvestigationOperation,
     InvestigationStep,
-    ModelDeployment,
+    ProviderAccountModel,
     ModelPolicyRevision,
     ModelRoutingDecision,
     NativeReadCandidate,
@@ -53,6 +53,7 @@ from lode.evidence_connectors.types import ProviderExecutionError
 from lode.infrastructure.evidence_archive import PostgresEvidenceResultArchiver
 from lode.infrastructure.intake_store import PostgresIntakeStore
 from lode.infrastructure.native_read_executor import NativeReadOperationExecutor
+from lode.model_catalog import require_openai_model
 
 SENTINEL = "__LODE_VALUE_REF_INCIDENT_TRACE__"
 RAW_TRACE = ' trace/值?x=1&quoted="yes"\nnext '
@@ -202,29 +203,21 @@ async def _create_fixture(session):
 
     provider = AIProviderAccount(
         name=f"evidence-access-check-{fixture_id}",
-        provider_kind="mock",
+        provider_kind="openai_compatible",
         base_url="https://model.invalid",
         credential_ciphertext=encrypt_value("model-secret"),
         verification_status="healthy",
-        data_processing_policy_revision="1",
-        data_residency="test",
-        retention_mode="none",
     )
     session.add(provider)
     await session.flush()
-    deployment = ModelDeployment(
+    profile = require_openai_model("gpt-5.6-sol")
+    deployment = ProviderAccountModel(
         provider_account_id=provider.id,
-        provider_model_id="mock-model",
-        display_name="Mock model",
-        capabilities={"structured_output": True},
-        max_input_tokens=32_000,
-        max_output_tokens=4_000,
-        tokenizer_id="mock",
-        provider_revision="1",
+        provider_model_id=profile.model_id,
+        catalog_revision=profile.catalog_revision,
+        catalog_profile_hash=profile.profile_hash,
+        discovery_state="synced",
         availability_state="healthy",
-        quality_baseline_revision="1",
-        cost_policy_revision="1",
-        rate_limit_policy_revision="1",
     )
     context_policy = ContextPolicyRevision(
         workspace_id=workspace.id,
@@ -238,12 +231,10 @@ async def _create_fixture(session):
     await session.flush()
     binding = WorkspaceModelBinding(
         workspace_id=workspace.id,
-        model_deployment_id=deployment.id,
+        provider_account_model_id=deployment.id,
         execution_classes=["latency_optimized"],
         allowed_roles=["native_query"],
         max_calls=10,
-        max_input_tokens=20_000,
-        max_output_tokens=2_000,
         max_cost_per_call=1,
         timeout_ms=30_000,
         allowed_data_classes=["masked"],
@@ -276,10 +267,10 @@ async def _create_fixture(session):
     binding_snapshot = InvestigationModelBindingSnapshot(
         investigation_id=investigation.id,
         workspace_model_binding_id=binding.id,
-        model_deployment_id=deployment.id,
+        provider_account_model_id=deployment.id,
         provider_account_id=provider.id,
         binding_revision=1,
-        model_deployment_revision=1,
+        provider_account_model_revision=1,
         provider_account_revision=1,
         execution_classes=["latency_optimized"],
         allowed_roles=["native_query"],
@@ -466,9 +457,9 @@ async def _create_fixture(session):
             context_bundle_revision_id=bundle.id,
             role="native_query",
             provider_account_id=provider.id,
-            model_deployment_id=deployment.id,
+            provider_account_model_id=deployment.id,
             provider_account_revision=1,
-            model_deployment_revision=1,
+            provider_account_model_revision=1,
             execution_class="latency_optimized",
             prompt_revision="test",
             schema_revision="native-read-candidate.v1",
@@ -538,9 +529,9 @@ async def _create_fixture(session):
         context_bundle_revision_id=bundle.id,
         role="native_query",
         provider_account_id=provider.id,
-        model_deployment_id=deployment.id,
+        provider_account_model_id=deployment.id,
         provider_account_revision=1,
-        model_deployment_revision=1,
+        provider_account_model_revision=1,
         execution_class="latency_optimized",
         prompt_revision="test",
         schema_revision="native-read-candidate.v1",
@@ -609,9 +600,9 @@ async def _create_fixture(session):
         context_bundle_revision_id=bundle.id,
         role="native_query",
         provider_account_id=provider.id,
-        model_deployment_id=deployment.id,
+        provider_account_model_id=deployment.id,
         provider_account_revision=1,
-        model_deployment_revision=1,
+        provider_account_model_revision=1,
         execution_class="latency_optimized",
         prompt_revision="test",
         schema_revision="native-read-candidate.v1",

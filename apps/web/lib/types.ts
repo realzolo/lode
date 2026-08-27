@@ -56,23 +56,24 @@ export interface InvestigationPolicy {
 export interface ProviderAccount {
   id: number;
   name: string;
-  provider_kind: 'openai' | 'openai_compatible' | 'anthropic';
+  provider_kind: 'openai_compatible';
   base_url: string;
+  organization_ref: string | null;
+  project_ref: string | null;
   state: 'active' | 'disabled';
   verification_status: 'untested' | 'healthy' | 'unavailable';
   verified_at: string | null;
+  models: ProviderAccountModel[];
   revision: number;
 }
 
-export interface ModelDeployment {
+export interface ProviderAccountModel {
   id: number;
   provider_account_id: number;
   provider_model_id: string;
   display_name: string;
-  capabilities: Record<string, unknown>;
-  max_input_tokens: number;
-  max_output_tokens: number;
-  tokenizer_id: string;
+  capabilities: Record<string, boolean>;
+  discovery_state: 'synced' | 'manual' | 'missing';
   availability_state: 'untested' | 'healthy' | 'unavailable';
   state: 'active' | 'disabled';
   revision: number;
@@ -81,13 +82,11 @@ export interface ModelDeployment {
 export interface ModelBinding {
   id: number;
   workspace_id: number;
-  model_deployment_id: number;
+  provider_account_model_id: number;
   execution_classes: string[];
   allowed_roles: string[];
   priority: number;
   max_calls: number;
-  max_input_tokens: number;
-  max_output_tokens: number;
   max_cost_per_call: number;
   timeout_ms: number;
   allowed_data_classes: string[];

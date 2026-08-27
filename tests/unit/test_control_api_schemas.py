@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from lode.api.control_schemas import (
     ConnectorPatch,
     ModelBindingInput,
-    ModelDeploymentPatch,
+    ProviderAccountModelSelection,
     ModelPolicyInput,
     PlatformSettingsUpdate,
     ProviderAccountPatch,
@@ -16,14 +16,12 @@ from lode.api.control_schemas import (
 )
 
 
-def test_model_binding_rejects_duplicate_roles_and_invalid_token_split() -> None:
+def test_model_binding_rejects_duplicate_roles() -> None:
     values = {
-        "model_deployment_id": 1,
+        "provider_account_model_id": 1,
         "execution_classes": ["latency_optimized"],
         "allowed_roles": ["planner", "planner"],
         "max_calls": 2,
-        "max_input_tokens": 1_000,
-        "max_output_tokens": 1_000,
         "max_cost_per_call": 1,
         "timeout_ms": 1_000,
         "allowed_data_classes": ["masked_operational"],
@@ -49,7 +47,7 @@ def test_model_policy_rejects_duplicate_immutable_binding_refs() -> None:
     ("schema", "values"),
     [
         (ProviderAccountPatch, {"name": None}),
-        (ModelDeploymentPatch, {"capabilities": None}),
+        (ProviderAccountModelSelection, {"model_ids": ["gpt-5.6-sol"], "manual_model_ids": ["missing"]}),
         (ConnectorPatch, {"secrets": None}),
     ],
 )
@@ -60,10 +58,10 @@ def test_patch_rejects_explicit_null_for_required_storage_fields(schema, values)
 
 def test_provider_patch_allows_clearing_optional_scope_references() -> None:
     patch = ProviderAccountPatch.model_validate(
-        {"organization_ref": None, "project_ref": None, "tenant_ref": None}
+        {"organization_ref": None, "project_ref": None}
     )
 
-    assert patch.model_fields_set == {"organization_ref", "project_ref", "tenant_ref"}
+    assert patch.model_fields_set == {"organization_ref", "project_ref"}
 
 
 def test_investigation_profile_and_ai_output_language_are_closed_sets() -> None:

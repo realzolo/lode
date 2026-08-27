@@ -16,7 +16,7 @@ from lode.domain.models import (
     EvidenceArtifact,
     IdentityResolution,
     ModelBindingRevisionRef,
-    ModelDeployment,
+    ProviderAccountModel,
     ModelPolicyRevision,
     ObservedRelation,
     ResourceObservation,
@@ -48,14 +48,12 @@ def test_model_binding_requires_nonempty_roles_and_execution_classes() -> None:
     with pytest.raises(DomainValidationError) as exc:
         WorkspaceModelBinding(
             workspace_id=1,
-            model_deployment_id=2,
+            provider_account_model_id=2,
             execution_classes=(),
             allowed_roles=(ModelRole.PLANNER,),
             allowed_data_classes=("internal",),
             priority=0,
             max_calls=10,
-            max_input_tokens=32000,
-            max_output_tokens=4096,
             max_cost_per_call=1.0,
             timeout_ms=30000,
             max_context_utilization=0.8,
@@ -68,14 +66,12 @@ def test_model_binding_reserves_context_capacity(utilization: float) -> None:
     with pytest.raises(DomainValidationError) as exc:
         WorkspaceModelBinding(
             workspace_id=1,
-            model_deployment_id=2,
+            provider_account_model_id=2,
             execution_classes=(ExecutionClass.LATENCY_OPTIMIZED,),
             allowed_roles=(ModelRole.PLANNER,),
             allowed_data_classes=("internal",),
             priority=0,
             max_calls=10,
-            max_input_tokens=32000,
-            max_output_tokens=4096,
             max_cost_per_call=1.0,
             timeout_ms=30000,
             max_context_utilization=utilization,
@@ -83,23 +79,18 @@ def test_model_binding_reserves_context_capacity(utilization: float) -> None:
     assert exc.value.code == "invalid_context_utilization"
 
 
-def test_model_deployment_freezes_nested_capabilities() -> None:
-    deployment = ModelDeployment(
+def test_provider_account_model_requires_immutable_catalog_identity() -> None:
+    account_model = ProviderAccountModel(
         provider_account_id=1,
-        provider_model_id="reasoner-v1",
-        display_name="Reasoner",
-        capabilities={"inputs": ["text"], "structured_output": True},
-        max_input_tokens=128000,
-        max_output_tokens=8192,
-        tokenizer_id="provider-tokenizer-v1",
+        provider_model_id="gpt-5.6-sol",
+        catalog_revision="openai-gpt5.6",
+        catalog_profile_hash="a" * 64,
+        discovery_state="synced",
         availability_state=HealthState.HEALTHY,
     )
 
-    assert deployment.capabilities["inputs"] == ("text",)
-    with pytest.raises(TypeError):
-        deployment.capabilities["new"] = True  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
-        deployment.max_input_tokens = 1  # type: ignore[misc]
+        account_model.catalog_revision = "next"  # type: ignore[misc]
 
 
 def test_context_and_model_policy_require_versioned_nonempty_inputs() -> None:

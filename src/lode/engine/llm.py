@@ -24,7 +24,6 @@ from lode.evidence_connectors.types import ProviderExecutionError
 from lode.infrastructure.provider_http import provider_request
 from lode.metrics import LLM_CALLS, LLM_LATENCY
 from lode.runtime_defaults import (
-    LLM_MAX_OUTPUT_TOKENS,
     LLM_MAX_RETRIES,
     LLM_REQUEST_TIMEOUT_SECONDS,
     LLM_RETRY_BASE_DELAY_SECONDS,
@@ -39,6 +38,9 @@ class ModelConfig:
     base_url: str
     api_key_ciphertext: str
     model: str
+    max_completion_tokens: int | None = None
+    organization_ref: str | None = None
+    project_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,10 +79,7 @@ def model_endpoint(provider: str, base_url: str) -> str:
     """Resolve a configured API base URL to the provider's completion endpoint."""
     parsed = urlsplit(base_url.strip())
     path = parsed.path.rstrip("/")
-    if provider == "anthropic":
-        if not path.endswith("/messages"):
-            path = f"{path}/messages" if path else "/v1/messages"
-    elif not path.endswith("/chat/completions"):
+    if not path.endswith("/chat/completions"):
         path = f"{path}/chat/completions" if path.endswith("/v1") else f"{path}/v1/chat/completions"
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
@@ -131,15 +130,11 @@ def _estimated_tokens(value: str) -> int:
 
 
 def _usage(
-    provider: str, body: dict[str, Any], system_prompt: str, user_prompt: str, text: str
+    body: dict[str, Any], system_prompt: str, user_prompt: str, text: str
 ) -> tuple[int, int, int, str]:
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
-    if provider == "anthropic":
-        input_tokens = usage.get("input_tokens")
-        output_tokens = usage.get("output_tokens")
-    else:
-        input_tokens = usage.get("prompt_tokens")
-        output_tokens = usage.get("completion_tokens")
+    input_tokens = usage.get("prompt_tokens")
+    output_tokens = usage.get("completion_tokens")
     if isinstance(input_tokens, int) and isinstance(output_tokens, int):
         total = usage.get("total_tokens")
         return (
@@ -192,25 +187,18 @@ async def complete_with_usage(
             0,
         )
 
-    if config.provider == "anthropic":
-        payload, headers = _anthropic_payload(
-            api_key,
-            config.base_url,
-            config.model,
-            system_prompt,
-            user_prompt,
-            response_schema=response_schema,
-        )
-    else:  # openai-compatible (default)
-        payload, headers = _openai_payload(
-            api_key,
-            config.base_url,
-            config.model,
-            system_prompt,
-            user_prompt,
-            json_mode=json_mode,
-            response_schema=response_schema,
-        )
+    payload, headers = _openai_payload(
+        api_key,
+        config.base_url,
+        config.model,
+        system_prompt,
+        user_prompt,
+        max_completion_tokens=config.max_completion_tokens,
+        organization_ref=config.organization_ref,
+        project_ref=config.project_ref,
+        json_mode=json_mode,
+        response_schema=response_schema,
+    )
 
     headers["Content-Type"] = "application/json"
     headers["Accept"] = "application/json"
@@ -249,10 +237,10 @@ async def complete_with_usage(
     for attempt in range(1, max_retries + 1):
         try:
             body = await _post()
-            text = _extract_text(config.provider, body, response_schema=response_schema)
+            text = _extract_text(body, response_schema=response_schema)
             elapsed = time.monotonic() - started
             input_tokens, output_tokens, total_tokens, token_source = _usage(
-                config.provider, body, system_prompt, user_prompt, text
+                body, system_prompt, user_prompt, text
             )
             LLM_LATENCY.observe(elapsed)
             LLM_CALLS.labels(outcome="success").inc()
@@ -337,6 +325,9 @@ def _openai_payload(
     system: str,
     user: str,
     *,
+    max_completion_tokens: int | None = None,
+    organization_ref: str | None = None,
+    project_ref: str | None = None,
     json_mode: bool = False,
     response_schema: ResponseSchema | None = None,
 ) -> tuple[dict, dict]:
@@ -347,8 +338,9 @@ def _openai_payload(
             {"role": "user", "content": user},
         ],
         "temperature": 0.2,
-        "max_completion_tokens": LLM_MAX_OUTPUT_TOKENS,
     }
+    if max_completion_tokens is not None:
+        payload["max_completion_tokens"] = max_completion_tokens
     if response_schema is not None:
         payload["response_format"] = {
             "type": "json_schema",
@@ -363,59 +355,18 @@ def _openai_payload(
     headers = {
         "Authorization": f"Bearer {api_key}",
     }
-    return payload, headers
-
-
-def _anthropic_payload(
-    api_key: str,
-    base_url: str,
-    model: str,
-    system: str,
-    user: str,
-    *,
-    response_schema: ResponseSchema | None = None,
-) -> tuple[dict, dict]:
-    # Anthropic Messages API uses a top-level system field (not a message role).
-    payload = {
-        "model": model,
-        "system": system,
-        "messages": [{"role": "user", "content": user}],
-        "max_tokens": LLM_MAX_OUTPUT_TOKENS,
-    }
-    if response_schema is not None:
-        payload["tools"] = [
-            {
-                "name": response_schema.name,
-                "description": "Submit the final structured response.",
-                "input_schema": response_schema.schema,
-            }
-        ]
-        payload["tool_choice"] = {"type": "tool", "name": response_schema.name}
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
+    if organization_ref:
+        headers["OpenAI-Organization"] = organization_ref
+    if project_ref:
+        headers["OpenAI-Project"] = project_ref
     return payload, headers
 
 
 def _extract_text(
-    provider: str,
     body: dict[str, Any],
     *,
     response_schema: ResponseSchema | None = None,
 ) -> str:
-    if provider == "anthropic":
-        parts = body.get("content") or []
-        if response_schema is not None:
-            for part in parts:
-                if (
-                    isinstance(part, dict)
-                    and part.get("type") == "tool_use"
-                    and part.get("name") == response_schema.name
-                ):
-                    return json.dumps(part.get("input"), ensure_ascii=False)
-            return ""
-        return "".join(p.get("text", "") for p in parts if isinstance(p, dict))
     choices = body.get("choices") or []
     if not choices:
         return ""

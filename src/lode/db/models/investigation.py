@@ -367,14 +367,14 @@ class InvestigationModelBindingSnapshot(CreatedAtMixin, Base):
     workspace_model_binding_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspace_model_bindings.id", ondelete="RESTRICT"), nullable=False
     )
-    model_deployment_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("model_deployments.id", ondelete="RESTRICT"), nullable=False
+    provider_account_model_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("provider_account_models.id", ondelete="RESTRICT"), nullable=False
     )
     provider_account_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("ai_provider_accounts.id", ondelete="RESTRICT"), nullable=False
     )
     binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    model_deployment_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_account_model_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     provider_account_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     execution_classes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     allowed_roles: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
@@ -388,7 +388,7 @@ class InvestigationModelBindingSnapshot(CreatedAtMixin, Base):
             name="uq_investigation_model_binding_snapshot",
         ),
         CheckConstraint("binding_revision > 0", name="binding_rev_pos"),
-        CheckConstraint("model_deployment_revision > 0", name="deployment_rev_pos"),
+        CheckConstraint("provider_account_model_revision > 0", name="account_model_rev_pos"),
         CheckConstraint("provider_account_revision > 0", name="account_rev_pos"),
         CheckConstraint("cardinality(execution_classes) > 0", name="classes_nonempty"),
         CheckConstraint("cardinality(allowed_roles) > 0", name="allowed_roles_nonempty"),

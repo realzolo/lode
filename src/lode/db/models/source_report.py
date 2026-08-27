@@ -161,11 +161,11 @@ class AIInvocation(CreatedAtMixin, Base):
     provider_account_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("ai_provider_accounts.id", ondelete="RESTRICT"), nullable=False
     )
-    model_deployment_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("model_deployments.id", ondelete="RESTRICT"), nullable=False
+    provider_account_model_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("provider_account_models.id", ondelete="RESTRICT"), nullable=False
     )
     provider_account_revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    model_deployment_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_account_model_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     execution_class: Mapped[str] = mapped_column(Text, nullable=False)
     prompt_revision: Mapped[str] = mapped_column(Text, nullable=False)
     schema_revision: Mapped[str] = mapped_column(Text, nullable=False)
@@ -196,7 +196,7 @@ class AIInvocation(CreatedAtMixin, Base):
         ),
         CheckConstraint("status IN ('succeeded', 'failed', 'unavailable')", name="status"),
         CheckConstraint("provider_account_revision > 0", name="account_revision_positive"),
-        CheckConstraint("model_deployment_revision > 0", name="deployment_revision_positive"),
+        CheckConstraint("provider_account_model_revision > 0", name="account_model_revision_positive"),
         CheckConstraint("attempt_count > 0", name="attempt_count_positive"),
         CheckConstraint("latency_ms >= 0", name="latency_nonnegative"),
         CheckConstraint("context_hash ~ '^[0-9a-f]{64}$'", name="context_hash_sha256"),

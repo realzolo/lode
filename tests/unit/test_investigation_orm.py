@@ -166,7 +166,7 @@ def test_model_invocation_always_references_route_and_context_bundle() -> None:
 
     assert not invocation.c.routing_decision_id.nullable
     assert not invocation.c.context_bundle_revision_id.nullable
-    assert {"provider_account_revision", "model_deployment_revision", "execution_class"}.issubset(
+    assert {"provider_account_revision", "provider_account_model_revision", "execution_class"}.issubset(
         invocation.c.keys()
     )
 

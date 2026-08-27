@@ -88,8 +88,10 @@ def test_control_plane_freezes_portfolio_and_context_objects() -> None:
 
     assert set(definitions) == {
         "workspace",
+        "platformSettings",
+        "investigationPolicyRevision",
         "aiProviderAccount",
-        "modelDeployment",
+        "providerAccountModel",
         "workspaceModelBinding",
         "modelPolicyRevision",
         "contextBundleRevision",
@@ -133,8 +135,8 @@ def test_api_and_database_manifests_exclude_removed_resources() -> None:
 def test_database_invariant_contract_covers_only_frozen_tables() -> None:
     inventory, triggers = expected_schema()
 
-    assert len(inventory) == 67
-    assert sum(len(names) for names in triggers.values()) == 83
+    assert len(inventory) == 69
+    assert sum(len(names) for names in triggers.values()) == 85
     assert "trg_evidence_read_attempts_immutable" in triggers["evidence_read_attempts"]
     assert "trg_investigation_reports_semantics" in triggers["investigation_reports"]
 

@@ -10,19 +10,23 @@ import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Tabs } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
-import { createConnector, createLocalRepository, createModelBinding, fetchCapabilities, fetchConnectorKinds, fetchConnectors, fetchInvestigationPolicy, fetchModelBindings, fetchModelDeployments, fetchRepositories, fetchResourceView, fetchWorkspace, introspectConnector, publishModelPolicy, testConnector, updateInvestigationPolicy } from '@/lib/api';
+import { createConnector, createLocalRepository, createModelBinding, fetchCapabilities, fetchConnectorKinds, fetchConnectors, fetchInvestigationPolicy, fetchModelBindings, fetchProviderAccounts, fetchRepositories, fetchResourceView, fetchWorkspace, introspectConnector, publishModelPolicy, testConnector, updateInvestigationPolicy } from '@/lib/api';
 import { Link } from '@/lib/navigation';
-import type { EvidenceConnector, InvestigationPolicy, ModelBinding, ModelDeployment, RepositoryBinding, Workspace } from '@/lib/types';
+import type { EvidenceConnector, InvestigationPolicy, ModelBinding, ProviderAccount, ProviderAccountModel, RepositoryBinding, Workspace } from '@/lib/types';
 
 const roles = ['planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor'];
 const resourceViews = ['build-units', 'components', 'resource-graph-revisions', 'resource-observations', 'identity-resolutions'];
+
+function flattenAccountModels(accounts: ProviderAccount[]): ProviderAccountModel[] {
+  return accounts.flatMap((account) => account.models.map((model) => ({ ...model, provider_account_id: account.id })));
+}
 
 export default function WorkspacePage({ params }: { params: { id: string } }) {
   const t = useTranslations('workspace');
   const tc = useTranslations('common');
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [bindings, setBindings] = useState<ModelBinding[]>([]);
-  const [deployments, setDeployments] = useState<ModelDeployment[]>([]);
+  const [accountModels, setAccountModels] = useState<ProviderAccountModel[]>([]);
   const [repositories, setRepositories] = useState<RepositoryBinding[]>([]);
   const [connectors, setConnectors] = useState<EvidenceConnector[]>([]);
   const [investigationPolicy, setInvestigationPolicy] = useState<InvestigationPolicy | null>(null);
@@ -33,24 +37,24 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
   const [dialog, setDialog] = useState<'binding' | 'repository' | 'connector' | null>(null);
   const load = useCallback(async () => {
     try {
-      const [ws, modelRows, deploymentRows, repoRows, connectorRows, kindRows, caps, policy] = await Promise.all([
-        fetchWorkspace(params.id), fetchModelBindings(params.id), fetchModelDeployments(), fetchRepositories(params.id), fetchConnectors(params.id), fetchConnectorKinds(), fetchCapabilities(params.id), fetchInvestigationPolicy(params.id),
+      const [ws, modelRows, accountRows, repoRows, connectorRows, kindRows, caps, policy] = await Promise.all([
+        fetchWorkspace(params.id), fetchModelBindings(params.id), fetchProviderAccounts(), fetchRepositories(params.id), fetchConnectors(params.id), fetchConnectorKinds(), fetchCapabilities(params.id), fetchInvestigationPolicy(params.id),
       ]);
-      setWorkspace(ws); setBindings(modelRows); setDeployments(deploymentRows); setRepositories(repoRows); setConnectors(connectorRows); setKinds(kindRows); setCapabilities(caps); setInvestigationPolicy(policy); setError('');
+      setWorkspace(ws); setBindings(modelRows); setAccountModels(flattenAccountModels(accountRows)); setRepositories(repoRows); setConnectors(connectorRows); setKinds(kindRows); setCapabilities(caps); setInvestigationPolicy(policy); setError('');
     } catch (cause) { setError(String(cause)); }
   }, [params.id]);
   useEffect(() => { void load(); }, [load]);
 
   const tabs = useMemo(() => [
     { value: 'overview', label: t('overview'), content: <Overview workspace={workspace} capabilities={capabilities} policy={investigationPolicy} onPolicyChanged={setInvestigationPolicy} /> },
-    { value: 'models', label: t('modelPolicy'), content: <Models workspaceId={params.id} bindings={bindings} deployments={deployments} onAdd={() => setDialog('binding')} onChanged={load} /> },
+    { value: 'models', label: t('modelPolicy'), content: <Models workspaceId={params.id} bindings={bindings} accountModels={accountModels} onAdd={() => setDialog('binding')} onChanged={load} /> },
     { value: 'repositories', label: t('repositories'), content: <Repositories rows={repositories} onAdd={() => setDialog('repository')} /> },
     { value: 'connectors', label: t('connectors'), content: <Connectors workspaceId={params.id} rows={connectors} onAdd={() => setDialog('connector')} onChanged={load} /> },
     { value: 'resources', label: t('resources'), content: <Resources workspaceId={params.id} values={resources} setValues={setResources} /> },
-  ], [bindings, capabilities, connectors, deployments, load, params.id, repositories, resources, workspace]);
+  ], [bindings, capabilities, connectors, accountModels, load, params.id, repositories, resources, workspace]);
 
   return <main className="space-y-6"><header className="flex flex-wrap items-end justify-between gap-4"><div><p className="mb-2 text-sm text-muted-foreground"><Link href="/admin" className="hover:text-link">{t('workspace')}</Link> / {params.id}</p><h1 className="page-title">{workspace?.name || t('workspace')}</h1><p className="page-subtitle mono">{workspace?.ingestion_topic}</p></div><Button size="icon" variant="outline" aria-label={tc('refresh')} title={tc('refresh')} onClick={() => void load()}><RefreshCw size={16} /></Button></header>{error && <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}<Tabs items={tabs} />
-    <BindingDialog open={dialog === 'binding'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} deployments={deployments} onCreated={load} />
+    <BindingDialog open={dialog === 'binding'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} accountModels={accountModels} onCreated={load} />
     <RepositoryDialog open={dialog === 'repository'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} onCreated={load} />
     <ConnectorDialog open={dialog === 'connector'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} kinds={kinds} onCreated={load} />
   </main>;
@@ -67,7 +71,7 @@ function Overview({ workspace, capabilities, policy, onPolicyChanged }: { worksp
   return <section className="space-y-5"><div className="grid gap-px overflow-hidden rounded-md border bg-border sm:grid-cols-3">{stats.map(([label, value]) => <div key={label} className="bg-card p-5"><p className="text-xs text-muted-foreground">{label}</p><strong className="mt-2 block text-2xl">{value}</strong></div>)}</div><div className="border-t pt-5"><h2 className="text-sm font-semibold">{t('investigationDepth')}</h2><div className="mt-3 max-w-sm"><Select value={policy?.profile || ''} onChange={(event) => void changeProfile(event.target.value as InvestigationPolicy['profile'])}><option value="fast">{t('fast')}</option><option value="balanced">{t('balanced')}</option><option value="deep">{t('deep')}</option></Select><p className="mt-2 text-xs text-muted-foreground">{t('depthHelp', { revision: policy?.revision || '-' })}</p></div></div><div className="border-t pt-5"><h2 className="text-sm font-semibold">{t('ingestion')}</h2><dl className="mt-3 grid gap-3 text-sm sm:grid-cols-3"><div><dt className="text-muted-foreground">{t('state')}</dt><dd>{workspace?.ingestion_state}</dd></div><div><dt className="text-muted-foreground">{t('version')}</dt><dd>{workspace?.ingestion_version}</dd></div><div><dt className="text-muted-foreground">{t('startPosition')}</dt><dd>{workspace?.ingestion_start_position || t('notStarted')}</dd></div></dl></div>{capabilities?.gaps.length ? <div className="border-t pt-5"><h2 className="text-sm font-semibold">{t('capabilityGaps')}</h2><div className="mt-2 flex flex-wrap gap-2">{capabilities.gaps.map((gap) => <span key={gap} className="rounded-sm bg-warning/10 px-2 py-1 text-xs text-warning-deep">{gap}</span>)}</div></div> : null}</section>;
 }
 
-function Models({ workspaceId, bindings, deployments, onAdd, onChanged }: { workspaceId: string; bindings: ModelBinding[]; deployments: ModelDeployment[]; onAdd: () => void; onChanged: () => Promise<void> }) {
+function Models({ workspaceId, bindings, accountModels, onAdd, onChanged }: { workspaceId: string; bindings: ModelBinding[]; accountModels: ProviderAccountModel[]; onAdd: () => void; onChanged: () => Promise<void> }) {
   const t = useTranslations('workspace');
   async function publish() {
     try {
@@ -81,7 +85,7 @@ function Models({ workspaceId, bindings, deployments, onAdd, onChanged }: { work
       await onChanged();
     } catch (cause) { toast.error(String(cause)); }
   }
-  return <section className="space-y-4"><div className="flex justify-between"><p className="text-sm text-muted-foreground">{t('policyHelp')}</p><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => void publish()} disabled={!bindings.length}>{t('publishPolicy')}</Button><Button size="sm" onClick={onAdd}><Plus size={15} />{t('addBinding')}</Button></div></div><div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('deployment')}</th><th>{t('roles')}</th><th>{t('classes')}</th><th>{t('budget')}</th><th>{t('revision')}</th></tr></thead><tbody>{bindings.map((row) => <tr key={row.id}><td>{deployments.find((item) => item.id === row.model_deployment_id)?.display_name || row.model_deployment_id}</td><td>{row.allowed_roles.join(', ')}</td><td>{row.execution_classes.join(', ')}</td><td>{t('callsTokens', { calls: row.max_calls, tokens: row.max_input_tokens.toLocaleString() })}</td><td>{row.revision}</td></tr>)}</tbody></table></div></div></section>;
+  return <section className="space-y-4"><div className="flex justify-between"><p className="text-sm text-muted-foreground">{t('policyHelp')}</p><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => void publish()} disabled={!bindings.length}>{t('publishPolicy')}</Button><Button size="sm" onClick={onAdd}><Plus size={15} />{t('addBinding')}</Button></div></div><div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('accountModel')}</th><th>{t('roles')}</th><th>{t('classes')}</th><th>{t('budget')}</th><th>{t('revision')}</th></tr></thead><tbody>{bindings.map((row) => <tr key={row.id}><td>{accountModels.find((item) => item.id === row.provider_account_model_id)?.display_name || row.provider_account_model_id}</td><td>{row.allowed_roles.join(', ')}</td><td>{row.execution_classes.join(', ')}</td><td>{t('calls', { calls: row.max_calls })}</td><td>{row.revision}</td></tr>)}</tbody></table></div></div></section>;
 }
 
 function Repositories({ rows, onAdd }: { rows: RepositoryBinding[]; onAdd: () => void }) {
@@ -104,12 +108,12 @@ function Resources({ workspaceId, values, setValues }: { workspaceId: string; va
   return <section><div className="flex flex-wrap gap-1">{resourceViews.map((value) => <Button key={value} size="sm" variant={selected === value ? 'default' : 'ghost'} onClick={() => void load(value)}>{value}</Button>)}</div><pre className="mt-4 max-h-[520px] overflow-auto rounded-md border bg-card p-4 text-xs">{JSON.stringify(values[selected] || [], null, 2)}</pre></section>;
 }
 
-function BindingDialog({ open, onOpenChange, workspaceId, deployments, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; deployments: ModelDeployment[]; onCreated: () => Promise<void> }) {
+function BindingDialog({ open, onOpenChange, workspaceId, accountModels, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; accountModels: ProviderAccountModel[]; onCreated: () => Promise<void> }) {
   const t = useTranslations('workspace');
   const tc = useTranslations('common');
-  const [deployment, setDeployment] = useState(''); const [selectedRoles, setRoles] = useState<string[]>(roles);
-  async function create() { try { await createModelBinding(workspaceId, { model_deployment_id: Number(deployment), execution_classes: ['latency_optimized', 'reasoning_optimized'], allowed_roles: selectedRoles, priority: 0, max_calls: 16, max_input_tokens: 64000, max_output_tokens: 4096, max_cost_per_call: 5, timeout_ms: 60000, allowed_data_classes: ['masked_operational', 'source_code'], max_context_utilization: 0.8 }); onOpenChange(false); await onCreated(); } catch (cause) { toast.error(String(cause)); } }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>{t('addModelBinding')}</DialogTitle></DialogHeader><Select value={deployment} onChange={(e) => setDeployment(e.target.value)}><option value="">{t('selectDeployment')}</option>{deployments.filter((row) => row.state === 'active').map((row) => <option key={row.id} value={row.id}>{row.display_name}</option>)}</Select><fieldset className="grid gap-2 sm:grid-cols-2"><legend className="mb-2 text-sm font-medium">{t('allowedRoles')}</legend>{roles.map((role) => <label key={role} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selectedRoles.includes(role)} onChange={(e) => setRoles((current) => e.target.checked ? [...current, role] : current.filter((item) => item !== role))} />{role}</label>)}</fieldset><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" disabled={!deployment || !selectedRoles.length} onClick={() => void create()}>{t('create')}</Button></DialogFooter></DialogContent></Dialog>;
+  const [accountModel, setAccountModel] = useState(''); const [selectedRoles, setRoles] = useState<string[]>(roles);
+  async function create() { try { await createModelBinding(workspaceId, { provider_account_model_id: Number(accountModel), execution_classes: ['latency_optimized', 'reasoning_optimized'], allowed_roles: selectedRoles, priority: 0, max_calls: 16, max_cost_per_call: 5, timeout_ms: 60000, allowed_data_classes: ['masked_operational', 'source_code'], max_context_utilization: 0.8 }); onOpenChange(false); await onCreated(); } catch (cause) { toast.error(String(cause)); } }
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>{t('addModelBinding')}</DialogTitle></DialogHeader><Select value={accountModel} onChange={(e) => setAccountModel(e.target.value)}><option value="">{t('selectAccountModel')}</option>{accountModels.filter((row) => row.state === 'active').map((row) => <option key={row.id} value={row.id}>{row.display_name}</option>)}</Select><fieldset className="grid gap-2 sm:grid-cols-2"><legend className="mb-2 text-sm font-medium">{t('allowedRoles')}</legend>{roles.map((role) => <label key={role} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selectedRoles.includes(role)} onChange={(e) => setRoles((current) => e.target.checked ? [...current, role] : current.filter((item) => item !== role))} />{role}</label>)}</fieldset><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" disabled={!accountModel || !selectedRoles.length} onClick={() => void create()}>{t('create')}</Button></DialogFooter></DialogContent></Dialog>;
 }
 
 function RepositoryDialog({ open, onOpenChange, workspaceId, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; onCreated: () => Promise<void> }) {

@@ -159,7 +159,7 @@ class AuditedInvestigationReporter:
                         contradiction_count=max(1, limits["contradiction_count"]),
                         causal_depth=limits["causal_depth"],
                         conclusion_risk="high",
-                        prior_synthesizer_deployment_id=synthesizer_row.model_deployment_id,
+                        prior_synthesizer_account_model_id=synthesizer_row.provider_account_model_id,
                         prior_synthesizer_provider_id=synthesizer_row.provider_account_id,
                     ),
                     state_packet=verification_state,
@@ -173,8 +173,8 @@ class AuditedInvestigationReporter:
                     schema_revision="investigation-verification.v1",
                     remaining_calls=max(0, limits["remaining_calls"] - 1),
                     remaining_cost=limits["remaining_cost"],
-                    verifier_separate_deployment=bool(
-                        verifier_policy.get("separate_deployment", False)
+                    verifier_separate_account_model=bool(
+                        verifier_policy.get("separate_account_model", False)
                     ),
                     verifier_separate_provider=bool(
                         verifier_policy.get("separate_provider", False)

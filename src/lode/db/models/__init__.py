@@ -45,7 +45,7 @@ from lode.db.models.investigation import (
 from lode.db.models.model_portfolio import (
     AIProviderAccount,
     ContextPolicyRevision,
-    ModelDeployment,
+    ProviderAccountModel,
     ModelPolicyRevision,
     ProviderModelObservation,
     WorkspaceModelBinding,
@@ -129,7 +129,7 @@ __all__ = [
     "InvestigationResourceGraphSnapshot",
     "InvestigationStep",
     "InvestigationPolicyRevision",
-    "ModelDeployment",
+    "ProviderAccountModel",
     "ModelPolicyRevision",
     "ModelRoutingDecision",
     "PlatformSettings",

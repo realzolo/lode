@@ -27,7 +27,7 @@ class ModelSelectionPolicyEngine:
         *,
         remaining_calls: int,
         remaining_cost: float,
-        verifier_separate_deployment: bool = False,
+        verifier_separate_account_model: bool = False,
         verifier_separate_provider: bool = False,
     ) -> SelectedModelRoute:
         required_class = self.required_execution_class(task)
@@ -40,16 +40,16 @@ class ModelSelectionPolicyEngine:
                 required_class=required_class,
                 remaining_calls=remaining_calls,
                 remaining_cost=remaining_cost,
-                verifier_separate_deployment=verifier_separate_deployment,
+                verifier_separate_account_model=verifier_separate_account_model,
                 verifier_separate_provider=verifier_separate_provider,
             )
             allowed_output = min(candidate.max_output_tokens, task.reserved_output_tokens)
             allowed_input = int(
                 min(
-                    candidate.max_input_tokens
+                    candidate.context_window_tokens
                     - allowed_output
-                    - task.provider_safety_margin_tokens,
-                    candidate.max_input_tokens * candidate.max_context_utilization,
+                    - candidate.provider_safety_margin_tokens,
+                    candidate.context_window_tokens * candidate.max_context_utilization,
                 )
             )
             if code is None and task.required_context_tokens > allowed_input:
@@ -116,7 +116,7 @@ class ModelSelectionPolicyEngine:
         required_class: ExecutionClass,
         remaining_calls: int,
         remaining_cost: float,
-        verifier_separate_deployment: bool,
+        verifier_separate_account_model: bool,
         verifier_separate_provider: bool,
     ) -> str | None:
         if candidate.health_status != "healthy":
@@ -135,10 +135,10 @@ class ModelSelectionPolicyEngine:
             return "model_cost_budget_exceeded"
         if (
             task.role is ModelRole.VERIFIER
-            and verifier_separate_deployment
-            and candidate.model_deployment_id == task.prior_synthesizer_deployment_id
+            and verifier_separate_account_model
+            and candidate.provider_account_model_id == task.prior_synthesizer_account_model_id
         ):
-            return "verifier_deployment_not_independent"
+            return "verifier_account_model_not_independent"
         if (
             task.role is ModelRole.VERIFIER
             and verifier_separate_provider

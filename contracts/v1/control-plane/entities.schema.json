@@ -49,35 +49,28 @@
     "aiProviderAccount": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "provider_kind", "base_url", "state", "verification_status", "rate_limit_policy", "cost_policy", "data_processing_policy_revision", "data_residency", "retention_mode", "revision"],
+      "required": ["id", "name", "provider_kind", "base_url", "state", "verification_status", "revision"],
       "properties": {
         "id": {"type": "integer", "minimum": 1},
         "name": {"type": "string", "minLength": 1},
-        "provider_kind": {"type": "string", "minLength": 1},
+        "provider_kind": {"type": "string", "const": "openai_compatible"},
         "base_url": {"type": "string", "minLength": 1},
         "state": {"type": "string", "enum": ["active", "disabled"]},
         "verification_status": {"type": "string", "enum": ["untested", "healthy", "unavailable"]},
-        "rate_limit_policy": {"type": "object"},
-        "cost_policy": {"type": "object"},
-        "data_processing_policy_revision": {"type": "string", "minLength": 1},
-        "data_residency": {"type": "string", "minLength": 1},
-        "retention_mode": {"type": "string", "minLength": 1},
         "revision": {"type": "integer", "minimum": 1}
       }
     },
-    "modelDeployment": {
+    "providerAccountModel": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "provider_account_id", "provider_model_id", "display_name", "capabilities", "max_input_tokens", "max_output_tokens", "tokenizer_id", "availability_state", "state", "revision"],
+      "required": ["id", "provider_account_id", "provider_model_id", "display_name", "capabilities", "discovery_state", "availability_state", "state", "revision"],
       "properties": {
         "id": {"type": "integer", "minimum": 1},
         "provider_account_id": {"type": "integer", "minimum": 1},
         "provider_model_id": {"type": "string", "minLength": 1},
         "display_name": {"type": "string", "minLength": 1},
         "capabilities": {"type": "object"},
-        "max_input_tokens": {"type": "integer", "minimum": 1},
-        "max_output_tokens": {"type": "integer", "minimum": 1},
-        "tokenizer_id": {"type": "string", "minLength": 1},
+        "discovery_state": {"type": "string", "enum": ["synced", "manual", "missing"]},
         "availability_state": {"type": "string", "enum": ["untested", "healthy", "unavailable"]},
         "state": {"type": "string", "enum": ["active", "disabled"]},
         "revision": {"type": "integer", "minimum": 1}
@@ -86,17 +79,15 @@
     "workspaceModelBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "workspace_id", "model_deployment_id", "execution_classes", "allowed_roles", "priority", "max_calls", "max_input_tokens", "max_output_tokens", "max_cost_per_call", "timeout_ms", "allowed_data_classes", "max_context_utilization", "state", "revision"],
+      "required": ["id", "workspace_id", "provider_account_model_id", "execution_classes", "allowed_roles", "priority", "max_calls", "max_cost_per_call", "timeout_ms", "allowed_data_classes", "max_context_utilization", "state", "revision"],
       "properties": {
         "id": {"type": "integer", "minimum": 1},
         "workspace_id": {"type": "integer", "minimum": 1},
-        "model_deployment_id": {"type": "integer", "minimum": 1},
+        "provider_account_model_id": {"type": "integer", "minimum": 1},
         "execution_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["latency_optimized", "reasoning_optimized"]}},
         "allowed_roles": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["planner", "native_query", "synthesizer", "verifier", "context_compactor"]}},
         "priority": {"type": "integer", "minimum": 0},
         "max_calls": {"type": "integer", "minimum": 1},
-        "max_input_tokens": {"type": "integer", "minimum": 1},
-        "max_output_tokens": {"type": "integer", "minimum": 1},
         "max_cost_per_call": {"type": "number", "minimum": 0},
         "timeout_ms": {"type": "integer", "minimum": 1},
         "allowed_data_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
