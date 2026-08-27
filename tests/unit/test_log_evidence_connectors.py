@@ -355,7 +355,6 @@ def test_provider_json_and_registry_are_strict_and_product_neutral() -> None:
 
     registry = build_native_policy_registry()
     assert set(registry.capabilities) == {
-        "command",
         "logql",
         "elasticsearch_query_dsl",
         "https",
@@ -363,7 +362,6 @@ def test_provider_json_and_registry_are_strict_and_product_neutral() -> None:
         "sql",
     }
     assert set(native_connector_capabilities()) == {
-        "command_runner",
         "elasticsearch",
         "https",
         "loki",

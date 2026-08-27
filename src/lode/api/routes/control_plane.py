@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hashlib
+import hmac
 import json
+import secrets
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 
 from aiokafka.admin import AIOKafkaAdminClient
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,11 +22,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lode.api.control_schemas import (
     ConnectorCreate,
     ConnectorOut,
-    ConnectorPatch,
+    GitAccountConnectionOut,
+    GitAccountManualCreate,
+    GitAccountRepositoryOut,
+    GitHubAppConnectionCreate,
+    GitOAuthStart,
+    GitOAuthStartOut,
+    GitProviderInstanceCreate,
+    GitProviderInstanceOut,
+    GitProviderInstancePatch,
     IngestionStart,
     InvestigationPolicyOut,
     InvestigationPolicyPut,
-    LocalRepositoryCreate,
     ModelBindingInput,
     ModelBindingOut,
     ModelBindingPatch,
@@ -38,20 +52,27 @@ from lode.api.control_schemas import (
     RepositoryBindingOut,
     RepositoryBindingPatch,
     WorkspaceCreate,
+    WorkspaceGitAccountGrantCreate,
+    WorkspaceGitAccountGrantOut,
+    WorkspaceRepositoryCandidateOut,
     WorkspaceOut,
 )
 from lode.api.deps import assert_workspace_permission, require_admin, require_user
 from lode.ai_output import SUPPORTED_AI_OUTPUT_LANGUAGES
 from lode.application.investigation_policy import investigation_policy_columns
 from lode.config import kafka_security_kwargs, settings
-from lode.crypto import decrypt_secret, encrypt_secret
+from lode.crypto import CryptoError, decrypt_secret, encrypt_secret
 from lode.db.models import (
     AIProviderAccount,
     AuditEvent,
     ContextPolicyRevision,
     EvidenceAccessScope,
     EvidenceConnector,
-    GitCredential,
+    GitAccountConnection,
+    GitAccountCredentialRevision,
+    GitAccountRepositoryAccess,
+    GitAccountSyncJob,
+    GitProviderInstance,
     GitRepository,
     Investigation,
     InvestigationPolicyRevision,
@@ -62,6 +83,8 @@ from lode.db.models import (
     ProviderModelObservation,
     User,
     Workspace,
+    WorkspaceGitAccountGrant,
+    WorkspaceGitRepositoryEntitlement,
     WorkspaceModelBinding,
     WorkspacePermission,
     WorkspaceRepositoryBinding,
@@ -74,7 +97,21 @@ from lode.evidence_connectors.registry import (
     native_connector_capabilities,
 )
 from lode.evidence_connectors.types import IntrospectionBudget, ProviderExecutionError
-from lode.infrastructure.git_source import validate_git_remote
+from lode.git_accounts import (
+    GitAccountSecret,
+    credential_identity_hash as git_credential_identity_hash,
+    encode_credential_secret,
+)
+from lode.git_accounts.providers import (
+    GitProviderError,
+    authenticate_access_token,
+    default_provider_urls,
+    github_app_installation_token,
+    list_repositories as list_provider_repositories,
+    exchange_oauth_code,
+    oauth_authorization_url,
+    validate_git_provider_url,
+)
 from lode.infrastructure.provider_http import (
     provider_endpoint,
     provider_request,
@@ -1273,13 +1310,21 @@ async def workspace_capabilities(
     }
 
 
-def _repository_out(binding: WorkspaceRepositoryBinding, repository: GitRepository):
+def _repository_out(
+    binding: WorkspaceRepositoryBinding,
+    repository: GitRepository,
+    provider: GitProviderInstance,
+):
     return RepositoryBindingOut(
         id=binding.id,
         workspace_id=binding.workspace_id,
         repository_id=repository.id,
+        repository_entitlement_id=binding.repository_entitlement_id,
+        provider_kind=provider.kind,
         name=repository.name,
+        full_name=repository.full_name,
         repo_url=repository.repo_url,
+        web_url=repository.web_url,
         repo_type=repository.repo_type,
         default_branch=repository.default_branch,
         role=binding.role,
@@ -1288,6 +1333,697 @@ def _repository_out(binding: WorkspaceRepositoryBinding, repository: GitReposito
         state=binding.state,
         revision=binding.revision,
     )
+
+
+def _git_provider_out(row: GitProviderInstance) -> GitProviderInstanceOut:
+    if "github_app_id" in row.config:
+        native_auth_kind: str | None = "github_app"
+    elif "oauth_client_id" in row.config:
+        native_auth_kind = "oauth"
+    else:
+        native_auth_kind = None
+    return GitProviderInstanceOut(
+        id=row.id,
+        kind=row.kind,
+        name=row.name,
+        base_url=row.base_url,
+        api_url=row.api_url,
+        state=row.state,
+        verification_status=row.verification_status,
+        verified_at=row.verified_at,
+        last_error=row.last_error,
+        native_auth_available=native_auth_kind is not None,
+        native_auth_kind=native_auth_kind,
+        revision=row.revision,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def _git_account_out(
+    session: AsyncSession, row: GitAccountConnection, provider: GitProviderInstance
+) -> GitAccountConnectionOut:
+    repository_count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(GitAccountRepositoryAccess)
+            .where(
+                GitAccountRepositoryAccess.account_connection_id == row.id,
+                GitAccountRepositoryAccess.state == "available",
+            )
+        )
+        or 0
+    )
+    return GitAccountConnectionOut(
+        id=row.id,
+        provider_instance_id=provider.id,
+        provider_kind=provider.kind,
+        provider_name=provider.name,
+        name=row.name,
+        auth_mode=row.auth_mode,
+        external_account_id=row.external_account_id,
+        external_account_login=row.external_account_login,
+        account_url=row.account_url,
+        state=row.state,
+        verification_status=row.verification_status,
+        verified_at=row.verified_at,
+        last_synced_at=row.last_synced_at,
+        last_error=row.last_error,
+        repository_count=repository_count,
+        revision=row.revision,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _provider_secret(value: str | None) -> dict[str, str]:
+    try:
+        plaintext = decrypt_secret(value)
+        parsed = json.loads(plaintext or "{}")
+    except (CryptoError, ValueError, TypeError) as exc:
+        raise ValueError("Git provider credential is unavailable") from exc
+    if not isinstance(parsed, dict) or any(
+        not isinstance(key, str) or not isinstance(item, str) or not item
+        for key, item in parsed.items()
+    ):
+        raise ValueError("Git provider credential is invalid")
+    return parsed
+
+
+def _oauth_state(*, provider_id: int, user_id: int, name: str) -> str:
+    payload = {
+        "provider_id": provider_id,
+        "user_id": user_id,
+        "name": name,
+        "nonce": secrets.token_urlsafe(24),
+        "expires_at": int(datetime.now(UTC).timestamp()) + 600,
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).rstrip(b"=")
+    signature = hmac.new(
+        settings.credential_identity_key.encode(), encoded, hashlib.sha256
+    ).digest()
+    return f"{encoded.decode()}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
+def _parse_oauth_state(value: str) -> dict[str, object]:
+    try:
+        encoded, signature = value.split(".", 1)
+        expected = hmac.new(
+            settings.credential_identity_key.encode(), encoded.encode(), hashlib.sha256
+        ).digest()
+        supplied = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+        payload = json.loads(
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        )
+    except (ValueError, TypeError, json.JSONDecodeError, binascii.Error) as exc:
+        raise ValueError("OAuth state is invalid") from exc
+    if not hmac.compare_digest(expected, supplied):
+        raise ValueError("OAuth state signature is invalid")
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("provider_id"), int)
+        or not isinstance(payload.get("user_id"), int)
+        or not isinstance(payload.get("name"), str)
+        or not payload["name"].strip()
+        or not isinstance(payload.get("nonce"), str)
+        or not isinstance(payload.get("expires_at"), int)
+        or payload["expires_at"] < int(datetime.now(UTC).timestamp())
+    ):
+        raise ValueError("OAuth state is expired or invalid")
+    return payload
+
+
+async def _append_account_credential(
+    session: AsyncSession,
+    account: GitAccountConnection,
+    *,
+    username: str,
+    token: str,
+    expires_at: datetime | None,
+) -> GitAccountCredentialRevision:
+    latest_revision = int(
+        await session.scalar(
+            select(func.coalesce(func.max(GitAccountCredentialRevision.revision), 0)).where(
+                GitAccountCredentialRevision.account_connection_id == account.id
+            )
+        )
+        or 0
+    )
+    secret = GitAccountSecret(username=username, token=token)
+    row = GitAccountCredentialRevision(
+        account_connection_id=account.id,
+        revision=latest_revision + 1,
+        secret_ciphertext=encrypt_secret(encode_credential_secret(secret)) or "",
+        credential_identity_hash=git_credential_identity_hash(secret),
+        expires_at=expires_at,
+    )
+    session.add(row)
+    await session.flush()
+    account.current_credential_revision_id = row.id
+    account.revision += 1
+    return row
+
+
+async def _refresh_github_app_credential(
+    session: AsyncSession, provider: GitProviderInstance, account: GitAccountConnection
+) -> None:
+    try:
+        secret = _provider_secret(provider.secret_ciphertext)
+        app_id = provider.config["github_app_id"]
+        installation_id = account.sync_cursor["github_installation_id"]
+        if not isinstance(app_id, str) or not isinstance(installation_id, str):
+            raise ValueError("GitHub App configuration is invalid")
+        _, token, expires_at = await github_app_installation_token(
+            api_url=provider.api_url,
+            app_id=app_id,
+            private_key_pem=secret["github_app_private_key"],
+            installation_id=installation_id,
+        )
+    except (KeyError, ValueError, GitProviderError) as exc:
+        raise ValueError("GitHub App credential cannot be refreshed") from exc
+    await _append_account_credential(
+        session,
+        account,
+        username="x-access-token",
+        token=token,
+        expires_at=expires_at,
+    )
+
+
+async def _account_secret(
+    session: AsyncSession, account: GitAccountConnection
+) -> GitAccountSecret:
+    if account.current_credential_revision_id is None:
+        raise ValueError("Git account credential is unavailable")
+    revision = await session.get(
+        GitAccountCredentialRevision, account.current_credential_revision_id
+    )
+    if revision is None or revision.account_connection_id != account.id:
+        raise ValueError("Git account credential is unavailable")
+    try:
+        from lode.git_accounts import decode_credential_secret
+
+        secret = decode_credential_secret(decrypt_secret(revision.secret_ciphertext) or "")
+    except (CryptoError, ValueError, TypeError) as exc:
+        raise ValueError("Git account credential is unavailable") from exc
+    if git_credential_identity_hash(secret) != revision.credential_identity_hash:
+        raise ValueError("Git account credential identity is invalid")
+    return secret
+
+
+async def _ensure_all_visible_entitlements(
+    session: AsyncSession,
+    account_connection_id: int,
+    repository_ids: set[int],
+) -> None:
+    if not repository_ids:
+        return
+    grants = tuple(
+        (
+            await session.execute(
+                select(WorkspaceGitAccountGrant).where(
+                    WorkspaceGitAccountGrant.account_connection_id == account_connection_id,
+                    WorkspaceGitAccountGrant.repository_scope == "all_visible",
+                    WorkspaceGitAccountGrant.state == "active",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for grant in grants:
+        existing = set(
+            (
+                await session.execute(
+                    select(WorkspaceGitRepositoryEntitlement.repository_id).where(
+                        WorkspaceGitRepositoryEntitlement.grant_id == grant.id,
+                        WorkspaceGitRepositoryEntitlement.repository_id.in_(repository_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for repository_id in repository_ids - existing:
+            session.add(
+                WorkspaceGitRepositoryEntitlement(
+                    workspace_id=grant.workspace_id,
+                    grant_id=grant.id,
+                    repository_id=repository_id,
+                    state="active",
+                    revision=1,
+                )
+            )
+
+
+async def _sync_git_account(
+    session: AsyncSession, provider: GitProviderInstance, account: GitAccountConnection
+) -> GitAccountSyncJob:
+    job = GitAccountSyncJob(account_connection_id=account.id, state="running", attempt=1)
+    session.add(job)
+    await session.flush()
+    try:
+        if account.auth_mode == "github_app":
+            await _refresh_github_app_credential(session, provider, account)
+        secret = await _account_secret(session, account)
+        catalogue = await list_provider_repositories(
+            kind=provider.kind,
+            api_url=provider.api_url,
+            token=secret.token,
+            auth_mode=account.auth_mode,
+        )
+        visible_ids: set[int] = set()
+        now = datetime.now(UTC)
+        for item in catalogue:
+            repository = (
+                await session.execute(
+                    select(GitRepository).where(
+                        GitRepository.provider_instance_id == provider.id,
+                        GitRepository.external_repository_id == item.external_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if repository is None:
+                repository = GitRepository(
+                    provider_instance_id=provider.id,
+                    external_repository_id=item.external_id,
+                    name=item.name,
+                    full_name=item.full_name,
+                    repo_url=item.clone_url,
+                    web_url=item.web_url,
+                    repo_type="git",
+                    default_branch=item.default_branch,
+                    visibility=item.visibility,
+                    archived=item.archived,
+                    pushed_at=item.pushed_at,
+                )
+                session.add(repository)
+                await session.flush()
+            else:
+                repository.name = item.name
+                repository.full_name = item.full_name
+                repository.repo_url = item.clone_url
+                repository.web_url = item.web_url
+                repository.default_branch = item.default_branch
+                repository.visibility = item.visibility
+                repository.archived = item.archived
+                repository.pushed_at = item.pushed_at
+            visible_ids.add(repository.id)
+            access = await session.get(GitAccountRepositoryAccess, (account.id, repository.id))
+            if access is None:
+                access = GitAccountRepositoryAccess(
+                    account_connection_id=account.id,
+                    repository_id=repository.id,
+                    access_level="read",
+                    state="available",
+                    last_seen_at=now,
+                )
+                session.add(access)
+            else:
+                access.state = "available"
+                access.last_seen_at = now
+        prior_access = tuple(
+            (
+                await session.execute(
+                    select(GitAccountRepositoryAccess).where(
+                        GitAccountRepositoryAccess.account_connection_id == account.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for access in prior_access:
+            if access.repository_id not in visible_ids:
+                access.state = "lost"
+        await _ensure_all_visible_entitlements(session, account.id, visible_ids)
+        account.verification_status = "healthy"
+        account.verified_at = now
+        account.last_synced_at = now
+        account.last_error = None
+        account.revision += 1
+        job.state = "succeeded"
+        job.finished_at = now
+    except (GitProviderError, ValueError) as exc:
+        account.verification_status = "unavailable"
+        account.last_error = exc.code if isinstance(exc, GitProviderError) else type(exc).__name__
+        account.revision += 1
+        job.state = "failed"
+        job.failure_code = account.last_error
+        job.finished_at = datetime.now(UTC)
+    return job
+
+
+@router.get("/git-provider-instances", response_model=list[GitProviderInstanceOut])
+async def list_git_provider_instances(
+    _: int = Depends(require_admin), session: AsyncSession = Depends(get_session)
+):
+    rows = (
+        await session.execute(select(GitProviderInstance).order_by(GitProviderInstance.name))
+    ).scalars()
+    return [_git_provider_out(row) for row in rows]
+
+
+@router.post("/git-provider-instances", response_model=GitProviderInstanceOut, status_code=201)
+async def create_git_provider_instance(
+    payload: GitProviderInstanceCreate,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    default_base_url, default_api_url = default_provider_urls(payload.kind)
+    try:
+        base_url = validate_git_provider_url(payload.base_url or default_base_url)
+        api_url = validate_git_provider_url(payload.api_url or default_api_url)
+        config: dict[str, str] = {}
+        secrets: dict[str, str] = {}
+        if payload.kind == "github" and payload.github_app_id:
+            config["github_app_id"] = payload.github_app_id
+            secrets["github_app_private_key"] = payload.github_app_private_key or ""
+        elif payload.kind in {"gitlab", "gitee"} and payload.oauth_client_id:
+            config["oauth_client_id"] = payload.oauth_client_id
+            config["oauth_redirect_uri"] = validate_git_provider_url(payload.oauth_redirect_uri or "")
+            secrets["oauth_client_secret"] = payload.oauth_client_secret or ""
+    except ValueError as exc:
+        raise _error(422, "git_provider_configuration_invalid", str(exc)) from exc
+    row = GitProviderInstance(
+        kind=payload.kind,
+        name=payload.name,
+        base_url=base_url,
+        api_url=api_url,
+        config=config,
+        secret_ciphertext=encrypt_secret(json.dumps(secrets, separators=(",", ":"), sort_keys=True))
+        or "",
+        state="active",
+    )
+    session.add(row)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise _error(409, "git_provider_instance_conflict", "Git provider name or URL is already used.") from exc
+    session.add(_audit(user, "git_provider_instance.create", "git_provider_instance", row.id))
+    await session.commit()
+    await session.refresh(row)
+    return _git_provider_out(row)
+
+
+@router.patch("/git-provider-instances/{provider_id}", response_model=GitProviderInstanceOut)
+async def patch_git_provider_instance(
+    provider_id: int,
+    payload: GitProviderInstancePatch,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    row = await session.get(GitProviderInstance, provider_id)
+    if row is None:
+        raise _error(404, "git_provider_instance_not_found", "Git provider instance was not found.")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(row, key, value)
+    row.revision += 1
+    session.add(_audit(user, "git_provider_instance.update", "git_provider_instance", row.id))
+    await session.commit()
+    await session.refresh(row)
+    return _git_provider_out(row)
+
+
+@router.get("/git-account-connections", response_model=list[GitAccountConnectionOut])
+async def list_git_account_connections(
+    _: int = Depends(require_admin), session: AsyncSession = Depends(get_session)
+):
+    rows = tuple(
+        (
+            await session.execute(
+                select(GitAccountConnection, GitProviderInstance)
+                .join(GitProviderInstance, GitProviderInstance.id == GitAccountConnection.provider_instance_id)
+                .order_by(GitProviderInstance.name, GitAccountConnection.name)
+            )
+        ).all()
+    )
+    return [await _git_account_out(session, account, provider) for account, provider in rows]
+
+
+@router.get(
+    "/git-account-connections/{connection_id}/repositories",
+    response_model=list[GitAccountRepositoryOut],
+)
+async def list_git_account_repositories(
+    connection_id: int,
+    _: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    rows = tuple(
+        (
+            await session.execute(
+                select(GitRepository, GitProviderInstance)
+                .join(
+                    GitAccountRepositoryAccess,
+                    GitAccountRepositoryAccess.repository_id == GitRepository.id,
+                )
+                .join(GitProviderInstance, GitProviderInstance.id == GitRepository.provider_instance_id)
+                .where(
+                    GitAccountRepositoryAccess.account_connection_id == connection_id,
+                    GitAccountRepositoryAccess.state == "available",
+                )
+                .order_by(GitRepository.full_name)
+            )
+        ).all()
+    )
+    return [
+        GitAccountRepositoryOut(
+            repository_id=repository.id,
+            provider_kind=provider.kind,
+            full_name=repository.full_name,
+            repo_url=repository.repo_url,
+            web_url=repository.web_url,
+            default_branch=repository.default_branch,
+            visibility=repository.visibility,
+            archived=repository.archived,
+        )
+        for repository, provider in rows
+    ]
+
+
+async def _create_git_account_connection(
+    session: AsyncSession,
+    *,
+    user: User,
+    provider: GitProviderInstance,
+    name: str,
+    auth_mode: str,
+    profile_id: str,
+    profile_login: str,
+    profile_url: str,
+    username: str,
+    token: str,
+    expires_at: datetime | None = None,
+    sync_cursor: dict[str, str] | None = None,
+) -> GitAccountConnectionOut:
+    account = GitAccountConnection(
+        provider_instance_id=provider.id,
+        name=name,
+        auth_mode=auth_mode,
+        external_account_id=profile_id,
+        external_account_login=profile_login,
+        account_url=profile_url,
+        state="active",
+        verification_status="healthy",
+        verified_at=datetime.now(UTC),
+        sync_cursor=sync_cursor or {},
+    )
+    session.add(account)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise _error(409, "git_account_connection_conflict", "Git account connection already exists.") from exc
+    await _append_account_credential(
+        session, account, username=username, token=token, expires_at=expires_at
+    )
+    job = await _sync_git_account(session, provider, account)
+    if job.state != "succeeded":
+        await session.rollback()
+        raise _error(502, "git_repository_sync_failed", "Git account verification or repository sync failed.")
+    session.add(_audit(user, "git_account_connection.create", "git_account_connection", account.id))
+    await session.commit()
+    await session.refresh(account)
+    return await _git_account_out(session, account, provider)
+
+
+@router.post("/git-account-connections/access-token", response_model=GitAccountConnectionOut, status_code=201)
+async def create_git_account_access_token(
+    payload: GitAccountManualCreate,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    provider = await session.get(GitProviderInstance, payload.provider_instance_id)
+    if provider is None or provider.state != "active":
+        raise _error(404, "git_provider_instance_not_found", "An active Git provider is required.")
+    try:
+        profile = await authenticate_access_token(
+            kind=provider.kind, api_url=provider.api_url, token=payload.access_token
+        )
+    except GitProviderError as exc:
+        raise _error(422, exc.code, "Git account credential verification failed.") from exc
+    username = "oauth2" if provider.kind in {"gitlab", "gitee"} else "x-access-token"
+    return await _create_git_account_connection(
+        session,
+        user=user,
+        provider=provider,
+        name=payload.name,
+        auth_mode="access_token",
+        profile_id=profile.external_id,
+        profile_login=profile.login,
+        profile_url=profile.account_url,
+        username=username,
+        token=payload.access_token,
+    )
+
+
+@router.post("/git-account-connections/github-app", response_model=GitAccountConnectionOut, status_code=201)
+async def create_github_app_connection(
+    payload: GitHubAppConnectionCreate,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    provider = await session.get(GitProviderInstance, payload.provider_instance_id)
+    if provider is None or provider.kind != "github" or provider.state != "active":
+        raise _error(404, "github_provider_not_found", "An active GitHub provider is required.")
+    try:
+        secret = _provider_secret(provider.secret_ciphertext)
+        app_id = provider.config["github_app_id"]
+        profile, token, expires_at = await github_app_installation_token(
+            api_url=provider.api_url,
+            app_id=app_id,
+            private_key_pem=secret["github_app_private_key"],
+            installation_id=payload.installation_id,
+        )
+    except (KeyError, ValueError, GitProviderError) as exc:
+        raise _error(422, "github_app_configuration_invalid", "GitHub App verification failed.") from exc
+    return await _create_git_account_connection(
+        session,
+        user=user,
+        provider=provider,
+        name=payload.name,
+        auth_mode="github_app",
+        profile_id=profile.external_id,
+        profile_login=profile.login,
+        profile_url=profile.account_url,
+        username="x-access-token",
+        token=token,
+        expires_at=expires_at,
+        sync_cursor={"github_installation_id": payload.installation_id},
+    )
+
+
+@router.post(
+    "/git-provider-instances/{provider_id}/oauth/start", response_model=GitOAuthStartOut
+)
+async def start_git_oauth_connection(
+    provider_id: int,
+    payload: GitOAuthStart,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    provider = await session.get(GitProviderInstance, provider_id)
+    if provider is None or provider.kind not in {"gitlab", "gitee"} or provider.state != "active":
+        raise _error(404, "git_oauth_provider_not_found", "An active OAuth Git provider is required.")
+    try:
+        client_id = provider.config["oauth_client_id"]
+        redirect_uri = provider.config["oauth_redirect_uri"]
+        if not isinstance(client_id, str) or not isinstance(redirect_uri, str):
+            raise ValueError("OAuth configuration is invalid")
+        authorization_url = oauth_authorization_url(
+            kind=provider.kind,
+            base_url=provider.base_url,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=_oauth_state(provider_id=provider.id, user_id=user.id, name=payload.name),
+        )
+    except ValueError as exc:
+        raise _error(422, "git_oauth_configuration_invalid", str(exc)) from exc
+    return GitOAuthStartOut(authorization_url=authorization_url)
+
+
+@router.get("/git-account-connections/oauth/callback")
+async def finish_git_oauth_connection(
+    code: str = Query(min_length=1, max_length=8_000),
+    state: str = Query(min_length=1, max_length=8_000),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        claims = _parse_oauth_state(state)
+        provider = await session.get(GitProviderInstance, claims["provider_id"])
+        user = await _active_user(session, claims["user_id"])
+        if provider is None or provider.kind not in {"gitlab", "gitee"} or provider.state != "active":
+            raise ValueError("OAuth provider is no longer available")
+        config = provider.config
+        secret = _provider_secret(provider.secret_ciphertext)
+        client_id = config["oauth_client_id"]
+        redirect_uri = config["oauth_redirect_uri"]
+        client_secret = secret["oauth_client_secret"]
+        if not all(isinstance(value, str) and value for value in (client_id, redirect_uri, client_secret)):
+            raise ValueError("OAuth configuration is invalid")
+        token = await exchange_oauth_code(
+            kind=provider.kind,
+            base_url=provider.base_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            code=code,
+        )
+        profile = await authenticate_access_token(
+            kind=provider.kind, api_url=provider.api_url, token=token
+        )
+        await _create_git_account_connection(
+            session,
+            user=user,
+            provider=provider,
+            name=claims["name"],
+            auth_mode="oauth",
+            profile_id=profile.external_id,
+            profile_login=profile.login,
+            profile_url=profile.account_url,
+            username="oauth2",
+            token=token,
+        )
+    except (GitProviderError, KeyError, ValueError) as exc:
+        code_name = exc.code if isinstance(exc, GitProviderError) else "git_oauth_connection_failed"
+        return HTMLResponse(
+            f"<!doctype html><title>Git connection failed</title><p>{code_name}</p>",
+            status_code=422,
+        )
+    return HTMLResponse(
+        "<!doctype html><title>Git connected</title><script>window.close()</script><p>Git account connected.</p>"
+    )
+
+
+@router.post("/git-account-connections/{connection_id}/sync", response_model=GitAccountConnectionOut)
+async def sync_git_account_connection(
+    connection_id: int,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    account = await session.get(GitAccountConnection, connection_id)
+    if account is None:
+        raise _error(404, "git_account_connection_not_found", "Git account connection was not found.")
+    provider = await session.get(GitProviderInstance, account.provider_instance_id)
+    if provider is None or provider.state != "active" or account.state != "active":
+        raise _error(409, "git_account_connection_inactive", "An active Git account connection is required.")
+    job = await _sync_git_account(session, provider, account)
+    session.add(_audit(user, "git_account_connection.sync", "git_account_connection", account.id))
+    await session.commit()
+    if job.state != "succeeded":
+        raise _error(502, "git_repository_sync_failed", "Git account repository sync failed.")
+    await session.refresh(account)
+    return await _git_account_out(session, account, provider)
 
 
 @router.get("/workspaces/{workspace_id}/repositories", response_model=list[RepositoryBindingOut])
@@ -1299,19 +2035,21 @@ async def list_repositories(
     await _workspace_access(session, user_id, workspace_id, "read")
     rows = (
         await session.execute(
-            select(WorkspaceRepositoryBinding, GitRepository)
+            select(WorkspaceRepositoryBinding, GitRepository, GitProviderInstance)
             .join(GitRepository, GitRepository.id == WorkspaceRepositoryBinding.repository_id)
+            .join(GitProviderInstance, GitProviderInstance.id == GitRepository.provider_instance_id)
             .where(WorkspaceRepositoryBinding.workspace_id == workspace_id)
             .order_by(WorkspaceRepositoryBinding.priority, WorkspaceRepositoryBinding.id)
         )
     ).all()
-    return [_repository_out(binding, repository) for binding, repository in rows]
+    return [_repository_out(binding, repository, provider) for binding, repository, provider in rows]
 
 
-async def _create_repository_binding(session, workspace_id, user, repository, payload):
+async def _create_repository_binding(session, workspace_id, user, entitlement, repository, payload):
     row = WorkspaceRepositoryBinding(
         workspace_id=workspace_id,
         repository_id=repository.id,
+        repository_entitlement_id=entitlement.id,
         role=payload.role,
         priority=payload.priority,
         description=payload.description,
@@ -1327,7 +2065,9 @@ async def _create_repository_binding(session, workspace_id, user, repository, pa
     )
     await session.commit()
     await session.refresh(row)
-    return _repository_out(row, repository)
+    provider = await session.get(GitProviderInstance, repository.provider_instance_id)
+    assert provider is not None
+    return _repository_out(row, repository, provider)
 
 
 @router.post(
@@ -1340,52 +2080,223 @@ async def bind_repository(
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
-    repository = await session.get(GitRepository, payload.repository_id)
-    if repository is None or (
-        repository.scope == "workspace" and repository.workspace_id != workspace_id
+    entitlement = await session.get(
+        WorkspaceGitRepositoryEntitlement, payload.repository_entitlement_id
+    )
+    if entitlement is None or entitlement.workspace_id != workspace_id or entitlement.state != "active":
+        raise _error(404, "repository_not_authorized", "Repository is not authorized for this Workspace.")
+    grant = await session.get(WorkspaceGitAccountGrant, entitlement.grant_id)
+    repository = await session.get(GitRepository, entitlement.repository_id)
+    if (
+        grant is None
+        or grant.workspace_id != workspace_id
+        or grant.state != "active"
+        or repository is None
     ):
-        raise _error(404, "repository_not_found", "Repository not found in allowed scope.")
-    return await _create_repository_binding(session, workspace_id, user, repository, payload)
+        raise _error(404, "repository_not_authorized", "Repository is not authorized for this Workspace.")
+    access = await session.get(
+        GitAccountRepositoryAccess, (grant.account_connection_id, repository.id)
+    )
+    if access is None or access.state != "available":
+        raise _error(409, "repository_access_lost", "Git account no longer has read access to this repository.")
+    return await _create_repository_binding(session, workspace_id, user, entitlement, repository, payload)
 
 
-@router.post(
-    "/workspaces/{workspace_id}/repositories/local",
-    response_model=RepositoryBindingOut,
-    status_code=201,
+@router.get(
+    "/workspaces/{workspace_id}/repository-candidates",
+    response_model=list[WorkspaceRepositoryCandidateOut],
 )
-async def create_local_repository(
+async def list_workspace_repository_candidates(
     workspace_id: int,
-    payload: LocalRepositoryCreate,
     user_id: int = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
-    user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
-    if payload.credential_id is not None:
-        credential = await session.get(GitCredential, payload.credential_id)
-        if credential is None or not credential.readonly:
-            raise _error(422, "git_credential_invalid", "A read-only Git credential is required.")
-    try:
-        validate_git_remote(payload.repo_url)
-    except ValueError as exc:
-        raise _error(422, "git_repository_url_invalid", str(exc)) from exc
-    repository = GitRepository(
-        name=payload.name,
-        repo_url=payload.repo_url,
-        repo_type=payload.repo_type,
-        default_branch=payload.default_branch,
-        credential_id=payload.credential_id,
-        scope="workspace",
-        workspace_id=workspace_id,
+    await _workspace_access(session, user_id, workspace_id, "read")
+    rows = tuple(
+        (
+            await session.execute(
+                select(
+                    WorkspaceGitRepositoryEntitlement,
+                    GitRepository,
+                    GitProviderInstance,
+                    GitAccountConnection,
+                )
+                .join(
+                    WorkspaceGitAccountGrant,
+                    WorkspaceGitAccountGrant.id == WorkspaceGitRepositoryEntitlement.grant_id,
+                )
+                .join(GitRepository, GitRepository.id == WorkspaceGitRepositoryEntitlement.repository_id)
+                .join(GitProviderInstance, GitProviderInstance.id == GitRepository.provider_instance_id)
+                .join(
+                    GitAccountConnection,
+                    GitAccountConnection.id == WorkspaceGitAccountGrant.account_connection_id,
+                )
+                .join(
+                    GitAccountRepositoryAccess,
+                    (GitAccountRepositoryAccess.account_connection_id == GitAccountConnection.id)
+                    & (GitAccountRepositoryAccess.repository_id == GitRepository.id),
+                )
+                .where(
+                    WorkspaceGitRepositoryEntitlement.workspace_id == workspace_id,
+                    WorkspaceGitRepositoryEntitlement.state == "active",
+                    WorkspaceGitAccountGrant.state == "active",
+                    GitAccountConnection.state == "active",
+                    GitAccountRepositoryAccess.state == "available",
+                )
+                .order_by(GitProviderInstance.name, GitRepository.full_name)
+            )
+        ).all()
     )
-    session.add(repository)
+    return [
+        WorkspaceRepositoryCandidateOut(
+            entitlement_id=entitlement.id,
+            repository_id=repository.id,
+            provider_kind=provider.kind,
+            full_name=repository.full_name,
+            repo_url=repository.repo_url,
+            web_url=repository.web_url,
+            default_branch=repository.default_branch,
+            visibility=repository.visibility,
+            archived=repository.archived,
+            account_connection_id=account.id,
+            account_name=account.name,
+        )
+        for entitlement, repository, provider, account in rows
+    ]
+
+
+@router.get(
+    "/workspaces/{workspace_id}/git-account-grants",
+    response_model=list[WorkspaceGitAccountGrantOut],
+)
+async def list_workspace_git_account_grants(
+    workspace_id: int,
+    user_id: int = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _workspace_access(session, user_id, workspace_id, "read")
+    rows = tuple(
+        (
+            await session.execute(
+                select(WorkspaceGitAccountGrant, GitAccountConnection, GitProviderInstance)
+                .join(
+                    GitAccountConnection,
+                    GitAccountConnection.id == WorkspaceGitAccountGrant.account_connection_id,
+                )
+                .join(GitProviderInstance, GitProviderInstance.id == GitAccountConnection.provider_instance_id)
+                .where(WorkspaceGitAccountGrant.workspace_id == workspace_id)
+                .order_by(GitProviderInstance.name, GitAccountConnection.name)
+            )
+        ).all()
+    )
+    return [
+        WorkspaceGitAccountGrantOut(
+            id=grant.id,
+            workspace_id=grant.workspace_id,
+            account_connection_id=account.id,
+            account_name=account.name,
+            provider_kind=provider.kind,
+            external_account_login=account.external_account_login,
+            repository_scope=grant.repository_scope,
+            state=grant.state,
+            repository_count=int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(WorkspaceGitRepositoryEntitlement)
+                    .where(
+                        WorkspaceGitRepositoryEntitlement.grant_id == grant.id,
+                        WorkspaceGitRepositoryEntitlement.state == "active",
+                    )
+                )
+                or 0
+            ),
+            revision=grant.revision,
+            created_at=grant.created_at,
+            updated_at=grant.updated_at,
+        )
+        for grant, account, provider in rows
+    ]
+
+
+@router.post(
+    "/workspaces/{workspace_id}/git-account-grants",
+    response_model=WorkspaceGitAccountGrantOut,
+    status_code=201,
+)
+async def create_workspace_git_account_grant(
+    workspace_id: int,
+    payload: WorkspaceGitAccountGrantCreate,
+    user_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user = await _active_user(session, user_id)
+    workspace = await session.get(Workspace, workspace_id)
+    if workspace is None:
+        raise _error(404, "workspace_not_found", "Workspace was not found.")
+    account = await session.get(GitAccountConnection, payload.account_connection_id)
+    if account is None or account.state != "active" or account.verification_status != "healthy":
+        raise _error(422, "git_account_connection_invalid", "A healthy active Git account is required.")
+    provider = await session.get(GitProviderInstance, account.provider_instance_id)
+    assert provider is not None
+    visible_repository_ids = set(
+        (
+            await session.execute(
+                select(GitAccountRepositoryAccess.repository_id).where(
+                    GitAccountRepositoryAccess.account_connection_id == account.id,
+                    GitAccountRepositoryAccess.state == "available",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    requested_repository_ids = (
+        visible_repository_ids
+        if payload.repository_scope == "all_visible"
+        else set(payload.repository_ids)
+    )
+    if not requested_repository_ids.issubset(visible_repository_ids):
+        raise _error(422, "repository_not_visible_to_git_account", "One or more repositories are not visible to the Git account.")
+    grant = WorkspaceGitAccountGrant(
+        workspace_id=workspace_id,
+        account_connection_id=account.id,
+        repository_scope=payload.repository_scope,
+        state="active",
+        revision=1,
+    )
+    session.add(grant)
     try:
         await session.flush()
     except IntegrityError as exc:
         await session.rollback()
-        raise _error(
-            409, "repository_url_conflict", "Repository URL is already registered."
-        ) from exc
-    return await _create_repository_binding(session, workspace_id, user, repository, payload)
+        raise _error(409, "workspace_git_account_grant_conflict", "Git account is already authorized for this Workspace.") from exc
+    for repository_id in requested_repository_ids:
+        session.add(
+            WorkspaceGitRepositoryEntitlement(
+                workspace_id=workspace_id,
+                grant_id=grant.id,
+                repository_id=repository_id,
+                state="active",
+                revision=1,
+            )
+        )
+    session.add(_audit(user, "workspace_git_account_grant.create", "workspace_git_account_grant", grant.id, workspace_id))
+    await session.commit()
+    await session.refresh(grant)
+    return WorkspaceGitAccountGrantOut(
+        id=grant.id,
+        workspace_id=grant.workspace_id,
+        account_connection_id=account.id,
+        account_name=account.name,
+        provider_kind=provider.kind,
+        external_account_login=account.external_account_login,
+        repository_scope=grant.repository_scope,
+        state=grant.state,
+        repository_count=len(requested_repository_ids),
+        revision=grant.revision,
+        created_at=grant.created_at,
+        updated_at=grant.updated_at,
+    )
 
 
 @router.patch(
@@ -1406,6 +2317,11 @@ async def patch_repository_binding(
         setattr(row, key, value)
     row.revision += 1
     repository = await session.get(GitRepository, row.repository_id)
+    provider = (
+        await session.get(GitProviderInstance, repository.provider_instance_id)
+        if repository is not None
+        else None
+    )
     session.add(
         _audit(
             user, "repository_binding.update", "workspace_repository_binding", row.id, workspace_id
@@ -1413,8 +2329,8 @@ async def patch_repository_binding(
     )
     await session.commit()
     await session.refresh(row)
-    assert repository is not None
-    return _repository_out(row, repository)
+    assert repository is not None and provider is not None
+    return _repository_out(row, repository, provider)
 
 
 @router.delete("/workspaces/{workspace_id}/repositories/{binding_id}", status_code=204)
@@ -1446,7 +2362,6 @@ _CONNECTOR_SECRET_FIELDS = {
     "postgresql": ["password"],
     "mysql": ["password"],
     "https": ["bearer_token", "api_key"],
-    "command_runner": ["runner_key"],
 }
 
 
@@ -1533,6 +2448,89 @@ def _connector_capability(kind: str):
     return getattr(language, "value", str(language)), list(value["read_capabilities"])
 
 
+def _connector_secrets(payload: ConnectorCreate) -> dict[str, str]:
+    if payload.authentication == "bearer_token":
+        return {"bearer_token": payload.credential or ""}
+    if payload.authentication == "api_key":
+        return {"api_key": payload.credential or ""}
+    if payload.authentication == "basic":
+        return {"username": payload.credential_username or "", "password": payload.credential or ""}
+    return {}
+
+
+def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], dict, dict]:
+    budget = {"timeout_ms": 5_000, "max_rows": 1_000, "max_output_bytes": 1_000_000}
+    if payload.kind == "loki":
+        matchers = {item.name: item.value for item in payload.root_matchers}
+        if len(matchers) != len(payload.root_matchers):
+            raise ValueError("Loki root matcher names must be unique")
+        return (
+            {"base_url": payload.endpoint, **({"tenant_id": payload.tenant_id} if payload.tenant_id else {})},
+            {"bearer_token": payload.credential} if payload.authentication == "bearer_token" else {},
+            {"root_matchers": matchers},
+            budget,
+        )
+    if payload.kind in {"elasticsearch", "opensearch"}:
+        indices = list(payload.allowed_indices)
+        if len(indices) != len(set(indices)):
+            raise ValueError("allowed index patterns must be unique")
+        return (
+            {"base_url": payload.endpoint},
+            _connector_secrets(payload),
+            {"allowed_indices": indices, "cardinality_bounds": {}},
+            budget,
+        )
+    if payload.kind == "https":
+        parsed = urlsplit(payload.endpoint or "")
+        try:
+            port = parsed.port or 443
+        except ValueError as exc:
+            raise ValueError("HTTPS connector port is invalid") from exc
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("HTTPS connector endpoint must be an HTTPS origin")
+        return (
+            {"base_url": payload.endpoint, "verification_path": payload.verification_path},
+            _connector_secrets(payload),
+            {
+                "safe_read_endpoints": [{
+                    "id": "default-read",
+                    "method": "GET",
+                    "host": parsed.hostname.lower(),
+                    "port": port,
+                    "path_template": payload.safe_read_path,
+                    "path_parameters": {},
+                    "query_parameters": {},
+                    "allowed_content_types": [payload.safe_read_content_type],
+                    "max_response_bytes": 1_000_000,
+                }]
+            },
+            budget,
+        )
+    if payload.kind in {"postgresql", "mysql"}:
+        tables = {item.table: item for item in payload.allowed_tables}
+        if len(tables) != len(payload.allowed_tables):
+            raise ValueError("allowed database tables must be unique")
+        return (
+            {
+                "host": payload.host,
+                "port": payload.port or (5432 if payload.kind == "postgresql" else 3306),
+                "database": payload.database,
+                "username": payload.database_username,
+                "ca_certificate_pem": payload.ca_certificate_pem,
+            },
+            {"password": payload.database_password or ""},
+            {
+                "allowed_tables": list(tables),
+                "table_policies": {
+                    table: {"time_column": item.time_column, "stable_order": list(item.stable_order)}
+                    for table, item in tables.items()
+                },
+            },
+            budget,
+        )
+    raise ValueError("unsupported connector kind")
+
+
 @router.post(
     "/workspaces/{workspace_id}/evidence-connectors", response_model=ConnectorOut, status_code=201
 )
@@ -1544,13 +2542,14 @@ async def create_connector(
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
     try:
-        create_evidence_connector(payload.kind, payload.config, payload.secrets)
+        config, secrets, scope_config, budget = _connector_storage(payload)
+        create_evidence_connector(payload.kind, config, secrets)
     except ValueError as exc:
         raise _error(422, "connector_configuration_invalid", str(exc)) from exc
     language, capabilities = _connector_capability(payload.kind)
     ciphertext = (
         encrypt_secret(
-            json.dumps(payload.secrets, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            json.dumps(secrets, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         )
         or ""
     )
@@ -1559,7 +2558,7 @@ async def create_connector(
         name=payload.name,
         kind=payload.kind,
         kind_version=1,
-        config=payload.config,
+        config=config,
         secret_ciphertext=ciphertext,
         instance_revision=1,
         capabilities=capabilities,
@@ -1574,11 +2573,11 @@ async def create_connector(
         EvidenceAccessScope(
             connector_id=row.id,
             allowed_languages=[language],
-            scope_config=payload.scope_config,
-            schema_catalog=payload.schema_catalog,
+            scope_config=scope_config,
+            schema_catalog={},
             schema_catalog_revision=1,
             read_policy_revision=1,
-            execution_budget_policy=payload.execution_budget_policy,
+            execution_budget_policy=budget,
             normalization_policy_revision=1,
             revision=1,
         )
@@ -1603,70 +2602,6 @@ async def _latest_scope(session: AsyncSession, connector_id: int) -> EvidenceAcc
     if row is None:
         raise _error(409, "connector_scope_missing", "Connector access scope is missing.")
     return row
-
-
-@router.patch(
-    "/workspaces/{workspace_id}/evidence-connectors/{connector_id}", response_model=ConnectorOut
-)
-async def patch_connector(
-    workspace_id: int,
-    connector_id: int,
-    payload: ConnectorPatch,
-    user_id: int = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
-    row = await session.get(EvidenceConnector, connector_id)
-    if row is None or row.workspace_id != workspace_id:
-        raise _error(404, "connector_not_found", "Evidence connector not found.")
-    scope = await _latest_scope(session, connector_id)
-    values = payload.model_dump(exclude_unset=True)
-    secrets = values.pop("secrets", None)
-    config = values.pop("config", None)
-    scope_config = values.pop("scope_config", None)
-    schema_catalog = values.pop("schema_catalog", None)
-    budget = values.pop("execution_budget_policy", None)
-    effective_config = config if config is not None else row.config
-    effective_secrets = secrets if secrets is not None else _connector_secret_map(row)
-    try:
-        create_evidence_connector(row.kind, effective_config, effective_secrets)
-    except ValueError as exc:
-        raise _error(422, "connector_configuration_invalid", str(exc)) from exc
-    for key, value in values.items():
-        setattr(row, key, value)
-    row.config = effective_config
-    if secrets is not None:
-        row.secret_ciphertext = (
-            encrypt_secret(json.dumps(secrets, separators=(",", ":"), sort_keys=True)) or ""
-        )
-    row.instance_revision += 1
-    row.verification_status = "untested"
-    row.verified_at = None
-    row.last_error = None
-    if any(value is not None for value in (scope_config, schema_catalog, budget)):
-        session.add(
-            EvidenceAccessScope(
-                connector_id=row.id,
-                allowed_languages=scope.allowed_languages,
-                scope_config=scope_config if scope_config is not None else scope.scope_config,
-                schema_catalog=schema_catalog
-                if schema_catalog is not None
-                else scope.schema_catalog,
-                schema_catalog_revision=scope.schema_catalog_revision + 1,
-                read_policy_revision=scope.read_policy_revision,
-                execution_budget_policy=budget
-                if budget is not None
-                else scope.execution_budget_policy,
-                normalization_policy_revision=scope.normalization_policy_revision,
-                revision=scope.revision + 1,
-            )
-        )
-    session.add(
-        _audit(user, "evidence_connector.update", "evidence_connector", row.id, workspace_id)
-    )
-    await session.commit()
-    await session.refresh(row)
-    return _connector_out(row)
 
 
 @router.post("/workspaces/{workspace_id}/evidence-connectors/{connector_id}/test")

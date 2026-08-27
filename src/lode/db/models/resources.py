@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Text,
@@ -22,19 +23,108 @@ from lode.db.base import Base
 from lode.db.models._common import CreatedAtMixin, TimestampMixin, identity_pk
 
 
-class GitCredential(TimestampMixin, Base):
-    __tablename__ = "git_credentials"
+class GitProviderInstance(TimestampMixin, Base):
+    """A globally administered GitHub, GitLab, or Gitee integration."""
+
+    __tablename__ = "git_provider_instances"
 
     id: Mapped[int] = identity_pk()
-    auth_type: Mapped[str] = mapped_column(Text, nullable=False)
-    username: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
-    readonly: Mapped[bool] = mapped_column(nullable=False, server_default="true")
-    note: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    api_url: Mapped[str] = mapped_column(Text, nullable=False)
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
+    verification_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="untested")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
 
     __table_args__ = (
-        CheckConstraint("auth_type IN ('ssh', 'https')", name="auth_type"),
-        CheckConstraint("readonly", name="readonly_required"),
+        CheckConstraint("kind IN ('github', 'gitlab', 'gitee')", name="kind"),
+        CheckConstraint("state IN ('active', 'disabled')", name="state"),
+        CheckConstraint(
+            "verification_status IN ('untested', 'healthy', 'unavailable')",
+            name="verification_status",
+        ),
+        CheckConstraint("revision > 0", name="revision_positive"),
+        UniqueConstraint("kind", "base_url", name="uq_git_provider_instance_kind_base_url"),
+        UniqueConstraint("name", name="uq_git_provider_instance_name"),
+    )
+
+
+class GitAccountConnection(TimestampMixin, Base):
+    """A global, reusable read-only connection to one provider account."""
+
+    __tablename__ = "git_account_connections"
+
+    id: Mapped[int] = identity_pk()
+    provider_instance_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_provider_instances.id", ondelete="RESTRICT"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    auth_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    external_account_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_account_login: Mapped[str] = mapped_column(Text, nullable=False)
+    account_url: Mapped[str] = mapped_column(Text, nullable=False)
+    current_credential_revision_id: Mapped[int | None] = mapped_column(BigInteger)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
+    verification_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="untested")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    sync_cursor: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+
+    __table_args__ = (
+        CheckConstraint("auth_mode IN ('github_app', 'oauth', 'access_token')", name="auth_mode"),
+        CheckConstraint("state IN ('active', 'disabled', 'revoked')", name="state"),
+        CheckConstraint(
+            "verification_status IN ('untested', 'healthy', 'unavailable')",
+            name="verification_status",
+        ),
+        CheckConstraint("revision > 0", name="revision_positive"),
+        ForeignKeyConstraint(
+            ["current_credential_revision_id", "id"],
+            [
+                "git_account_credential_revisions.id",
+                "git_account_credential_revisions.account_connection_id",
+            ],
+            ondelete="RESTRICT",
+            use_alter=True,
+            name="fk_git_account_connections_current_credential_revision",
+        ),
+        UniqueConstraint(
+            "provider_instance_id", "external_account_id", "auth_mode",
+            name="uq_git_account_connection_provider_external_mode",
+        ),
+    )
+
+
+class GitAccountCredentialRevision(CreatedAtMixin, Base):
+    """Immutable encrypted account authorization material."""
+
+    __tablename__ = "git_account_credential_revisions"
+
+    id: Mapped[int] = identity_pk()
+    account_connection_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_account_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    credential_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="revision_positive"),
+        CheckConstraint(
+            "credential_identity_hash ~ '^[0-9a-f]{64}$'", name="credential_hash_sha256"
+        ),
+        UniqueConstraint(
+            "id", "account_connection_id", name="uq_git_account_credential_revision_identity"
+        ),
+        UniqueConstraint("account_connection_id", "revision", name="uq_git_account_credential_revision"),
     )
 
 
@@ -42,26 +132,122 @@ class GitRepository(TimestampMixin, Base):
     __tablename__ = "git_repositories"
 
     id: Mapped[int] = identity_pk()
+    provider_instance_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_provider_instances.id", ondelete="RESTRICT"), nullable=False
+    )
+    external_repository_id: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    full_name: Mapped[str] = mapped_column(Text, nullable=False)
     repo_url: Mapped[str] = mapped_column(Text, nullable=False)
-    repo_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="other")
+    web_url: Mapped[str] = mapped_column(Text, nullable=False)
+    repo_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="git")
     default_branch: Mapped[str] = mapped_column(Text, nullable=False, server_default="main")
-    credential_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("git_credentials.id", ondelete="SET NULL")
-    )
-    scope: Mapped[str] = mapped_column(Text, nullable=False, server_default="global")
-    workspace_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE")
-    )
+    visibility: Mapped[str] = mapped_column(Text, nullable=False, server_default="private")
+    archived: Mapped[bool] = mapped_column(nullable=False, server_default="false")
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        CheckConstraint("scope IN ('global', 'workspace')", name="scope"),
-        CheckConstraint(
-            "(scope = 'global' AND workspace_id IS NULL) OR "
-            "(scope = 'workspace' AND workspace_id IS NOT NULL)",
-            name="scope_owner",
+        CheckConstraint("visibility IN ('public', 'private', 'internal')", name="visibility"),
+        UniqueConstraint(
+            "provider_instance_id", "external_repository_id",
+            name="uq_git_repository_provider_external",
         ),
-        UniqueConstraint("scope", "workspace_id", "repo_url", name="uq_git_repository_scope_url"),
+    )
+
+
+class GitAccountRepositoryAccess(TimestampMixin, Base):
+    __tablename__ = "git_account_repository_access"
+
+    account_connection_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_account_connections.id", ondelete="CASCADE"), primary_key=True
+    )
+    repository_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_repositories.id", ondelete="CASCADE"), primary_key=True
+    )
+    access_level: Mapped[str] = mapped_column(Text, nullable=False, server_default="read")
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="available")
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("access_level = 'read'", name="read_only"),
+        CheckConstraint("state IN ('available', 'lost')", name="state"),
+    )
+
+
+class WorkspaceGitAccountGrant(TimestampMixin, Base):
+    __tablename__ = "workspace_git_account_grants"
+
+    id: Mapped[int] = identity_pk()
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    account_connection_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_account_connections.id", ondelete="RESTRICT"), nullable=False
+    )
+    repository_scope: Mapped[str] = mapped_column(Text, nullable=False, server_default="selected")
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+
+    __table_args__ = (
+        CheckConstraint("repository_scope IN ('selected', 'all_visible')", name="repository_scope"),
+        CheckConstraint("state IN ('active', 'disabled')", name="state"),
+        CheckConstraint("revision > 0", name="revision_positive"),
+        UniqueConstraint("id", "workspace_id", name="uq_workspace_git_account_grant_workspace"),
+        UniqueConstraint("workspace_id", "account_connection_id", name="uq_workspace_git_account_grant"),
+    )
+
+
+class WorkspaceGitRepositoryEntitlement(TimestampMixin, Base):
+    __tablename__ = "workspace_git_repository_entitlements"
+
+    id: Mapped[int] = identity_pk()
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    grant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    repository_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+
+    __table_args__ = (
+        CheckConstraint("state IN ('active', 'disabled')", name="state"),
+        CheckConstraint("revision > 0", name="revision_positive"),
+        ForeignKeyConstraint(
+            ["grant_id", "workspace_id"],
+            ["workspace_git_account_grants.id", "workspace_git_account_grants.workspace_id"],
+            ondelete="CASCADE",
+            name="fk_workspace_git_repository_entitlements_grant_workspace",
+        ),
+        UniqueConstraint(
+            "id",
+            "workspace_id",
+            "repository_id",
+            name="uq_workspace_git_repository_entitlement_identity",
+        ),
+        UniqueConstraint("grant_id", "repository_id", name="uq_workspace_git_repository_entitlement"),
+    )
+
+
+class GitAccountSyncJob(TimestampMixin, Base):
+    __tablename__ = "git_account_sync_jobs"
+
+    id: Mapped[int] = identity_pk()
+    account_connection_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_account_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    lease_owner: Mapped[str | None] = mapped_column(Text)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("state IN ('queued', 'running', 'succeeded', 'failed')", name="state"),
+        CheckConstraint("attempt >= 0", name="attempt_nonnegative"),
     )
 
 
@@ -75,6 +261,7 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
     repository_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False
     )
+    repository_entitlement_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
@@ -91,6 +278,16 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
         CheckConstraint("state IN ('active', 'disabled')", name="state"),
         CheckConstraint("descriptor_revision > 0", name="descriptor_revision_positive"),
         CheckConstraint("revision > 0", name="revision_positive"),
+        ForeignKeyConstraint(
+            ["repository_entitlement_id", "workspace_id", "repository_id"],
+            [
+                "workspace_git_repository_entitlements.id",
+                "workspace_git_repository_entitlements.workspace_id",
+                "workspace_git_repository_entitlements.repository_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_workspace_repo_bindings_entitlement_scope",
+        ),
         Index(
             "uq_workspace_repository_binding_active",
             "workspace_id",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import stat
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -253,8 +252,6 @@ async def _run_git(
 ) -> _GitResult:
     process = await asyncio.create_subprocess_exec(
         "git",
-        "-c",
-        "protocol.file.allow=always",
         *arguments,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -277,47 +274,42 @@ def _git_auth(
     if credential is None:
         yield environment
         return
-    if credential.auth_type == "https":
-        with tempfile.TemporaryDirectory(prefix="lode-git-auth-") as temporary:
-            askpass = Path(temporary) / "askpass"
-            askpass.write_text(
-                '#!/bin/sh\ncase "$1" in *Username*) printf \'%s\' "$LODE_GIT_USER" ;; '
-                "*) printf '%s' \"$LODE_GIT_SECRET\" ;; esac\n",
-                encoding="utf-8",
-            )
-            askpass.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-            yield {
-                **environment,
-                "GIT_ASKPASS": str(askpass),
-                "LODE_GIT_USER": credential.username,
-                "LODE_GIT_SECRET": credential.secret,
-            }
-        return
-    if credential.auth_type == "ssh":
-        with tempfile.TemporaryDirectory(prefix="lode-git-auth-") as temporary:
-            key = Path(temporary) / "identity"
-            key.write_text(credential.secret, encoding="utf-8")
-            key.chmod(stat.S_IRUSR | stat.S_IWUSR)
-            yield {
-                **environment,
-                "GIT_SSH_COMMAND": (
-                    f"ssh -i {key} -o IdentitiesOnly=yes -o BatchMode=yes "
-                    "-o StrictHostKeyChecking=yes"
-                ),
-            }
-        return
-    raise ValueError("unsupported Git credential type")
+    if credential.auth_type != "https":
+        raise ValueError("Git account credentials must use HTTPS")
+    with tempfile.TemporaryDirectory(prefix="lode-git-auth-") as temporary:
+        askpass = Path(temporary) / "askpass"
+        askpass.write_text(
+            '#!/bin/sh\ncase "$1" in *Username*) printf \'%s\' "$LODE_GIT_USER" ;; '
+            "*) printf '%s' \"$LODE_GIT_SECRET\" ;; esac\n",
+            encoding="utf-8",
+        )
+        askpass.chmod(0o700)
+        yield {
+            **environment,
+            "GIT_ASKPASS": str(askpass),
+            "LODE_GIT_USER": credential.username,
+            "LODE_GIT_SECRET": credential.secret,
+        }
 
 
 def validate_git_remote(repo_url: str) -> None:
     value = repo_url.strip()
     parsed = urlsplit(value)
-    is_scp = value.startswith("git@") and ":" in value
-    is_local = parsed.scheme == "file" or (not parsed.scheme and Path(value).is_absolute())
-    if parsed.scheme not in {"https", "ssh", "file"} and not is_scp and not is_local:
-        raise ValueError("Git remote scheme is not allowed")
-    if parsed.scheme == "https" and (parsed.username is not None or parsed.password is not None):
-        raise ValueError("Git credentials must not be embedded in repository URLs")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Git remote port is invalid") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.netloc != parsed.netloc.lower()
+        or (port is not None and port < 1)
+    ):
+        raise ValueError("Git remote must be a canonical credential-free HTTPS URL")
 
 
 def _validate_branch(branch: str) -> None:

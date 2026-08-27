@@ -99,8 +99,12 @@ export interface RepositoryBinding {
   id: number;
   workspace_id: number;
   repository_id: number;
+  repository_entitlement_id: number;
+  provider_kind: 'github' | 'gitlab' | 'gitee';
   name: string;
+  full_name: string;
   repo_url: string;
+  web_url: string;
   repo_type: string;
   default_branch: string;
   role: string;
@@ -108,6 +112,112 @@ export interface RepositoryBinding {
   description: string;
   state: 'active' | 'disabled';
   revision: number;
+}
+
+export interface GitProviderInstance {
+  id: number;
+  kind: 'github' | 'gitlab' | 'gitee';
+  name: string;
+  base_url: string;
+  api_url: string;
+  state: 'active' | 'disabled';
+  verification_status: 'untested' | 'healthy' | 'unavailable';
+  verified_at: string | null;
+  last_error: string | null;
+  native_auth_available: boolean;
+  native_auth_kind: 'github_app' | 'oauth' | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GitAccountConnection {
+  id: number;
+  provider_instance_id: number;
+  provider_kind: 'github' | 'gitlab' | 'gitee';
+  provider_name: string;
+  name: string;
+  auth_mode: 'github_app' | 'oauth' | 'access_token';
+  external_account_id: string;
+  external_account_login: string;
+  account_url: string;
+  state: 'active' | 'disabled' | 'revoked';
+  verification_status: 'untested' | 'healthy' | 'unavailable';
+  verified_at: string | null;
+  last_synced_at: string | null;
+  last_error: string | null;
+  repository_count: number;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GitAccountRepository {
+  repository_id: number;
+  provider_kind: 'github' | 'gitlab' | 'gitee';
+  full_name: string;
+  repo_url: string;
+  web_url: string;
+  default_branch: string;
+  visibility: 'public' | 'private' | 'internal';
+  archived: boolean;
+}
+
+export interface WorkspaceGitAccountGrant {
+  id: number;
+  workspace_id: number;
+  account_connection_id: number;
+  account_name: string;
+  provider_kind: 'github' | 'gitlab' | 'gitee';
+  external_account_login: string;
+  repository_scope: 'selected' | 'all_visible';
+  state: 'active' | 'disabled';
+  repository_count: number;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceRepositoryCandidate {
+  entitlement_id: number;
+  repository_id: number;
+  provider_kind: 'github' | 'gitlab' | 'gitee';
+  full_name: string;
+  repo_url: string;
+  web_url: string;
+  default_branch: string;
+  visibility: 'public' | 'private' | 'internal';
+  archived: boolean;
+  account_connection_id: number;
+  account_name: string;
+}
+
+export interface BuildUnit {
+  id: number;
+  repository_binding_id: number;
+  stable_key: string;
+  source_root: string;
+  build_system: string;
+  identity_status: 'verified' | 'provisional' | 'ambiguous';
+  state: 'active' | 'disabled';
+  revision: number;
+}
+
+export interface Component {
+  id: number;
+  stable_key: string;
+  display_name: string;
+  kind: string;
+  description: string;
+  identity_status: 'verified' | 'provisional' | 'ambiguous';
+  state: 'active' | 'disabled';
+  revision: number;
+  source_bindings: Array<{
+    build_unit_id: number;
+    build_unit_key: string;
+    role: string;
+    path_prefix: string;
+  }>;
 }
 
 export interface EvidenceConnector {

@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from collections.abc import Mapping
 from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from lode.crypto import decrypt_secret
+from lode.crypto import CryptoError, decrypt_secret
 from lode.db.models import (
-    GitCredential,
+    GitAccountCredentialRevision,
     InvestigationInput,
     InvestigationOperation,
     InvestigationRepositorySnapshot,
 )
+from lode.git_accounts import credential_identity_hash, decode_credential_secret
 from lode.domain.investigation import OperationResult, PlannedOperation
 from lode.engine.evidence.git import derive_query_terms
 from lode.infrastructure.git_source import (
@@ -141,22 +141,21 @@ class SourceReadOperationExecutor:
 async def _credential(
     session: AsyncSession, snapshot: InvestigationRepositorySnapshot
 ) -> GitCredentialMaterial | None:
-    if snapshot.credential_id is None:
-        if snapshot.credential_identity_hash is not None:
-            raise GitSourceUnavailable("frozen Git credential identity is inconsistent")
-        return None
-    row = await session.get(GitCredential, snapshot.credential_id)
+    row = await session.get(GitAccountCredentialRevision, snapshot.credential_revision_id)
     if (
         row is None
-        or not row.readonly
-        or hashlib.sha256(row.secret_ciphertext.encode()).hexdigest()
-        != snapshot.credential_identity_hash
+        or row.account_connection_id != snapshot.account_connection_id
+        or row.credential_identity_hash != snapshot.credential_identity_hash
     ):
         raise GitSourceUnavailable("frozen Git credential is no longer available")
-    plaintext = decrypt_secret(row.secret_ciphertext)
-    if not plaintext:
+    try:
+        plaintext = decrypt_secret(row.secret_ciphertext)
+        secret = decode_credential_secret(plaintext or "")
+    except (CryptoError, ValueError) as exc:
+        raise GitSourceUnavailable("frozen Git credential cannot be decrypted") from exc
+    if credential_identity_hash(secret) != snapshot.credential_identity_hash:
         raise GitSourceUnavailable("frozen Git credential cannot be decrypted")
-    return GitCredentialMaterial(row.auth_type, row.username, plaintext)
+    return GitCredentialMaterial("https", secret.username, secret.token)
 
 
 def _stack(error: Mapping[str, object]) -> str:

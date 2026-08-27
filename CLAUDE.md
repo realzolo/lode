@@ -37,14 +37,24 @@ deployment-canary observations to pass the statistical and non-regression gate.
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
-- The current ORM registry and the only migration register exactly the 69 tables in
+- The current ORM registry and the only migration register exactly the 75 tables in
   `contracts/v1/database/tables.json`. Provider accounts, account models,
-  Workspace bindings, repositories, build units, components, resource graph
-  revisions, connectors, immutable investigation snapshots, the evidence
-  graph, native-read audit chain, source assessments, findings, and reports are
+  global Git providers/accounts/catalogue, Workspace Git grants and repository
+  entitlements, Workspace bindings, build units, components, resource graph
+  revisions, connectors, immutable investigation snapshots, the evidence graph,
+  native-read audit chain, source assessments, findings, and reports are
   separate final objects. Deprecated global workload identity, single-model,
-  and product-specific integration tables and routes are not registered.
-- `contracts/v1/database/invariants.json` freezes 85 required triggers. The
+  per-repository Git credentials, and product-specific integration tables and
+  routes are not registered.
+- Git provider instances, account connections, encrypted immutable credential
+  revisions, and discovered repository facts are global reusable objects. A
+  global admin explicitly grants an account to a Workspace and selects its
+  repository entitlements; all cross-Workspace grant, entitlement, binding, and
+  credential-revision references are database-constrained. Private repositories
+  are accessed only through the approved account connection, never through a
+  per-repository secret. GitHub App, GitLab/Gitee OAuth, and read-only access
+  token connections are verified before their repository catalogues are used.
+- `contracts/v1/database/invariants.json` freezes 91 required triggers. The
   migration enforces timestamp updates, secret-free ordinary JSON,
   immutability, archived-investigation read-only behavior, authorization-chain
   integrity, frozen AI routing/context, exact source anchors, and confirmed
@@ -318,7 +328,11 @@ strict synthesis/verifier publication, the default worker composition root, and
 the `analysis-check` workflow. Phase 9 added no dependency; it replaced the API
 and Web surfaces with the final Workspace/model/repository/connector/investigation
 contracts and added the `api-check` and `web-check` workflows.
-Phase 10 adds no dependency. It adds startup master-key and Runner-key
+The current unreleased Git-account/catalogue and typed-connector redesign adds
+no dependency. It replaces local repository and per-repository credential
+control with global provider/account management and Workspace authorizations;
+it also removes raw connector configuration/scope forms and the public command
+runner connector. Phase 10 adds no dependency. It adds startup master-key and Runner-key
 validation, correlation IDs and isolated-
 runner nonces, slot-before-claim worker concurrency, lease-loss cancellation,
 deterministic fuzz/security/performance/soak checks, complete operational and
@@ -400,7 +414,9 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/application/conclusion_validation.py`: server-owned confirmation downgrade gates.
 - `src/lode/infrastructure/investigation_control_snapshots.py`: same-transaction repository and model control freezing.
 - `src/lode/infrastructure/model_runtime.py`: immutable routing/context/invocation audit, replay, drift checks, and bounded compaction.
-- `src/lode/infrastructure/git_source.py`: bounded exact-revision Git reader.
+- `src/lode/git_accounts`: bounded GitHub/GitLab/Gitee profile, OAuth, GitHub
+  App, and repository-catalogue adapters plus strict credential encoding.
+- `src/lode/infrastructure/git_source.py`: bounded exact-revision HTTPS Git reader.
 - `src/lode/infrastructure/source_store.py`: masked source artifact, revision, and assessment archival.
 - `src/lode/infrastructure/investigation_reporting.py`: audited synthesis and independent verification roles.
 - `src/lode/infrastructure/report_store.py`: strict semantic validation and immutable report publication.
@@ -614,13 +630,15 @@ and authorization/read audit objects. Connector kinds are code-registered and
 may have multiple instances without a schema migration.
 
 Native evidence capabilities are selected through the provider-neutral Connector
-registry, never by an investigation-core product branch. The active kinds are
-`loki`, `elasticsearch`, `opensearch`, `postgresql`, `mysql`, `https`, and
-`command_runner`; each kind declares one native
+registry, never by an investigation-core product branch. The configurable kinds
+are `loki`, `elasticsearch`, `opensearch`, `postgresql`, `mysql`, and `https`;
+each kind declares one native
 language and its own verification, introspection, parser/policy versions, read
 capabilities, adapter, fixture corpus, and failure semantics. A
 new provider is not active merely because it resembles an existing product: it
 must register a complete independent security profile and contract tests.
+The isolated command runner remains an internal execution component and is not
+exposed as a user-configurable evidence connector.
 
 Database connectors support PostgreSQL and MySQL through structured host,
 port, database, username, mandatory TLS, encrypted password, qualified
@@ -728,15 +746,15 @@ reconnects with the last observed cursor and preserves the last canonical view.
 
 The project has not released its database baseline.
 `alembic/versions/0001_initial.py` is the only revision and creates exactly the
-69 final business tables. There is one current schema and no parallel version,
+75 final business tables. There is one current schema and no parallel version,
 compatibility view, dual write, backfill, or old-schema adapter; unreleased
 development databases are recreated from the unique initial migration. After
 the first release, schema changes use ordinary forward migrations.
 
 The table inventory and database invariants are frozen independently under
 `contracts/v1/database`. SQLAlchemy metadata must exactly match the migration.
-The schema currently owns 85 explicit non-internal triggers: 36 immutable-row
-triggers, 25 archived-investigation read-only triggers, 17 `updated_at`
+The schema currently owns 91 explicit non-internal triggers: 37 immutable-row
+triggers, 25 archived-investigation read-only triggers, 22 `updated_at`
 triggers, and seven cross-table/security triggers. `set_updated_at()` uses
 `clock_timestamp()` so updates within one transaction still advance the value.
 Ordinary connector/scope JSON is traversed structurally and rejects credential
@@ -814,12 +832,18 @@ account-model selections at `/[locale]/admin/models`. The account dialog
 synchronizes supported upstream models after Base URL/key entry and can add a
 reviewed catalog model manually; it has no separate model-deployment form and
 never renders token or tokenizer configuration. Workspace creation atomically requires name and the
-globally unique Kafka topic. `admin/workspaces/[id]` provides Overview, Model
-policy, Repositories, Connectors, and Resources tabs. Connector forms use
-`GET /evidence-connector-kinds` for the current kind/capability/secret metadata;
-secret values are password inputs and are never rendered after submission.
-Workspace administrators manage bindings, immutable model-policy revisions,
-read-only repositories, connector instances, and ingestion transitions.
+globally unique Kafka topic. `/[locale]/admin/git` manages reusable GitHub,
+GitLab, and Gitee services, multiple account connections, provider-native
+authorization, manual read-only tokens, and repository-catalogue refreshes.
+`admin/workspaces/[id]` provides Overview, Model policy, Repositories, and
+Connectors tabs. A global admin grants a Git account to a Workspace and selects
+its repository access; Workspace administrators bind only those selected
+catalogue entries. The Repositories tab presents Workspace-derived build units
+and components, not raw resource-graph payloads. Connector forms use ordinary
+provider-specific fields and require verification before introspection; secrets
+are password inputs and are never rendered after submission. Workspace
+administrators manage bindings, immutable model-policy revisions, read-only
+repositories, connector instances, and ingestion transitions.
 
 The only investigation UI lives under `workbench`. Its list supports search,
 state filtering, manual intake, and navigation by opaque public ID. Detail leads

@@ -15,7 +15,9 @@ from lode.crypto import CryptoError, decrypt_secret
 from lode.db.models import (
     AIProviderAccount,
     ContextPolicyRevision,
-    GitCredential,
+    GitAccountConnection,
+    GitAccountCredentialRevision,
+    GitAccountRepositoryAccess,
     GitRepository,
     InvestigationDescriptorSnapshot,
     InvestigationModelBindingSnapshot,
@@ -25,9 +27,12 @@ from lode.db.models import (
     ModelPolicyRevision,
     RepositoryDescriptor,
     Workspace,
+    WorkspaceGitAccountGrant,
+    WorkspaceGitRepositoryEntitlement,
     WorkspaceModelBinding,
     WorkspaceRepositoryBinding,
 )
+from lode.git_accounts import credential_identity_hash, decode_credential_secret
 from lode.infrastructure.git_source import (
     GitCredentialMaterial,
     GitRemoteRevisionResolver,
@@ -62,17 +67,64 @@ class InvestigationControlSnapshotStore:
         workspace_id: int,
         incident_source_revision: str | None,
     ) -> None:
+        active_binding_ids = set(
+            (
+                await self.session.scalars(
+                    select(WorkspaceRepositoryBinding.id).where(
+                        WorkspaceRepositoryBinding.workspace_id == workspace_id,
+                        WorkspaceRepositoryBinding.state == "active",
+                    )
+                )
+            ).all()
+        )
         rows = tuple(
             (
                 await self.session.execute(
-                    select(WorkspaceRepositoryBinding, GitRepository)
+                    select(
+                        WorkspaceRepositoryBinding,
+                        GitRepository,
+                        GitAccountConnection,
+                        GitAccountCredentialRevision,
+                    )
                     .join(
                         GitRepository,
                         GitRepository.id == WorkspaceRepositoryBinding.repository_id,
                     )
+                    .join(
+                        WorkspaceGitRepositoryEntitlement,
+                        WorkspaceGitRepositoryEntitlement.id
+                        == WorkspaceRepositoryBinding.repository_entitlement_id,
+                    )
+                    .join(
+                        WorkspaceGitAccountGrant,
+                        WorkspaceGitAccountGrant.id
+                        == WorkspaceGitRepositoryEntitlement.grant_id,
+                    )
+                    .join(
+                        GitAccountConnection,
+                        GitAccountConnection.id
+                        == WorkspaceGitAccountGrant.account_connection_id,
+                    )
+                    .join(
+                        GitAccountCredentialRevision,
+                        GitAccountCredentialRevision.id
+                        == GitAccountConnection.current_credential_revision_id,
+                    )
+                    .join(
+                        GitAccountRepositoryAccess,
+                        (GitAccountRepositoryAccess.account_connection_id == GitAccountConnection.id)
+                        & (GitAccountRepositoryAccess.repository_id == GitRepository.id),
+                    )
                     .where(
                         WorkspaceRepositoryBinding.workspace_id == workspace_id,
                         WorkspaceRepositoryBinding.state == "active",
+                        WorkspaceGitRepositoryEntitlement.workspace_id == workspace_id,
+                        WorkspaceGitRepositoryEntitlement.state == "active",
+                        WorkspaceGitAccountGrant.workspace_id == workspace_id,
+                        WorkspaceGitAccountGrant.state == "active",
+                        GitAccountConnection.state == "active",
+                        GitAccountConnection.verification_status == "healthy",
+                        GitAccountRepositoryAccess.state == "available",
                     )
                     .order_by(
                         WorkspaceRepositoryBinding.priority,
@@ -81,44 +133,36 @@ class InvestigationControlSnapshotStore:
                 )
             ).all()
         )
-        credentials: dict[int, tuple[str | None, GitCredentialMaterial | None, bool]] = {}
-        for _, repository in rows:
-            credential_hash = None
-            material = None
-            credential_ready = repository.credential_id is None
-            if repository.credential_id is not None:
-                credential = await self.session.get(GitCredential, repository.credential_id)
-                if credential is not None:
-                    credential_hash = hashlib.sha256(
-                        credential.secret_ciphertext.encode()
-                    ).hexdigest()
-                    try:
-                        secret = decrypt_secret(credential.secret_ciphertext)
-                    except CryptoError:
-                        secret = None
-                    if credential.readonly and secret:
-                        material = GitCredentialMaterial(
-                            credential.auth_type, credential.username, secret
-                        )
-                        credential_ready = True
-            credentials[repository.id] = (
-                credential_hash,
-                material,
-                credential_ready,
+        if {binding.id for binding, _, _, _ in rows} != active_binding_ids:
+            raise ValueError("an active repository binding is no longer authorized")
+        credentials: dict[int, tuple[int, int, str, GitCredentialMaterial]] = {}
+        for binding, _, connection, revision in rows:
+            try:
+                plaintext = decrypt_secret(revision.secret_ciphertext)
+                secret = decode_credential_secret(plaintext or "")
+            except (CryptoError, ValueError) as exc:
+                raise ValueError("active Git account credential is unavailable") from exc
+            if credential_identity_hash(secret) != revision.credential_identity_hash:
+                raise ValueError("active Git account credential identity is invalid")
+            credentials[binding.id] = (
+                connection.id,
+                revision.id,
+                revision.credential_identity_hash,
+                GitCredentialMaterial("https", secret.username, secret.token),
             )
 
         exact_results = await asyncio.gather(
             *(
                 self._resolve_exact(
-                    repository, credentials[repository.id], incident_source_revision
+                    repository, credentials[binding.id], incident_source_revision
                 )
-                for binding, repository in rows
+                for binding, repository, _, _ in rows
                 if binding.role == "runtime_source" and incident_source_revision is not None
             )
         )
         runtime_rows = [
             (binding, repository)
-            for binding, repository in rows
+            for binding, repository, _, _ in rows
             if binding.role == "runtime_source" and incident_source_revision is not None
         ]
         exact_binding_ids = {
@@ -128,13 +172,13 @@ class InvestigationControlSnapshotStore:
         }
         branch_rows = [
             (binding, repository)
-            for binding, repository in rows
+            for binding, repository, _, _ in rows
             if binding.id not in exact_binding_ids
         ]
         branch_results = await asyncio.gather(
             *(
-                self._resolve_branch(repository, credentials[repository.id])
-                for _, repository in branch_rows
+                self._resolve_branch(repository, credentials[binding.id])
+                for binding, repository in branch_rows
             )
         )
         branch_by_binding = {
@@ -142,8 +186,8 @@ class InvestigationControlSnapshotStore:
             for (binding, _), resolved in zip(branch_rows, branch_results, strict=True)
         }
 
-        for binding, repository in rows:
-            credential_hash, _, _ = credentials[repository.id]
+        for binding, repository, _, _ in rows:
+            connection_id, credential_revision_id, credential_hash, _ = credentials[binding.id]
             if binding.id in exact_binding_ids:
                 candidate_sha = incident_source_revision
                 revision_role = "incident_source"
@@ -155,7 +199,8 @@ class InvestigationControlSnapshotStore:
             payload = {
                 "repository_binding_id": binding.id,
                 "repository_id": repository.id,
-                "credential_id": repository.credential_id,
+                "account_connection_id": connection_id,
+                "credential_revision_id": credential_revision_id,
                 "binding_revision": binding.revision,
                 "role": binding.role,
                 "priority": binding.priority,
@@ -169,8 +214,8 @@ class InvestigationControlSnapshotStore:
                         "repository_id": repository.id,
                         "repo_url": repository.repo_url,
                         "default_branch": repository.default_branch,
-                        "scope": repository.scope,
-                        "workspace_id": repository.workspace_id,
+                        "provider_instance_id": repository.provider_instance_id,
+                        "external_repository_id": repository.external_repository_id,
                     }
                 ),
                 "credential_identity_hash": credential_hash,
@@ -210,16 +255,14 @@ class InvestigationControlSnapshotStore:
     async def _resolve_exact(
         self,
         repository: GitRepository,
-        credential: tuple[str | None, GitCredentialMaterial | None, bool],
+        credential: tuple[int, int, str, GitCredentialMaterial],
         revision: str,
     ) -> str | None:
-        if not credential[2]:
-            return None
         try:
             return await self.revision_resolver.resolve_revision(
                 repo_url=repository.repo_url,
                 revision=revision,
-                credential=credential[1],
+                credential=credential[3],
             )
         except (OSError, RuntimeError, ValueError):
             return None
@@ -227,15 +270,13 @@ class InvestigationControlSnapshotStore:
     async def _resolve_branch(
         self,
         repository: GitRepository,
-        credential: tuple[str | None, GitCredentialMaterial | None, bool],
+        credential: tuple[int, int, str, GitCredentialMaterial],
     ) -> str | None:
-        if not credential[2]:
-            return None
         try:
             return await self.revision_resolver.resolve_branch(
                 repo_url=repository.repo_url,
                 branch=repository.default_branch,
-                credential=credential[1],
+                credential=credential[3],
             )
         except (OSError, RuntimeError, ValueError):
             return None

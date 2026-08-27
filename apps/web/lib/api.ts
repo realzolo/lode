@@ -1,4 +1,6 @@
 import type {
+  BuildUnit,
+  Component,
   CurrentUser,
   EvidenceConnector,
   InvestigationDetail,
@@ -14,6 +16,11 @@ import type {
   PlatformSettings,
   ProviderAccount,
   RepositoryBinding,
+  GitAccountConnection,
+  GitAccountRepository,
+  GitProviderInstance,
+  WorkspaceGitAccountGrant,
+  WorkspaceRepositoryCandidate,
   Workspace,
 } from '@/lib/types';
 
@@ -173,8 +180,43 @@ export function publishModelPolicy(workspaceId: number | string, input: Record<s
 export function fetchRepositories(workspaceId: number | string) {
   return get<RepositoryBinding[]>(`/workspaces/${workspaceId}/repositories`);
 }
-export function createLocalRepository(workspaceId: number | string, input: Record<string, unknown>) {
-  return send<RepositoryBinding>(`/workspaces/${workspaceId}/repositories/local`, 'POST', input);
+export function fetchGitProviderInstances() { return get<GitProviderInstance[]>('/git-provider-instances'); }
+export function createGitProviderInstance(input: Record<string, unknown>) {
+  return send<GitProviderInstance>('/git-provider-instances', 'POST', input);
+}
+export function fetchGitAccountConnections() { return get<GitAccountConnection[]>('/git-account-connections'); }
+export function createGitAccountAccessToken(input: { provider_instance_id: number; name: string; access_token: string }) {
+  return send<GitAccountConnection>('/git-account-connections/access-token', 'POST', input);
+}
+export function createGitHubAppConnection(input: { provider_instance_id: number; name: string; installation_id: string }) {
+  return send<GitAccountConnection>('/git-account-connections/github-app', 'POST', input);
+}
+export function syncGitAccountConnection(id: number) {
+  return send<GitAccountConnection>(`/git-account-connections/${id}/sync`, 'POST');
+}
+export function fetchGitAccountRepositories(id: number) {
+  return get<GitAccountRepository[]>(`/git-account-connections/${id}/repositories`);
+}
+export function startGitOAuth(providerId: number, name: string) {
+  return send<{ authorization_url: string }>(`/git-provider-instances/${providerId}/oauth/start`, 'POST', { name });
+}
+export function fetchWorkspaceGitAccountGrants(workspaceId: number | string) {
+  return get<WorkspaceGitAccountGrant[]>(`/workspaces/${workspaceId}/git-account-grants`);
+}
+export function createWorkspaceGitAccountGrant(workspaceId: number | string, input: { account_connection_id: number; repository_scope: 'selected' | 'all_visible'; repository_ids?: number[] }) {
+  return send<WorkspaceGitAccountGrant>(`/workspaces/${workspaceId}/git-account-grants`, 'POST', input);
+}
+export function fetchWorkspaceRepositoryCandidates(workspaceId: number | string) {
+  return get<WorkspaceRepositoryCandidate[]>(`/workspaces/${workspaceId}/repository-candidates`);
+}
+export function fetchBuildUnits(workspaceId: number | string) {
+  return get<{ items: BuildUnit[] }>(`/workspaces/${workspaceId}/build-units`);
+}
+export function fetchComponents(workspaceId: number | string) {
+  return get<{ items: Component[] }>(`/workspaces/${workspaceId}/components`);
+}
+export function bindRepository(workspaceId: number | string, input: { repository_entitlement_id: number; role: string; priority?: number; description?: string }) {
+  return send<RepositoryBinding>(`/workspaces/${workspaceId}/repositories`, 'POST', input);
 }
 export function fetchConnectorKinds() {
   return get<Array<{ kind: string; language: string; capabilities: string[]; secret_fields: string[] }>>('/evidence-connector-kinds');
@@ -191,10 +233,6 @@ export function testConnector(workspaceId: number | string, connectorId: number)
 export function introspectConnector(workspaceId: number | string, connectorId: number) {
   return send<Record<string, unknown>>(`/workspaces/${workspaceId}/evidence-connectors/${connectorId}/introspect`, 'POST');
 }
-export function fetchResourceView(workspaceId: number | string, resource: string) {
-  return get<Array<Record<string, unknown>>>(`/workspaces/${workspaceId}/${resource}`);
-}
-
 export function fetchInvestigations(input: { workspaceId?: number; status?: string; q?: string; afterId?: number } = {}) {
   const query = new URLSearchParams();
   if (input.workspaceId) query.set('workspace_id', String(input.workspaceId));

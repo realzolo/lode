@@ -508,7 +508,7 @@ async def get_investigation_technical(
                 InvestigationRepositorySnapshot,
                 internal_id,
                 order_by=InvestigationRepositorySnapshot.id,
-                exclude=frozenset({"credential_id"}),
+                exclude=frozenset({"credential_revision_id", "credential_identity_hash"}),
             ),
             "connectors": await _rows(
                 session,

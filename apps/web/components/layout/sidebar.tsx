@@ -1,7 +1,7 @@
 'use client';
 
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { Activity, Boxes, Languages, LogOut, Moon, ServerCog, Settings, Sun, Users } from 'lucide-react';
+import { Activity, Boxes, GitFork, Languages, LogOut, Moon, ServerCog, Settings, Sun, Users } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import { useTheme } from 'next-themes';
 import { Link, usePathname, useRouter } from '@/lib/navigation';
@@ -19,6 +19,7 @@ export function Sidebar({ portal, onNavigate }: { portal: Portal; onNavigate?: (
   const adminNav = [
     { label: t('workspaces'), href: '/admin', icon: Boxes },
     { label: t('models'), href: '/admin/models', icon: ServerCog },
+    { label: t('git'), href: '/admin/git', icon: GitFork },
     { label: t('users'), href: '/admin/users', icon: Users },
     { label: t('settings'), href: '/admin/settings', icon: Settings },
   ];

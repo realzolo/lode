@@ -6,7 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from lode.api.control_schemas import (
-    ConnectorPatch,
+    ConnectorCreate,
+    GitProviderInstanceCreate,
+    WorkspaceGitAccountGrantCreate,
     ModelBindingInput,
     ProviderAccountModelSelection,
     ModelPolicyInput,
@@ -48,12 +50,38 @@ def test_model_policy_rejects_duplicate_immutable_binding_refs() -> None:
     [
         (ProviderAccountPatch, {"name": None}),
         (ProviderAccountModelSelection, {"model_ids": ["gpt-5.6-sol"], "manual_model_ids": ["missing"]}),
-        (ConnectorPatch, {"secrets": None}),
     ],
 )
 def test_patch_rejects_explicit_null_for_required_storage_fields(schema, values) -> None:
     with pytest.raises(ValidationError):
         schema.model_validate(values)
+
+
+def test_connector_creation_rejects_raw_configuration_documents() -> None:
+    with pytest.raises(ValidationError):
+        ConnectorCreate.model_validate(
+            {
+                "name": "logs",
+                "kind": "loki",
+                "config": {"base_url": "https://logs.example.com"},
+                "scope_config": {"root_matchers": {"cluster": "production"}},
+            }
+        )
+
+
+def test_git_provider_and_workplace_access_forms_require_complete_authorization() -> None:
+    with pytest.raises(ValidationError):
+        GitProviderInstanceCreate.model_validate(
+            {
+                "kind": "github",
+                "name": "GitHub",
+                "github_app_id": "123",
+            }
+        )
+    with pytest.raises(ValidationError):
+        WorkspaceGitAccountGrantCreate.model_validate(
+            {"account_connection_id": 1, "repository_scope": "selected"}
+        )
 
 
 def test_provider_patch_allows_clearing_optional_scope_references() -> None:

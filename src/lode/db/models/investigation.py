@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Text,
@@ -131,8 +132,13 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
     repository_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False
     )
-    credential_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("git_credentials.id", ondelete="RESTRICT")
+    account_connection_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("git_account_connections.id", ondelete="RESTRICT"), nullable=False
+    )
+    credential_revision_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("git_account_credential_revisions.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)
@@ -143,10 +149,19 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
     frozen_revision_role: Mapped[str] = mapped_column(Text, nullable=False)
     frozen_resolution_status: Mapped[str] = mapped_column(Text, nullable=False)
     repository_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    credential_identity_hash: Mapped[str | None] = mapped_column(Text)
+    credential_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["credential_revision_id", "account_connection_id"],
+            [
+                "git_account_credential_revisions.id",
+                "git_account_credential_revisions.account_connection_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_investigation_repository_snapshots_credential_account",
+        ),
         UniqueConstraint(
             "investigation_id", "repository_binding_id", name="uq_investigation_repository_snapshot"
         ),

@@ -70,7 +70,8 @@ def test_repository_snapshot_freezes_location_and_identity() -> None:
     sql = _check_sql("investigation_repository_snapshots")
 
     assert {
-        "credential_id",
+        "account_connection_id",
+        "credential_revision_id",
         "frozen_resolution_status",
         "frozen_revision_role",
         "repo_url",

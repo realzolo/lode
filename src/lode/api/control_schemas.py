@@ -279,19 +279,153 @@ class PlatformSettingsOut(_ORMOutput):
     supported_languages: list[Literal["en", "zh"]]
 
 
-class RepositoryBind(_StrictInput):
-    repository_id: int = Field(gt=0)
-    role: Literal["runtime_source", "shared_library", "infrastructure", "documentation"]
-    priority: int = Field(default=0, ge=0)
-    description: str = Field(default="", max_length=2_000)
-
-
-class LocalRepositoryCreate(_StrictInput):
+class GitProviderInstanceCreate(_StrictInput):
+    kind: Literal["github", "gitlab", "gitee"]
     name: str = Field(min_length=1, max_length=200)
-    repo_url: str = Field(min_length=1, max_length=2_000)
-    repo_type: str = Field(default="other", max_length=100)
-    default_branch: str = Field(default="main", min_length=1, max_length=200)
-    credential_id: int | None = Field(default=None, gt=0)
+    base_url: str | None = Field(default=None, max_length=2_000)
+    api_url: str | None = Field(default=None, max_length=2_000)
+    github_app_id: str | None = Field(default=None, max_length=200)
+    github_app_private_key: str | None = Field(default=None, max_length=100_000)
+    oauth_client_id: str | None = Field(default=None, max_length=2_000)
+    oauth_client_secret: str | None = Field(default=None, max_length=8_000)
+    oauth_redirect_uri: str | None = Field(default=None, max_length=2_000)
+
+    @model_validator(mode="after")
+    def valid_native_auth(self):
+        github_values = (self.github_app_id, self.github_app_private_key)
+        oauth_values = (self.oauth_client_id, self.oauth_client_secret, self.oauth_redirect_uri)
+        if self.kind == "github":
+            if any(value is not None for value in oauth_values):
+                raise ValueError("GitHub provider instances do not use OAuth client fields")
+            if any(value is not None for value in github_values) and not all(github_values):
+                raise ValueError("GitHub App ID and private key must be supplied together")
+        else:
+            if any(value is not None for value in github_values):
+                raise ValueError("only GitHub provider instances accept GitHub App fields")
+            if any(value is not None for value in oauth_values) and not all(oauth_values):
+                raise ValueError("OAuth client ID, secret, and redirect URI must be supplied together")
+        return self
+
+
+class GitProviderInstanceOut(_ORMOutput):
+    id: int
+    kind: Literal["github", "gitlab", "gitee"]
+    name: str
+    base_url: str
+    api_url: str
+    state: Literal["active", "disabled"]
+    verification_status: Literal["untested", "healthy", "unavailable"]
+    verified_at: datetime | None
+    last_error: str | None
+    native_auth_available: bool
+    native_auth_kind: Literal["github_app", "oauth"] | None
+    revision: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class GitProviderInstancePatch(_StrictPatch):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    state: Literal["active", "disabled"] | None = None
+
+
+class GitAccountManualCreate(_StrictInput):
+    provider_instance_id: int = Field(gt=0)
+    name: str = Field(min_length=1, max_length=200)
+    access_token: str = Field(min_length=1, max_length=8_000)
+
+
+class GitHubAppConnectionCreate(_StrictInput):
+    provider_instance_id: int = Field(gt=0)
+    name: str = Field(min_length=1, max_length=200)
+    installation_id: str = Field(min_length=1, max_length=200)
+
+
+class GitOAuthStart(_StrictInput):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class GitOAuthStartOut(_StrictInput):
+    authorization_url: str
+
+
+class GitAccountConnectionOut(_ORMOutput):
+    id: int
+    provider_instance_id: int
+    provider_kind: Literal["github", "gitlab", "gitee"]
+    provider_name: str
+    name: str
+    auth_mode: Literal["github_app", "oauth", "access_token"]
+    external_account_id: str
+    external_account_login: str
+    account_url: str
+    state: Literal["active", "disabled", "revoked"]
+    verification_status: Literal["untested", "healthy", "unavailable"]
+    verified_at: datetime | None
+    last_synced_at: datetime | None
+    last_error: str | None
+    repository_count: int
+    revision: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class GitAccountRepositoryOut(_StrictInput):
+    repository_id: int
+    provider_kind: Literal["github", "gitlab", "gitee"]
+    full_name: str
+    repo_url: str
+    web_url: str
+    default_branch: str
+    visibility: Literal["public", "private", "internal"]
+    archived: bool
+
+
+class WorkspaceGitAccountGrantCreate(_StrictInput):
+    account_connection_id: int = Field(gt=0)
+    repository_scope: Literal["selected", "all_visible"] = "selected"
+    repository_ids: tuple[int, ...] = Field(default=(), max_length=1_000)
+
+    @model_validator(mode="after")
+    def selected_scope_requires_repositories(self):
+        if len(self.repository_ids) != len(set(self.repository_ids)):
+            raise ValueError("repository IDs must be unique")
+        if self.repository_scope == "selected" and not self.repository_ids:
+            raise ValueError("selected repository access requires at least one repository")
+        return self
+
+
+class WorkspaceGitAccountGrantOut(_ORMOutput):
+    id: int
+    workspace_id: int
+    account_connection_id: int
+    account_name: str
+    provider_kind: Literal["github", "gitlab", "gitee"]
+    external_account_login: str
+    repository_scope: Literal["selected", "all_visible"]
+    state: Literal["active", "disabled"]
+    repository_count: int
+    revision: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkspaceRepositoryCandidateOut(_StrictInput):
+    entitlement_id: int
+    repository_id: int
+    provider_kind: Literal["github", "gitlab", "gitee"]
+    full_name: str
+    repo_url: str
+    web_url: str
+    default_branch: str
+    visibility: Literal["public", "private", "internal"]
+    archived: bool
+    account_connection_id: int
+    account_name: str
+
+
+class RepositoryBind(_StrictInput):
+    repository_entitlement_id: int = Field(gt=0)
     role: Literal["runtime_source", "shared_library", "infrastructure", "documentation"]
     priority: int = Field(default=0, ge=0)
     description: str = Field(default="", max_length=2_000)
@@ -310,8 +444,12 @@ class RepositoryBindingOut(_StrictInput):
     id: int
     workspace_id: int
     repository_id: int
+    repository_entitlement_id: int
+    provider_kind: Literal["github", "gitlab", "gitee"]
     name: str
+    full_name: str
     repo_url: str
+    web_url: str
     repo_type: str
     default_branch: str
     role: str
@@ -321,26 +459,71 @@ class RepositoryBindingOut(_StrictInput):
     revision: int
 
 
+class ConnectorMatcherInput(_StrictInput):
+    name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+    value: str = Field(min_length=1, max_length=1_000)
+
+
+class SqlTableScopeInput(_StrictInput):
+    table: str = Field(min_length=3, max_length=260, pattern=r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
+    time_column: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    stable_order: tuple[str, ...] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def stable_order_is_unique(self):
+        if len(self.stable_order) != len(set(self.stable_order)):
+            raise ValueError("stable order columns must be unique")
+        return self
+
+
 class ConnectorCreate(_StrictInput):
     name: str = Field(min_length=1, max_length=200)
-    kind: Literal[
-        "loki", "elasticsearch", "opensearch", "postgresql", "mysql", "https", "command_runner"
-    ]
-    config: dict[str, Any]
-    secrets: dict[str, str] = Field(default_factory=dict)
-    scope_config: dict[str, Any]
-    schema_catalog: dict[str, Any] = Field(default_factory=dict)
-    execution_budget_policy: dict[str, Any]
+    kind: Literal["loki", "elasticsearch", "opensearch", "postgresql", "mysql", "https"]
+    endpoint: str | None = Field(default=None, min_length=1, max_length=1_000)
+    authentication: Literal["none", "bearer_token", "api_key", "basic"] = "none"
+    credential: str | None = Field(default=None, min_length=1, max_length=8_000)
+    credential_username: str | None = Field(default=None, min_length=1, max_length=200)
+    tenant_id: str | None = Field(default=None, min_length=1, max_length=200)
+    root_matchers: tuple[ConnectorMatcherInput, ...] = Field(default=(), max_length=32)
+    allowed_indices: tuple[str, ...] = Field(default=(), max_length=500)
+    verification_path: str = Field(default="/health", min_length=1, max_length=1_000)
+    safe_read_path: str | None = Field(default=None, min_length=1, max_length=1_000)
+    safe_read_content_type: str = Field(default="application/json", min_length=3, max_length=200)
+    host: str | None = Field(default=None, min_length=1, max_length=253)
+    port: int | None = Field(default=None, ge=1, le=65_535)
+    database: str | None = Field(default=None, min_length=1, max_length=64)
+    database_username: str | None = Field(default=None, min_length=1, max_length=64)
+    database_password: str | None = Field(default=None, min_length=1, max_length=8_000)
+    ca_certificate_pem: str | None = Field(default=None, min_length=1, max_length=100_000)
+    allowed_tables: tuple[SqlTableScopeInput, ...] = Field(default=(), max_length=500)
 
-
-class ConnectorPatch(_StrictPatch):
-    name: str | None = Field(default=None, min_length=1, max_length=200)
-    config: dict[str, Any] | None = None
-    secrets: dict[str, str] | None = None
-    scope_config: dict[str, Any] | None = None
-    schema_catalog: dict[str, Any] | None = None
-    execution_budget_policy: dict[str, Any] | None = None
-    state: Literal["active", "disabled"] | None = None
+    @model_validator(mode="after")
+    def valid_kind_specific_form(self):
+        if self.kind in {"loki", "elasticsearch", "opensearch", "https"} and not self.endpoint:
+            raise ValueError("an HTTPS endpoint is required")
+        if self.kind == "loki" and not self.root_matchers:
+            raise ValueError("Loki requires at least one root label matcher")
+        if self.kind in {"elasticsearch", "opensearch"} and not self.allowed_indices:
+            raise ValueError("search connectors require at least one allowed index")
+        if self.kind == "https" and not self.safe_read_path:
+            raise ValueError("HTTPS connectors require one allowed read path")
+        if self.kind in {"postgresql", "mysql"} and not all(
+            (self.host, self.database, self.database_username, self.database_password, self.ca_certificate_pem)
+        ):
+            raise ValueError("database connectors require read-only database and TLS fields")
+        if self.kind in {"postgresql", "mysql"} and not self.allowed_tables:
+            raise ValueError("database connectors require at least one allowed table")
+        if self.kind == "loki" and self.authentication not in {"none", "bearer_token"}:
+            raise ValueError("Loki supports only bearer-token authentication")
+        if self.kind in {"elasticsearch", "opensearch", "https"} and self.authentication == "none":
+            raise ValueError("this connector requires an authentication method")
+        if self.kind in {"loki", "elasticsearch", "opensearch", "https"} and self.authentication == "basic" and not self.credential_username:
+            raise ValueError("basic authentication requires a username")
+        if self.kind in {"loki", "elasticsearch", "opensearch", "https"} and self.authentication != "none" and not self.credential:
+            raise ValueError("the selected authentication method requires a credential")
+        if self.kind in {"loki", "elasticsearch", "opensearch", "https"} and self.authentication == "none" and self.credential is not None:
+            raise ValueError("a credential requires an authentication method")
+        return self
 
 
 class ConnectorOut(_StrictInput):
