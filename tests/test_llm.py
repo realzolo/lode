@@ -207,19 +207,25 @@ def test_strict_response_schema_replaces_loose_json_mode(monkeypatch):
 
 
 def test_anthropic_uses_its_native_authentication_headers(monkeypatch):
-    captured: dict = {}
+    captured: list[tuple[str, dict]] = []
 
-    async def request(_method, _endpoint, **kwargs):
-        captured.update(kwargs["headers"])
-        return _Response({"choices": [{"message": {"content": "OK"}}]})
+    async def request(_method, endpoint, **kwargs):
+        captured.append((endpoint, kwargs["headers"]))
+        if endpoint.endswith("/count_tokens"):
+            return _Response({"input_tokens": 2})
+        return _Response({"content": [{"type": "text", "text": "OK"}]})
 
     monkeypatch.setattr("lode.engine.llm.provider_request", request)
     config = ModelConfig(
         protocol_id="anthropic.messages.v1",
         base_url="https://model.example",
         api_key_ciphertext=encrypt_secret("test-key"),
-        model="test-model",
+        model="claude-sonnet-5",
     )
     assert asyncio.run(complete_with_usage("system", "user", config)).text == "OK"
-    assert captured["x-api-key"] == "test-key"
-    assert captured["anthropic-version"]
+    assert [endpoint.rsplit("/", 1)[-1] for endpoint, _ in captured] == [
+        "count_tokens",
+        "messages",
+    ]
+    assert all(headers["x-api-key"] == "test-key" for _, headers in captured)
+    assert all(headers["anthropic-version"] for _, headers in captured)

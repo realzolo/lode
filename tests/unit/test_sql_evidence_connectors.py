@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -7,8 +8,12 @@ import pytest
 
 import lode.evidence_access.orchestrator as orchestrator_module
 from lode.evidence_access.orchestrator import ExecutionPermit
-from lode.evidence_connectors.mysql import MySQLConnector
-from lode.evidence_connectors.postgresql import PostgreSQLConnector
+from lode.evidence_connectors.mysql import MySQLBackend, MySQLConnector, MySQLConnectorConfig
+from lode.evidence_connectors.postgresql import (
+    PostgreSQLBackend,
+    PostgreSQLConnector,
+    PostgreSQLConnectorConfig,
+)
 from lode.evidence_connectors.types import IntrospectionBudget, ProviderExecutionError
 
 
@@ -30,16 +35,27 @@ class FakeSQLBackend:
         return self.attestation
 
     async def introspect(
-        self, tables: Sequence[str], timeout_ms: int
+        self, max_tables: int, timeout_ms: int
     ) -> Mapping[str, Mapping[str, Any]]:
-        self.calls.append(("introspect", tuple(tables)))
+        self.calls.append(("introspect", max_tables))
         return {
-            table: {
-                "id": {"type": "bigint", "nullable": False},
-                "tenant_id": {"type": "text", "nullable": False},
-                "created_at": {"type": "timestamp", "nullable": False},
-            }
-            for table in tables
+            "public.orders": {
+                "columns": {
+                    "id": {"type": "bigint", "nullable": False},
+                    "tenant_id": {"type": "text", "nullable": False},
+                    "created_at": {"type": "timestamp", "nullable": False},
+                },
+                "primary_key": ["id"],
+                "unique_indexes": {},
+            },
+            "public.unsafe_events": {
+                "columns": {
+                    "message": {"type": "text", "nullable": False},
+                    "created_at": {"type": "timestamp", "nullable": False},
+                },
+                "primary_key": [],
+                "unique_indexes": {},
+            },
         }
 
     async def explain(self, query: str, timeout_ms: int) -> Mapping[str, Any]:
@@ -68,7 +84,6 @@ def config() -> dict[str, Any]:
         "port": 5432,
         "database": "analytics",
         "username": "lode_reader",
-        "ca_certificate_pem": "test-ca",
     }
 
 
@@ -144,15 +159,7 @@ async def test_sql_connector_verify_introspect_preflight_execute(
 
     verified = await connector.verify()
     catalog = await connector.introspect(
-        {
-            "allowed_tables": ["public.orders"],
-            "table_policies": {
-                "public.orders": {
-                    "time_column": "created_at",
-                    "stable_order": ["created_at", "id"],
-                }
-            },
-        },
+        {},
         IntrospectionBudget(timeout_ms=3_000, max_resources=10),
     )
     preflight = await connector.preflight(permit(action(kind, dialect)))
@@ -160,6 +167,8 @@ async def test_sql_connector_verify_introspect_preflight_execute(
 
     assert verified.provider == kind
     assert catalog.resources["tables"]["public.orders"]["time_column"] == "created_at"
+    assert catalog.resources["tables"]["public.orders"]["stable_order"] == ["id"]
+    assert catalog.resources["excluded_tables"] == {"public.unsafe_events": "no_stable_key"}
     assert preflight["estimated_rows"] == 10
     assert result["records"][0]["message"] == "<REDACTED:credential_assignment>"
     assert result["secret_categories"] == ["credential_assignment"]
@@ -238,6 +247,13 @@ async def test_sql_explain_mode_never_fetches_rows() -> None:
 
 def test_sql_connector_config_and_permit_are_strict() -> None:
     with pytest.raises(ValueError):
+        PostgreSQLConnector(
+            {**config(), "ca_certificate_pem": "custom-ca"},
+            {"password": "secret"},
+            FakeSQLBackend(attestation=postgres_attestation()),
+        )
+
+    with pytest.raises(ValueError):
         MySQLConnector(
             {**config(), "allowed_ip_cidrs": ["10.0.0.1/8"]},
             {"password": "secret"},
@@ -256,6 +272,42 @@ def test_sql_connector_config_and_permit_are_strict() -> None:
 
     with pytest.raises(PermissionError):
         connector._action(Forged())
+
+
+def test_sql_backends_enforce_system_ca_hostname_verification_and_tls_12() -> None:
+    postgres = PostgreSQLBackend(
+        PostgreSQLConnectorConfig.model_validate(config()), "secret"
+    )
+    mysql = MySQLBackend(MySQLConnectorConfig.model_validate(config()), "secret")
+
+    for backend in (postgres, mysql):
+        assert backend.ssl_context.check_hostname is True
+        assert backend.ssl_context.verify_mode == ssl.CERT_REQUIRED
+        assert backend.ssl_context.minimum_version == ssl.TLSVersion.TLSv1_2
+
+
+@pytest.mark.asyncio
+async def test_sql_introspection_rejects_more_than_200_readable_tables() -> None:
+    class OversizedBackend(FakeSQLBackend):
+        async def introspect(self, max_tables: int, timeout_ms: int):
+            descriptor = {
+                "columns": {
+                    "id": {"type": "bigint", "nullable": False},
+                    "occurred_at": {"type": "timestamp", "nullable": False},
+                },
+                "primary_key": ["id"],
+                "unique_indexes": {},
+            }
+            return {f"public.table_{index}": descriptor for index in range(201)}
+
+    connector = PostgreSQLConnector(
+        config(), {"password": "secret"}, OversizedBackend(attestation=postgres_attestation())
+    )
+
+    with pytest.raises(ProviderExecutionError) as error:
+        await connector.introspect({}, IntrospectionBudget(timeout_ms=3_000, max_resources=500))
+
+    assert error.value.code == "cost_exceeded"
 
 
 @pytest.mark.asyncio

@@ -13,4 +13,8 @@ def test_catalog_accepts_only_reviewed_fixed_openai_model_ids() -> None:
     assert len(profile.profile_hash) == 64
     assert find_model("openai", "openai.responses.v1", "gpt-5.6") is None
     assert find_model("openai", "anthropic.messages.v1", "gpt-5.6-sol") is None
-    assert require_model("anthropic", "anthropic.messages.v1", "claude-sonnet-4-20250514").display_name == "Claude Sonnet 4"
+    anthropic = require_model("anthropic", "anthropic.messages.v1", "claude-sonnet-5")
+    assert anthropic.display_name == "Claude Sonnet 5"
+    assert anthropic.token_counting_strategy == "anthropic_count_tokens"
+    assert anthropic.tokenizer_encoding is None
+    assert anthropic.capabilities["tool_calling"] is True

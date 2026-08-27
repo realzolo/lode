@@ -48,11 +48,11 @@
   --border: 0 0% 92%;                /* ~#ebebeb hairline */
   --input: 0 0% 92%;
   --ring: 215 100% 50%;              /* #0070f3 link blue */
-  --radius: 8px;                     /* DESIGN.md rounded.md */
+  --radius: 6px;
 
   /* Geometry */
-  --sidebar-width: 256px;
-  --topbar-height: 64px;
+  --sidebar-width: 248px;
+  --topbar-height: 56px;
 
   /* ---- Motion tokens (emil-design-eng) ----
      Strong custom easing curves — the built-in `ease` lacks punch and makes
@@ -1729,7 +1729,7 @@ button {
   .workspace-switcher { min-height: 40px; padding: 0; }
   .sidebar-logo { font-size: 0; flex: 0; }
   .sidebar-logo::before { font-size: 16px; }
-  .workspace-plan, .sidebar-search span, .sidebar-search kbd, .nav-item:not(.nav-subitem) > :not(.nav-icon), .sidebar-label, .sidebar-divider, .sidebar-account .account-meta { display: none; }
+  .workspace-plan, .sidebar-search span, .sidebar-search kbd, .nav-item-label, .sidebar-label, .sidebar-divider, .sidebar-account .account-meta { display: none; }
   .sidebar-search { width: 40px; margin: 8px 0 14px; justify-content: center; padding: 0; }
   .nav-item { width: 40px; justify-content: center; padding: 0; }
   .sidebar-account { width: 40px; justify-content: center; padding: 8px 0; }

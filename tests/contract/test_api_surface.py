@@ -29,6 +29,8 @@ def test_control_plane_responses_never_publish_secret_values() -> None:
 
     assert "credential" not in provider_fields
     assert "credential_ciphertext" not in provider_fields
+    assert "api_key" not in provider_fields
+    assert "api_key_ciphertext" not in provider_fields
     assert "secrets" not in connector_fields
     assert "secret_ciphertext" not in connector_fields
     assert "configured_secret_fields" in connector_fields

@@ -8,6 +8,7 @@
 // user). Keeping the chrome here avoids duplicating the sidebar/topbar.
 
 import { useEffect, useState, type ReactNode } from 'react';
+import { useTranslations } from 'next-intl';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Topbar } from '@/components/layout/topbar';
 import { useRouter } from '@/lib/navigation';
@@ -17,6 +18,7 @@ export type Portal = 'admin' | 'workbench';
 
 export function AppShell({ portal, children }: { portal: Portal; children: ReactNode }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const t = useTranslations('navigation');
   const { user, loading } = useUser();
   const router = useRouter();
 
@@ -40,8 +42,8 @@ export function AppShell({ portal, children }: { portal: Portal; children: React
         <Topbar portal={portal} onMenu={() => setMobileNavOpen(true)} />
         <div className="content"><div className="page-frame">{children}</div></div>
       </div>
-      <div className={`mobile-nav-drawer ${mobileNavOpen ? 'is-open' : ''}`} role="dialog" aria-label="Navigation" aria-modal="true" aria-hidden={!mobileNavOpen}>
-        <button className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />
+      <div className={`mobile-nav-drawer ${mobileNavOpen ? 'is-open' : ''}`} role="dialog" aria-label={t('navigation')} aria-modal="true" aria-hidden={!mobileNavOpen}>
+        <button className="mobile-nav-backdrop" aria-label={t('closeNavigation')} onClick={() => setMobileNavOpen(false)} />
         <Sidebar portal={portal} onNavigate={() => setMobileNavOpen(false)} />
       </div>
     </div>

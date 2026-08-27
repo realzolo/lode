@@ -97,6 +97,7 @@ class Workspace:
 @dataclass(frozen=True, slots=True)
 class ProviderAccount:
     name: str
+    provider_kind: Literal["openai", "anthropic"]
     protocol_id: str
     base_url: str
     state: LifecycleState = LifecycleState.ACTIVE
@@ -106,6 +107,7 @@ class ProviderAccount:
     def __post_init__(self) -> None:
         for field_name in (
             "name",
+            "provider_kind",
             "protocol_id",
             "base_url",
         ):
@@ -116,6 +118,16 @@ class ProviderAccount:
             "anthropic.messages.v1",
         }:
             raise DomainValidationError("unsupported_protocol", "model protocol is not supported")
+        if (
+            self.provider_kind == "openai"
+            and not self.protocol_id.startswith("openai.")
+        ) or (
+            self.provider_kind == "anthropic"
+            and self.protocol_id != "anthropic.messages.v1"
+        ):
+            raise DomainValidationError(
+                "provider_protocol_mismatch", "model protocol does not match provider"
+            )
         if self.revision < 1:
             raise DomainValidationError("invalid_revision", "revision must be positive")
 
@@ -126,6 +138,7 @@ class ProviderAccountModel:
     provider_model_id: str
     catalog_revision: str
     catalog_profile_hash: str
+    discovery_state: Literal["discovered", "manual", "missing"]
     availability_state: HealthState = HealthState.UNTESTED
     state: LifecycleState = LifecycleState.ACTIVE
     revision: int = 1
@@ -136,6 +149,10 @@ class ProviderAccountModel:
         _required(self.provider_model_id, "provider_model_id")
         _required(self.catalog_revision, "catalog_revision")
         _required(self.catalog_profile_hash, "catalog_profile_hash")
+        if self.discovery_state not in {"discovered", "manual", "missing"}:
+            raise DomainValidationError(
+                "invalid_discovery_state", "account model discovery state is invalid"
+            )
         if not _SHA256.fullmatch(self.catalog_profile_hash) or self.revision < 1:
             raise DomainValidationError(
                 "invalid_model_catalog", "account model catalog data is invalid"

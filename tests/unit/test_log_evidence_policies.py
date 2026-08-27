@@ -64,7 +64,10 @@ def candidate(language: str, payload: dict, *, bindings: dict[str, str] | None =
 
 def logql_context(**changes) -> AccessContext:
     scope = {
-        "root_matchers": {"cluster": "prod", "namespace": "orders"},
+        "root_filter_dnf": [[
+            {"label": "cluster", "operator": "equals", "values": ["prod"]},
+            {"label": "namespace", "operator": "equals", "values": ["orders"]},
+        ]],
         "allowed_pipeline_stages": ["line_filter", "json", "label_filter"],
         "allow_metric_queries": True,
         "max_metric_range_seconds": 900,
@@ -150,13 +153,13 @@ def test_logql_full_parse_scope_injection_and_arbitrary_value_binding() -> None:
     raw = ' trace/值?x=1"quoted"\nnext '
     bound = policy.bind_values(parsed, evaluated, {SENTINEL: raw})
 
-    assert 'cluster="prod"' in evaluated.effective_action["query"]
-    assert 'namespace="orders"' in evaluated.effective_action["query"]
+    assert 'cluster="prod"' in evaluated.effective_action["queries"][0]
+    assert 'namespace="orders"' in evaluated.effective_action["queries"][0]
     assert evaluated.effective_action["limit"] == 500
     assert evaluated.effective_action["timeout_ms"] == 10_000
-    assert raw not in evaluated.effective_action["query"]
-    assert json.dumps(raw, ensure_ascii=False) in bound.canonical_action["query"]
-    rebound = policy._parser.parse(bound.canonical_action["query"])
+    assert raw not in evaluated.effective_action["queries"][0]
+    assert json.dumps(raw, ensure_ascii=False) in bound.canonical_action["queries"][0]
+    rebound = policy._parser.parse(bound.canonical_action["queries"][0])
     assert any(item.get("value") == raw for item in rebound.strings)
     assert bound.structural_hash == evaluated.effective_structural_hash
 

@@ -9,7 +9,7 @@ export function Topbar({ portal, onMenu }: { portal: 'admin' | 'workbench'; onMe
   const controlPlane = portal === 'admin';
   return <header className="topbar">
     <div className="topbar-project">
-      <button className="mobile-menu-button" aria-label={t('accountMenu')} onClick={onMenu}><Menu size={17} /></button>
+      <button className="mobile-menu-button" aria-label={t('openNavigation')} onClick={onMenu}><Menu size={17} /></button>
       <Link href={controlPlane ? '/admin' : '/workbench'}>Lode</Link>
     </div>
     <span className="topbar-section topbar-title">{controlPlane ? t('controlPlane') : t('workbench')}</span>

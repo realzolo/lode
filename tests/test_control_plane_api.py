@@ -37,9 +37,13 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
 
     secret = f"provider-secret-{suffix}"
     async def discover(**_kwargs):
-        return control_plane._DiscoveredModels([{"id": "gpt-5.6-sol", "owned_by": "openai"}])
+        return ("gpt-5.6-sol",)
+
+    async def probe(*_args, **_kwargs):
+        return True, None
 
     monkeypatch.setattr(control_plane, "_discover_provider_models", discover)
+    monkeypatch.setattr(control_plane, "_probe_model", probe)
     admin_headers = {
         "Authorization": "Bearer "
         + create_token(admin_id, settings.jwt_signing_key, 3600)
@@ -54,15 +58,16 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
             headers=admin_headers,
             json={
                 "name": f"provider-{suffix}",
+                "provider_kind": "openai",
+                "protocol_id": "openai.responses.v1",
                 "base_url": "https://api.openai.com/v1",
-                "credential": secret,
-                "model_ids": ["gpt-5.6-sol"],
-                "manual_model_ids": [],
+                "api_key": secret,
+                "models": [{"provider_model_id": "gpt-5.6-sol", "source": "discovered"}],
             },
         )
         assert provider.status_code == 201
         assert secret not in provider.text
-        assert "credential" not in provider.json()
+        assert "api_key" not in provider.json()
 
         provider_list = await client.get("/ai-provider-accounts", headers=admin_headers)
         assert provider_list.status_code == 200
@@ -128,32 +133,43 @@ async def test_account_model_sync_manual_selection_and_active_binding_guard(monk
     upstream_ids = {"gpt-5.6-sol", "gpt-5.6-terra"}
 
     async def discover(**_kwargs):
-        return control_plane._DiscoveredModels(
-            [{"id": model_id, "owned_by": "openai"} for model_id in sorted(upstream_ids)]
-        )
+        return tuple(sorted(upstream_ids))
+
+    async def probe(*_args, **_kwargs):
+        return True, None
 
     monkeypatch.setattr(control_plane, "_discover_provider_models", discover)
+    monkeypatch.setattr(control_plane, "_probe_model", probe)
     headers = {"Authorization": "Bearer " + create_token(admin_id, settings.jwt_signing_key, 3600)}
     secret = f"draft-secret-{suffix}"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         draft = await client.post(
             "/ai-provider-accounts/discover-models",
             headers=headers,
-            json={"base_url": "https://api.openai.com/v1", "credential": secret},
+            json={
+                "provider_kind": "openai",
+                "protocol_id": "openai.responses.v1",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": secret,
+            },
         )
         assert draft.status_code == 200
         assert secret not in draft.text
-        assert {item["provider_model_id"] for item in draft.json()} == upstream_ids
+        assert set(draft.json()["available_model_ids"]) == upstream_ids
 
         created = await client.post(
             "/ai-provider-accounts",
             headers=headers,
             json={
                 "name": f"account-{suffix}",
+                "provider_kind": "openai",
+                "protocol_id": "openai.responses.v1",
                 "base_url": "https://api.openai.com/v1",
-                "credential": secret,
-                "model_ids": sorted(upstream_ids),
-                "manual_model_ids": [],
+                "api_key": secret,
+                "models": [
+                    {"provider_model_id": model_id, "source": "discovered"}
+                    for model_id in sorted(upstream_ids)
+                ],
             },
         )
         assert created.status_code == 201
@@ -186,7 +202,7 @@ async def test_account_model_sync_manual_selection_and_active_binding_guard(monk
         blocked = await client.put(
             f"/ai-provider-accounts/{account_id}/models",
             headers=headers,
-            json={"model_ids": ["gpt-5.6-terra"], "manual_model_ids": []},
+            json={"models": [{"provider_model_id": "gpt-5.6-terra", "source": "discovered"}]},
         )
         assert blocked.status_code == 409
         assert blocked.json()["error"]["code"] == "account_model_in_use"
@@ -195,22 +211,38 @@ async def test_account_model_sync_manual_selection_and_active_binding_guard(monk
         missing = await client.put(
             f"/ai-provider-accounts/{account_id}/models",
             headers=headers,
-            json={"model_ids": ["gpt-5.6-sol", "gpt-5.6-terra"], "manual_model_ids": []},
+            json={"models": [
+                {"provider_model_id": "gpt-5.6-sol", "source": "discovered"},
+                {"provider_model_id": "gpt-5.6-terra", "source": "discovered"},
+            ]},
         )
         assert missing.status_code == 200
         sol = next(item for item in missing.json()["models"] if item["provider_model_id"] == "gpt-5.6-sol")
         assert sol["discovery_state"] == "missing"
         assert sol["state"] == "disabled"
 
+        upstream_ids.clear()
+        refreshed = await client.post(
+            f"/ai-provider-accounts/{account_id}/discover-models",
+            headers=headers,
+        )
+        assert refreshed.status_code == 200
+        accounts = await client.get("/ai-provider-accounts", headers=headers)
+        assert accounts.status_code == 200
+        refreshed_account = next(item for item in accounts.json() if item["id"] == account_id)
+        assert refreshed_account["verification_status"] == "unavailable"
+        assert all(item["state"] == "disabled" for item in refreshed_account["models"])
+
         manual = await client.post(
             "/ai-provider-accounts",
             headers=headers,
             json={
                 "name": f"manual-{suffix}",
+                "provider_kind": "openai",
+                "protocol_id": "openai.responses.v1",
                 "base_url": "https://api.openai.com/v1",
-                "credential": f"manual-secret-{suffix}",
-                "model_ids": ["gpt-5.6-luna"],
-                "manual_model_ids": ["gpt-5.6-luna"],
+                "api_key": f"manual-secret-{suffix}",
+                "models": [{"provider_model_id": "gpt-5.6-luna", "source": "manual"}],
             },
         )
         assert manual.status_code == 201
@@ -218,7 +250,7 @@ async def test_account_model_sync_manual_selection_and_active_binding_guard(monk
         unknown = await client.put(
             f"/ai-provider-accounts/{account_id}/models",
             headers=headers,
-            json={"model_ids": ["not-supported"], "manual_model_ids": ["not-supported"]},
+            json={"models": [{"provider_model_id": "not-supported", "source": "manual"}]},
         )
         assert unknown.status_code == 422
         assert unknown.json()["error"]["code"] == "unsupported_model"

@@ -85,7 +85,7 @@ def test_provider_account_model_requires_immutable_catalog_identity() -> None:
         provider_model_id="gpt-5.6-sol",
         catalog_revision="openai-gpt5.6",
         catalog_profile_hash="a" * 64,
-        discovery_state="synced",
+        discovery_state="discovered",
         availability_state=HealthState.HEALTHY,
     )
 

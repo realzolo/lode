@@ -34,7 +34,7 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 
 ## Layout
 
-- Desktop (`>=1024px`): 256px fixed workspace sidebar and 56px context bar. Page content is fluid and uses a maximum readable frame only when a form or prose surface needs it.
+- Desktop (`>=1024px`): 248px fixed workspace sidebar and 56px context bar. Page content is fluid and uses a maximum readable frame only when a form or prose surface needs it.
 - Tablet (`768-1023px`): 64px icon-only sidebar. Navigation labels become accessible names/tooltips, never hidden semantics.
 - Mobile (`<768px`): a 56px single-line context bar and an off-canvas navigation drawer. The drawer closes by navigation, backdrop click, and Escape.
 - Workspace detail stays inside the global control-plane shell and uses tabs for
@@ -55,14 +55,15 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 - A visible field label is 13px with a 20px line box; its input or select starts 12px below it. Use the shared vertical field layout rather than an unscoped `gap` declaration.
 - Toolbar controls use an 8px gap. On narrow screens filter bars wrap into a vertical stack without shrinking important controls below usable width.
 - Icon-only buttons require a tooltip and accessible name. Text buttons are reserved for explicit commands such as Save, Retry, or Clear filters.
-- All interactive controls expose hover, active, disabled, loading, and `focus-visible` states. Keyboard focus always has a visible ring.
+- All interactive controls expose hover, active, disabled, loading, and `focus-visible` states. Keyboard focus always has a visible ring. Async buttons preserve their dimensions, replace the icon/text with a spinner and action label, set `aria-busy`, and reject duplicate submission. Row actions own independent busy state.
+- Creation and edit workflows use the right-side `DialogContent` drawer variant at every viewport. The drawer is full-width on phones, constrained on larger screens, scrolls its body independently, and keeps its action footer at the bottom. Destructive confirmations remain centered dialogs.
 
 ## Operational Surfaces
 
 - Use 1px-bordered, low-radius panels for forms, inspectors, dialogs, and repeated data groups. Do not place decorative cards inside cards.
 - Tables and record streams are the default list surface. Wide tables use a horizontal scroll container, stable column widths, truncation for unbounded technical strings, and copy affordances where appropriate.
 - Every row that has a detail view is entirely keyboard accessible and has a labelled detail path. A visual arrow may support the affordance but cannot be its only indication.
-- Empty, loading, and error states are first-class. Errors expose a Retry action when their source can be fetched again and retain the safe, concrete backend validation reason when one exists. Filtered-empty states preserve filters and offer Clear filters when any filter is active.
+- Empty, loading, and error states are first-class. First loads use structural table/list skeletons with the same row height as real data; refresh retains the existing data. Errors expose a Retry action when their source can be fetched again. Client UI renders localized safe messages and keeps stable backend codes out of ordinary display. Filtered-empty states preserve filters and offer Clear filters when any filter is active.
 - Workflow state is literal: a missing stage is pending only for an active run. A terminal historical run that predates a stage marks it skipped with an explanation; never show it as still queued.
 
 ## Status And Feedback
@@ -70,6 +71,13 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 - Use compact 6-8px status chips only for discrete state, with text labels in addition to color. Keep status chips compact rather than converting ordinary metadata into pills.
 - Toasts acknowledge completed asynchronous actions. Errors remain visible at the failed surface and must not be toast-only.
 - Destructive actions require confirmation where the underlying workflow supports it. Disabled actions explain their unavailable state in nearby text or an accessible label.
+
+## Internationalization
+
+- Every route and shared component uses `next-intl` for visible labels, placeholders, empty/error/validation text, icon accessible names, and dialog controls. API response messages are not rendered directly.
+- Closed enums use explicit typed translation maps. Internal snake_case values, connector capability IDs, role IDs, visibility, readiness, and health states never appear as fallback UI text.
+- `en.json` and `zh.json` have identical key sets. `npm run check:i18n` verifies parity and scans TSX for visible string literals. Dates and numbers use the active locale.
+- Repository binding searches full name, account, and provider. Repository access also searches visibility, preserves selected values under filtering, displays selected count, and supports selecting or clearing the current results.
 
 ## Authenticated UI Checklist
 

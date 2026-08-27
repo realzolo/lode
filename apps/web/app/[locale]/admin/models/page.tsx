@@ -1,34 +1,199 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { Activity, Pencil, Plus, RefreshCw } from 'lucide-react';
-import { toast } from 'sonner';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Activity, CloudDownload, Pencil, Plus, RefreshCw } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
-import { createProviderAccount, fetchProviderAccounts, testProviderAccountModel, updateProviderAccount } from '@/lib/api';
-import type { ProviderAccount } from '@/lib/types';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  apiErrorMessage,
+  createProviderAccount,
+  discoverProviderModels,
+  fetchProviderAccounts,
+  fetchProviderModelCatalog,
+  refreshProviderModels,
+  testProviderAccountModel,
+  updateProviderAccount,
+} from '@/lib/api';
+import type { ProviderAccount, ProviderModelCatalogItem } from '@/lib/types';
 
-const CATALOG: Record<string, Array<{ id: string; name: string }>> = {
-  'openai.responses.v1': [{ id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' }, { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' }, { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
-  'openai.chat_completions.v1': [{ id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' }, { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' }, { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
-  'anthropic.messages.v1': [{ id: 'claude-opus-4-1-20250805', name: 'Claude Opus 4.1' }, { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' }],
+type ProviderKind = 'openai' | 'anthropic';
+type ModelSource = 'discovered' | 'manual';
+
+const PROTOCOLS: Record<ProviderKind, Array<{ id: string; label: string }>> = {
+  openai: [
+    { id: 'openai.responses.v1', label: 'OpenAI Responses' },
+    { id: 'openai.chat_completions.v1', label: 'OpenAI Chat Completions' },
+  ],
+  anthropic: [{ id: 'anthropic.messages.v1', label: 'Anthropic Messages' }],
 };
-const DEFAULT_URL: Record<string, string> = { 'openai.responses.v1': 'https://api.openai.com/v1', 'openai.chat_completions.v1': 'https://api.openai.com/v1', 'anthropic.messages.v1': 'https://api.anthropic.com' };
+const DEFAULT_URL: Record<ProviderKind, string> = {
+  openai: 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com',
+};
 
 export default function ModelsPage() {
-  const t = useTranslations('admin'); const tc = useTranslations('common'); const [accounts, setAccounts] = useState<ProviderAccount[]>([]); const [editing, setEditing] = useState<ProviderAccount | null>(null); const [open, setOpen] = useState(false); const [error, setError] = useState('');
-  const load = useCallback(async () => { try { setAccounts(await fetchProviderAccounts()); setError(''); } catch (cause) { setError(String(cause)); } }, []);
+  const t = useTranslations('admin');
+  const tc = useTranslations('common');
+  const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
+  const [editing, setEditing] = useState<ProviderAccount | null>(null);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [busyModel, setBusyModel] = useState<number | null>(null);
+  const [busyAccount, setBusyAccount] = useState<number | null>(null);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async (background = false) => {
+    background ? setRefreshing(true) : setLoading(true);
+    try {
+      setAccounts(await fetchProviderAccounts());
+      setError('');
+    } catch (cause) {
+      setError(apiErrorMessage(cause, tc('requestFailed')));
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
   useEffect(() => { void load(); }, [load]);
-  return <main className="space-y-6"><header className="flex flex-wrap items-end justify-between gap-4"><div><h1 className="page-title">{t('providerAccounts')}</h1><p className="page-subtitle">{t('modelsSubtitle')}</p></div><div className="flex gap-2"><Button size="icon" variant="outline" title={tc('refresh')} aria-label={tc('refresh')} onClick={() => void load()}><RefreshCw size={16} /></Button><Button size="sm" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={16} />{t('addAccount')}</Button></div></header>{error ? <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}<section className="space-y-3">{accounts.map((account) => <article key={account.id} className="border-b pb-5 last:border-0"><div className="flex justify-between gap-3"><div><h2 className="font-semibold">{account.name}</h2><p className="mono text-xs text-muted-foreground">{account.protocol_id} | {account.base_url}</p></div><Button size="icon" variant="ghost" title={t('editAccount')} aria-label={t('editAccount')} onClick={() => { setEditing(account); setOpen(true); }}><Pencil size={16} /></Button></div><div className="mt-3 overflow-x-auto border"><table className="table"><thead><tr><th>{t('providerModel')}</th><th>{t('availability')}</th><th>{t('state')}</th><th /></tr></thead><tbody>{account.models.map((model) => <tr key={model.id}><td><span className="font-medium">{model.display_name}</span><span className="ml-2 mono text-xs text-muted-foreground">{model.provider_model_id}</span></td><td>{model.availability_state}</td><td>{model.state}</td><td><Button size="icon" variant="ghost" disabled={model.state !== 'active'} onClick={() => void testProviderAccountModel(account.id, model.id).then(load).catch((cause) => toast.error(String(cause)))}><Activity size={16} /></Button></td></tr>)}</tbody></table></div></article>)}</section><AccountDialog open={open} account={editing} onOpenChange={setOpen} onSaved={load} /></main>;
+
+  async function refreshModels(account: ProviderAccount) {
+    setBusyAccount(account.id);
+    try {
+      const result = await refreshProviderModels(account.id);
+      await load(true);
+      toast.success(t('modelsDiscovered', { count: result.available_model_ids.length }));
+    } catch (cause) {
+      setError(apiErrorMessage(cause, tc('requestFailed')));
+    } finally {
+      setBusyAccount(null);
+    }
+  }
+
+  async function probe(accountId: number, modelId: number) {
+    setBusyModel(modelId);
+    try {
+      await testProviderAccountModel(accountId, modelId);
+      await load(true);
+    } catch (cause) {
+      setError(apiErrorMessage(cause, tc('requestFailed')));
+    } finally {
+      setBusyModel(null);
+    }
+  }
+
+  return (
+    <main className="space-y-6">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div><h1 className="page-title">{t('providerAccounts')}</h1><p className="page-subtitle">{t('modelsSubtitle')}</p></div>
+        <div className="flex gap-2">
+          <Button size="icon" variant="outline" loading={refreshing} title={tc('refresh')} aria-label={tc('refresh')} onClick={() => void load(true)}><RefreshCw size={16} /></Button>
+          <Button size="sm" variant="primary" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={16} />{t('addAccount')}</Button>
+        </div>
+      </header>
+      {error ? <div role="alert" className="flex items-center justify-between gap-3 border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"><span>{error}</span><Button size="sm" variant="outline" onClick={() => void load()}>{tc('retry')}</Button></div> : null}
+      {loading ? <AccountSkeleton /> : accounts.length === 0 ? (
+        <section className="flex min-h-56 flex-col items-center justify-center border text-center"><h2 className="text-sm font-semibold">{t('noAccounts')}</h2><p className="mt-1 max-w-md text-sm text-muted-foreground">{t('noAccountsDescription')}</p><Button className="mt-4" size="sm" variant="primary" onClick={() => setOpen(true)}><Plus size={16} />{t('addAccount')}</Button></section>
+      ) : (
+        <section className="divide-y border">
+          {accounts.map((account) => (
+            <article key={account.id} className="p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div><div className="flex items-center gap-2"><h2 className="font-semibold">{account.name}</h2><span className="status-badge">{account.provider_kind === 'openai' ? 'OpenAI' : 'Anthropic'}</span></div><p className="mono mt-1 text-xs text-muted-foreground">{account.protocol_id} · {account.base_url}</p></div>
+                <div className="flex gap-1"><Button size="icon" variant="ghost" loading={busyAccount === account.id} title={t('syncModels')} aria-label={t('syncModels')} onClick={() => void refreshModels(account)}><CloudDownload size={16} /></Button><Button size="icon" variant="ghost" title={t('editAccount')} aria-label={t('editAccount')} onClick={() => { setEditing(account); setOpen(true); }}><Pencil size={16} /></Button></div>
+              </div>
+              <div className="mt-4 overflow-x-auto border">
+                <table className="table"><thead><tr><th>{t('providerModel')}</th><th>{t('source')}</th><th>{t('availability')}</th><th>{t('state')}</th><th><span className="sr-only">{tc('actions')}</span></th></tr></thead>
+                  <tbody>{account.models.map((model) => <tr key={model.id}><td><span className="font-medium">{model.display_name}</span><span className="ml-2 mono text-xs text-muted-foreground">{model.provider_model_id}</span></td><td>{t(`modelSource.${model.discovery_state}`)}</td><td>{t(`availabilityState.${model.availability_state}`)}</td><td>{t(`accountState.${model.state}`)}</td><td className="text-right"><Button size="icon" variant="ghost" loading={busyModel === model.id} disabled={model.state !== 'active'} title={t('probeModel')} aria-label={t('probeModel')} onClick={() => void probe(account.id, model.id)}><Activity size={16} /></Button></td></tr>)}</tbody>
+                </table>
+              </div>
+            </article>
+          ))}
+        </section>
+      )}
+      <AccountDialog open={open} account={editing} onOpenChange={setOpen} onSaved={() => load(true)} />
+    </main>
+  );
+}
+
+function AccountSkeleton() {
+  return <section className="divide-y border" aria-busy="true">{[0, 1].map((row) => <div key={row} className="space-y-4 p-4"><div className="flex justify-between"><div className="space-y-2"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-72" /></div><Skeleton className="h-8 w-20" /></div><Skeleton className="h-24 w-full" /></div>)}</section>;
 }
 
 function AccountDialog({ open, account, onOpenChange, onSaved }: { open: boolean; account: ProviderAccount | null; onOpenChange: (value: boolean) => void; onSaved: () => Promise<void> }) {
-  const tc = useTranslations('common'); const t = useTranslations('admin'); const [name, setName] = useState(''); const [protocolId, setProtocolId] = useState('openai.responses.v1'); const [baseUrl, setBaseUrl] = useState(DEFAULT_URL['openai.responses.v1']); const [credential, setCredential] = useState(''); const [models, setModels] = useState<string[]>([]);
-  useEffect(() => { if (!open) return; const protocol = account?.protocol_id ?? 'openai.responses.v1'; setName(account?.name ?? ''); setProtocolId(protocol); setBaseUrl(account?.base_url ?? DEFAULT_URL[protocol]); setCredential(''); setModels(account?.models.filter((model) => model.state === 'active').map((model) => model.provider_model_id) ?? []); }, [account, open]);
-  function changeProtocol(value: string) { setProtocolId(value); setBaseUrl(DEFAULT_URL[value]); setModels([]); }
-  async function save() { const input = { name, protocol_id: protocolId, base_url: baseUrl, ...(credential ? { credential } : {}), model_ids: models }; try { if (account) await updateProviderAccount(account.id, input); else await createProviderAccount(input); onOpenChange(false); await onSaved(); } catch (cause) { toast.error(String(cause)); } }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>{account ? t('editAccount') : t('addAccount')}</DialogTitle></DialogHeader><div className="space-y-3"><Input placeholder={t('accountName')} value={name} onChange={(event) => setName(event.target.value)} /><Select value={protocolId} onChange={(event) => changeProtocol(event.target.value)}><option value="openai.responses.v1">OpenAI Responses</option><option value="openai.chat_completions.v1">OpenAI Chat Completions</option><option value="anthropic.messages.v1">Anthropic Messages</option></Select><Input className="mono" placeholder={t('httpsBaseUrl')} value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /><Input type="password" placeholder={account ? t('credentialOptional') : t('credential')} value={credential} onChange={(event) => setCredential(event.target.value)} /><div className="max-h-52 overflow-y-auto border">{CATALOG[protocolId].map((model) => <label key={model.id} className="flex items-center gap-3 border-b px-3 py-2 text-sm"><input type="checkbox" checked={models.includes(model.id)} onChange={(event) => setModels((current) => event.target.checked ? [...new Set([...current, model.id])] : current.filter((id) => id !== model.id))} />{model.name}<span className="mono text-xs text-muted-foreground">{model.id}</span></label>)}</div></div><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" disabled={!name || !baseUrl || !models.length || (!account && !credential)} onClick={() => void save()}>{tc('save')}</Button></DialogFooter></DialogContent></Dialog>;
+  const tc = useTranslations('common');
+  const t = useTranslations('admin');
+  const [name, setName] = useState('');
+  const [providerKind, setProviderKind] = useState<ProviderKind>('openai');
+  const [protocolId, setProtocolId] = useState(PROTOCOLS.openai[0].id);
+  const [baseUrl, setBaseUrl] = useState(DEFAULT_URL.openai);
+  const [apiKey, setApiKey] = useState('');
+  const [catalog, setCatalog] = useState<ProviderModelCatalogItem[]>([]);
+  const [selected, setSelected] = useState<Record<string, ModelSource>>({});
+  const [manualId, setManualId] = useState('');
+  const [unsupportedCount, setUnsupportedCount] = useState(0);
+  const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    const kind = account?.provider_kind ?? 'openai';
+    const protocol = account?.protocol_id ?? PROTOCOLS[kind][0].id;
+    setName(account?.name ?? ''); setProviderKind(kind); setProtocolId(protocol);
+    setBaseUrl(account?.base_url ?? DEFAULT_URL[kind]); setApiKey(''); setManualId(''); setUnsupportedCount(0); setError('');
+    setSelected(Object.fromEntries(account?.models.filter((model) => model.state === 'active').map((model) => [model.provider_model_id, model.discovery_state === 'manual' ? 'manual' : 'discovered']) ?? []));
+  }, [account, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoadingCatalog(true);
+    void fetchProviderModelCatalog(providerKind, protocolId).then(setCatalog).catch((cause) => setError(apiErrorMessage(cause, tc('requestFailed')))).finally(() => setLoadingCatalog(false));
+  }, [open, protocolId, providerKind]);
+
+  const catalogIds = useMemo(() => new Set(catalog.map((model) => model.provider_model_id)), [catalog]);
+  function changeProvider(kind: ProviderKind) {
+    setProviderKind(kind); setProtocolId(PROTOCOLS[kind][0].id); setBaseUrl(DEFAULT_URL[kind]); setSelected({}); setUnsupportedCount(0); setError('');
+  }
+  async function discover() {
+    setDiscovering(true); setError('');
+    try {
+      const result = account && !apiKey
+        ? await refreshProviderModels(account.id)
+        : await discoverProviderModels({ provider_kind: providerKind, protocol_id: protocolId, base_url: baseUrl, api_key: apiKey });
+      setUnsupportedCount(result.unsupported_model_ids.length);
+      setSelected((current) => ({ ...current, ...Object.fromEntries(result.available_model_ids.map((id) => [id, 'discovered' as const])) }));
+    } catch (cause) { setError(apiErrorMessage(cause, tc('requestFailed'))); } finally { setDiscovering(false); }
+  }
+  function addManual() {
+    const value = manualId.trim();
+    if (!catalogIds.has(value)) { setError(t('unsupportedManualModel')); return; }
+    setSelected((current) => ({ ...current, [value]: 'manual' })); setManualId(''); setError('');
+  }
+  async function save() {
+    setSaving(true); setError('');
+    const input = { name: name.trim(), provider_kind: providerKind, protocol_id: protocolId, base_url: baseUrl.trim(), ...(apiKey ? { api_key: apiKey } : {}), models: Object.entries(selected).map(([provider_model_id, source]) => ({ provider_model_id, source })) };
+    try { account ? await updateProviderAccount(account.id, input) : await createProviderAccount(input); onOpenChange(false); await onSaved(); }
+    catch (cause) { setError(apiErrorMessage(cause, tc('requestFailed'))); } finally { setSaving(false); }
+  }
+
+  const canDiscover = Boolean(baseUrl && (account || apiKey));
+  const canSave = Boolean(name.trim() && baseUrl.trim() && Object.keys(selected).length && (account || apiKey));
+  return <Dialog open={open} onOpenChange={(value) => !saving && onOpenChange(value)}><DialogContent variant="drawer" className="max-w-2xl overflow-hidden p-0"><DialogHeader className="border-b px-6 py-5"><DialogTitle>{account ? t('editAccount') : t('addAccount')}</DialogTitle></DialogHeader><div className="h-[calc(100dvh-145px)] space-y-5 overflow-y-auto px-6 py-5">
+    {error ? <p role="alert" className="border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</p> : null}
+    <label className="field"><span className="field-label">{t('accountName')}</span><Input value={name} onChange={(event) => setName(event.target.value)} /></label>
+    <div className="grid gap-4 sm:grid-cols-2"><label className="field"><span className="field-label">{t('provider')}</span><Select value={providerKind} onChange={(event) => changeProvider(event.target.value as ProviderKind)}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></Select></label><label className="field"><span className="field-label">{t('messageFormat')}</span><Select value={protocolId} onChange={(event) => { setProtocolId(event.target.value); setSelected({}); }}>{PROTOCOLS[providerKind].map((protocol) => <option key={protocol.id} value={protocol.id}>{protocol.label}</option>)}</Select></label></div>
+    <label className="field"><span className="field-label">{t('httpsBaseUrl')}</span><Input className="mono" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label>
+    <label className="field"><span className="field-label">API Key</span><Input type="password" autoComplete="off" placeholder={account ? t('apiKeyOptional') : 'API Key'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label>
+    <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-medium">{t('accountModels')}</h3><p className="text-xs text-muted-foreground">{t('modelDiscoveryDescription')}</p></div><Button size="sm" variant="outline" loading={discovering} loadingText={t('discoveringModels')} disabled={!canDiscover} onClick={() => void discover()}><CloudDownload size={16} />{t('syncModels')}</Button></div>
+    {unsupportedCount ? <p className="text-xs text-muted-foreground">{t('unsupportedModelsHidden', { count: unsupportedCount })}</p> : null}
+    <div className="overflow-hidden border" aria-busy={loadingCatalog}>{loadingCatalog ? <div className="space-y-3 p-3"><Skeleton className="h-9 w-full" /><Skeleton className="h-9 w-full" /></div> : catalog.map((model) => { const source = selected[model.provider_model_id]; return <label key={model.provider_model_id} className="flex min-h-12 cursor-pointer items-center gap-3 border-b px-3 py-2 last:border-0 hover:bg-accent/50"><input type="checkbox" checked={Boolean(source)} onChange={(event) => setSelected((current) => { const next = { ...current }; event.target.checked ? next[model.provider_model_id] = 'manual' : delete next[model.provider_model_id]; return next; })} /><span className="min-w-0 flex-1"><span className="block text-sm font-medium">{model.display_name}</span><span className="mono block truncate text-xs text-muted-foreground">{model.provider_model_id}</span></span>{source ? <span className="status-badge">{t(`modelSource.${source}`)}</span> : null}</label>; })}</div>
+    <div className="flex gap-2"><Input className="mono" placeholder={t('manualModelPlaceholder')} value={manualId} onChange={(event) => setManualId(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addManual(); } }} /><Button variant="outline" onClick={addManual}>{t('addCatalogModel')}</Button></div>
+  </div><DialogFooter className="border-t px-6 py-4"><Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" loading={saving} loadingText={tc('saving')} disabled={!canSave} onClick={() => void save()}>{tc('save')}</Button></DialogFooter></DialogContent></Dialog>;
 }

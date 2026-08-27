@@ -32,11 +32,11 @@ export function Sidebar({ portal, onNavigate }: { portal: Portal; onNavigate?: (
       <Link href={home} className="sidebar-logo" onClick={onNavigate}>Lode</Link>
       <span className="workspace-plan">{portal === 'admin' ? t('controlPlane') : t('workbench')}</span>
     </div>
-    <nav aria-label="Primary navigation" className="stack" style={{ gap: 4 }}>
+    <nav aria-label={t('primaryNavigation')} className="stack" style={{ gap: 4 }}>
       {nav.map((item) => {
         const active = pathname === item.href || (item.href !== home && pathname.startsWith(`${item.href}/`));
-        return <Link key={item.href} href={item.href} className={cx('nav-item', active && 'active')} onClick={onNavigate}>
-          <item.icon size={16} className="nav-icon" />{item.label}
+        return <Link key={item.href} href={item.href} className={cx('nav-item', active && 'active')} onClick={onNavigate} aria-label={item.label} title={item.label}>
+          <item.icon size={16} className="nav-icon" /><span className="nav-item-label">{item.label}</span>
         </Link>;
       })}
     </nav>
@@ -44,7 +44,7 @@ export function Sidebar({ portal, onNavigate }: { portal: Portal; onNavigate?: (
       <DropdownMenu.Trigger asChild>
         <button className="sidebar-account" aria-label={t('accountMenu')}>
           <span className="account-avatar">{(user?.display_name || user?.username || 'L')[0].toUpperCase()}</span>
-          <span className="account-meta"><strong>{user?.display_name || 'Lode user'}</strong><span>{user?.username}</span></span>
+          <span className="account-meta"><strong>{user?.display_name || t('user')}</strong><span>{user?.username}</span></span>
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>

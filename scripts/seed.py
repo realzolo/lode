@@ -23,6 +23,11 @@ from lode.db.models import (
 from lode.model_catalog import require_model
 from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.session import AsyncSessionLocal
+from current_git_fixture import (
+    FIXTURE_ADAPTER_ID,
+    FIXTURE_ENDPOINT_HASH,
+    ensure_repository_entitlement,
+)
 WORKSPACE_NAME = "Checkout"
 INGESTION_TOPIC = "incident.checkout.v1"
 
@@ -64,18 +69,25 @@ async def main() -> None:
         workspace.investigation_policy_revision_id = investigation_policy.id
 
         repository = GitRepository(
+            adapter_id=FIXTURE_ADAPTER_ID,
+            endpoint_identity_hash=FIXTURE_ENDPOINT_HASH,
+            external_repository_id="checkout",
             name="checkout",
+            full_name="example/checkout",
             repo_url="https://example.com/checkout.git",
+            web_url="https://example.com/checkout",
             repo_type="other",
             default_branch="main",
-            scope="global",
+            visibility="private",
         )
         session.add(repository)
         await session.flush()
+        entitlement_id = await ensure_repository_entitlement(session, workspace.id, repository)
         session.add(
             WorkspaceRepositoryBinding(
                 workspace_id=workspace.id,
                 repository_id=repository.id,
+                repository_entitlement_id=entitlement_id,
                 role="runtime_source",
                 priority=0,
                 description="Seed runtime source",
@@ -84,9 +96,10 @@ async def main() -> None:
 
         provider = AIProviderAccount(
             name="seed-openai-compatible",
+            provider_kind="openai",
             protocol_id="openai.responses.v1",
             base_url="https://example.invalid/v1",
-            credential_ciphertext="seed-disabled-ciphertext",
+            api_key_ciphertext="seed-disabled-ciphertext",
             state="disabled",
         )
         session.add(provider)
@@ -97,6 +110,8 @@ async def main() -> None:
             provider_model_id=profile.model_id,
             catalog_revision=profile.catalog_revision,
             catalog_profile_hash=profile.profile_hash,
+            discovery_state="manual",
+            availability_state="unavailable",
             state="disabled",
         )
         session.add(deployment)

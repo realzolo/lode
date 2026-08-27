@@ -20,13 +20,13 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
-from lode.db.models._common import CreatedAtMixin, TimestampMixin, identity_pk
+from lode.db.models._common import CreatedAtMixin, TimestampMixin, snowflake_pk
 
 
 class IngestionEvent(CreatedAtMixin, Base):
     __tablename__ = "ingestion_events"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="SET NULL")
     )
@@ -58,7 +58,7 @@ class IngestionEvent(CreatedAtMixin, Base):
 class Alert(CreatedAtMixin, Base):
     __tablename__ = "alerts"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -88,7 +88,7 @@ class Alert(CreatedAtMixin, Base):
 class DeadLetter(TimestampMixin, Base):
     __tablename__ = "dead_letters"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="SET NULL")
     )
@@ -123,7 +123,7 @@ class DeadLetter(TimestampMixin, Base):
 class Incident(TimestampMixin, Base):
     __tablename__ = "incidents"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -157,7 +157,7 @@ class Incident(TimestampMixin, Base):
 class InvestigationJob(TimestampMixin, Base):
     __tablename__ = "investigation_jobs"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, unique=True
     )

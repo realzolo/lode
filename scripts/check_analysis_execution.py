@@ -20,6 +20,8 @@ from lode.db.models import (
     ContextPolicyRevision,
     ContextSummaryArtifact,
     EvidenceArtifact,
+    GitAccount,
+    GitAccountCredentialRevision,
     GitRepository,
     InvestigationModelBindingSnapshot,
     InvestigationPolicyRevision,
@@ -49,6 +51,11 @@ from lode.infrastructure.report_store import (
 )
 from lode.infrastructure.source_store import PostgresSourceStore
 from lode.model_catalog import require_model
+from current_git_fixture import (
+    FIXTURE_ADAPTER_ID,
+    FIXTURE_ENDPOINT_HASH,
+    ensure_repository_entitlement,
+)
 
 
 class FixtureGateway:
@@ -94,9 +101,10 @@ class FixtureGateway:
 async def _provider(session, suffix: str, name: str) -> AIProviderAccount:
     provider = AIProviderAccount(
         name=f"{name}-{suffix}",
+        provider_kind="openai",
         protocol_id="openai.responses.v1",
         base_url="https://models.example.invalid",
-        credential_ciphertext=encrypt_secret(f"{name}-secret") or "",
+        api_key_ciphertext=encrypt_secret(f"{name}-secret") or "",
         state="active",
         verification_status="healthy",
         verified_at=datetime.now(UTC),
@@ -114,6 +122,7 @@ async def _deployment(session, provider: AIProviderAccount, name: str) -> Provid
         provider_model_id=profile.model_id,
         catalog_revision=profile.catalog_revision,
         catalog_profile_hash=profile.profile_hash,
+        discovery_state="manual",
         availability_state="healthy",
         health_checked_at=datetime.now(UTC),
         state="active",
@@ -406,7 +415,7 @@ async def main() -> None:
     async with AsyncSessionLocal() as session:
         latency_provider = await session.get(AIProviderAccount, latency_provider_id)
         assert latency_provider is not None
-        latency_provider.credential_ciphertext = encrypt_secret("rotated-secret") or ""
+        latency_provider.api_key_ciphertext = encrypt_secret("rotated-secret") or ""
         latency_provider.revision += 1
         await session.commit()
     try:
@@ -538,16 +547,38 @@ async def _check_report_publication(
     revision = "e" * 40
     async with AsyncSessionLocal() as session:
         repository = GitRepository(
+            adapter_id=FIXTURE_ADAPTER_ID,
+            endpoint_identity_hash=FIXTURE_ENDPOINT_HASH,
+            external_repository_id=str(investigation_id),
             name=f"analysis-source-{investigation_id}",
+            full_name=f"fixtures/analysis-source-{investigation_id}",
             repo_url=f"file:///analysis-source-{investigation_id}",
+            web_url=f"https://example.invalid/analysis-source-{investigation_id}",
             default_branch="main",
-            scope="global",
+            visibility="private",
         )
         session.add(repository)
         await session.flush()
+        entitlement_id = await ensure_repository_entitlement(
+            session, workspace_id, repository
+        )
+        account = (
+            await session.execute(
+                select(GitAccount).where(
+                    GitAccount.adapter_id == FIXTURE_ADAPTER_ID,
+                    GitAccount.endpoint_identity_hash == FIXTURE_ENDPOINT_HASH,
+                    GitAccount.external_account_id == str(workspace_id),
+                )
+            )
+        ).scalar_one()
+        credential = await session.get(
+            GitAccountCredentialRevision, account.current_credential_revision_id
+        )
+        assert credential is not None
         binding = WorkspaceRepositoryBinding(
             workspace_id=workspace_id,
             repository_id=repository.id,
+            repository_entitlement_id=entitlement_id,
             role="runtime_source",
             priority=0,
             state="active",
@@ -558,7 +589,8 @@ async def _check_report_publication(
         snapshot_payload = {
             "repository_binding_id": binding.id,
             "repository_id": repository.id,
-            "credential_id": None,
+            "account_connection_id": account.id,
+            "credential_revision_id": credential.id,
             "binding_revision": 1,
             "role": "runtime_source",
             "priority": 0,
@@ -572,11 +604,12 @@ async def _check_report_publication(
                     "repository_id": repository.id,
                     "repo_url": repository.repo_url,
                     "default_branch": repository.default_branch,
-                    "scope": repository.scope,
-                    "workspace_id": repository.workspace_id,
+                    "adapter_id": repository.adapter_id,
+                    "endpoint_identity_hash": repository.endpoint_identity_hash,
+                    "external_repository_id": repository.external_repository_id,
                 }
             ),
-            "credential_identity_hash": None,
+            "credential_identity_hash": credential.credential_identity_hash,
         }
         snapshot = InvestigationRepositorySnapshot(
             investigation_id=investigation_id,

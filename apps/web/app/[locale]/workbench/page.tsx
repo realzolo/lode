@@ -8,7 +8,8 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { createInvestigation, fetchInvestigations, fetchWorkspaces } from '@/lib/api';
+import { ListSkeleton } from '@/components/ui/list-skeleton';
+import { apiErrorMessage, createInvestigation, fetchInvestigations, fetchWorkspaces } from '@/lib/api';
 import { Link, useRouter } from '@/lib/navigation';
 import type { InvestigationSummary, Workspace } from '@/lib/types';
 
@@ -43,8 +44,11 @@ export default function InvestigationsPage() {
   const [nextAfterId, setNextAfterId] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async (append = false, afterId?: number) => {
+    if (!append) setRefreshing(true);
     try {
       const [page, scopes] = await Promise.all([
         fetchInvestigations({ status, q: query, afterId }),
@@ -55,7 +59,9 @@ export default function InvestigationsPage() {
       setNextAfterId(page.next_after_id);
       setError('');
     } catch (cause) {
-      setError(String(cause));
+      setError(apiErrorMessage(cause, tc('requestFailed')));
+    } finally {
+      setLoading(false); setRefreshing(false);
     }
   }, [query, status]);
 
@@ -72,7 +78,7 @@ export default function InvestigationsPage() {
         <p className="page-subtitle">{t('subtitle')}</p>
       </div>
       <div className="flex gap-2">
-        <Button size="icon" variant="outline" aria-label={tc('refresh')} title={tc('refresh')} onClick={() => void load()}><RefreshCw size={16} /></Button>
+        <Button size="icon" variant="outline" loading={refreshing} aria-label={tc('refresh')} title={tc('refresh')} onClick={() => void load()}><RefreshCw size={16} /></Button>
         <Button variant="primary" onClick={() => setOpen(true)}><Plus size={16} />{t('new')}</Button>
       </div>
     </header>
@@ -91,25 +97,25 @@ export default function InvestigationsPage() {
       {(query || status !== 'all') && <Button size="icon" variant="ghost" aria-label={tc('clearFilters')} title={tc('clearFilters')} onClick={() => { setQuery(''); setStatus('all'); }}><X size={16} /></Button>}
     </div>
     {error && <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
-    <div className="operational-table">
+    {loading ? <ListSkeleton rows={6} columns={6} /> : <div className="operational-table">
       <div className="table-wrap"><table className="table"><thead><tr><th>{t('investigation')}</th><th>{t('workspace')}</th><th>{t('status')}</th><th>{t('result')}</th><th>{t('created')}</th><th /></tr></thead>
         <tbody>{rows.map((row) => <tr key={row.id}>
-          <td><p className="font-medium">{row.headline || row.event || t('analysisInProgress')}</p><p className="mono mt-1 text-xs text-muted-foreground">{row.public_id}</p></td>
+          <td><p className="font-medium">{row.headline || row.event || t('analysisInProgress')}</p><p className="mono mt-1 text-xs text-muted-foreground">{row.id}</p></td>
           <td>{names.get(row.workspace_id) || row.workspace_id}</td>
           <td><span className={`table-status table-status-${row.status === 'completed' ? 'success' : row.status === 'failed' ? 'danger' : row.status === 'running' ? 'warning' : 'neutral'}`}><i />{statusLabel(row.status, t)}</span></td>
           <td>{resultStateLabel(row.result_state, t)}</td>
           <td className="text-xs text-muted-foreground">{new Date(row.created_at).toLocaleString(dateLocale)}</td>
-          <td><Button size="icon" variant="ghost" asChild><Link href={`/workbench/investigation/${row.public_id}`} aria-label={tc('open')} title={tc('open')}><ArrowUpRight size={16} /></Link></Button></td>
+          <td><Button size="icon" variant="ghost" asChild><Link href={`/workbench/investigation/${row.id}`} aria-label={tc('open')} title={tc('open')}><ArrowUpRight size={16} /></Link></Button></td>
         </tr>)}</tbody>
       </table></div>
       {rows.length === 0 && <p className="p-8 text-center text-muted-foreground">{t('noMatching')}</p>}
-    </div>
+    </div>}
     {nextAfterId !== null && <div className="flex justify-center"><Button variant="outline" onClick={() => void load(true, nextAfterId)}>{t('loadMore')}</Button></div>}
     <CreateDialog open={open} onOpenChange={setOpen} workspaces={workspaces} onCreated={(id) => router.push(`/workbench/investigation/${id}`)} />
   </main>;
 }
 
-function CreateDialog({ open, onOpenChange, workspaces, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaces: Workspace[]; onCreated: (id: string) => void }) {
+function CreateDialog({ open, onOpenChange, workspaces, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaces: Workspace[]; onCreated: (id: number) => void }) {
   const t = useTranslations('workbench');
   const tc = useTranslations('common');
   const [workspaceId, setWorkspaceId] = useState('');
@@ -120,16 +126,18 @@ function CreateDialog({ open, onOpenChange, workspaces, onCreated }: { open: boo
   const [stack, setStack] = useState('');
   const [trace, setTrace] = useState('');
   const [error, setError] = useState('');
+  const [creating, setCreating] = useState(false);
   async function create() {
+    setCreating(true);
     try {
       const result = await createInvestigation({ workspace_id: Number(workspaceId), occurred_at: new Date().toISOString(), severity, event, trace_id: trace || null, source_revision: null, error: { type, message, stack, cause: null }, attachments: [] });
       onOpenChange(false);
       onCreated(result.id);
     } catch (cause) {
-      setError(String(cause));
-    }
+      setError(apiErrorMessage(cause, tc('requestFailed')));
+    } finally { setCreating(false); }
   }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>{t('newTitle')}</DialogTitle></DialogHeader>
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent variant="drawer"><DialogHeader><DialogTitle>{t('newTitle')}</DialogTitle></DialogHeader>
     <div className="grid gap-3 sm:grid-cols-2">
       <Select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}><option value="">{t('workspacePlaceholder')}</option>{workspaces.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</Select>
       <Select value={severity} onChange={(event) => setSeverity(event.target.value as 'CRITICAL' | 'WARNING')}><option value="WARNING">{severityLabel('WARNING', t)}</option><option value="CRITICAL">{severityLabel('CRITICAL', t)}</option></Select>
@@ -140,6 +148,6 @@ function CreateDialog({ open, onOpenChange, workspaces, onCreated }: { open: boo
       <Textarea className="mono min-h-32 sm:col-span-2" placeholder={t('stackTrace')} value={stack} onChange={(event) => setStack(event.target.value)} />
     </div>
     {error && <p className="text-sm text-destructive">{error}</p>}
-    <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" disabled={!workspaceId || !event || !type} onClick={() => void create()}>{tc('start')}</Button></DialogFooter>
+    <DialogFooter><Button variant="outline" disabled={creating} onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" loading={creating} loadingText={tc('loading')} disabled={!workspaceId || !event || !type} onClick={() => void create()}>{tc('start')}</Button></DialogFooter>
   </DialogContent></Dialog>;
 }

@@ -7,13 +7,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lode.api.types import EntityId
+
 
 class _StrictInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
 class UserOut(BaseModel):
-    id: int
+    id: EntityId
     username: str
     display_name: str
     status: str
@@ -57,7 +59,7 @@ class WorkspaceMemberPutIn(_StrictInput):
 
 
 class WorkspaceMemberOut(BaseModel):
-    user_id: int
+    user_id: EntityId
     username: str
     display_name: str
     status: Literal["active", "disabled"]

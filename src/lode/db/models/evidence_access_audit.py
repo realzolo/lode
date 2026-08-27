@@ -19,13 +19,13 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
-from lode.db.models._common import CreatedAtMixin, identity_pk
+from lode.db.models._common import CreatedAtMixin, snowflake_pk
 
 
 class NativeReadCandidate(CreatedAtMixin, Base):
     __tablename__ = "native_read_candidates"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -72,7 +72,7 @@ class NativeReadCandidate(CreatedAtMixin, Base):
 class EvidenceAccessDecision(CreatedAtMixin, Base):
     __tablename__ = "evidence_access_decisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -121,7 +121,7 @@ class EvidenceAccessDecision(CreatedAtMixin, Base):
 class AuthorizedEvidenceRead(CreatedAtMixin, Base):
     __tablename__ = "authorized_evidence_reads"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -153,7 +153,7 @@ class AuthorizedEvidenceRead(CreatedAtMixin, Base):
 class EvidenceReadAttempt(CreatedAtMixin, Base):
     __tablename__ = "evidence_read_attempts"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -192,7 +192,7 @@ class EvidenceReadAttempt(CreatedAtMixin, Base):
 class SealedEvidenceValue(CreatedAtMixin, Base):
     __tablename__ = "sealed_evidence_values"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )

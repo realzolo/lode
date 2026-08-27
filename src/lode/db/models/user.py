@@ -13,7 +13,6 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
-    Identity,
     Text,
     ForeignKey,
     Index,
@@ -22,14 +21,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
+from lode.db.models._common import snowflake_pk
 
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(
-        BigInteger, Identity(always=True), primary_key=True
-    )
+    id: Mapped[int] = snowflake_pk()
     username: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)

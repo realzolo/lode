@@ -20,13 +20,13 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
-from lode.db.models._common import CreatedAtMixin, TimestampMixin, identity_pk
+from lode.db.models._common import CreatedAtMixin, TimestampMixin, snowflake_pk
 
 
 class Workspace(TimestampMixin, Base):
     __tablename__ = "workspaces"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     name: Mapped[str] = mapped_column(Text, nullable=False)
     ingestion_topic: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     model_policy_revision_id: Mapped[int | None] = mapped_column(
@@ -92,7 +92,7 @@ class InvestigationPolicyRevision(CreatedAtMixin, Base):
 
     __tablename__ = "investigation_policy_revisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -191,7 +191,7 @@ class WorkspacePermission(CreatedAtMixin, Base):
 class AuditEvent(CreatedAtMixin, Base):
     __tablename__ = "audit_events"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     actor_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="RESTRICT")
     )

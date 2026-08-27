@@ -52,6 +52,7 @@ async def provider_request(
     *,
     headers: Mapping[str, str],
     timeout_seconds: float,
+    query: Mapping[str, str] | None = None,
     json_body: Mapping[str, Any] | None = None,
 ) -> ProviderHTTPResponse:
     """Execute one bounded request to the provider account endpoint."""
@@ -72,9 +73,10 @@ async def provider_request(
         raise ProviderExecutionError(
             "invalid_response", "AI provider endpoint is invalid"
         ) from exc
-    return await transport.request(
-        method,
-        parsed.path or "/",
-        json_body=json_body,
-        timeout_ms=max(1, int(timeout_seconds * 1_000)),
-    )
+    request: dict[str, Any] = {
+        "json_body": json_body,
+        "timeout_ms": max(1, int(timeout_seconds * 1_000)),
+    }
+    if query is not None:
+        request["query"] = query
+    return await transport.request(method, parsed.path or "/", **request)

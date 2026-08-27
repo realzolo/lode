@@ -9,13 +9,13 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
-from lode.db.models._common import CreatedAtMixin, identity_pk
+from lode.db.models._common import CreatedAtMixin, snowflake_pk
 
 
 class EvidenceCollection(CreatedAtMixin, Base):
     __tablename__ = "evidence_collections"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -53,7 +53,7 @@ class EvidenceCollection(CreatedAtMixin, Base):
 class EvidenceArtifact(CreatedAtMixin, Base):
     __tablename__ = "evidence_artifacts"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -90,7 +90,7 @@ class EvidenceArtifact(CreatedAtMixin, Base):
 class EvidenceLink(CreatedAtMixin, Base):
     __tablename__ = "evidence_links"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -119,7 +119,7 @@ class EvidenceLink(CreatedAtMixin, Base):
 class ObservedEntity(CreatedAtMixin, Base):
     __tablename__ = "observed_entities"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -148,7 +148,7 @@ class ObservedEntity(CreatedAtMixin, Base):
 class ObservedEvent(CreatedAtMixin, Base):
     __tablename__ = "observed_events"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -184,7 +184,7 @@ class ObservedEvent(CreatedAtMixin, Base):
 class ObservedRelation(CreatedAtMixin, Base):
     __tablename__ = "observed_relations"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -222,7 +222,7 @@ class ObservedRelation(CreatedAtMixin, Base):
 class EvidenceAssertion(CreatedAtMixin, Base):
     __tablename__ = "evidence_assertions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )

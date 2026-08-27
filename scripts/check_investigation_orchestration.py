@@ -178,8 +178,30 @@ async def _fixture() -> tuple[int, int, int]:
                 scope_config={
                     "evidence_anchors": ["incident.trace_id"],
                     "data_class": "masked",
+                    "allowed_tables": ["public.orders"],
+                    "table_policies": {
+                        "public.orders": {
+                            "time_column": "occurred_at",
+                            "stable_order": ["id"],
+                        }
+                    },
                 },
-                schema_catalog={"tables": {"orders": {"columns": ["trace_id"]}}},
+                schema_catalog={
+                    "tables": {
+                        "public.orders": {
+                            "columns": {
+                                "id": {"data_type": "bigint", "nullable": False},
+                                "occurred_at": {
+                                    "data_type": "timestamp with time zone",
+                                    "nullable": False,
+                                },
+                                "trace_id": {"data_type": "text", "nullable": False},
+                            },
+                            "time_column": "occurred_at",
+                            "stable_order": ["id"],
+                        }
+                    }
+                },
                 schema_catalog_revision=1,
                 read_policy_revision=1,
                 execution_budget_policy={

@@ -17,13 +17,13 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
-from lode.db.models._common import CreatedAtMixin, TimestampMixin, identity_pk
+from lode.db.models._common import CreatedAtMixin, TimestampMixin, snowflake_pk
 
 
 class EvidenceConnector(TimestampMixin, Base):
     __tablename__ = "evidence_connectors"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -62,7 +62,7 @@ class EvidenceConnector(TimestampMixin, Base):
 class EvidenceAccessScope(CreatedAtMixin, Base):
     __tablename__ = "evidence_access_scopes"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     connector_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("evidence_connectors.id", ondelete="CASCADE"), nullable=False
     )

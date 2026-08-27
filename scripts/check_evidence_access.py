@@ -203,9 +203,10 @@ async def _create_fixture(session):
 
     provider = AIProviderAccount(
         name=f"evidence-access-check-{fixture_id}",
+        provider_kind="openai",
         protocol_id="openai.responses.v1",
         base_url="https://model.invalid",
-        credential_ciphertext=encrypt_value("model-secret"),
+        api_key_ciphertext=encrypt_value("model-secret"),
         verification_status="healthy",
     )
     session.add(provider)
@@ -216,6 +217,7 @@ async def _create_fixture(session):
         provider_model_id=profile.model_id,
         catalog_revision=profile.catalog_revision,
         catalog_profile_hash=profile.profile_hash,
+        discovery_state="manual",
         availability_state="healthy",
     )
     context_policy = ContextPolicyRevision(

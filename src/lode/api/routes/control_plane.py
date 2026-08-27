@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 from aiokafka.admin import AIOKafkaAdminClient
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,10 @@ from lode.api.control_schemas import (
     ModelBindingPatch,
     ProviderAccountModelOut,
     ProviderAccountModelSelection,
+    ProviderAccountConnectionInput,
+    ProviderModelCatalogOut,
+    ProviderModelDiscoveryOut,
+    ProviderModelSelectionItem,
     ModelPolicyInput,
     ModelPolicyOut,
     PlatformSettingsOut,
@@ -46,6 +50,7 @@ from lode.api.control_schemas import (
     WorkspaceOut,
 )
 from lode.api.schemas import WorkspaceMemberOut, WorkspaceMemberPutIn
+from lode.api.types import EntityId
 from lode.api.deps import assert_workspace_permission, require_admin, require_user
 from lode.api.audit import audit_action
 from lode.ai_output import SUPPORTED_AI_OUTPUT_LANGUAGES
@@ -83,7 +88,9 @@ from lode.evidence_connectors.registry import (
     create_evidence_connector,
     native_connector_capabilities,
 )
-from lode.evidence_connectors.types import IntrospectionBudget
+from lode.evidence_access.loki_scope import normalize_loki_filter
+from lode.evidence_connectors.common import response_json
+from lode.evidence_connectors.types import IntrospectionBudget, ProviderExecutionError
 from lode.git_accounts import (
     GitAccountSecret,
     credential_identity_hash as git_credential_identity_hash,
@@ -98,8 +105,8 @@ from lode.git_accounts.providers import (
     require_adapter,
     resolve_api_url,
 )
-from lode.infrastructure.provider_http import validate_provider_endpoint
-from lode.model_catalog import find_model, require_model, supported_models
+from lode.infrastructure.provider_http import provider_endpoint, provider_request, validate_provider_endpoint
+from lode.model_catalog import CATALOG_REVISION, find_model, require_model, supported_models
 from lode.runtime_defaults import LLM_PROBE_TIMEOUT_SECONDS, KAFKA_TOPIC_VALIDATION_TIMEOUT_SECONDS
 
 router = APIRouter(tags=["control-plane"])
@@ -124,7 +131,7 @@ def _error(status: int, code: str, message: str, **details) -> HTTPException:
     )
 
 
-async def _active_user(session: AsyncSession, user_id: int) -> User:
+async def _active_user(session: AsyncSession, user_id: EntityId) -> User:
     user = await session.get(User, user_id)
     if user is None or user.status != "active":
         raise _error(401, "active_user_required", "An active user is required.")
@@ -132,7 +139,7 @@ async def _active_user(session: AsyncSession, user_id: int) -> User:
 
 
 async def _workspace_access(
-    session: AsyncSession, user_id: int, workspace_id: int, permission: str
+    session: AsyncSession, user_id: EntityId, workspace_id: EntityId, permission: str
 ) -> tuple[User, Workspace]:
     user = await _active_user(session, user_id)
     workspace = await session.get(Workspace, workspace_id)
@@ -160,14 +167,14 @@ def _account_model_out(row: ProviderAccountModel) -> ProviderAccountModelOut:
 def _account_model_out_for_account(
     row: ProviderAccountModel, account: AIProviderAccount
 ) -> ProviderAccountModelOut:
-    provider_kind = "anthropic" if account.protocol_id == "anthropic.messages.v1" else "openai"
-    profile = require_model(provider_kind, account.protocol_id, row.provider_model_id)
+    profile = require_model(account.provider_kind, account.protocol_id, row.provider_model_id)
     return ProviderAccountModelOut(
         id=row.id,
         provider_account_id=row.provider_account_id,
         provider_model_id=row.provider_model_id,
         display_name=profile.display_name,
         capabilities=dict(profile.capabilities),
+        discovery_state=row.discovery_state,
         availability_state=row.availability_state,
         health_checked_at=row.health_checked_at,
         state=row.state,
@@ -192,6 +199,7 @@ async def _provider_out(session: AsyncSession, row: AIProviderAccount) -> Provid
     return ProviderAccountOut(
         id=row.id,
         name=row.name,
+        provider_kind=row.provider_kind,
         protocol_id=row.protocol_id,
         base_url=row.base_url,
         state=row.state,
@@ -221,7 +229,7 @@ def _platform_settings_out(row: PlatformSettings) -> PlatformSettingsOut:
     )
 
 
-def _audit(user: User, action: str, target_type: str, target_id: int, workspace_id=None):
+def _audit(user: User, action: str, target_type: str, target_id: EntityId, workspace_id=None):
     return AuditEvent(
         actor_id=user.id,
         actor_username=user.username,
@@ -247,7 +255,7 @@ async def get_platform_settings(
 @router.put("/platform-settings", response_model=PlatformSettingsOut)
 async def put_platform_settings(
     payload: PlatformSettingsUpdate,
-    user_id: int = Depends(require_admin),
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
@@ -282,15 +290,90 @@ async def list_provider_accounts(
     return [await _provider_out(session, row) for row in rows]
 
 
-def _protocol_provider_kind(protocol_id: str) -> str:
-    return "anthropic" if protocol_id == "anthropic.messages.v1" else "openai"
+def _validate_provider_protocol(provider_kind: str, protocol_id: str) -> None:
+    if provider_kind == "openai" and protocol_id in {
+        "openai.responses.v1",
+        "openai.chat_completions.v1",
+    }:
+        return
+    if provider_kind == "anthropic" and protocol_id == "anthropic.messages.v1":
+        return
+    raise _error(
+        422,
+        "provider_protocol_mismatch",
+        "The selected protocol is not available for this provider.",
+    )
+
+
+async def _discover_provider_models(
+    *, provider_kind: str, base_url: str, api_key: str
+) -> tuple[str, ...]:
+    if provider_kind == "openai":
+        endpoint = provider_endpoint(base_url, "/models")
+        headers = {"authorization": f"Bearer {api_key}", "accept": "application/json"}
+    else:
+        endpoint = provider_endpoint(base_url, "/v1/models")
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "accept": "application/json",
+        }
+    discovered: set[str] = set()
+    after_id: str | None = None
+    for _ in range(10):
+        query = (
+            {"limit": "100", **({"after_id": after_id} if after_id else {})}
+            if provider_kind == "anthropic"
+            else None
+        )
+        response = await provider_request(
+            "GET",
+            endpoint,
+            headers=headers,
+            timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
+            query=query,
+        )
+        payload = response_json(response)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ProviderExecutionError("invalid_response", "provider model list is invalid")
+        page_ids: list[str] = []
+        for item in payload["data"]:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                raise ProviderExecutionError("invalid_response", "provider model item is invalid")
+            model_id = item["id"]
+            if not model_id or len(model_id) > 200 or model_id != model_id.strip():
+                raise ProviderExecutionError("invalid_response", "provider model ID is invalid")
+            page_ids.append(model_id)
+            discovered.add(model_id)
+            if len(discovered) > 1_000:
+                raise ProviderExecutionError("cost_exceeded", "provider model list is too large")
+        if provider_kind == "openai" or payload.get("has_more") is not True:
+            break
+        last_id = payload.get("last_id")
+        if not isinstance(last_id, str) or not last_id or last_id == after_id or not page_ids:
+            raise ProviderExecutionError("invalid_response", "provider model pagination is invalid")
+        after_id = last_id
+    else:
+        raise ProviderExecutionError("cost_exceeded", "provider model pagination is too large")
+    return tuple(sorted(discovered))
+
+
+def _discovery_out(
+    provider_kind: str, protocol_id: str, discovered: tuple[str, ...]
+) -> ProviderModelDiscoveryOut:
+    supported = {profile.model_id for profile in supported_models(provider_kind, protocol_id)}
+    return ProviderModelDiscoveryOut(
+        catalog_revision=CATALOG_REVISION,
+        available_model_ids=tuple(model_id for model_id in discovered if model_id in supported),
+        unsupported_model_ids=tuple(model_id for model_id in discovered if model_id not in supported),
+    )
 
 
 async def _probe_model(
     account: AIProviderAccount,
     model_id: str,
     *,
-    credential_ciphertext: str | None = None,
+    api_key_ciphertext: str | None = None,
 ) -> tuple[bool, str | None]:
     result = await complete_with_usage(
         "You are a protocol health probe.",
@@ -298,7 +381,7 @@ async def _probe_model(
         ModelConfig(
             protocol_id=account.protocol_id,
             base_url=account.base_url,
-            api_key_ciphertext=credential_ciphertext or account.credential_ciphertext,
+            api_key_ciphertext=api_key_ciphertext or account.api_key_ciphertext,
             model=model_id,
             max_completion_tokens=32,
         ),
@@ -315,15 +398,23 @@ async def _apply_model_selection(
     session: AsyncSession,
     account: AIProviderAccount,
     *,
-    model_ids: tuple[str, ...],
+    models: tuple[ProviderModelSelectionItem, ...],
+    discovered_ids: frozenset[str],
     reset_health: bool,
-    credential_ciphertext: str | None = None,
+    api_key_ciphertext: str | None = None,
 ) -> None:
-    provider_kind = _protocol_provider_kind(account.protocol_id)
-    profiles = {
-        model_id: require_model(provider_kind, account.protocol_id, model_id)
-        for model_id in model_ids
-    }
+    profiles = {}
+    selections = {item.provider_model_id: item for item in models}
+    for item in models:
+        profile = find_model(account.provider_kind, account.protocol_id, item.provider_model_id)
+        if profile is None:
+            raise _error(
+                422,
+                "unsupported_model",
+                "The model is not in the reviewed provider catalog.",
+                model_id=item.provider_model_id,
+            )
+        profiles[item.provider_model_id] = profile
     rows = tuple(
         (
             await session.execute(
@@ -337,8 +428,30 @@ async def _apply_model_selection(
     )
     existing = {row.provider_model_id: row for row in rows}
     for model_id, profile in profiles.items():
+        selection = selections[model_id]
+        missing = selection.source == "discovered" and model_id not in discovered_ids
+        row = existing.get(model_id)
+        if missing:
+            if row is None:
+                session.add(
+                    ProviderAccountModel(
+                        provider_account_id=account.id,
+                        provider_model_id=model_id,
+                        catalog_revision=profile.catalog_revision,
+                        catalog_profile_hash=profile.profile_hash,
+                        discovery_state="missing",
+                        availability_state="unavailable",
+                        state="disabled",
+                    )
+                )
+            else:
+                row.discovery_state = "missing"
+                row.availability_state = "unavailable"
+                row.state = "disabled"
+                row.revision += 1
+            continue
         available, error_code = await _probe_model(
-            account, model_id, credential_ciphertext=credential_ciphertext
+            account, model_id, api_key_ciphertext=api_key_ciphertext
         )
         if not available:
             raise _error(
@@ -348,7 +461,6 @@ async def _apply_model_selection(
                 model_id=model_id,
                 provider_error=error_code,
             )
-        row = existing.get(model_id)
         if row is None:
             session.add(
                 ProviderAccountModel(
@@ -356,6 +468,7 @@ async def _apply_model_selection(
                     provider_model_id=model_id,
                     catalog_revision=profile.catalog_revision,
                     catalog_profile_hash=profile.profile_hash,
+                    discovery_state=selection.source,
                     availability_state="healthy",
                     health_checked_at=datetime.now(UTC),
                     state="active",
@@ -369,6 +482,7 @@ async def _apply_model_selection(
         )
         row.catalog_revision = profile.catalog_revision
         row.catalog_profile_hash = profile.profile_hash
+        row.discovery_state = selection.source
         row.availability_state = "healthy"
         row.health_checked_at = datetime.now(UTC)
         row.state = "active"
@@ -394,19 +508,143 @@ async def _apply_model_selection(
             row.revision += 1
 
 
+async def _sync_provider_verification_status(
+    session: AsyncSession, account: AIProviderAccount
+) -> None:
+    await session.flush()
+    active_model_id = await session.scalar(
+        select(ProviderAccountModel.id).where(
+            ProviderAccountModel.provider_account_id == account.id,
+            ProviderAccountModel.state == "active",
+            ProviderAccountModel.availability_state == "healthy",
+        )
+    )
+    account.verification_status = "healthy" if active_model_id is not None else "unavailable"
+    account.verified_at = datetime.now(UTC)
+
+
+async def _safe_discover(
+    *, provider_kind: str, protocol_id: str, base_url: str, api_key: str
+) -> tuple[str, ...]:
+    _validate_provider_protocol(provider_kind, protocol_id)
+    try:
+        return await _discover_provider_models(
+            provider_kind=provider_kind,
+            base_url=_validate_provider_url(base_url),
+            api_key=api_key,
+        )
+    except ProviderExecutionError as exc:
+        raise _error(
+            422,
+            f"model_discovery_{exc.code}",
+            "The provider model list could not be loaded.",
+        ) from exc
+
+
+@router.get("/ai-provider-model-catalog", response_model=list[ProviderModelCatalogOut])
+async def get_provider_model_catalog(
+    provider_kind: str = Query(),
+    protocol_id: str = Query(),
+    _: int = Depends(require_admin),
+) -> list[ProviderModelCatalogOut]:
+    _validate_provider_protocol(provider_kind, protocol_id)
+    return [
+        ProviderModelCatalogOut(
+            provider_kind=profile.provider_kind,
+            provider_model_id=profile.model_id,
+            display_name=profile.display_name,
+            context_window_tokens=profile.context_window_tokens,
+            max_output_tokens=profile.max_output_tokens,
+            capabilities=dict(profile.capabilities),
+            protocol_ids=profile.protocol_ids,
+            catalog_revision=profile.catalog_revision,
+            source_url=profile.source_url,
+            reviewed_at=profile.reviewed_at,
+        )
+        for profile in supported_models(provider_kind, protocol_id)
+    ]
+
+
+@router.post(
+    "/ai-provider-accounts/discover-models", response_model=ProviderModelDiscoveryOut
+)
+async def discover_unsaved_provider_models(
+    payload: ProviderAccountConnectionInput,
+    _: int = Depends(require_admin),
+) -> ProviderModelDiscoveryOut:
+    discovered = await _safe_discover(
+        provider_kind=payload.provider_kind,
+        protocol_id=payload.protocol_id,
+        base_url=payload.base_url,
+        api_key=payload.api_key,
+    )
+    return _discovery_out(payload.provider_kind, payload.protocol_id, discovered)
+
+
+@router.post(
+    "/ai-provider-accounts/{account_id}/discover-models",
+    response_model=ProviderModelDiscoveryOut,
+)
+async def discover_saved_provider_models(
+    account_id: EntityId,
+    user_id: EntityId = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ProviderModelDiscoveryOut:
+    user = await _active_user(session, user_id)
+    row = await session.get(AIProviderAccount, account_id)
+    if row is None:
+        raise _error(404, "provider_account_not_found", "Provider account not found.")
+    api_key = decrypt_secret(row.api_key_ciphertext)
+    if not api_key:
+        raise _error(422, "provider_api_key_unavailable", "Provider API Key is unavailable.")
+    discovered = await _safe_discover(
+        provider_kind=row.provider_kind,
+        protocol_id=row.protocol_id,
+        base_url=row.base_url,
+        api_key=api_key,
+    )
+    current = tuple(
+        (
+            await session.execute(
+                select(ProviderAccountModel).where(
+                    ProviderAccountModel.provider_account_id == row.id,
+                )
+            )
+        ).scalars()
+    )
+    await _apply_model_selection(
+        session,
+        row,
+        models=tuple(
+            ProviderModelSelectionItem(
+                provider_model_id=model.provider_model_id,
+                source=model.discovery_state if model.discovery_state != "missing" else "discovered",
+            )
+            for model in current
+        ),
+        discovered_ids=frozenset(discovered),
+        reset_health=False,
+    )
+    await _sync_provider_verification_status(session, row)
+    session.add(_audit(user, "provider_account.models.discover", "ai_provider_account", row.id))
+    await session.commit()
+    return _discovery_out(row.provider_kind, row.protocol_id, discovered)
+
+
 @router.post("/ai-provider-accounts", response_model=ProviderAccountOut, status_code=201)
 async def create_provider_account(
     payload: ProviderAccountCreate,
-    user_id: int = Depends(require_admin),
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
     base_url = _validate_provider_url(payload.base_url)
     row = AIProviderAccount(
         name=payload.name.strip(),
+        provider_kind=payload.provider_kind,
         protocol_id=payload.protocol_id,
         base_url=base_url,
-        credential_ciphertext=encrypt_secret(payload.credential) or "",
+        api_key_ciphertext=encrypt_secret(payload.api_key) or "",
         verification_status="untested",
     )
     session.add(row)
@@ -417,14 +655,24 @@ async def create_provider_account(
         raise _error(
             409, "provider_name_conflict", "Provider account name is already used."
         ) from exc
+    discovered = (
+        await _safe_discover(
+            provider_kind=payload.provider_kind,
+            protocol_id=payload.protocol_id,
+            base_url=base_url,
+            api_key=payload.api_key,
+        )
+        if any(item.source == "discovered" for item in payload.models)
+        else ()
+    )
     await _apply_model_selection(
         session,
         row,
-        model_ids=payload.model_ids,
+        models=payload.models,
+        discovered_ids=frozenset(discovered),
         reset_health=True,
     )
-    row.verification_status = "healthy"
-    row.verified_at = datetime.now(UTC)
+    await _sync_provider_verification_status(session, row)
     session.add(_audit(user, "provider_account.create", "ai_provider_account", row.id))
     await session.commit()
     await session.refresh(row)
@@ -433,9 +681,9 @@ async def create_provider_account(
 
 @router.patch("/ai-provider-accounts/{account_id}", response_model=ProviderAccountOut)
 async def patch_provider_account(
-    account_id: int,
+    account_id: EntityId,
     payload: ProviderAccountPatch,
-    user_id: int = Depends(require_admin),
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
@@ -443,38 +691,54 @@ async def patch_provider_account(
     if row is None:
         raise _error(404, "provider_account_not_found", "Provider account not found.")
     values = payload.model_dump(exclude_unset=True)
-    credential = values.pop("credential", None)
-    model_ids = values.pop("model_ids", None)
+    api_key = values.pop("api_key", None)
+    models = values.pop("models", None)
     if "base_url" in values:
         values["base_url"] = _validate_provider_url(values["base_url"])
     connection_changed = (
-        "base_url" in values or "protocol_id" in values or credential is not None
+        "base_url" in values
+        or "protocol_id" in values
+        or "provider_kind" in values
+        or api_key is not None
     )
-    if connection_changed and model_ids is None:
+    if connection_changed and models is None:
         raise _error(
             422,
             "model_selection_required",
             "Changing a provider connection requires a refreshed model selection.",
         )
-    effective_credential = credential or decrypt_secret(row.credential_ciphertext)
-    if model_ids is not None and not effective_credential:
-        raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
+    effective_api_key = api_key or decrypt_secret(row.api_key_ciphertext)
+    if models is not None and not effective_api_key:
+        raise _error(422, "provider_api_key_unavailable", "Provider API Key is unavailable.")
+    effective_provider_kind = values.get("provider_kind", row.provider_kind)
+    effective_protocol_id = values.get("protocol_id", row.protocol_id)
+    _validate_provider_protocol(effective_provider_kind, effective_protocol_id)
     for key, value in values.items():
         setattr(row, key, value)
-    if credential is not None:
-        row.credential_ciphertext = encrypt_secret(credential) or ""
+    if api_key is not None:
+        row.api_key_ciphertext = encrypt_secret(api_key) or ""
     row.revision += 1
-    if model_ids is not None:
-        probe_credential = encrypt_secret(effective_credential) or ""
-        row.verification_status = "healthy"
-        row.verified_at = datetime.now(UTC)
+    if models is not None:
+        discovered = (
+            await _safe_discover(
+                provider_kind=row.provider_kind,
+                protocol_id=row.protocol_id,
+                base_url=row.base_url,
+                api_key=effective_api_key,
+            )
+            if any(item.source == "discovered" for item in models)
+            else ()
+        )
+        probe_api_key = encrypt_secret(effective_api_key) or ""
         await _apply_model_selection(
             session,
             row,
-            model_ids=model_ids,
+            models=models,
+            discovered_ids=frozenset(discovered),
             reset_health=connection_changed,
-            credential_ciphertext=probe_credential,
+            api_key_ciphertext=probe_api_key,
         )
+        await _sync_provider_verification_status(session, row)
     session.add(_audit(user, "provider_account.update", "ai_provider_account", row.id))
     await session.commit()
     await session.refresh(row)
@@ -483,26 +747,36 @@ async def patch_provider_account(
 
 @router.put("/ai-provider-accounts/{account_id}/models", response_model=ProviderAccountOut)
 async def update_provider_account_models(
-    account_id: int,
+    account_id: EntityId,
     payload: ProviderAccountModelSelection,
-    user_id: int = Depends(require_admin),
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
     row = await session.get(AIProviderAccount, account_id)
     if row is None:
         raise _error(404, "provider_account_not_found", "Provider account not found.")
-    credential = decrypt_secret(row.credential_ciphertext)
-    if not credential:
-        raise _error(422, "provider_credential_unavailable", "Provider credential is unavailable.")
+    api_key = decrypt_secret(row.api_key_ciphertext)
+    if not api_key:
+        raise _error(422, "provider_api_key_unavailable", "Provider API Key is unavailable.")
+    discovered = (
+        await _safe_discover(
+            provider_kind=row.provider_kind,
+            protocol_id=row.protocol_id,
+            base_url=row.base_url,
+            api_key=api_key,
+        )
+        if any(item.source == "discovered" for item in payload.models)
+        else ()
+    )
     await _apply_model_selection(
         session,
         row,
-        model_ids=payload.model_ids,
+        models=payload.models,
+        discovered_ids=frozenset(discovered),
         reset_health=False,
     )
-    row.verification_status = "healthy"
-    row.verified_at = datetime.now(UTC)
+    await _sync_provider_verification_status(session, row)
     row.revision += 1
     session.add(_audit(user, "provider_account.models.update", "ai_provider_account", row.id))
     await session.commit()
@@ -512,8 +786,8 @@ async def update_provider_account_models(
 
 @router.delete("/ai-provider-accounts/{account_id}", status_code=204)
 async def disable_provider_account(
-    account_id: int,
-    user_id: int = Depends(require_admin),
+    account_id: EntityId,
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
@@ -529,8 +803,8 @@ async def disable_provider_account(
 
 @router.post("/ai-provider-accounts/{account_id}/models/{account_model_id}/test")
 async def test_provider_account_model(
-    account_id: int,
-    account_model_id: int,
+    account_id: EntityId,
+    account_model_id: EntityId,
     _: int = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -541,7 +815,7 @@ async def test_provider_account_model(
     if row.state != "active" or provider.state != "active":
         raise _error(422, "account_model_ineligible", "An active account model is required.")
     profile = require_model(
-        _protocol_provider_kind(provider.protocol_id),
+        provider.provider_kind,
         provider.protocol_id,
         row.provider_model_id,
     )
@@ -556,7 +830,7 @@ async def test_provider_account_model(
         ModelConfig(
             protocol_id=provider.protocol_id,
             base_url=provider.base_url,
-            api_key_ciphertext=provider.credential_ciphertext,
+            api_key_ciphertext=provider.api_key_ciphertext,
             model=row.provider_model_id,
             max_completion_tokens=16,
         ),
@@ -576,7 +850,7 @@ async def test_provider_account_model(
 @router.post("/workspaces", response_model=WorkspaceOut, status_code=201)
 async def create_workspace(
     payload: WorkspaceCreate,
-    user_id: int = Depends(require_admin),
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
@@ -614,7 +888,7 @@ async def create_workspace(
 
 @router.get("/workspaces", response_model=list[WorkspaceOut])
 async def list_workspaces(
-    user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)
+    user_id: EntityId = Depends(require_user), session: AsyncSession = Depends(get_session)
 ):
     user = await _active_user(session, user_id)
     statement = select(Workspace).order_by(Workspace.name, Workspace.id)
@@ -624,8 +898,8 @@ async def list_workspaces(
 
 @router.get("/workspaces/{workspace_id}", response_model=WorkspaceOut)
 async def get_workspace(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     _, row = await _workspace_access(session, user_id, workspace_id, "read")
@@ -634,7 +908,7 @@ async def get_workspace(
 
 @router.get("/workspaces/{workspace_id}/members", response_model=list[WorkspaceMemberOut])
 async def list_workspace_members(
-    workspace_id: int,
+    workspace_id: EntityId,
     _: int = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> list[WorkspaceMemberOut]:
@@ -662,10 +936,10 @@ async def list_workspace_members(
 
 @router.put("/workspaces/{workspace_id}/members/{member_id}", response_model=WorkspaceMemberOut)
 async def put_workspace_member(
-    workspace_id: int,
-    member_id: int,
+    workspace_id: EntityId,
+    member_id: EntityId,
     payload: WorkspaceMemberPutIn,
-    admin_id: int = Depends(require_admin),
+    admin_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> WorkspaceMemberOut:
     if await session.get(Workspace, workspace_id) is None:
@@ -702,9 +976,9 @@ async def put_workspace_member(
 
 @router.delete("/workspaces/{workspace_id}/members/{member_id}", status_code=204)
 async def delete_workspace_member(
-    workspace_id: int,
-    member_id: int,
-    admin_id: int = Depends(require_admin),
+    workspace_id: EntityId,
+    member_id: EntityId,
+    admin_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> None:
     grant = await session.get(WorkspacePermission, (member_id, workspace_id))
@@ -723,11 +997,11 @@ async def delete_workspace_member(
 
 @router.post("/admin/investigations/{investigation_id}/archive")
 async def archive_investigation_as_admin(
-    investigation_id: str,
-    admin_id: int = Depends(require_admin),
+    investigation_id: EntityId,
+    admin_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    row = await session.scalar(select(Investigation).where(Investigation.public_id == investigation_id))
+    row = await session.get(Investigation, investigation_id)
     if row is None:
         raise _error(404, "investigation_not_found", "Investigation not found.")
     if row.status not in {"completed", "failed", "cancelled"}:
@@ -741,7 +1015,7 @@ async def archive_investigation_as_admin(
         action="investigation.archive",
         actor_id=admin_id,
         target_type="investigation",
-        target_id=investigation_id,
+        target_id=str(investigation_id),
         workspace_id=row.workspace_id,
     )
     return {"status": "ok"}
@@ -846,9 +1120,9 @@ async def _set_ingestion(
 
 @router.post("/workspaces/{workspace_id}/ingestion/start", response_model=WorkspaceOut)
 async def start_ingestion(
-    workspace_id: int,
+    workspace_id: EntityId,
     payload: IngestionStart,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, workspace = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -859,8 +1133,8 @@ async def start_ingestion(
 
 @router.post("/workspaces/{workspace_id}/ingestion/pause", response_model=WorkspaceOut)
 async def pause_ingestion(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, workspace = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -871,8 +1145,8 @@ async def pause_ingestion(
 
 @router.post("/workspaces/{workspace_id}/ingestion/resume", response_model=WorkspaceOut)
 async def resume_ingestion(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, workspace = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -886,8 +1160,8 @@ async def resume_ingestion(
     response_model=InvestigationPolicyOut,
 )
 async def get_investigation_policy(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     _, workspace = await _workspace_access(session, user_id, workspace_id, "read")
@@ -904,9 +1178,9 @@ async def get_investigation_policy(
     response_model=InvestigationPolicyOut,
 )
 async def put_investigation_policy(
-    workspace_id: int,
+    workspace_id: EntityId,
     payload: InvestigationPolicyPut,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -945,8 +1219,8 @@ async def put_investigation_policy(
 
 @router.get("/workspaces/{workspace_id}/model-bindings", response_model=list[ModelBindingOut])
 async def list_model_bindings(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _workspace_access(session, user_id, workspace_id, "read")
@@ -966,9 +1240,9 @@ async def list_model_bindings(
     status_code=201,
 )
 async def create_model_binding(
-    workspace_id: int,
+    workspace_id: EntityId,
     payload: ModelBindingInput,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -998,10 +1272,10 @@ async def create_model_binding(
     response_model=ModelBindingOut,
 )
 async def patch_model_binding(
-    workspace_id: int,
-    binding_id: int,
+    workspace_id: EntityId,
+    binding_id: EntityId,
     payload: ModelBindingPatch,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -1037,9 +1311,9 @@ async def patch_model_binding(
 
 @router.delete("/workspaces/{workspace_id}/model-bindings/{binding_id}", status_code=204)
 async def disable_model_binding(
-    workspace_id: int,
-    binding_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    binding_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -1057,9 +1331,9 @@ async def disable_model_binding(
 
 @router.put("/workspaces/{workspace_id}/model-policy", response_model=ModelPolicyOut)
 async def put_model_policy(
-    workspace_id: int,
+    workspace_id: EntityId,
     payload: ModelPolicyInput,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, workspace = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -1156,8 +1430,8 @@ async def put_model_policy(
 
 @router.get("/workspaces/{workspace_id}/model-routing-audit")
 async def model_routing_audit(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _workspace_access(session, user_id, workspace_id, "read")
@@ -1188,8 +1462,8 @@ async def model_routing_audit(
 
 @router.get("/workspaces/{workspace_id}/capabilities")
 async def workspace_capabilities(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     _, workspace = await _workspace_access(session, user_id, workspace_id, "read")
@@ -1353,7 +1627,7 @@ async def _account_secret(
 
 async def _ensure_all_visible_entitlements(
     session: AsyncSession,
-    account_connection_id: int,
+    account_connection_id: EntityId,
     repository_ids: set[int],
 ) -> None:
     if not repository_ids:
@@ -1557,7 +1831,7 @@ async def _create_git_account(
 @router.post("/git-accounts", response_model=GitAccountOut, status_code=201)
 async def create_git_account(
     payload: GitAccountCreate,
-    user_id: int = Depends(require_admin),
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     return await _create_git_account(session, await _active_user(session, user_id), payload)
@@ -1565,9 +1839,9 @@ async def create_git_account(
 
 @router.patch("/git-accounts/{account_id}", response_model=GitAccountOut)
 async def patch_git_account(
-    account_id: int,
+    account_id: EntityId,
     payload: GitAccountPatch,
-    user_id: int = Depends(require_admin),
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
@@ -1585,9 +1859,9 @@ async def patch_git_account(
 
 @router.post("/git-accounts/{account_id}/access-token", response_model=GitAccountOut)
 async def rotate_git_account_token(
-    account_id: int,
+    account_id: EntityId,
     payload: GitAccountTokenRotate,
-    user_id: int = Depends(require_admin),
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
@@ -1615,8 +1889,8 @@ async def rotate_git_account_token(
 
 @router.post("/git-accounts/{account_id}/sync", response_model=GitAccountOut)
 async def sync_git_account(
-    account_id: int,
-    user_id: int = Depends(require_admin),
+    account_id: EntityId,
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
@@ -1636,7 +1910,7 @@ async def sync_git_account(
 
 @router.get("/git-accounts/{account_id}/repositories", response_model=list[GitAccountRepositoryOut])
 async def list_git_account_repositories_current(
-    account_id: int,
+    account_id: EntityId,
     _: int = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1668,8 +1942,8 @@ async def list_git_account_repositories_current(
 
 @router.get("/workspaces/{workspace_id}/repositories", response_model=list[RepositoryBindingOut])
 async def list_repositories(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _workspace_access(session, user_id, workspace_id, "read")
@@ -1711,9 +1985,9 @@ async def _create_repository_binding(session, workspace_id, user, entitlement, r
     "/workspaces/{workspace_id}/repositories", response_model=RepositoryBindingOut, status_code=201
 )
 async def bind_repository(
-    workspace_id: int,
+    workspace_id: EntityId,
     payload: RepositoryBind,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -1744,8 +2018,8 @@ async def bind_repository(
     response_model=list[WorkspaceRepositoryCandidateOut],
 )
 async def list_workspace_repository_candidates(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _workspace_access(session, user_id, workspace_id, "read")
@@ -1805,8 +2079,8 @@ async def list_workspace_repository_candidates(
     response_model=list[WorkspaceGitAccountGrantOut],
 )
 async def list_workspace_git_account_grants(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _workspace_access(session, user_id, workspace_id, "read")
@@ -1858,9 +2132,9 @@ async def list_workspace_git_account_grants(
     status_code=201,
 )
 async def create_workspace_git_account_grant(
-    workspace_id: int,
+    workspace_id: EntityId,
     payload: WorkspaceGitAccountGrantCreate,
-    user_id: int = Depends(require_admin),
+    user_id: EntityId = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
@@ -1935,10 +2209,10 @@ async def create_workspace_git_account_grant(
     "/workspaces/{workspace_id}/repositories/{binding_id}", response_model=RepositoryBindingOut
 )
 async def patch_repository_binding(
-    workspace_id: int,
-    binding_id: int,
+    workspace_id: EntityId,
+    binding_id: EntityId,
     payload: RepositoryBindingPatch,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -1962,9 +2236,9 @@ async def patch_repository_binding(
 
 @router.delete("/workspaces/{workspace_id}/repositories/{binding_id}", status_code=204)
 async def disable_repository_binding(
-    workspace_id: int,
-    binding_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    binding_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -2054,8 +2328,8 @@ async def connector_kinds(_: int = Depends(require_user)):
 
 @router.get("/workspaces/{workspace_id}/evidence-connectors", response_model=list[ConnectorOut])
 async def list_connectors(
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _workspace_access(session, user_id, workspace_id, "read")
@@ -2088,13 +2362,14 @@ def _connector_secrets(payload: ConnectorCreate) -> dict[str, str]:
 def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], dict, dict]:
     budget = {"timeout_ms": 5_000, "max_rows": 1_000, "max_output_bytes": 1_000_000}
     if payload.kind == "loki":
-        matchers = {item.name: item.value for item in payload.root_matchers}
-        if len(matchers) != len(payload.root_matchers):
-            raise ValueError("Loki root matcher names must be unique")
+        if payload.root_filter is None:
+            raise ValueError("Loki root filter is required")
+        root_filter = payload.root_filter.model_dump()
+        branches = normalize_loki_filter(root_filter)
         return (
             {"base_url": payload.endpoint, **({"tenant_id": payload.tenant_id} if payload.tenant_id else {})},
             {"bearer_token": payload.credential} if payload.authentication == "bearer_token" else {},
-            {"root_matchers": matchers},
+            {"root_filter": root_filter, "root_filter_dnf": [[dict(item) for item in branch] for branch in branches]},
             budget,
         )
     if payload.kind in {"elasticsearch", "opensearch"}:
@@ -2134,24 +2409,17 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
             budget,
         )
     if payload.kind in {"postgresql", "mysql"}:
-        tables = {item.table: item for item in payload.allowed_tables}
-        if len(tables) != len(payload.allowed_tables):
-            raise ValueError("allowed database tables must be unique")
         return (
             {
                 "host": payload.host,
                 "port": payload.port or (5432 if payload.kind == "postgresql" else 3306),
                 "database": payload.database,
                 "username": payload.database_username,
-                "ca_certificate_pem": payload.ca_certificate_pem,
             },
             {"password": payload.database_password or ""},
             {
-                "allowed_tables": list(tables),
-                "table_policies": {
-                    table: {"time_column": item.time_column, "stable_order": list(item.stable_order)}
-                    for table, item in tables.items()
-                },
+                "allowed_tables": [],
+                "table_policies": {},
             },
             budget,
         )
@@ -2162,9 +2430,9 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
     "/workspaces/{workspace_id}/evidence-connectors", response_model=ConnectorOut, status_code=201
 )
 async def create_connector(
-    workspace_id: int,
+    workspace_id: EntityId,
     payload: ConnectorCreate,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
@@ -2217,7 +2485,7 @@ async def create_connector(
     return _connector_out(row)
 
 
-async def _latest_scope(session: AsyncSession, connector_id: int) -> EvidenceAccessScope:
+async def _latest_scope(session: AsyncSession, connector_id: EntityId) -> EvidenceAccessScope:
     row = (
         await session.execute(
             select(EvidenceAccessScope)
@@ -2233,9 +2501,9 @@ async def _latest_scope(session: AsyncSession, connector_id: int) -> EvidenceAcc
 
 @router.post("/workspaces/{workspace_id}/evidence-connectors/{connector_id}/test")
 async def test_connector(
-    workspace_id: int,
-    connector_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    connector_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _workspace_access(session, user_id, workspace_id, "admin")
@@ -2267,9 +2535,9 @@ async def test_connector(
 
 @router.post("/workspaces/{workspace_id}/evidence-connectors/{connector_id}/introspect")
 async def introspect_connector(
-    workspace_id: int,
-    connector_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    connector_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     await _workspace_access(session, user_id, workspace_id, "admin")
@@ -2290,10 +2558,25 @@ async def introspect_connector(
             window_end=now,
         ),
     )
+    scope_config = scope.scope_config
+    if row.kind in {"postgresql", "mysql"}:
+        tables = catalog.resources.get("tables")
+        if not isinstance(tables, dict):
+            raise _error(502, "connector_introspection_invalid", "SQL discovery returned an invalid catalog.")
+        scope_config = {
+            "allowed_tables": sorted(tables),
+            "table_policies": {
+                table: {
+                    "time_column": descriptor["time_column"],
+                    "stable_order": descriptor["stable_order"],
+                }
+                for table, descriptor in tables.items()
+            },
+        }
     new_scope = EvidenceAccessScope(
         connector_id=row.id,
         allowed_languages=scope.allowed_languages,
-        scope_config=scope.scope_config,
+        scope_config=scope_config,
         schema_catalog=dict(catalog.resources),
         schema_catalog_revision=scope.schema_catalog_revision + 1,
         read_policy_revision=scope.read_policy_revision,
@@ -2309,14 +2592,17 @@ async def introspect_connector(
         "version": catalog.version,
         "resources": catalog.resources,
         "scope_revision": new_scope.revision,
+        "readiness": "ready"
+        if row.kind not in {"postgresql", "mysql"} or bool(scope_config["allowed_tables"])
+        else "empty",
     }
 
 
 @router.delete("/workspaces/{workspace_id}/evidence-connectors/{connector_id}", status_code=204)
 async def disable_connector(
-    workspace_id: int,
-    connector_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    connector_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")

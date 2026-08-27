@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.config import settings
+from lode.api.types import EntityId
 from lode.db.models import User, WorkspacePermission
 from lode.db.session import AsyncSessionLocal
 from lode.security import decode_token
@@ -44,7 +45,7 @@ def require_user(authorization: str | None = Header(default=None)) -> int:
     return sub
 
 
-async def require_admin(user_id: int = Depends(require_user)) -> int:
+async def require_admin(user_id: EntityId = Depends(require_user)) -> int:
     """Require the active, password-ready system administrator."""
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
@@ -57,7 +58,7 @@ async def require_admin(user_id: int = Depends(require_user)) -> int:
     return user_id
 
 
-async def require_workbench_user(user_id: int = Depends(require_user)) -> int:
+async def require_workbench_user(user_id: EntityId = Depends(require_user)) -> int:
     """Require an active user whose initial password was changed."""
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
@@ -71,7 +72,7 @@ async def require_workbench_user(user_id: int = Depends(require_user)) -> int:
 async def assert_workspace_permission(
     session: AsyncSession,
     user: User,
-    workspace_id: int,
+    workspace_id: EntityId,
     required_perm: str,
 ) -> None:
     """Raise unless ``user`` has the required Workspace permission."""
@@ -87,8 +88,8 @@ async def assert_workspace_permission(
 
 async def require_workspace_permission(
     security_scopes: SecurityScopes,
-    workspace_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
 ) -> int:
     """FastAPI dependency enforcing a Workspace permission level."""
     required = security_scopes.scopes[0] if security_scopes.scopes else "read"
@@ -101,7 +102,7 @@ async def require_workspace_permission(
 
 
 async def permitted_workspace_ids(
-    session: AsyncSession, user_id: int, is_system_admin: bool = False
+    session: AsyncSession, user_id: EntityId, is_system_admin: bool = False
 ) -> set[int] | None:
     """Workspace ids the user may read, or ``None`` when unrestricted."""
     if is_system_admin:

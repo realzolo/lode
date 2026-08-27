@@ -9,13 +9,13 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
-from lode.db.models._common import CreatedAtMixin, identity_pk
+from lode.db.models._common import CreatedAtMixin, snowflake_pk
 
 
 class SourceRevision(CreatedAtMixin, Base):
     __tablename__ = "source_revisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -49,7 +49,7 @@ class SourceRevision(CreatedAtMixin, Base):
 class SourceAssessment(CreatedAtMixin, Base):
     __tablename__ = "source_assessments"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -81,7 +81,7 @@ class SourceAssessment(CreatedAtMixin, Base):
 class InvestigationCodeFinding(CreatedAtMixin, Base):
     __tablename__ = "investigation_code_findings"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -144,7 +144,7 @@ class InvestigationCodeFinding(CreatedAtMixin, Base):
 class AIInvocation(CreatedAtMixin, Base):
     __tablename__ = "ai_invocations"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )

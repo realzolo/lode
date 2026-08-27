@@ -383,7 +383,7 @@ class InvestigationControlSnapshotStore:
                 "provider_base_url": provider.base_url,
                 "provider_model_id": deployment.provider_model_id,
                 "credential_identity_hash": hashlib.sha256(
-                    provider.credential_ciphertext.encode()
+                    provider.api_key_ciphertext.encode()
                 ).hexdigest(),
             }
             payload = {

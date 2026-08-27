@@ -46,10 +46,12 @@ def test_provider_credentials_are_separate_from_provider_account_models() -> Non
     accounts = Base.metadata.tables["ai_provider_accounts"]
     deployments = Base.metadata.tables["provider_account_models"]
 
-    assert "credential_ciphertext" in accounts.c
-    assert "credential_ciphertext" not in deployments.c
+    assert {"provider_kind", "protocol_id", "api_key_ciphertext"}.issubset(accounts.c.keys())
+    assert "credential_ciphertext" not in accounts.c
+    assert "api_key_ciphertext" not in deployments.c
     assert "api_key" not in deployments.c
     assert "provider_account_id" in deployments.c
+    assert "discovery_state" in deployments.c
 
 
 def test_workspace_model_binding_has_portfolio_and_budget_constraints() -> None:

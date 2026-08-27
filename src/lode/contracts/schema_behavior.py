@@ -89,11 +89,11 @@ BEGIN
     ) RETURNING id INTO policy_id;
 
     INSERT INTO investigations (
-        public_id, workspace_id, investigation_policy_revision_id, trigger_signature_hash, status, result_state,
+        workspace_id, investigation_policy_revision_id, trigger_signature_hash, status, result_state,
         window_started_at, window_finished_at, execution_budget, engine_version,
         finished_at, archived_at
     ) VALUES (
-        'schema-behavior-investigation', workspace_row.id, policy_id, repeat('a', 64),
+        workspace_row.id, policy_id, repeat('a', 64),
         'completed', 'insufficient', now() - interval '1 minute', now(),
         '{}'::jsonb, 'schema-behavior', now(), now()
     ) RETURNING id INTO investigation_id;

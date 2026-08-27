@@ -21,17 +21,13 @@ class PostgreSQLConnectorConfig(BaseModel):
     port: int = Field(default=5432, ge=1, le=65_535)
     database: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,62}$")
     username: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,62}$")
-    ca_certificate_pem: str = Field(min_length=1, max_length=100_000)
 
 
 class PostgreSQLBackend(SQLBackend):
     def __init__(self, config: PostgreSQLConnectorConfig, password: str) -> None:
         self.config = config
         self.password = password
-        try:
-            self.ssl_context = ssl.create_default_context(cadata=config.ca_certificate_pem)
-        except ssl.SSLError as exc:
-            raise ValueError("PostgreSQL CA certificate is invalid") from exc
+        self.ssl_context = ssl.create_default_context()
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
 
     async def attest(self, timeout_ms: int) -> Mapping[str, Any]:
@@ -55,7 +51,7 @@ class PostgreSQLBackend(SQLBackend):
         return dict(row)
 
     async def introspect(
-        self, tables: Sequence[str], timeout_ms: int
+        self, max_tables: int, timeout_ms: int
     ) -> Mapping[str, Mapping[str, Any]]:
         output: dict[str, Mapping[str, Any]] = {}
         async with (
@@ -63,8 +59,22 @@ class PostgreSQLBackend(SQLBackend):
             connection.transaction(readonly=True),
         ):
             await self._set_timeouts(connection, timeout_ms)
-            for qualified in tables:
-                schema, table = self._qualified_table(qualified)
+            tables = await connection.fetch(
+                """
+                SELECT schemaname, tablename
+                FROM pg_catalog.pg_tables
+                WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+                  AND schemaname !~ '^pg_toast'
+                  AND has_table_privilege(format('%I.%I', schemaname, tablename), 'SELECT')
+                ORDER BY schemaname, tablename
+                LIMIT $1
+                """,
+                max_tables,
+                timeout=timeout_ms / 1_000,
+            )
+            for table_row in tables:
+                schema, table = table_row["schemaname"], table_row["tablename"]
+                qualified = f"{schema}.{table}"
                 rows = await connection.fetch(
                     """
                         SELECT c.column_name, c.data_type, c.is_nullable = 'YES' AS nullable
@@ -79,12 +89,45 @@ class PostgreSQLBackend(SQLBackend):
                     table,
                     timeout=timeout_ms / 1_000,
                 )
-                output[qualified] = {
+                columns = {
                     row["column_name"]: {
                         "type": row["data_type"],
                         "nullable": row["nullable"],
                     }
                     for row in rows
+                }
+                index_rows = await connection.fetch(
+                    """
+                    SELECT idx.relname AS index_name, ix.indisprimary,
+                           array_agg(att.attname ORDER BY key.ordinality) AS columns
+                    FROM pg_catalog.pg_class AS tbl
+                    JOIN pg_catalog.pg_namespace AS ns ON ns.oid = tbl.relnamespace
+                    JOIN pg_catalog.pg_index AS ix ON ix.indrelid = tbl.oid
+                    JOIN pg_catalog.pg_class AS idx ON idx.oid = ix.indexrelid
+                    JOIN unnest(ix.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+                      ON key.attnum > 0
+                    JOIN pg_catalog.pg_attribute AS att
+                      ON att.attrelid = tbl.oid AND att.attnum = key.attnum
+                    WHERE ns.nspname = $1 AND tbl.relname = $2
+                      AND ix.indisunique AND ix.indpred IS NULL AND ix.indexprs IS NULL
+                    GROUP BY idx.relname, ix.indisprimary
+                    ORDER BY ix.indisprimary DESC, idx.relname
+                    """,
+                    schema,
+                    table,
+                    timeout=timeout_ms / 1_000,
+                )
+                primary = next(
+                    (list(item["columns"]) for item in index_rows if item["indisprimary"]), []
+                )
+                output[qualified] = {
+                    "columns": columns,
+                    "primary_key": primary,
+                    "unique_indexes": {
+                        item["index_name"]: list(item["columns"])
+                        for item in index_rows
+                        if not item["indisprimary"]
+                    },
                 }
         return output
 

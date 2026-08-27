@@ -20,14 +20,13 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
-from lode.db.models._common import CreatedAtMixin, TimestampMixin, identity_pk
+from lode.db.models._common import CreatedAtMixin, TimestampMixin, snowflake_pk
 
 
 class Investigation(TimestampMixin, Base):
     __tablename__ = "investigations"
 
-    id: Mapped[int] = identity_pk()
-    public_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -120,7 +119,7 @@ class InvestigationInput(CreatedAtMixin, Base):
 class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
     __tablename__ = "investigation_repository_snapshots"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -193,7 +192,7 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
 class InvestigationBuildUnitSnapshot(CreatedAtMixin, Base):
     __tablename__ = "investigation_build_unit_snapshots"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -228,7 +227,7 @@ class InvestigationBuildUnitSnapshot(CreatedAtMixin, Base):
 class InvestigationComponentSnapshot(CreatedAtMixin, Base):
     __tablename__ = "investigation_component_snapshots"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -259,7 +258,7 @@ class InvestigationComponentSnapshot(CreatedAtMixin, Base):
 class InvestigationConnectorSnapshot(CreatedAtMixin, Base):
     __tablename__ = "investigation_connector_snapshots"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -323,7 +322,7 @@ class InvestigationResourceGraphSnapshot(CreatedAtMixin, Base):
 class InvestigationDescriptorSnapshot(CreatedAtMixin, Base):
     __tablename__ = "investigation_descriptor_snapshots"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -375,7 +374,7 @@ class InvestigationModelPolicySnapshot(CreatedAtMixin, Base):
 class InvestigationModelBindingSnapshot(CreatedAtMixin, Base):
     __tablename__ = "investigation_model_binding_snapshots"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -414,7 +413,7 @@ class InvestigationModelBindingSnapshot(CreatedAtMixin, Base):
 class InvestigationStep(CreatedAtMixin, Base):
     __tablename__ = "investigation_steps"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -448,7 +447,7 @@ class InvestigationStep(CreatedAtMixin, Base):
 class InvestigationDecision(CreatedAtMixin, Base):
     __tablename__ = "investigation_decisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -487,7 +486,7 @@ class InvestigationDecision(CreatedAtMixin, Base):
 class InvestigationOperation(CreatedAtMixin, Base):
     __tablename__ = "investigation_operations"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -540,7 +539,7 @@ class InvestigationOperation(CreatedAtMixin, Base):
 class InvestigationOperationEvent(Base):
     __tablename__ = "investigation_operation_events"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -574,7 +573,7 @@ class InvestigationOperationEvent(Base):
 class ModelRoutingDecision(CreatedAtMixin, Base):
     __tablename__ = "model_routing_decisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -620,7 +619,7 @@ class ModelRoutingDecision(CreatedAtMixin, Base):
 class ContextBundleRevision(CreatedAtMixin, Base):
     __tablename__ = "context_bundle_revisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
@@ -657,7 +656,7 @@ class ContextBundleRevision(CreatedAtMixin, Base):
 class ContextSummaryArtifact(CreatedAtMixin, Base):
     __tablename__ = "context_summary_artifacts"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )

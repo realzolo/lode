@@ -71,6 +71,8 @@ class ConnectorSnapshotStore:
         )
         snapshots: list[InvestigationConnectorSnapshot] = []
         for connector in connectors:
+            if connector.last_introspected_at is None:
+                continue
             scope = (
                 await session.execute(
                     select(EvidenceAccessScope)
@@ -80,6 +82,10 @@ class ConnectorSnapshotStore:
                 )
             ).scalar_one_or_none()
             if scope is None:
+                continue
+            if connector.kind in {"postgresql", "mysql"} and not scope.scope_config.get(
+                "allowed_tables"
+            ):
                 continue
             credential_hash = hashlib.sha256(
                 connector.secret_ciphertext.encode("utf-8")

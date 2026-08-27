@@ -11,10 +11,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import Text, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.api.deps import assert_workspace_permission, permitted_workspace_ids, require_user
+from lode.api.types import EntityId
 from lode.application.intake import ManualIncidentRequest, NormalizedIncident, normalize_manual
 from lode.crypto import decrypt_value
 from lode.db.models import (
@@ -62,16 +63,15 @@ _TERMINAL_STATUSES = {"completed", "failed"}
 
 
 class ManualInvestigationCreated(BaseModel):
-    id: str
-    workspace_id: int
+    id: EntityId
+    workspace_id: EntityId
     status: str
-    job_id: int
+    job_id: EntityId
 
 
 class InvestigationListItem(BaseModel):
-    id: int
-    public_id: str
-    workspace_id: int
+    id: EntityId
+    workspace_id: EntityId
     status: str
     result_state: str
     output_language: str
@@ -85,7 +85,7 @@ class InvestigationListItem(BaseModel):
 
 class InvestigationListPage(BaseModel):
     items: list[InvestigationListItem]
-    next_after_id: int | None
+    next_after_id: EntityId | None
 
 
 class InvestigationTimelineItem(BaseModel):
@@ -100,7 +100,7 @@ class InvestigationTimelineItem(BaseModel):
 
 
 class EvidenceSummaryItem(BaseModel):
-    id: int
+    id: EntityId
     kind: str
     evidence_class: str
     data_class: str
@@ -123,9 +123,8 @@ class InvestigationReportSummary(BaseModel):
 
 
 class InvestigationOverview(BaseModel):
-    id: int
-    public_id: str
-    workspace_id: int
+    id: EntityId
+    workspace_id: EntityId
     status: str
     result_state: str
     output_language: str
@@ -154,7 +153,7 @@ AuditKind = Literal[
 
 
 class InvestigationAuditItem(BaseModel):
-    id: int
+    id: EntityId
     kind: AuditKind
     status: str
     summary: str
@@ -163,7 +162,7 @@ class InvestigationAuditItem(BaseModel):
 
 class InvestigationAuditPage(BaseModel):
     items: list[InvestigationAuditItem]
-    next_after_id: int | None
+    next_after_id: EntityId | None
 
 
 async def get_session() -> AsyncSession:
@@ -173,7 +172,7 @@ async def get_session() -> AsyncSession:
 
 @workbench_router.get("/workspaces")
 async def list_workbench_workspaces(
-    user_id: int = Depends(require_user), session: AsyncSession = Depends(get_session)
+    user_id: EntityId = Depends(require_user), session: AsyncSession = Depends(get_session)
 ) -> list[dict[str, Any]]:
     """Return all Workspaces for admins, granted Workspaces for ordinary users."""
     user = await _active_user(session, user_id)
@@ -210,7 +209,7 @@ def _error(status: int, code: str, message: str, **details: Any) -> HTTPExceptio
     )
 
 
-async def _active_user(session: AsyncSession, user_id: int) -> User:
+async def _active_user(session: AsyncSession, user_id: EntityId) -> User:
     user = await session.get(User, user_id)
     if user is None or user.status != "active":
         raise _error(401, "active_user_required", "An active user is required.")
@@ -220,8 +219,8 @@ async def _active_user(session: AsyncSession, user_id: int) -> User:
 async def _require_workspace(
     session: AsyncSession,
     *,
-    user_id: int,
-    workspace_id: int,
+    user_id: EntityId,
+    workspace_id: EntityId,
     permission: str,
 ) -> User:
     user = await _active_user(session, user_id)
@@ -234,12 +233,12 @@ async def _require_workspace(
 async def _investigation_access(
     session: AsyncSession,
     *,
-    user_id: int,
-    public_id: str,
+    user_id: EntityId,
+    investigation_id: EntityId,
     permission: str,
 ) -> tuple[User, Investigation]:
     user = await _active_user(session, user_id)
-    row = await session.scalar(select(Investigation).where(Investigation.public_id == public_id))
+    row = await session.get(Investigation, investigation_id)
     if row is None:
         raise _error(404, "investigation_not_found", "Investigation not found.")
     await assert_workspace_permission(session, user, row.workspace_id, permission)
@@ -259,7 +258,7 @@ def _row(row: Any, *, exclude: frozenset[str] = frozenset()) -> dict[str, Any] |
 async def _rows(
     session: AsyncSession,
     model: Any,
-    investigation_id: int,
+    investigation_id: EntityId,
     *,
     order_by: Any | None = None,
     exclude: frozenset[str] = frozenset(),
@@ -320,7 +319,7 @@ def _audit_item(kind: AuditKind, row: Any) -> InvestigationAuditItem:
 @router.post("", response_model=ManualInvestigationCreated, status_code=201)
 async def create_manual_investigation(
     payload: ManualIncidentRequest,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> ManualInvestigationCreated:
     user = await _require_workspace(
@@ -340,7 +339,7 @@ async def create_manual_investigation(
             actor_username=user.username,
             action="investigation.create.manual",
             target_type="investigation",
-            target_id=result.investigation_public_id,
+            target_id=str(result.investigation_id),
             workspace_id=payload.workspace_id,
             result="ok",
             detail={"source_type": "manual"},
@@ -348,7 +347,7 @@ async def create_manual_investigation(
     )
     await session.commit()
     return ManualInvestigationCreated(
-        id=result.investigation_public_id or "",
+        id=result.investigation_id or 0,
         workspace_id=payload.workspace_id,
         status="queued",
         job_id=result.job_id or 0,
@@ -357,19 +356,21 @@ async def create_manual_investigation(
 
 @router.get("", response_model=InvestigationListPage)
 async def list_investigations(
-    workspace_id: int | None = Query(default=None, gt=0),
+    workspace_id: EntityId | None = Query(default=None, gt=0),
     status: str | None = Query(default=None),
     result_state: str | None = Query(default=None),
     q: str | None = Query(default=None, min_length=1, max_length=200),
     include_archived: bool = Query(default=False),
-    after_id: int = Query(default=0, ge=0),
+    after_id: EntityId | None = Query(default=None, gt=0),
     limit: int = Query(default=50, ge=1, le=200),
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user = await _active_user(session, user_id)
     allowed = await permitted_workspace_ids(session, user.id, user.is_system_admin)
-    statement = select(Investigation).where(Investigation.id > after_id)
+    statement = select(Investigation)
+    if after_id is not None:
+        statement = statement.where(Investigation.id > after_id)
     if allowed is not None:
         if not allowed:
             return InvestigationListPage(items=[], next_after_id=None)
@@ -391,7 +392,7 @@ async def list_investigations(
         pattern = f"%{q.strip()}%"
         statement = statement.where(
             or_(
-                Investigation.public_id.ilike(pattern),
+                cast(Investigation.id, Text).ilike(pattern),
                 InvestigationInput.event.ilike(pattern),
                 InvestigationReport.headline.ilike(pattern),
             )
@@ -408,7 +409,6 @@ async def list_investigations(
         items=[
             InvestigationListItem(
                 id=investigation.id,
-                public_id=investigation.public_id,
                 workspace_id=investigation.workspace_id,
                 status=investigation.status,
                 result_state=investigation.result_state,
@@ -428,14 +428,14 @@ async def list_investigations(
 
 @router.get("/{investigation_id}", response_model=InvestigationOverview)
 async def get_investigation(
-    investigation_id: str,
-    user_id: int = Depends(require_user),
+    investigation_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     _, investigation = await _investigation_access(
         session,
         user_id=user_id,
-        public_id=investigation_id,
+        investigation_id=investigation_id,
         permission="viewer",
     )
     internal_id = investigation.id
@@ -463,7 +463,6 @@ async def get_investigation(
     error = input_row.error if input_row is not None else {}
     return InvestigationOverview(
         id=investigation.id,
-        public_id=investigation.public_id,
         workspace_id=investigation.workspace_id,
         status=investigation.status,
         result_state=investigation.result_state,
@@ -516,14 +515,14 @@ async def get_investigation(
 
 @router.get("/{investigation_id}/technical")
 async def get_investigation_technical(
-    investigation_id: str,
-    user_id: int = Depends(require_user),
+    investigation_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     _, investigation = await _investigation_access(
         session,
         user_id=user_id,
-        public_id=investigation_id,
+        investigation_id=investigation_id,
         permission="viewer",
     )
     internal_id = investigation.id
@@ -611,14 +610,14 @@ async def get_investigation_technical(
 
 @router.get("/{investigation_id}/events")
 async def get_investigation_events(
-    investigation_id: str,
+    investigation_id: EntityId,
     after: int = Query(default=0, ge=0),
     limit: int = Query(default=200, ge=1, le=500),
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     _, investigation = await _investigation_access(
-        session, user_id=user_id, public_id=investigation_id, permission="viewer"
+        session, user_id=user_id, investigation_id=investigation_id, permission="viewer"
     )
     values = (
         await session.execute(
@@ -636,15 +635,15 @@ async def get_investigation_events(
 
 @router.get("/{investigation_id}/audit", response_model=InvestigationAuditPage)
 async def get_investigation_audit(
-    investigation_id: str,
+    investigation_id: EntityId,
     kind: AuditKind = Query(default="access_decisions"),
-    after_id: int = Query(default=0, ge=0),
+    after_id: EntityId | None = Query(default=None, gt=0),
     limit: int = Query(default=200, ge=1, le=500),
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     _, investigation = await _investigation_access(
-        session, user_id=user_id, public_id=investigation_id, permission="viewer"
+        session, user_id=user_id, investigation_id=investigation_id, permission="viewer"
     )
 
     models: dict[AuditKind, Any] = {
@@ -655,13 +654,13 @@ async def get_investigation_audit(
         "ai_invocations": AIInvocation,
     }
     model = models[kind]
+    statement = select(model).where(model.investigation_id == investigation.id)
+    if after_id is not None:
+        statement = statement.where(model.id > after_id)
     values = tuple(
         (
             await session.execute(
-                select(model)
-                .where(model.investigation_id == investigation.id, model.id > after_id)
-                .order_by(model.id)
-                .limit(limit + 1)
+                statement.order_by(model.id).limit(limit + 1)
             )
         ).scalars()
     )
@@ -674,17 +673,17 @@ async def get_investigation_audit(
 
 @router.get("/{investigation_id}/stream")
 async def stream_investigation(
-    investigation_id: str,
+    investigation_id: EntityId,
     request: Request,
     after: int = Query(default=0, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
 ):
     async with AsyncSessionLocal() as access_session:
         _, investigation = await _investigation_access(
             access_session,
             user_id=user_id,
-            public_id=investigation_id,
+            investigation_id=investigation_id,
             permission="viewer",
         )
     try:
@@ -729,7 +728,7 @@ async def stream_investigation(
                     state = json.dumps(
                         jsonable_encoder(
                             {
-                                "public_id": current.public_id,
+                                "id": current.id,
                                 "status": current.status,
                                 "result_state": current.result_state,
                                 "event_cursor": current.event_cursor,
@@ -755,12 +754,12 @@ async def stream_investigation(
     "/{investigation_id}/retry", response_model=ManualInvestigationCreated, status_code=201
 )
 async def retry_investigation(
-    investigation_id: str,
-    user_id: int = Depends(require_user),
+    investigation_id: EntityId,
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     user, investigation = await _investigation_access(
-        session, user_id=user_id, public_id=investigation_id, permission="operator"
+        session, user_id=user_id, investigation_id=investigation_id, permission="operator"
     )
     if investigation.status not in _TERMINAL_STATUSES:
         raise _error(409, "investigation_not_terminal", "Only a terminal investigation can retry.")
@@ -807,15 +806,15 @@ async def retry_investigation(
             actor_username=user.username,
             action="investigation.retry",
             target_type="investigation",
-            target_id=result.investigation_public_id,
+            target_id=str(result.investigation_id),
             workspace_id=investigation.workspace_id,
             result="ok",
-            detail={"retry_of": investigation.public_id},
+            detail={"retry_of": investigation.id},
         )
     )
     await session.commit()
     return ManualInvestigationCreated(
-        id=result.investigation_public_id or "",
+        id=result.investigation_id or 0,
         workspace_id=investigation.workspace_id,
         status="queued",
         job_id=result.job_id or 0,

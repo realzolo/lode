@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -43,7 +42,6 @@ class IntakeResult:
     workspace_id: int | None = None
     alert_id: int | None = None
     investigation_id: int | None = None
-    investigation_public_id: str | None = None
     job_id: int | None = None
     dead_letter_id: int | None = None
 
@@ -387,7 +385,6 @@ class PostgresIntakeStore:
             raise ValueError("Investigation policy ownership is invalid")
         signature_hash = _signature(workspace_id, incident.event, incident.trace_id)
         investigation = Investigation(
-            public_id=str(uuid.uuid4()),
             workspace_id=workspace_id,
             investigation_policy_revision_id=policy.id,
             alert_id=alert_row_id,
@@ -482,6 +479,5 @@ class PostgresIntakeStore:
             workspace_id=workspace_id,
             alert_id=alert_row_id,
             investigation_id=investigation.id,
-            investigation_public_id=investigation.public_id,
             job_id=job.id,
         )

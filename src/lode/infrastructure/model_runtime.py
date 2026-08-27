@@ -116,6 +116,8 @@ class TokenizerRegistry:
             *supported_models("anthropic", "anthropic.messages.v1"),
         )
         for profile in profiles:
+            if profile.tokenizer_encoding is None:
+                continue
             tokenizer = TiktokenJSONTokenizer(profile.tokenizer_encoding)
             self._values.setdefault(tokenizer.tokenizer_id, tokenizer)
         self._values.update({value.tokenizer_id: value for value in tokenizers})
@@ -724,10 +726,10 @@ class PostgresModelRuntime:
             deployment = await session.get(ProviderAccountModel, snapshot.provider_account_model_id)
             provider = await session.get(AIProviderAccount, snapshot.provider_account_id)
             protocol_id = str(policy.get("protocol_id", ""))
-            provider_kind = "anthropic" if protocol_id == "anthropic.messages.v1" else "openai"
+            provider_kind = provider.provider_kind if provider is not None else ""
             profile = find_model(provider_kind, protocol_id, str(policy.get("provider_model_id", "")))
             current_credential_hash = (
-                hashlib.sha256(provider.credential_ciphertext.encode()).hexdigest()
+                hashlib.sha256(provider.api_key_ciphertext.encode()).hexdigest()
                 if provider is not None
                 else ""
             )
@@ -809,7 +811,7 @@ class PostgresModelRuntime:
         return ModelConfigWithTimeout(
             protocol_id=str(policy["protocol_id"]),
             base_url=str(policy["provider_base_url"]),
-            api_key_ciphertext=provider.credential_ciphertext,
+            api_key_ciphertext=provider.api_key_ciphertext,
             model=str(policy["provider_model_id"]),
             max_completion_tokens=max_completion_tokens,
             timeout_ms=int(policy["timeout_ms"]),

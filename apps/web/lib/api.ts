@@ -12,6 +12,8 @@ import type {
   InvestigationSummary,
   ModelBinding,
   ProviderAccountModel,
+  ProviderModelCatalogItem,
+  ProviderModelDiscovery,
   PlatformSettings,
   ProviderAccount,
   RepositoryBinding,
@@ -25,6 +27,17 @@ import type {
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
 const TOKEN_KEY = 'lode_token';
 export const SESSION_EXPIRED_EVENT = 'lode:session-expired';
+
+export class ApiError extends Error {
+  constructor(public readonly code: string, public readonly status: number) {
+    super(code);
+    this.name = 'ApiError';
+  }
+}
+
+export function apiErrorMessage(_cause: unknown, fallback: string): string {
+  return fallback;
+}
 
 export function getToken(): string | null {
   if (typeof document === 'undefined') return null;
@@ -68,7 +81,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     response = await fetch(`${API_BASE}${path}`, { cache: 'no-store', ...init });
   } catch {
-    throw new Error(`Network error: ${API_BASE}${path}`);
+    throw new ApiError('network_error', 0);
   }
   if (response.status === 401) {
     clearToken();
@@ -76,9 +89,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null) as {
-      error?: { message?: string; details?: unknown };
+      error?: { code?: string };
     } | null;
-    throw new Error(body?.error?.message || `Request failed (${response.status})`);
+    throw new ApiError(body?.error?.code || 'request_failed', response.status);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -156,8 +169,18 @@ export function createProviderAccount(input: Record<string, unknown>) {
 export function updateProviderAccount(id: number, input: Record<string, unknown>) {
   return send<ProviderAccount>(`/ai-provider-accounts/${id}`, 'PATCH', input);
 }
-export function updateProviderAccountModels(id: number, input: { model_ids: string[] }) {
+export function updateProviderAccountModels(id: number, input: { models: Array<{ provider_model_id: string; source: 'discovered' | 'manual' }> }) {
   return send<ProviderAccount>(`/ai-provider-accounts/${id}/models`, 'PUT', input);
+}
+export function fetchProviderModelCatalog(providerKind: 'openai' | 'anthropic', protocolId: string) {
+  const query = new URLSearchParams({ provider_kind: providerKind, protocol_id: protocolId });
+  return get<ProviderModelCatalogItem[]>(`/ai-provider-model-catalog?${query}`);
+}
+export function discoverProviderModels(input: { provider_kind: 'openai' | 'anthropic'; protocol_id: string; base_url: string; api_key: string }) {
+  return send<ProviderModelDiscovery>('/ai-provider-accounts/discover-models', 'POST', input);
+}
+export function refreshProviderModels(id: number) {
+  return send<ProviderModelDiscovery>(`/ai-provider-accounts/${id}/discover-models`, 'POST');
 }
 export function testProviderAccountModel(accountId: number, accountModelId: number) {
   return send<Record<string, unknown>>(`/ai-provider-accounts/${accountId}/models/${accountModelId}/test`, 'POST');
@@ -228,22 +251,24 @@ export function fetchInvestigations(input: { workspaceId?: number; status?: stri
   return get<InvestigationListPage>(`/investigations${suffix}`);
 }
 export function createInvestigation(input: Record<string, unknown>) {
-  return send<{ id: string; workspace_id: number; status: string; job_id: number }>('/investigations', 'POST', input);
+  return send<{ id: number; workspace_id: number; status: string; job_id: number }>('/investigations', 'POST', input);
 }
-export function fetchInvestigation(id: string) { return get<InvestigationOverview>(`/investigations/${encodeURIComponent(id)}`); }
-export function fetchInvestigationTechnical(id: string) { return get<InvestigationDetail>(`/investigations/${encodeURIComponent(id)}/technical`); }
-export function fetchInvestigationAudit(id: string, kind: InvestigationAuditKind, afterId = 0) {
-  return get<InvestigationAuditPage>(`/investigations/${encodeURIComponent(id)}/audit?kind=${kind}&after_id=${afterId}`);
+export function fetchInvestigation(id: number | string) { return get<InvestigationOverview>(`/investigations/${encodeURIComponent(id)}`); }
+export function fetchInvestigationTechnical(id: number | string) { return get<InvestigationDetail>(`/investigations/${encodeURIComponent(id)}/technical`); }
+export function fetchInvestigationAudit(id: number | string, kind: InvestigationAuditKind, afterId?: number) {
+  const query = new URLSearchParams({ kind });
+  if (afterId !== undefined) query.set('after_id', String(afterId));
+  return get<InvestigationAuditPage>(`/investigations/${encodeURIComponent(id)}/audit?${query.toString()}`);
 }
-export function retryInvestigation(id: string) {
-  return send<{ id: string }>(`/investigations/${encodeURIComponent(id)}/retry`, 'POST');
+export function retryInvestigation(id: number | string) {
+  return send<{ id: number }>(`/investigations/${encodeURIComponent(id)}/retry`, 'POST');
 }
-export function archiveInvestigation(id: string) {
+export function archiveInvestigation(id: number | string) {
   return send(`/investigations/${encodeURIComponent(id)}/archive`, 'POST');
 }
 
 export function openInvestigationStream(
-  id: string,
+  id: number | string,
   after: number,
   onEvent: (event: Record<string, unknown>) => void,
 ): () => void {

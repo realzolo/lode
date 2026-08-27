@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lode.evidence_access.orchestrator import ExecutionPermit
+from lode.evidence_access.loki_scope import selector_for_branch
 from lode.evidence_connectors.common import (
     classify_response,
     credential_identity_hash,
@@ -93,20 +94,15 @@ class LokiConnector:
     async def introspect(
         self, scope: Mapping[str, Any], budget: IntrospectionBudget
     ) -> NativeSchemaCatalog:
-        root = scope.get("root_matchers")
+        branches = scope.get("root_filter_dnf")
         if (
-            not isinstance(root, dict)
-            or not root
-            or any(
-                not isinstance(key, str)
-                or _LABEL.fullmatch(key) is None
-                or not isinstance(value, str)
-                or len(value) > 1_000
-                for key, value in root.items()
-            )
+            not isinstance(branches, list)
+            or not branches
+            or len(branches) > 8
+            or any(not isinstance(branch, list) or not branch for branch in branches)
         ):
             raise ProviderExecutionError(
-                "invalid_response", "Loki introspection requires root matchers"
+                "invalid_response", "Loki introspection requires a normalized root filter"
             )
         if budget.window_start is None or budget.window_end is None:
             raise ProviderExecutionError(
@@ -116,47 +112,46 @@ class LokiConnector:
             raise ProviderExecutionError(
                 "cost_exceeded", "Loki introspection window exceeds one hour"
             )
-        selector = (
-            "{"
-            + ",".join(
-                f"{key}={json.dumps(value, ensure_ascii=False)}"
-                for key, value in sorted(root.items())
+        labels: set[str] = set()
+        series_count = 0
+        for branch in branches:
+            try:
+                selector = selector_for_branch(branch)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProviderExecutionError("invalid_response", "Loki root filter is invalid") from exc
+            response = await self.transport.request(
+                "GET",
+                "/loki/api/v1/series",
+                query={
+                    "match[]": selector,
+                    "start": budget.window_start.isoformat(),
+                    "end": budget.window_end.isoformat(),
+                },
+                timeout_ms=budget.timeout_ms,
             )
-            + "}"
-        )
-        response = await self.transport.request(
-            "GET",
-            "/loki/api/v1/series",
-            query={
-                "match[]": selector,
-                "start": budget.window_start.isoformat(),
-                "end": budget.window_end.isoformat(),
-            },
-            timeout_ms=budget.timeout_ms,
-        )
-        payload = response_json(response)
-        if (
-            not isinstance(payload, dict)
-            or payload.get("status") != "success"
-            or not isinstance(payload.get("data"), list)
-        ):
-            raise ProviderExecutionError("invalid_response", "Loki series response is invalid")
-        if len(payload["data"]) > budget.max_resources:
-            raise ProviderExecutionError("cost_exceeded", "Loki series catalog is too large")
-        labels: set[str] = set(root)
-        for series in payload["data"]:
-            if not isinstance(series, dict) or any(
-                not isinstance(key, str) or not isinstance(value, str)
-                for key, value in series.items()
+            payload = response_json(response)
+            if (
+                not isinstance(payload, dict)
+                or payload.get("status") != "success"
+                or not isinstance(payload.get("data"), list)
             ):
-                raise ProviderExecutionError("invalid_response", "Loki series catalog is invalid")
-            labels.update(series)
-            if len(labels) > budget.max_resources:
-                raise ProviderExecutionError("cost_exceeded", "Loki label catalog is too large")
+                raise ProviderExecutionError("invalid_response", "Loki series response is invalid")
+            series_count += len(payload["data"])
+            if series_count > budget.max_resources:
+                raise ProviderExecutionError("cost_exceeded", "Loki series catalog is too large")
+            for series in payload["data"]:
+                if not isinstance(series, dict) or any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in series.items()
+                ):
+                    raise ProviderExecutionError("invalid_response", "Loki series catalog is invalid")
+                labels.update(series)
+                if len(labels) > budget.max_resources:
+                    raise ProviderExecutionError("cost_exceeded", "Loki label catalog is too large")
         return NativeSchemaCatalog(
             provider=self.kind,
             version=self._version or "unverified",
-            resources={"labels": sorted(labels), "root_matchers": dict(sorted(root.items()))},
+            resources={"labels": sorted(labels), "root_filter_dnf": branches},
         )
 
     async def preflight(self, permit: ExecutionPermit) -> Mapping[str, Any]:
@@ -171,23 +166,55 @@ class LokiConnector:
 
     async def execute(self, permit: ExecutionPermit) -> Mapping[str, Any]:
         action = self._action(permit)
-        query = {
-            "query": action["query"],
-            "start": action["start"],
-            "end": action["end"],
-            "limit": str(action["limit"]),
-            "direction": action["direction"],
-        }
-        if action.get("step_seconds") is not None:
-            query["step"] = str(action["step_seconds"])
-        response = await self.transport.request(
-            "GET",
-            "/loki/api/v1/query_range",
-            query=query,
-            timeout_ms=action["timeout_ms"],
+        normalized_branches: list[dict[str, Any]] = []
+        branch_timeout = max(1, action["timeout_ms"] // len(action["queries"]))
+        for branch_query in action["queries"]:
+            query = {
+                "query": branch_query,
+                "start": action["start"],
+                "end": action["end"],
+                "limit": str(action["limit"]),
+                "direction": action["direction"],
+            }
+            if action.get("step_seconds") is not None:
+                query["step"] = str(action["step_seconds"])
+            response = await self.transport.request(
+                "GET",
+                "/loki/api/v1/query_range",
+                query=query,
+                timeout_ms=branch_timeout,
+            )
+            normalized_branches.append(self._normalize(response_json(response), action["limit"]))
+        result_types = {item["result_type"] for item in normalized_branches}
+        if len(result_types) != 1:
+            raise ProviderExecutionError("invalid_response", "Loki branch result types differ")
+        records_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+        truncated = False
+        for item in normalized_branches:
+            truncated = truncated or bool(item["truncated"])
+            for record in item["records"]:
+                key = (
+                    record["timestamp"],
+                    json.dumps(record["labels"], sort_keys=True),
+                    record["value"],
+                )
+                records_by_key[key] = record
+        records = sorted(
+            records_by_key.values(),
+            key=lambda item: (
+                float(item["timestamp"]),
+                json.dumps(item["labels"], sort_keys=True),
+                item["value"],
+            ),
         )
-        payload = response_json(response)
-        normalized = self._normalize(payload, action["limit"])
+        normalized = {
+            "provider": "loki",
+            "result_type": next(iter(result_types)),
+            "records": records[: action["limit"]],
+            "record_count": min(len(records), action["limit"]),
+            "truncated": truncated or len(records) > action["limit"],
+            "statistics": {"branch_count": len(normalized_branches)},
+        }
         sanitized, categories, injection = sanitize_evidence(normalized)
         return {
             **sanitized,
@@ -203,7 +230,7 @@ class LokiConnector:
         action = permit.action
         required = {
             "adapter_kind",
-            "query",
+            "queries",
             "query_kind",
             "start",
             "end",
@@ -211,7 +238,13 @@ class LokiConnector:
             "direction",
             "timeout_ms",
         }
-        if action.get("adapter_kind") != "loki" or not required <= set(action):
+        if (
+            action.get("adapter_kind") != "loki"
+            or not required <= set(action)
+            or not isinstance(action.get("queries"), list)
+            or not 1 <= len(action["queries"]) <= 8
+            or any(not isinstance(query, str) or not query for query in action["queries"])
+        ):
             raise PermissionError("execution permit is not authorized for Loki")
         return action
 

@@ -63,7 +63,6 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
             )
         )
         investigation = Investigation(
-            public_id=str(uuid.uuid4()),
             workspace_id=workspace.id,
             investigation_policy_revision_id=policy.id,
             trigger_signature_hash="a" * 64,
@@ -144,18 +143,18 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         investigation.result_state = "insufficient"
         investigation.finished_at = now
         await session.commit()
-        public_id = investigation.public_id
+        investigation_id = investigation.id
         user_id = user.id
 
     token = create_token(user_id, settings.jwt_signing_key, 3600)
     headers = {"Authorization": f"Bearer {token}"}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        replay = await client.get(f"/investigations/{public_id}/events", headers=headers)
+        replay = await client.get(f"/investigations/{investigation_id}/events", headers=headers)
         assert replay.status_code == 200
         assert [item["sequence"] for item in replay.json()] == [1]
 
         stream = await client.get(
-            f"/investigations/{public_id}/stream",
+            f"/investigations/{investigation_id}/stream",
             headers={**headers, "Last-Event-ID": "1"},
         )
         assert stream.status_code == 200
@@ -171,13 +170,11 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         admin_id = admin.id
     admin_headers = {"Authorization": "Bearer " + create_token(admin_id, settings.jwt_signing_key, 3600)}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        archived = await client.post(f"/admin/investigations/{public_id}/archive", headers=admin_headers)
+        archived = await client.post(f"/admin/investigations/{investigation_id}/archive", headers=admin_headers)
         assert archived.status_code == 200
 
     async with AsyncSessionLocal() as session:
-        persisted = await session.scalar(
-            select(Investigation).where(Investigation.public_id == public_id)
-        )
+        persisted = await session.get(Investigation, investigation_id)
         assert persisted is not None
         assert persisted.archived_by == admin_id
         assert persisted.archived_at is not None

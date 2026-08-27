@@ -49,7 +49,15 @@ def test_model_policy_rejects_duplicate_immutable_binding_refs() -> None:
     ("schema", "values"),
     [
         (ProviderAccountPatch, {"name": None}),
-        (ProviderAccountModelSelection, {"model_ids": ["gpt-5.6-sol", "gpt-5.6-sol"]}),
+        (
+            ProviderAccountModelSelection,
+            {
+                "models": [
+                    {"provider_model_id": "gpt-5.6-sol", "source": "manual"},
+                    {"provider_model_id": "gpt-5.6-sol", "source": "discovered"},
+                ]
+            },
+        ),
     ],
 )
 def test_patch_rejects_explicit_null_for_required_storage_fields(schema, values) -> None:
@@ -86,6 +94,32 @@ def test_git_account_and_workplace_access_forms_require_complete_authorization()
 def test_provider_patch_rejects_removed_organization_and_project_fields() -> None:
     with pytest.raises(ValidationError):
         ProviderAccountPatch.model_validate({"organization_ref": "org"})
+
+
+def test_provider_protocol_matrix_is_closed() -> None:
+    from lode.api.control_schemas import ProviderAccountConnectionInput
+
+    with pytest.raises(ValidationError):
+        ProviderAccountConnectionInput.model_validate(
+            {
+                "provider_kind": "openai",
+                "protocol_id": "anthropic.messages.v1",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "secret",
+            }
+        )
+
+
+def test_entity_ids_are_positive_javascript_safe_integers() -> None:
+    for value in (0, 2**52):
+        with pytest.raises(ValidationError):
+            WorkspaceGitAccountGrantCreate.model_validate(
+                {
+                    "account_connection_id": value,
+                    "repository_scope": "all_visible",
+                    "repository_ids": [],
+                }
+            )
 
 
 def test_investigation_profile_and_ai_output_language_are_closed_sets() -> None:

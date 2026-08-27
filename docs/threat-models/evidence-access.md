@@ -44,10 +44,10 @@ regeneration.
 
 | Language | Primary threats | Required proof | Infrastructure backstop |
 |---|---|---|---|
-| LogQL | selector escape, parser differential, unbounded range, costly regexp/cardinality, rule or delete endpoints | Full maintained AST, root selector subset, bounded absolute time, allowed pipeline/aggregation nodes | Query-only token, endpoint allowlist, provider limits |
+| LogQL | selector escape, DNF expansion, parser differential, unbounded range, attacker regexp/cardinality, rule or delete endpoints | Full maintained AST, normalized bounded condition tree, positive exact matcher per branch, server-only regexp escaping, bounded absolute time, allowed pipeline/aggregation nodes | Query-only token, endpoint allowlist, provider limits |
 | Elasticsearch DSL | index escape, script/runtime fields, async/scroll persistence, aggregation explosion, management API | JSON duplicate-key rejection, recursive node allowlist, exact `_search` path, forced range/size/source/bucket limits | Read-only role restricted to frozen indices |
 | OpenSearch DSL | Elasticsearch policy reuse despite version/plugin differences, scripts, PPL/SQL, management API | Independent versioned parser/policy and contract corpus, exact `_search` path | Read-only role, plugins disabled |
-| SQL | multi-statement, writable CTE, locking reads, file/network/UDF side effects, system catalogs, cost exhaustion | Fixed dialect AST, every node read-only, catalog allowlist, enforced limit/timeouts, optional non-executing explain | Attested replica/snapshot, read-only role and transaction, resource group |
+| SQL | operator-selected unsafe tables, multi-statement, writable CTE, locking reads, file/network/UDF side effects, system catalogs, TLS interception, cost exhaustion | Fixed dialect AST, every node read-only, introspected safe-table catalog, enforced limit/timeouts, optional non-executing explain | TLS 1.2+ with system CA/hostname verification, attested replica/snapshot, read-only role and transaction, resource group |
 | HTTPS | Ambiguous normalization, redirects, credential override, nominal GET with side effects | Canonical HTTPS URL, safe-read endpoint catalog, host/port/path/schema and response checks | Zero redirects, adapter-injected identity |
 | Command | shell injection, interpreter escape, path/symlink escape, writable mount, inherited environment/network, binary replacement | Structured executable/argv/working-set, exact flag grammar, fixed binary path and hash | Separate uid/image, read-only mounts/root, empty environment, no network, syscall/resource limits |
 
@@ -57,6 +57,25 @@ EXPLAIN evidence. The generic HTTPS adapter has no request body or redirect
 capability. The initial command catalog contains only one exact
 `/usr/bin/rg --fixed-strings` profile; adding another profile requires a code
 and threat-model change, not a configuration edit.
+
+Loki scope is authored as an `ALL`/`ANY` condition tree and normalized by the
+server into deterministic DNF before it is frozen. Depth is at most three,
+normalized branches at most eight, conditions at most 32, and set values at
+most 20. Every branch contains a positive `equals`; `any_of` and `not_any_of`
+regular expressions are produced only by escaping literal values in server
+code. The model parser continues to reject regex. Each branch receives a share
+of the total timeout and the same global row/byte/window budget. Results merge
+by timestamp, labels, and value with stable ordering. One failed or partial
+branch fails the read, so no partial result is archived.
+
+PostgreSQL and MySQL connector forms expose no allowed-table, time-column,
+stable-order, TLS-disable, or custom-CA authority. After topology and identity
+attestation, the server enumerates readable non-system base tables and fails
+when more than 200 candidates are visible. A safe table requires a non-null
+temporal column and either a primary key or an all-non-null unique index;
+selection order is deterministic and every excluded table receives a reason
+code. An empty discovery is not snapshot-ready. Connections use the system
+trust store, hostname verification, and TLS 1.2 or newer.
 
 The command runner is separately authenticated and replay protected. It
 revalidates binary hash, argv, budget, logical working root and every path
@@ -107,11 +126,15 @@ failures and never relabeled as policy decisions.
       ignored suffixes.
 - [ ] Every AST/JSON/argv node is positively allowlisted.
 - [ ] Snapshot ownership and root scope are checked before ValueRef unsealing.
+- [ ] Loki condition trees satisfy depth/condition/value/branch limits, every
+      DNF branch has a positive exact matcher, and only server code creates regex.
 - [ ] Value binding preserves the parsed shape.
 - [ ] Absolute window, result, byte, timeout, concurrency, and total budgets are
       enforced below AI requests.
 - [ ] Credentials and provider identities are injected by the adapter only.
 - [ ] The infrastructure identity is independently read-only.
+- [ ] SQL scope comes only from bounded schema introspection over system-CA,
+      hostname-verified TLS 1.2+; excluded and empty scopes remain fail-closed.
 - [ ] Authorization tokens are signed/hash-bound, expiring, and single-use.
 - [ ] Candidate, decisions, effective action, attempts, results, and rejection
       reasons are immutable and replayable.

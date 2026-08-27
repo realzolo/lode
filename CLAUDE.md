@@ -10,7 +10,7 @@ quality and Wilson confidence thresholds below. The final Phase 9 API and Web
 Workbench implementation is present and passes its deterministic API, database,
 SSE, type, build, and responsive-browser checks. Phase 10 local hardening and
 the deterministic release gate pass on a fresh isolated database; the latest
-full backend run is 353 tests. The complete gate includes deterministic fuzz,
+full backend run is 361 tests. The complete gate includes deterministic fuzz,
 security, worker soak/crash/lease-loss, release-bundle, operational-metric, and
 canary mechanism tests. Final release still requires frozen real-provider and
 deployment-canary observations to pass the statistical and non-regression gate.
@@ -46,6 +46,15 @@ deployment-canary observations to pass the statistical and non-regression gate.
   separate final objects. Deprecated global workload identity, single-model,
   per-repository Git credentials, and product-specific integration tables and
   routes are not registered.
+- Every generated business-entity primary key uses PostgreSQL `next_lode_id()`,
+  a single-node compact snowflake allocator with the `2020-01-01 UTC` epoch,
+  42 millisecond bits, and 10 sequence bits. A session advisory lock and
+  database clock coordinate API, worker, and consumer processes; rollback is
+  clamped and sequence overflow waits for the next millisecond. Entity IDs are
+  positive, 10-16 digit JavaScript-safe integers no greater than `2^52-1`.
+  `platform_settings.id=1`, revisions, ordinals, and event cursors retain their
+  separate meanings. Investigations have no UUID/public-ID alias; routes and
+  nullable entity pagination cursors use the snowflake ID directly.
 - Git adapters are static reviewed code registrations. Token-only Git accounts,
   encrypted immutable credential revisions, and discovered repository facts are
   global reusable objects. A
@@ -142,8 +151,14 @@ deployment-canary observations to pass the statistical and non-regression gate.
   execution capability. Parser recovery nodes, trailing payloads, unsupported
   string encodings, multiple selectors, regex/pattern/format/label mutation,
   unknown CST nodes, unbounded metrics, and unregistered pipeline capabilities
-  fail closed. Root matchers are injected from the frozen snapshot and exact
-  ValueRef string nodes are reparsed after binding.
+  fail closed. A versioned Loki root filter accepts a maximum-depth-three
+  recursive `ALL`/`ANY` tree with `equals`, `not_equals`, `any_of`, and
+  `not_any_of`; it normalizes deterministically to at most eight DNF branches,
+  32 conditions, and 20 values per set. Every branch requires a positive exact
+  matcher. Only server code escapes set values into regex matchers. Branches
+  execute independently under one shared budget, then deduplicate and sort;
+  any branch failure rejects the complete read. Exact ValueRef string nodes are
+  reparsed after binding.
 - Elasticsearch 8/9 and OpenSearch 2/3 use separate parser/policy versions,
   product verification, connector classes, and contract fixtures. Each permits
   only an exact single-index `_search`, a recursive positive query allowlist,
@@ -159,8 +174,14 @@ deployment-canary observations to pass the statistical and non-regression gate.
   table/column catalog; injects tenant/time predicates, stable ordering and
   LIMIT; and enforces EXPLAIN row/cost plus result row/byte budgets. PostgreSQL
   must attest a read-only replica and non-write-capable role; MySQL must attest
-  both read-only flags and an exact SELECT/SHOW VIEW grant set. Execution uses
-  explicit read-only transactions and server timeouts.
+  both read-only flags and an exact SELECT/SHOW VIEW grant set. Both use TLS
+  1.2 or newer with system roots and hostname verification; custom CA and TLS
+  disable controls do not exist. Successful verification discovers all readable
+  non-system base tables. A table is safe only when it has a non-null temporal
+  column and a primary key or all-non-null unique index; time/stable-key choice
+  is deterministic, exclusions carry reason codes, and more than 200 candidate
+  tables fails instead of truncating. Execution uses explicit read-only
+  transactions and server timeouts.
 - Generic HTTPS accepts only cataloged GET/HEAD endpoints with canonical HTTPS
   origins, exact ports and typed path/query schemas. It has no
   request-body, redirect, proxy, credential-header, arbitrary content-type, or
@@ -480,11 +501,11 @@ envelope:
 }
 ```
 
-The Web start dialog displays the actual requirements and capability gaps. A
+The Web start dialog displays the actual requirements and capability gaps. An
 account model must pass its provider protocol probe before becoming routing
-eligible; editing endpoint, credential, provider, or model resets its health to
-`untested`. The backend gate remains authoritative for stale clients and direct
-API callers.
+eligible; editing provider, protocol, Base URL, API Key, or model selection
+clears incompatible discovery state and resets health to `untested`. The
+backend gate remains authoritative for stale clients and direct API callers.
 
 ## Investigation Execution
 
@@ -658,10 +679,12 @@ The isolated command runner remains an internal execution component and is not
 exposed as a user-configurable evidence connector.
 
 Database connectors support PostgreSQL and MySQL through structured host,
-port, database, username, mandatory TLS, encrypted password, qualified
-allowed-table catalog, AST-validated model candidates, and server-injected
-predicates and budgets. The model never receives credentials or direct database
-access, and an effective action can execute only through a one-use permit.
+port, database, username, mandatory system-trusted TLS, encrypted password,
+automatically discovered safe-table scope, AST-validated model candidates, and
+server-injected predicates and budgets. Operators cannot submit allowed tables,
+time columns, stable ordering, or a CA certificate. The model never receives
+credentials or direct database access, and an effective action can execute only
+through a one-use permit.
 Kafka evidence connectors are independent of `Workspace.ingestion_topic` and
 are limited to administrator-allowlisted topics and consumer groups.
 
@@ -768,6 +791,11 @@ compatibility view, dual write, backfill, or old-schema adapter; unreleased
 development databases are recreated from the unique initial migration. After
 the first release, schema changes use ordinary forward migrations.
 
+`next_lode_id()` and its state sequence are created before business tables in
+the initial migration. Tests exercise concurrent connections, independent
+processes, monotonic allocation, clock rollback, 1024-ID millisecond overflow,
+digit length, JavaScript safety, and fresh-schema foreign keys.
+
 The table inventory and database invariants are frozen independently under
 `contracts/v1/database`. SQLAlchemy metadata must exactly match the migration.
 The schema trigger inventory is frozen with the initial migration and database
@@ -843,10 +871,25 @@ secret hashing, and Compose privilege/network/key-ownership assertions.
 
 ## Frontend Contract
 
-Global admins manage write-only explicit-protocol model account credentials and
-reviewed account-model selections at `/[locale]/admin/models`; the UI supports
-OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages BaseURLs but
-never organization/project IDs, dynamic discovery, or manual model IDs.
+Global admins manage write-only provider model accounts at
+`/[locale]/admin/models`. Requests use `provider_kind`, `protocol_id`,
+`base_url`, `api_key`, and structured model selections. OpenAI exposes only
+Responses or Chat Completions; Anthropic exposes only Messages, and switching
+provider clears incompatible protocol, Base URL, discovery, and selection
+state. The API Key is never returned or placed in errors/logs. Unsaved accounts
+can discover models, saved accounts can refresh them, and the server follows the
+official bounded OpenAI `/models` and Anthropic `/v1/models` inventories.
+Discovered but unreviewed IDs remain visible and disabled. Manual entry accepts
+only exact IDs in the reviewed server catalog; arbitrary IDs, aliases, capacity,
+and tokenizer parameters are rejected. OpenAI uses the reviewed local tokenizer
+strategy, while Anthropic calls its official token-count endpoint before the
+Messages request.
+
+The reviewed catalog currently contains OpenAI GPT-5.6 Sol/Terra/Luna and
+Anthropic Claude Fable 5, Opus 5, Sonnet 5, and Haiku 4.5, with source URL,
+review date, context/output limits, capabilities, protocols, and immutable
+profile hash. A disappeared discovered model is marked `missing` and disabled;
+a manual selection remains usable only after a successful probe.
 Workspace creation atomically requires name and the globally unique Kafka topic.
 `/[locale]/admin/git` manages reusable GitHub, GitLab, and Gitee token accounts
 and repository-catalogue refreshes. It does not manage Git services, OAuth, or
@@ -855,12 +898,28 @@ GitHub App credentials.
 Connectors, and Members tabs. The sole system administrator creates ordinary
 users and grants each Workspace `viewer` or `operator` access; it also grants a
 Git account to a Workspace and selects its repository access. There are no
-Workspace administrators. The Repositories tab presents Workspace-derived build units
-and components, not raw resource-graph payloads. Connector forms use ordinary
-provider-specific fields and require verification before introspection; secrets
-are password inputs and are never rendered after submission. Workspace
-The system administrator manages bindings, immutable model-policy revisions,
+Workspace administrators. The Repositories tab presents Workspace-derived
+build units and components, not raw resource-graph payloads. Repository binding
+is searchable; repository access is a searchable multi-selector that preserves
+selection while filtering and can select or clear the current result set.
+Connector forms use provider-specific fields and require verification before
+introspection; secrets are password inputs and are never rendered after
+submission. PostgreSQL/MySQL creation automatically chains connection
+verification and safe-table discovery and surfaces readiness, exclusions,
+failure reason, and retry. Loki uses the recursive condition-tree editor. The
+system administrator manages bindings, immutable model-policy revisions,
 read-only repositories, connector instances, and ingestion transitions.
+
+The authenticated shell follows `apps/web/DESIGN.md`: 248px fixed desktop
+sidebar, 56px context bar, neutral one-pixel borders, 6px radii, 36px controls,
+compact tables, and non-nested operational sections in both themes. Shared
+buttons preserve size while loading, set `aria-busy`, and prevent duplicate
+submissions; row actions have independent state. Lists use structural skeletons
+on first load, retain prior data during refresh, and define empty, filtered-
+empty, inline-error, and retry states. All visible labels, accessibility names,
+enum values, placeholders, validation messages, and client API errors use
+`next-intl`. `npm run check:i18n` enforces English/Chinese key parity and scans
+TSX literals; dates and numbers use the active locale.
 
 Authentication uses normalized lowercase usernames. The initial migration
 creates exactly one system administrator, `admin`, with password `123456` and
@@ -877,7 +936,7 @@ their Workspace grants when disabled, and regain them only after re-enablement.
 permissions do not exist.
 
 The only investigation UI lives under `workbench`. Its list supports search,
-state filtering, manual intake, and navigation by opaque public ID. Detail leads
+state filtering, manual intake, and navigation by compact entity ID. Detail leads
 with the incident summary, cause, code diagnosis, confirmed facts, evidence gaps,
 and recommended next step; it then presents human-readable timeline, evidence,
 and execution-audit views. Raw source/runtime/model snapshots remain available
@@ -905,6 +964,11 @@ make local-release-check
 `make local-release-check` is the complete deterministic gate and must run once
 against a fresh isolated upgraded PostgreSQL database. The external statistical
 gate is:
+
+Local release and seed fixtures use the current Git authorization chain:
+account, encrypted credential revision, repository visibility, Workspace grant,
+repository entitlement, then repository binding. Verification scripts must not
+bypass that chain with nullable entitlement IDs or removed repository fields.
 
 ```bash
 make provider-release-check \
@@ -952,8 +1016,10 @@ expiry/replay, fingerprint dedupe, Connector lifecycle changes, forged execution
 preflight/execution/cancellation terminals, output bounds, and immutable audit.
 
 Log Connector changes must additionally cover complete LogQL CST parsing and
-parser differential inputs, root selector enforcement, exact string-node
-ValueRef binding, bounded log and metric queries, exact index and field scope,
+parser differential inputs, nested filter normalization, DNF complexity and
+positive-matcher limits, server-only regex escaping, root selector enforcement,
+branch budget sharing, stable merge/deduplication, atomic partial failure, exact
+string-node ValueRef binding, bounded log and metric queries, exact index and field scope,
 recursive Query DSL and aggregation allowlists, bucket/cardinality limits,
 independent Elasticsearch/OpenSearch version proof, schema introspection,
 provider request snapshots, stable pagination/order, partial and malformed
@@ -963,8 +1029,10 @@ imports.
 
 SQL/HTTPS/Command changes must additionally cover PostgreSQL and MySQL dialect
 AST differentials, safe CTE and non-executing EXPLAIN, write/locking/function/
-system-catalog rejection, replica and grant attestation, read-only transaction
-and cost budgets, canonical URL/SSRF/DNS/redirect/decompression controls, exact
+system-catalog rejection, replica and grant attestation, system-CA TLS 1.2 and
+hostname verification, readable base-table discovery, deterministic time/stable
+key inference, candidate-table overflow, exclusion reasons, no-safe-table
+readiness, read-only transaction and cost budgets, canonical URL/SSRF/DNS/redirect/decompression controls, exact
 endpoint schemas, argv and ValueRef injection, binary attestation, symlink/path
 escape, signed protocol replay, exact-file read-only mounts, empty environment,
 private network and secret ownership, Connector lifecycle checks, output truncation,

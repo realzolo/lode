@@ -6,7 +6,7 @@ import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
-import { fetchPlatformSettings, updatePlatformSettings } from '@/lib/api';
+import { apiErrorMessage, fetchPlatformSettings, updatePlatformSettings } from '@/lib/api';
 import type { PlatformSettings } from '@/lib/types';
 
 export default function SettingsPage() {
@@ -22,7 +22,7 @@ export default function SettingsPage() {
       setLanguage(value.ai_output_language);
       setError('');
     } catch (cause) {
-      setError(String(cause));
+      setError(apiErrorMessage(cause, tc('requestFailed')));
     }
   }, []);
   useEffect(() => { void load(); }, [load]);
@@ -33,7 +33,7 @@ export default function SettingsPage() {
       setSettings(value);
       toast.success(t('saved'));
     } catch (cause) {
-      setError(String(cause));
+      setError(apiErrorMessage(cause, tc('requestFailed')));
       await load();
     }
   }

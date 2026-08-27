@@ -23,6 +23,7 @@ from lode.crypto import decrypt_secret
 from lode.evidence_connectors.types import ProviderExecutionError
 from lode.infrastructure.provider_http import provider_request
 from lode.metrics import LLM_CALLS, LLM_LATENCY
+from lode.model_catalog import require_model
 from lode.runtime_defaults import (
     LLM_MAX_RETRIES,
     LLM_REQUEST_TIMEOUT_SECONDS,
@@ -204,6 +205,33 @@ async def complete_with_usage(
     request_timeout = max(1.0, timeout_seconds or LLM_REQUEST_TIMEOUT_SECONDS)
 
     async def _post() -> dict[str, Any]:
+        if config.protocol_id == "anthropic.messages.v1":
+            count_payload = {
+                key: payload[key]
+                for key in ("model", "system", "messages")
+                if key in payload
+            }
+            count_response = await provider_request(
+                "POST",
+                endpoint + "/count_tokens",
+                headers=headers,
+                timeout_seconds=request_timeout,
+                json_body=count_payload,
+            )
+            if count_response.status_code >= 400:
+                raise ProviderHTTPError(count_response.status_code)
+            try:
+                count_body = json.loads(count_response.body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise TypeError("Anthropic token count response is invalid") from exc
+            input_tokens = count_body.get("input_tokens") if isinstance(count_body, dict) else None
+            if not isinstance(input_tokens, int) or input_tokens < 0:
+                raise TypeError("Anthropic token count response is invalid")
+            profile = require_model("anthropic", config.protocol_id, config.model)
+            if input_tokens + (config.max_completion_tokens or 1024) > profile.context_window_tokens:
+                raise ProviderExecutionError(
+                    "cost_exceeded", "Anthropic request exceeds the reviewed context window"
+                )
         response = await provider_request(
             "POST",
             endpoint,

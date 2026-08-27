@@ -24,6 +24,7 @@ from lode.db.models import (
     IdentityResolution,
     User,
     Workspace,
+    WorkspacePermission,
     WorkspaceRepositoryBinding,
 )
 from lode.db.session import AsyncSessionLocal, engine
@@ -32,6 +33,11 @@ from lode.resource_understanding import ManifestScanner, SemanticAnnotationDraft
 from lode.resource_understanding.store import BoundRepositoryScan, ResourceGraphStore
 from lode.security import create_token
 from lode.config import settings
+from current_git_fixture import (
+    FIXTURE_ADAPTER_ID,
+    FIXTURE_ENDPOINT_HASH,
+    ensure_repository_entitlement,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -64,9 +70,19 @@ async def _binding(session, workspace: Workspace, suffix: str, role: str) -> Wor
         select(GitRepository).where(GitRepository.repo_url == url)
     )).scalar_one_or_none()
     if repository is None:
-        repository = GitRepository(name=f"resource-check-{suffix}", repo_url=url, scope="global")
+        repository = GitRepository(
+            adapter_id=FIXTURE_ADAPTER_ID,
+            endpoint_identity_hash=FIXTURE_ENDPOINT_HASH,
+            external_repository_id=suffix,
+            name=f"resource-check-{suffix}",
+            full_name=f"fixtures/resource-check-{suffix}",
+            repo_url=url,
+            web_url=url.removesuffix(".git"),
+            visibility="private",
+        )
         session.add(repository)
         await session.flush()
+    entitlement_id = await ensure_repository_entitlement(session, workspace.id, repository)
     binding = (await session.execute(
         select(WorkspaceRepositoryBinding).where(
             WorkspaceRepositoryBinding.workspace_id == workspace.id,
@@ -78,6 +94,7 @@ async def _binding(session, workspace: Workspace, suffix: str, role: str) -> Wor
         binding = WorkspaceRepositoryBinding(
             workspace_id=workspace.id,
             repository_id=repository.id,
+            repository_entitlement_id=entitlement_id,
             role=role,
         )
         session.add(binding)
@@ -105,6 +122,20 @@ async def main() -> None:
             )
             session.add(user)
             await session.flush()
+        permission = await session.scalar(
+            select(WorkspacePermission).where(
+                WorkspacePermission.workspace_id == workspace.id,
+                WorkspacePermission.user_id == user.id,
+            )
+        )
+        if permission is None:
+            session.add(
+                WorkspacePermission(
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    permission="viewer",
+                )
+            )
         await session.commit()
 
         source_scan = scanner.scan(

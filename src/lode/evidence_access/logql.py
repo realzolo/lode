@@ -15,6 +15,7 @@ from typing import Any
 from lode.application.intake import canonical_hash
 from lode.evidence_access.budget import intersect_budget
 from lode.evidence_access.candidate import NativeReadCandidateInput, QueryPayload
+from lode.evidence_access.loki_scope import matcher_text
 from lode.evidence_access.types import (
     AccessContext,
     AccessRejection,
@@ -183,7 +184,7 @@ class LogQLPolicy:
     language = "logql"
     parser_name = "grafana-lezer-logql"
     parser_version = _PARSER_VERSION
-    policy_version = "lode-logql-policy.1"
+    policy_version = "lode-logql-policy.2"
 
     def __init__(self, parser: LogQLParser | None = None) -> None:
         self._parser = parser or LogQLParser()
@@ -218,25 +219,30 @@ class LogQLPolicy:
             raise AccessRejection("budget_violation", "LogQL requires an absolute bounded window")
         syntax = self._parser.parse(str(action.canonical_action["query"]))
         self._validate_scope(syntax, context)
-        query, injected = self._inject_root_matchers(
-            str(action.canonical_action["query"]), syntax, context
-        )
-        effective_syntax = self._parser.parse(query)
-        self._validate_syntax(effective_syntax)
-        self._validate_scope(effective_syntax, context, require_roots=True)
+        queries: list[str] = []
+        effective_syntaxes: list[LogQLSyntax] = []
+        branches = self._root_branches(context)
+        for branch in branches:
+            query, _ = self._inject_root_matchers(
+                str(action.canonical_action["query"]), syntax, branch
+            )
+            effective_syntax = self._parser.parse(query)
+            self._validate_syntax(effective_syntax, allow_generated_matchers=True)
+            self._validate_scope(effective_syntax, context, root_branch=branch)
+            queries.append(query)
+            effective_syntaxes.append(effective_syntax)
 
         duration = (budget.window_end - budget.window_start).total_seconds()
-        metric = effective_syntax.query_kind == "metric"
+        metric = effective_syntaxes[0].query_kind == "metric"
         max_samples = self._scope_int(context, "max_metric_samples", 2_000)
         step_seconds = max(1, math.ceil(duration / max_samples)) if metric else None
         if metric and not bool(context.scope_config.get("allow_metric_queries", False)):
             raise AccessRejection("scope_violation", "metric LogQL is disabled by the snapshot")
-        if injected:
-            diff["root_matchers"] = {"injected": injected}
+        diff["root_filter"] = {"branch_count": len(branches), "injected": True}
         effective_action = {
             "adapter_kind": "loki",
-            "query": query,
-            "query_kind": effective_syntax.query_kind,
+            "queries": queries,
+            "query_kind": effective_syntaxes[0].query_kind,
             "start": budget.window_start.astimezone(UTC).isoformat(),
             "end": budget.window_end.astimezone(UTC).isoformat(),
             "limit": budget.result_limit,
@@ -246,7 +252,7 @@ class LogQLPolicy:
         }
         return PolicyEvaluation(
             effective_action=effective_action,
-            effective_structural_hash=self._effective_structure(effective_action, effective_syntax),
+            effective_structural_hash=self._effective_structure(effective_action, effective_syntaxes),
             validation_decisions=(
                 {"check": "logql_complete_cst", "outcome": "allow", "parser": self.parser_version},
                 {"check": "logql_node_allowlist", "outcome": "allow"},
@@ -264,40 +270,55 @@ class LogQLPolicy:
         values: Mapping[str, str],
     ) -> BoundNativeAction:
         effective = dict(evaluation.effective_action)
-        query = str(effective["query"])
-        syntax = self._parser.parse(query)
-        spans = self._string_spans(syntax, set(values))
-        if set(spans) != set(values):
-            raise AccessRejection("scope_violation", "resolved values do not match LogQL slots")
-        for sentinel, (start, end) in sorted(
-            spans.items(), key=lambda item: item[1][0], reverse=True
-        ):
-            query = query[:start] + json.dumps(values[sentinel], ensure_ascii=False) + query[end:]
-        bound_syntax = self._parser.parse(query)
-        self._validate_syntax(bound_syntax)
-        effective["query"] = query
-        shape = self._effective_structure(effective, bound_syntax)
+        queries = effective.get("queries")
+        if not isinstance(queries, list) or not queries:
+            raise AccessRejection("scope_violation", "effective Loki branch set is invalid")
+        bound_queries: list[str] = []
+        bound_syntaxes: list[LogQLSyntax] = []
+        for raw_query in queries:
+            query = str(raw_query)
+            syntax = self._parser.parse(query)
+            spans = self._string_spans(syntax, set(values))
+            if set(spans) != set(values):
+                raise AccessRejection("scope_violation", "resolved values do not match LogQL slots")
+            for sentinel, (start, end) in sorted(
+                spans.items(), key=lambda item: item[1][0], reverse=True
+            ):
+                query = query[:start] + json.dumps(values[sentinel], ensure_ascii=False) + query[end:]
+            bound_syntax = self._parser.parse(query)
+            self._validate_syntax(bound_syntax, allow_generated_matchers=True)
+            bound_queries.append(query)
+            bound_syntaxes.append(bound_syntax)
+        effective["queries"] = bound_queries
+        shape = self._effective_structure(effective, bound_syntaxes)
         if shape != evaluation.effective_structural_hash:
             raise AccessRejection("invalid_syntax", "ValueRef binding changed LogQL structure")
         return BoundNativeAction(
             language=self.language,
             canonical_action=effective,
             structural_hash=shape,
-            parse_tree_hash=canonical_hash({"query": query, "tree": bound_syntax.structural_tree}),
+            parse_tree_hash=canonical_hash(
+                {"queries": bound_queries, "trees": [item.structural_tree for item in bound_syntaxes]}
+            ),
         )
 
     @staticmethod
-    def _validate_syntax(syntax: LogQLSyntax) -> None:
+    def _validate_syntax(
+        syntax: LogQLSyntax, *, allow_generated_matchers: bool = False
+    ) -> None:
         if len(syntax.selectors) != 1:
             raise AccessRejection("unsupported_node", "LogQL must contain exactly one selector")
         nodes = set(syntax.node_counts)
-        if nodes & _FORBIDDEN_NODES:
+        forbidden = _FORBIDDEN_NODES - ({"Re", "Nre"} if allow_generated_matchers else set())
+        if nodes & forbidden:
             raise AccessRejection(
                 "unsupported_node",
                 "LogQL contains a disabled AST node",
-                {"nodes": sorted(nodes & _FORBIDDEN_NODES)},
+                {"nodes": sorted(nodes & forbidden)},
             )
         allowed = _BASE_NODES | (_METRIC_NODES if syntax.query_kind == "metric" else set())
+        if allow_generated_matchers:
+            allowed |= {"Re", "Nre"}
         unknown = nodes - allowed
         if unknown:
             raise AccessRejection(
@@ -309,7 +330,8 @@ class LogQLPolicy:
             raise AccessRejection(
                 "invalid_syntax", "LogQL strings must use JSON-compatible quoting"
             )
-        if any(item.get("operator") not in {"Eq"} for item in syntax.matchers):
+        matcher_operators = {"Eq", "Neq", "Re", "Nre"} if allow_generated_matchers else {"Eq"}
+        if any(item.get("operator") not in matcher_operators for item in syntax.matchers):
             raise AccessRejection("unsupported_node", "LogQL selector operator is disabled")
         if any(
             item.get("operator") not in {"PipeExact", "PipeNotEqual"}
@@ -322,29 +344,41 @@ class LogQLPolicy:
         syntax: LogQLSyntax,
         context: AccessContext,
         *,
-        require_roots: bool = False,
+        root_branch: tuple[Mapping[str, Any], ...] | None = None,
     ) -> None:
-        roots = self._root_matchers(context)
+        root_labels = self._root_labels(context)
         allowed_labels = self._string_set(context.schema_catalog.get("labels"), "schema labels")
         allowed_fields = self._string_set(context.schema_catalog.get("fields", []), "schema fields")
         for matcher in syntax.matchers:
-            if matcher.get("name") not in allowed_labels | set(roots):
+            if matcher.get("name") not in allowed_labels | root_labels:
                 raise AccessRejection(
                     "scope_violation", "LogQL selector label is outside schema catalog"
                 )
         identifiers = {
             item["text"] for item in syntax.terminals if item.get("name") == "Identifier"
         }
-        if not identifiers <= allowed_labels | allowed_fields:
+        if not identifiers <= allowed_labels | allowed_fields | root_labels:
             raise AccessRejection("scope_violation", "LogQL field is outside schema catalog")
-        if require_roots:
-            present = {
-                (item.get("name"), (item.get("value") or {}).get("value"))
-                for item in syntax.matchers
-                if item.get("operator") == "Eq"
+        if root_branch is not None:
+            required = {
+                (
+                    item["label"],
+                    {"equals": "Eq", "not_equals": "Neq", "any_of": "Re", "not_any_of": "Nre"}[item["operator"]],
+                    item["values"][0]
+                    if item["operator"] in {"equals", "not_equals"}
+                    else "^(?:" + "|".join(re.escape(value) for value in item["values"]) + ")$",
+                )
+                for item in root_branch
             }
-            missing = {(name, value) for name, value in roots.items()} - present
-            if missing:
+            present = {
+                (
+                    item.get("name"),
+                    item.get("operator"),
+                    (item.get("value") or {}).get("value"),
+                )
+                for item in syntax.matchers
+            }
+            if not required <= present:
                 raise AccessRejection("scope_violation", "LogQL root selector was not enforced")
         stages = set()
         for stage in syntax.pipeline_stages:
@@ -385,37 +419,51 @@ class LogQLPolicy:
         self,
         query: str,
         syntax: LogQLSyntax,
-        context: AccessContext,
+        branch: tuple[Mapping[str, Any], ...],
     ) -> tuple[str, list[str]]:
-        roots = self._root_matchers(context)
         present = {
             (item.get("name"), (item.get("value") or {}).get("value"))
             for item in syntax.matchers
             if item.get("operator") == "Eq"
         }
-        missing = [(name, value) for name, value in roots.items() if (name, value) not in present]
+        missing = [
+            item for item in branch
+            if item["operator"] != "equals" or (item["label"], item["values"][0]) not in present
+        ]
         if not missing:
             return query, []
         selector = syntax.selectors[0]
         position = int(selector["from"]) + 1
-        prefix = ",".join(
-            f"{name}={json.dumps(value, ensure_ascii=False)}" for name, value in missing
-        )
+        prefix = ",".join(matcher_text(item) for item in missing)
         existing = query[position : int(selector["to"])].lstrip().startswith("}")
         separator = "" if existing else ","
         return query[:position] + prefix + separator + query[position:], [
-            name for name, _ in missing
+            str(item["label"]) for item in missing
         ]
 
-    def _root_matchers(self, context: AccessContext) -> dict[str, str]:
-        value = context.scope_config.get("root_matchers")
-        if not isinstance(value, dict) or not value:
-            raise AccessRejection("scope_violation", "LogQL snapshot has no root matcher")
-        if any(not isinstance(key, str) or not _LABEL.fullmatch(key) for key in value):
-            raise AccessRejection("scope_violation", "LogQL root matcher label is invalid")
-        if any(not isinstance(item, str) or not item for item in value.values()):
-            raise AccessRejection("scope_violation", "LogQL root matcher value is invalid")
-        return dict(value)
+    def _root_branches(
+        self, context: AccessContext
+    ) -> tuple[tuple[Mapping[str, Any], ...], ...]:
+        value = context.scope_config.get("root_filter_dnf")
+        if not isinstance(value, list) or not 1 <= len(value) <= 8:
+            raise AccessRejection("scope_violation", "LogQL snapshot has no root filter")
+        branches: list[tuple[Mapping[str, Any], ...]] = []
+        for branch in value:
+            if not isinstance(branch, list) or not branch:
+                raise AccessRejection("scope_violation", "LogQL root filter branch is invalid")
+            branches.append(tuple(branch))
+        return tuple(branches)
+
+    def _root_labels(self, context: AccessContext) -> set[str]:
+        labels = {
+            str(item.get("label"))
+            for branch in self._root_branches(context)
+            for item in branch
+            if isinstance(item, Mapping)
+        }
+        if any(_LABEL.fullmatch(label) is None for label in labels):
+            raise AccessRejection("scope_violation", "LogQL root filter label is invalid")
+        return labels
 
     def _value_slots(
         self,
@@ -455,9 +503,11 @@ class LogQLPolicy:
         return spans
 
     @staticmethod
-    def _effective_structure(action: Mapping[str, Any], syntax: LogQLSyntax) -> str:
+    def _effective_structure(
+        action: Mapping[str, Any], syntaxes: list[LogQLSyntax]
+    ) -> str:
         shape = {
-            key: (syntax.structural_tree if key == "query" else type(value).__name__)
+            key: ([item.structural_tree for item in syntaxes] if key == "queries" else type(value).__name__)
             for key, value in sorted(action.items())
         }
         return canonical_hash(shape)

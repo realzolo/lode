@@ -20,7 +20,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
-from lode.db.models._common import CreatedAtMixin, TimestampMixin, identity_pk
+from lode.db.models._common import CreatedAtMixin, TimestampMixin, snowflake_pk
 
 
 class GitAccount(TimestampMixin, Base):
@@ -28,7 +28,7 @@ class GitAccount(TimestampMixin, Base):
 
     __tablename__ = "git_accounts"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     adapter_id: Mapped[str] = mapped_column(Text, nullable=False)
     api_url: Mapped[str] = mapped_column(Text, nullable=False)
     endpoint_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
@@ -76,7 +76,7 @@ class GitAccountCredentialRevision(CreatedAtMixin, Base):
 
     __tablename__ = "git_account_credential_revisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     account_connection_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("git_accounts.id", ondelete="CASCADE"), nullable=False
     )
@@ -100,7 +100,7 @@ class GitAccountCredentialRevision(CreatedAtMixin, Base):
 class GitRepository(TimestampMixin, Base):
     __tablename__ = "git_repositories"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     adapter_id: Mapped[str] = mapped_column(Text, nullable=False)
     endpoint_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
     external_repository_id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -145,7 +145,7 @@ class GitAccountRepositoryAccess(TimestampMixin, Base):
 class WorkspaceGitAccountGrant(TimestampMixin, Base):
     __tablename__ = "workspace_git_account_grants"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -168,7 +168,7 @@ class WorkspaceGitAccountGrant(TimestampMixin, Base):
 class WorkspaceGitRepositoryEntitlement(TimestampMixin, Base):
     __tablename__ = "workspace_git_repository_entitlements"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -201,7 +201,7 @@ class WorkspaceGitRepositoryEntitlement(TimestampMixin, Base):
 class GitAccountSyncJob(TimestampMixin, Base):
     __tablename__ = "git_account_sync_jobs"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     account_connection_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("git_accounts.id", ondelete="CASCADE"), nullable=False
     )
@@ -222,7 +222,7 @@ class GitAccountSyncJob(TimestampMixin, Base):
 class WorkspaceRepositoryBinding(TimestampMixin, Base):
     __tablename__ = "workspace_repository_bindings"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -269,7 +269,7 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
 class RepositoryDescriptor(CreatedAtMixin, Base):
     __tablename__ = "repository_descriptors"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     repository_binding_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspace_repository_bindings.id", ondelete="CASCADE"), nullable=False
     )
@@ -288,7 +288,7 @@ class RepositoryDescriptor(CreatedAtMixin, Base):
 class BuildUnit(TimestampMixin, Base):
     __tablename__ = "build_units"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -322,7 +322,7 @@ class BuildUnit(TimestampMixin, Base):
 class Component(TimestampMixin, Base):
     __tablename__ = "components"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -373,7 +373,7 @@ class ComponentSourceBinding(CreatedAtMixin, Base):
 class ComponentDescriptor(CreatedAtMixin, Base):
     __tablename__ = "component_descriptors"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     component_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("components.id", ondelete="CASCADE"), nullable=False
     )
@@ -392,7 +392,7 @@ class ComponentDescriptor(CreatedAtMixin, Base):
 class ResourceObservation(CreatedAtMixin, Base):
     __tablename__ = "resource_observations"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -433,7 +433,7 @@ class ResourceObservation(CreatedAtMixin, Base):
 class SemanticAnnotation(CreatedAtMixin, Base):
     __tablename__ = "semantic_annotations"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -452,7 +452,7 @@ class SemanticAnnotation(CreatedAtMixin, Base):
 class IdentityResolution(CreatedAtMixin, Base):
     __tablename__ = "identity_resolutions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -491,7 +491,7 @@ class IdentityResolution(CreatedAtMixin, Base):
 class ResourceGraphRevision(CreatedAtMixin, Base):
     __tablename__ = "resource_graph_revisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )

@@ -23,7 +23,7 @@ class SQLBackend(Protocol):
     async def attest(self, timeout_ms: int) -> Mapping[str, Any]: ...
 
     async def introspect(
-        self, tables: Sequence[str], timeout_ms: int
+        self, max_tables: int, timeout_ms: int
     ) -> Mapping[str, Mapping[str, Any]]: ...
 
     async def explain(self, query: str, timeout_ms: int) -> Mapping[str, Any]: ...
@@ -61,51 +61,78 @@ class SQLConnectorMechanics:
     async def introspect(
         self, scope: Mapping[str, Any], budget: IntrospectionBudget
     ) -> NativeSchemaCatalog:
-        tables = scope.get("allowed_tables")
-        if (
-            not isinstance(tables, list)
-            or not tables
-            or len(tables) > budget.max_resources
-            or any(not isinstance(table, str) for table in tables)
-        ):
-            raise ProviderExecutionError("invalid_response", "SQL introspection scope is invalid")
-        raw = await self._backend_call(self.backend.introspect(tables, budget.timeout_ms))
-        if set(raw) != set(tables):
+        del scope
+        raw = await self._backend_call(self.backend.introspect(201, budget.timeout_ms))
+        if len(raw) > 200:
             raise ProviderExecutionError(
-                "invalid_response", "SQL introspection did not resolve the exact table scope"
+                "cost_exceeded", "more than 200 readable SQL tables were discovered"
             )
-        resources = 0
         catalog: dict[str, Any] = {}
-        table_policies = scope.get("table_policies")
-        if not isinstance(table_policies, dict) or set(table_policies) != set(tables):
-            raise ProviderExecutionError("invalid_response", "SQL table policies are invalid")
-        for table in sorted(tables):
-            columns = raw[table]
-            policy = table_policies[table]
-            if not isinstance(columns, Mapping):
+        excluded: dict[str, str] = {}
+        for table, descriptor in sorted(raw.items()):
+            if not isinstance(descriptor, Mapping):
                 raise ProviderExecutionError("invalid_response", "SQL table catalog is invalid")
-            resources += 1 + len(columns)
-            if resources > budget.max_resources:
-                raise ProviderExecutionError("cost_exceeded", "SQL schema catalog is too large")
-            if (
-                not columns
-                or not isinstance(policy, dict)
-                or policy.get("time_column") not in columns
-                or not isinstance(policy.get("stable_order"), list)
-                or not policy["stable_order"]
-                or any(column not in columns for column in policy["stable_order"])
-            ):
+            columns = descriptor.get("columns")
+            if not isinstance(columns, Mapping) or not columns:
                 raise ProviderExecutionError("invalid_response", "SQL table catalog is invalid")
+            time_column = self._time_column(columns)
+            if time_column is None:
+                excluded[table] = "no_time_column"
+                continue
+            stable_order = self._stable_order(descriptor, columns)
+            if stable_order is None:
+                excluded[table] = "no_stable_key"
+                continue
             catalog[table] = {
                 "columns": dict(columns),
-                "time_column": policy["time_column"],
-                "stable_order": list(policy["stable_order"]),
+                "time_column": time_column,
+                "stable_order": list(stable_order),
             }
         return NativeSchemaCatalog(
             provider=self.kind,
             version=self.version or "unverified",
-            resources={"dialect": self.dialect, "tables": catalog},
+            resources={"dialect": self.dialect, "tables": catalog, "excluded_tables": excluded},
         )
+
+    @staticmethod
+    def _time_column(columns: Mapping[str, Any]) -> str | None:
+        temporal = sorted(
+            name
+            for name, value in columns.items()
+            if isinstance(value, Mapping)
+            and value.get("nullable") is False
+            and isinstance(value.get("type"), str)
+            and ("timestamp" in value["type"].lower() or "datetime" in value["type"].lower())
+        )
+        priorities = (
+            "occurred_at", "event_time", "event_timestamp", "timestamp", "ts",
+            "created_at", "updated_at",
+        )
+        return next((name for name in priorities if name in temporal), temporal[0] if temporal else None)
+
+    @staticmethod
+    def _stable_order(
+        descriptor: Mapping[str, Any], columns: Mapping[str, Any]
+    ) -> tuple[str, ...] | None:
+        primary = descriptor.get("primary_key")
+        if isinstance(primary, list) and primary and all(column in columns for column in primary):
+            return tuple(primary)
+        indexes = descriptor.get("unique_indexes")
+        if not isinstance(indexes, Mapping):
+            return None
+        for _, index_columns in sorted(indexes.items()):
+            if (
+                isinstance(index_columns, list)
+                and index_columns
+                and all(
+                    column in columns
+                    and isinstance(columns[column], Mapping)
+                    and columns[column].get("nullable") is False
+                    for column in index_columns
+                )
+            ):
+                return tuple(index_columns)
+        return None
 
     async def preflight(self, permit: ExecutionPermit) -> Mapping[str, Any]:
         action = self._action(permit)

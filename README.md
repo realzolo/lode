@@ -211,6 +211,9 @@ Schema verification must use a fresh PostgreSQL database and run both
 `alembic upgrade head` and `alembic check`. The only migration is
 `alembic/versions/0001_initial.py`.
 
+`make web-check` runs TypeScript validation, English/Chinese key parity and
+untranslated-literal scanning, then the production Next.js build.
+
 `make analysis-check` is a deterministic smoke gate. A release additionally
 requires frozen real-provider observations to pass the quality thresholds and
 Wilson confidence bounds documented in `CLAUDE.md`; the deterministic corpus is

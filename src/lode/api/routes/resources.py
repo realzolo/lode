@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.api.deps import assert_workspace_permission, require_user
+from lode.api.types import EntityId
 from lode.db.models import (
     BuildUnit,
     Component,
@@ -27,7 +28,7 @@ Limit = Annotated[int, Query(ge=1, le=200)]
 Offset = Annotated[int, Query(ge=0)]
 
 
-async def _authorized_session(workspace_id: int, user_id: int) -> AsyncSession:
+async def _authorized_session(workspace_id: EntityId, user_id: EntityId) -> AsyncSession:
     session = AsyncSessionLocal()
     user = await session.get(User, user_id)
     if user is None:
@@ -43,10 +44,10 @@ async def _authorized_session(workspace_id: int, user_id: int) -> AsyncSession:
 
 @router.get("/build-units")
 async def list_build_units(
-    workspace_id: int,
+    workspace_id: EntityId,
     limit: Limit = 100,
     offset: Offset = 0,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
 ) -> dict:
     session = await _authorized_session(workspace_id, user_id)
     try:
@@ -80,10 +81,10 @@ async def list_build_units(
 
 @router.get("/components")
 async def list_components(
-    workspace_id: int,
+    workspace_id: EntityId,
     limit: Limit = 100,
     offset: Offset = 0,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
 ) -> dict:
     session = await _authorized_session(workspace_id, user_id)
     try:
@@ -131,10 +132,10 @@ async def list_components(
 
 @router.get("/resource-graph-revisions")
 async def list_resource_graph_revisions(
-    workspace_id: int,
+    workspace_id: EntityId,
     limit: Limit = 100,
     offset: Offset = 0,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
 ) -> dict:
     session = await _authorized_session(workspace_id, user_id)
     try:
@@ -152,9 +153,9 @@ async def list_resource_graph_revisions(
 
 @router.get("/resource-graph-revisions/{revision_id}")
 async def get_resource_graph_revision(
-    workspace_id: int,
-    revision_id: int,
-    user_id: int = Depends(require_user),
+    workspace_id: EntityId,
+    revision_id: EntityId,
+    user_id: EntityId = Depends(require_user),
 ) -> dict:
     session = await _authorized_session(workspace_id, user_id)
     try:
@@ -185,10 +186,10 @@ async def get_resource_graph_revision(
 
 @router.get("/resource-observations")
 async def list_resource_observations(
-    workspace_id: int,
+    workspace_id: EntityId,
     limit: Limit = 100,
     offset: Offset = 0,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
 ) -> dict:
     session = await _authorized_session(workspace_id, user_id)
     try:
@@ -225,10 +226,10 @@ async def list_resource_observations(
 
 @router.get("/identity-resolutions")
 async def list_identity_resolutions(
-    workspace_id: int,
+    workspace_id: EntityId,
     limit: Limit = 100,
     offset: Offset = 0,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
 ) -> dict:
     session = await _authorized_session(workspace_id, user_id)
     try:

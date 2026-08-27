@@ -7,8 +7,14 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from lode.api.types import EntityId
+
 ExecutionClassValue = Literal["latency_optimized", "reasoning_optimized"]
 ModelRoleValue = Literal["planner", "native_query", "synthesizer", "verifier", "context_compactor"]
+ProviderKindValue = Literal["openai", "anthropic"]
+ProviderProtocolValue = Literal[
+    "openai.responses.v1", "openai.chat_completions.v1", "anthropic.messages.v1"
+]
 
 
 class _StrictInput(BaseModel):
@@ -34,43 +40,64 @@ class _ORMOutput(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ProviderModelSelectionItem(_StrictInput):
+    provider_model_id: str = Field(min_length=1, max_length=200)
+    source: Literal["discovered", "manual"]
+
+    @field_validator("provider_model_id")
+    @classmethod
+    def trimmed_model_id(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("model ID must be trimmed")
+        return value
+
+
 class _ModelSelection(_StrictInput):
-    model_ids: tuple[str, ...] = Field(max_length=100)
+    models: tuple[ProviderModelSelectionItem, ...] = Field(max_length=100)
 
     @model_validator(mode="after")
     def valid_model_selection(self):
-        if len(self.model_ids) != len(set(self.model_ids)):
+        model_ids = [item.provider_model_id for item in self.models]
+        if len(model_ids) != len(set(model_ids)):
             raise ValueError("model IDs must be unique")
-        if any(not value or value != value.strip() for value in self.model_ids):
-            raise ValueError("model IDs must be trimmed and nonempty")
         return self
 
 
 class ProviderAccountConnectionInput(_StrictInput):
-    protocol_id: Literal["openai.responses.v1", "openai.chat_completions.v1", "anthropic.messages.v1"]
+    provider_kind: ProviderKindValue
+    protocol_id: ProviderProtocolValue
     base_url: str = Field(min_length=1, max_length=2_000)
-    credential: str = Field(min_length=1, max_length=8_000)
+    api_key: str = Field(min_length=1, max_length=8_000)
+
+    @model_validator(mode="after")
+    def valid_provider_protocol(self):
+        if self.provider_kind == "openai" and not self.protocol_id.startswith("openai."):
+            raise ValueError("OpenAI accounts require an OpenAI protocol")
+        if self.provider_kind == "anthropic" and self.protocol_id != "anthropic.messages.v1":
+            raise ValueError("Anthropic accounts require the Anthropic Messages protocol")
+        return self
 
 
 class ProviderAccountCreate(ProviderAccountConnectionInput, _ModelSelection):
     name: str = Field(min_length=1, max_length=200)
-    model_ids: tuple[str, ...] = Field(min_length=1, max_length=100)
+    models: tuple[ProviderModelSelectionItem, ...] = Field(min_length=1, max_length=100)
 
 
 class ProviderAccountPatch(_StrictPatch):
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    protocol_id: Literal["openai.responses.v1", "openai.chat_completions.v1", "anthropic.messages.v1"] | None = None
+    provider_kind: ProviderKindValue | None = None
+    protocol_id: ProviderProtocolValue | None = None
     base_url: str | None = Field(default=None, min_length=1, max_length=2_000)
-    credential: str | None = Field(default=None, min_length=1, max_length=8_000)
-    model_ids: tuple[str, ...] | None = Field(default=None, max_length=100)
+    api_key: str | None = Field(default=None, min_length=1, max_length=8_000)
+    models: tuple[ProviderModelSelectionItem, ...] | None = Field(default=None, max_length=100)
     state: Literal["active", "disabled"] | None = None
 
     @model_validator(mode="after")
     def valid_model_selection(self):
-        if self.model_ids is None:
+        if self.models is None:
             return self
-        selection = _ModelSelection(model_ids=self.model_ids)
-        self.model_ids = selection.model_ids
+        selection = _ModelSelection(models=self.models)
+        self.models = selection.models
         return self
 
 
@@ -78,12 +105,32 @@ class ProviderAccountModelSelection(_ModelSelection):
     pass
 
 
+class ProviderModelCatalogOut(_StrictInput):
+    provider_kind: ProviderKindValue
+    provider_model_id: str
+    display_name: str
+    context_window_tokens: int
+    max_output_tokens: int
+    capabilities: dict[str, bool]
+    protocol_ids: tuple[str, ...]
+    catalog_revision: str
+    source_url: str
+    reviewed_at: str
+
+
+class ProviderModelDiscoveryOut(_StrictInput):
+    catalog_revision: str
+    available_model_ids: tuple[str, ...]
+    unsupported_model_ids: tuple[str, ...]
+
+
 class ProviderAccountModelOut(_ORMOutput):
-    id: int
-    provider_account_id: int
+    id: EntityId
+    provider_account_id: EntityId
     provider_model_id: str
     display_name: str
     capabilities: dict[str, bool]
+    discovery_state: Literal["discovered", "manual", "missing"]
     availability_state: Literal["untested", "healthy", "unavailable"]
     health_checked_at: datetime | None
     state: Literal["active", "disabled"]
@@ -93,9 +140,10 @@ class ProviderAccountModelOut(_ORMOutput):
 
 
 class ProviderAccountOut(_ORMOutput):
-    id: int
+    id: EntityId
     name: str
-    protocol_id: Literal["openai.responses.v1", "openai.chat_completions.v1", "anthropic.messages.v1"]
+    provider_kind: ProviderKindValue
+    protocol_id: ProviderProtocolValue
     base_url: str
     state: str
     verification_status: str
@@ -120,11 +168,11 @@ class WorkspaceCreate(_StrictInput):
 
 
 class WorkspaceOut(_ORMOutput):
-    id: int
+    id: EntityId
     name: str
     ingestion_topic: str
-    model_policy_revision_id: int | None
-    investigation_policy_revision_id: int | None
+    model_policy_revision_id: EntityId | None
+    investigation_policy_revision_id: EntityId | None
     ingestion_state: str
     ingestion_version: int
     ingestion_start_position: str | None
@@ -139,7 +187,7 @@ class IngestionStart(_StrictInput):
 
 
 class ModelBindingInput(_StrictInput):
-    provider_account_model_id: int = Field(gt=0)
+    provider_account_model_id: EntityId = Field(gt=0)
     execution_classes: tuple[ExecutionClassValue, ...] = Field(min_length=1)
     allowed_roles: tuple[ModelRoleValue, ...] = Field(min_length=1)
     priority: int = Field(default=0, ge=0)
@@ -174,9 +222,9 @@ class ModelBindingPatch(_StrictPatch):
 
 
 class ModelBindingOut(_ORMOutput):
-    id: int
-    workspace_id: int
-    provider_account_model_id: int
+    id: EntityId
+    workspace_id: EntityId
+    provider_account_model_id: EntityId
     execution_classes: list[str]
     allowed_roles: list[str]
     priority: int
@@ -192,7 +240,7 @@ class ModelBindingOut(_ORMOutput):
 
 
 class ModelPolicyInput(_StrictInput):
-    eligible_binding_ids: tuple[int, ...] = Field(min_length=1)
+    eligible_binding_ids: tuple[EntityId, ...] = Field(min_length=1)
     role_policies: dict[str, Any]
     verifier_policy: dict[str, Any] = Field(default_factory=dict)
     pinned_evidence_kinds: tuple[str, ...] = Field(min_length=1)
@@ -213,11 +261,11 @@ class ModelPolicyInput(_StrictInput):
 
 
 class ModelPolicyOut(_ORMOutput):
-    id: int
-    workspace_id: int
+    id: EntityId
+    workspace_id: EntityId
     eligible_bindings: list[dict[str, int]]
     role_policies: dict[str, Any]
-    context_policy_revision_id: int
+    context_policy_revision_id: EntityId
     verifier_policy: dict[str, Any]
     revision: int
     created_at: datetime
@@ -228,8 +276,8 @@ class InvestigationPolicyPut(_StrictInput):
 
 
 class InvestigationPolicyOut(_ORMOutput):
-    id: int
-    workspace_id: int
+    id: EntityId
+    workspace_id: EntityId
     profile: Literal["fast", "balanced", "deep"]
     max_evidence_steps: int
     max_model_calls: int
@@ -272,7 +320,7 @@ class GitAccountTokenRotate(_StrictInput):
 
 
 class GitAccountOut(_ORMOutput):
-    id: int
+    id: EntityId
     adapter_id: str
     api_url: str
     name: str
@@ -291,7 +339,7 @@ class GitAccountOut(_ORMOutput):
 
 
 class GitAccountRepositoryOut(_StrictInput):
-    repository_id: int
+    repository_id: EntityId
     provider_kind: Literal["github", "gitlab", "gitee"]
     full_name: str
     repo_url: str
@@ -302,9 +350,9 @@ class GitAccountRepositoryOut(_StrictInput):
 
 
 class WorkspaceGitAccountGrantCreate(_StrictInput):
-    account_connection_id: int = Field(gt=0)
+    account_connection_id: EntityId = Field(gt=0)
     repository_scope: Literal["selected", "all_visible"] = "selected"
-    repository_ids: tuple[int, ...] = Field(default=(), max_length=1_000)
+    repository_ids: tuple[EntityId, ...] = Field(default=(), max_length=1_000)
 
     @model_validator(mode="after")
     def selected_scope_requires_repositories(self):
@@ -316,9 +364,9 @@ class WorkspaceGitAccountGrantCreate(_StrictInput):
 
 
 class WorkspaceGitAccountGrantOut(_ORMOutput):
-    id: int
-    workspace_id: int
-    account_connection_id: int
+    id: EntityId
+    workspace_id: EntityId
+    account_connection_id: EntityId
     account_name: str
     provider_kind: Literal["github", "gitlab", "gitee"]
     external_account_login: str
@@ -331,8 +379,8 @@ class WorkspaceGitAccountGrantOut(_ORMOutput):
 
 
 class WorkspaceRepositoryCandidateOut(_StrictInput):
-    entitlement_id: int
-    repository_id: int
+    entitlement_id: EntityId
+    repository_id: EntityId
     provider_kind: Literal["github", "gitlab", "gitee"]
     full_name: str
     repo_url: str
@@ -340,12 +388,12 @@ class WorkspaceRepositoryCandidateOut(_StrictInput):
     default_branch: str
     visibility: Literal["public", "private", "internal"]
     archived: bool
-    account_connection_id: int
+    account_connection_id: EntityId
     account_name: str
 
 
 class RepositoryBind(_StrictInput):
-    repository_entitlement_id: int = Field(gt=0)
+    repository_entitlement_id: EntityId = Field(gt=0)
     role: Literal["runtime_source", "shared_library", "infrastructure", "documentation"]
     priority: int = Field(default=0, ge=0)
     description: str = Field(default="", max_length=2_000)
@@ -361,10 +409,10 @@ class RepositoryBindingPatch(_StrictPatch):
 
 
 class RepositoryBindingOut(_StrictInput):
-    id: int
-    workspace_id: int
-    repository_id: int
-    repository_entitlement_id: int
+    id: EntityId
+    workspace_id: EntityId
+    repository_id: EntityId
+    repository_entitlement_id: EntityId
     provider_kind: Literal["github", "gitlab", "gitee"]
     name: str
     full_name: str
@@ -379,21 +427,20 @@ class RepositoryBindingOut(_StrictInput):
     revision: int
 
 
-class ConnectorMatcherInput(_StrictInput):
-    name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
-    value: str = Field(min_length=1, max_length=1_000)
+class LokiConditionInput(_StrictInput):
+    kind: Literal["condition"] = "condition"
+    label: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+    operator: Literal["equals", "not_equals", "any_of", "not_any_of"]
+    values: tuple[str, ...] = Field(min_length=1, max_length=20)
 
 
-class SqlTableScopeInput(_StrictInput):
-    table: str = Field(min_length=3, max_length=260, pattern=r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
-    time_column: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
-    stable_order: tuple[str, ...] = Field(min_length=1, max_length=10)
+class LokiConditionGroupInput(_StrictInput):
+    kind: Literal["group"] = "group"
+    combinator: Literal["all", "any"]
+    items: tuple["LokiConditionInput | LokiConditionGroupInput", ...] = Field(min_length=1)
 
-    @model_validator(mode="after")
-    def stable_order_is_unique(self):
-        if len(self.stable_order) != len(set(self.stable_order)):
-            raise ValueError("stable order columns must be unique")
-        return self
+
+LokiConditionGroupInput.model_rebuild()
 
 
 class ConnectorCreate(_StrictInput):
@@ -404,7 +451,7 @@ class ConnectorCreate(_StrictInput):
     credential: str | None = Field(default=None, min_length=1, max_length=8_000)
     credential_username: str | None = Field(default=None, min_length=1, max_length=200)
     tenant_id: str | None = Field(default=None, min_length=1, max_length=200)
-    root_matchers: tuple[ConnectorMatcherInput, ...] = Field(default=(), max_length=32)
+    root_filter: LokiConditionGroupInput | None = None
     allowed_indices: tuple[str, ...] = Field(default=(), max_length=500)
     verification_path: str = Field(default="/health", min_length=1, max_length=1_000)
     safe_read_path: str | None = Field(default=None, min_length=1, max_length=1_000)
@@ -414,25 +461,25 @@ class ConnectorCreate(_StrictInput):
     database: str | None = Field(default=None, min_length=1, max_length=64)
     database_username: str | None = Field(default=None, min_length=1, max_length=64)
     database_password: str | None = Field(default=None, min_length=1, max_length=8_000)
-    ca_certificate_pem: str | None = Field(default=None, min_length=1, max_length=100_000)
-    allowed_tables: tuple[SqlTableScopeInput, ...] = Field(default=(), max_length=500)
 
     @model_validator(mode="after")
     def valid_kind_specific_form(self):
         if self.kind in {"loki", "elasticsearch", "opensearch", "https"} and not self.endpoint:
             raise ValueError("an HTTPS endpoint is required")
-        if self.kind == "loki" and not self.root_matchers:
-            raise ValueError("Loki requires at least one root label matcher")
+        if self.kind == "loki" and self.root_filter is None:
+            raise ValueError("Loki requires a root label filter")
+        if self.kind == "loki" and self.root_filter is not None:
+            from lode.evidence_access.loki_scope import normalize_loki_filter
+
+            normalize_loki_filter(self.root_filter.model_dump())
         if self.kind in {"elasticsearch", "opensearch"} and not self.allowed_indices:
             raise ValueError("search connectors require at least one allowed index")
         if self.kind == "https" and not self.safe_read_path:
             raise ValueError("HTTPS connectors require one allowed read path")
         if self.kind in {"postgresql", "mysql"} and not all(
-            (self.host, self.database, self.database_username, self.database_password, self.ca_certificate_pem)
+            (self.host, self.database, self.database_username, self.database_password)
         ):
-            raise ValueError("database connectors require read-only database and TLS fields")
-        if self.kind in {"postgresql", "mysql"} and not self.allowed_tables:
-            raise ValueError("database connectors require at least one allowed table")
+            raise ValueError("database connectors require database connection fields")
         if self.kind == "loki" and self.authentication not in {"none", "bearer_token"}:
             raise ValueError("Loki supports only bearer-token authentication")
         if self.kind in {"elasticsearch", "opensearch", "https"} and self.authentication == "none":
@@ -447,8 +494,8 @@ class ConnectorCreate(_StrictInput):
 
 
 class ConnectorOut(_StrictInput):
-    id: int
-    workspace_id: int
+    id: EntityId
+    workspace_id: EntityId
     name: str
     kind: str
     kind_version: int

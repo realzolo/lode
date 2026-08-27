@@ -20,17 +20,18 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lode.db.base import Base
-from lode.db.models._common import CreatedAtMixin, TimestampMixin, identity_pk
+from lode.db.models._common import CreatedAtMixin, TimestampMixin, snowflake_pk
 
 
 class AIProviderAccount(TimestampMixin, Base):
     __tablename__ = "ai_provider_accounts"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    provider_kind: Mapped[str] = mapped_column(Text, nullable=False)
     protocol_id: Mapped[str] = mapped_column(Text, nullable=False)
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
-    credential_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
     verification_status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="untested"
@@ -39,9 +40,15 @@ class AIProviderAccount(TimestampMixin, Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
 
     __table_args__ = (
+        CheckConstraint("provider_kind IN ('openai', 'anthropic')", name="provider_kind"),
         CheckConstraint(
             "protocol_id IN ('openai.responses.v1', 'openai.chat_completions.v1', 'anthropic.messages.v1')",
             name="protocol_id",
+        ),
+        CheckConstraint(
+            "(provider_kind = 'openai' AND protocol_id IN ('openai.responses.v1', 'openai.chat_completions.v1')) OR "
+            "(provider_kind = 'anthropic' AND protocol_id = 'anthropic.messages.v1')",
+            name="provider_protocol",
         ),
         CheckConstraint("state IN ('active', 'disabled')", name="state"),
         CheckConstraint(
@@ -55,13 +62,14 @@ class AIProviderAccount(TimestampMixin, Base):
 class ProviderAccountModel(TimestampMixin, Base):
     __tablename__ = "provider_account_models"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     provider_account_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("ai_provider_accounts.id", ondelete="RESTRICT"), nullable=False
     )
     provider_model_id: Mapped[str] = mapped_column(Text, nullable=False)
     catalog_revision: Mapped[str] = mapped_column(Text, nullable=False)
     catalog_profile_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    discovery_state: Mapped[str] = mapped_column(Text, nullable=False)
     availability_state: Mapped[str] = mapped_column(Text, nullable=False, server_default="untested")
     health_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
@@ -76,6 +84,10 @@ class ProviderAccountModel(TimestampMixin, Base):
             "availability_state IN ('untested', 'healthy', 'unavailable')",
             name="availability_state",
         ),
+        CheckConstraint(
+            "discovery_state IN ('discovered', 'manual', 'missing')",
+            name="discovery_state",
+        ),
         CheckConstraint("state IN ('active', 'disabled')", name="state"),
         CheckConstraint("revision > 0", name="revision_positive"),
     )
@@ -84,7 +96,7 @@ class ProviderAccountModel(TimestampMixin, Base):
 class ContextPolicyRevision(CreatedAtMixin, Base):
     __tablename__ = "context_policy_revisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -107,7 +119,7 @@ class ContextPolicyRevision(CreatedAtMixin, Base):
 class WorkspaceModelBinding(TimestampMixin, Base):
     __tablename__ = "workspace_model_bindings"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -152,7 +164,7 @@ class WorkspaceModelBinding(TimestampMixin, Base):
 class ModelPolicyRevision(CreatedAtMixin, Base):
     __tablename__ = "model_policy_revisions"
 
-    id: Mapped[int] = identity_pk()
+    id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )

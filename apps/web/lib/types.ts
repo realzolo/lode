@@ -57,6 +57,7 @@ export interface InvestigationPolicy {
 export interface ProviderAccount {
   id: number;
   name: string;
+  provider_kind: 'openai' | 'anthropic';
   protocol_id: 'openai.responses.v1' | 'openai.chat_completions.v1' | 'anthropic.messages.v1';
   base_url: string;
   state: 'active' | 'disabled';
@@ -72,9 +73,29 @@ export interface ProviderAccountModel {
   provider_model_id: string;
   display_name: string;
   capabilities: Record<string, boolean>;
+  discovery_state: 'discovered' | 'manual' | 'missing';
   availability_state: 'untested' | 'healthy' | 'unavailable';
   state: 'active' | 'disabled';
   revision: number;
+}
+
+export interface ProviderModelCatalogItem {
+  provider_kind: 'openai' | 'anthropic';
+  provider_model_id: string;
+  display_name: string;
+  context_window_tokens: number;
+  max_output_tokens: number;
+  capabilities: Record<string, boolean>;
+  protocol_ids: string[];
+  catalog_revision: string;
+  source_url: string;
+  reviewed_at: string;
+}
+
+export interface ProviderModelDiscovery {
+  catalog_revision: string;
+  available_model_ids: string[];
+  unsupported_model_ids: string[];
 }
 
 export interface ModelBinding {
@@ -223,9 +244,10 @@ export interface EvidenceConnector {
   configured_secret_fields: string[];
 }
 
+export type EntityId = number;
+
 export interface InvestigationSummary {
-  id: number;
-  public_id: string;
+  id: EntityId;
   workspace_id: number;
   status: 'queued' | 'running' | 'completed' | 'failed';
   result_state: 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
@@ -278,8 +300,7 @@ export interface InvestigationReportSummary {
 }
 
 export interface InvestigationOverview {
-  id: number;
-  public_id: string;
+  id: EntityId;
   workspace_id: number;
   status: 'queued' | 'running' | 'completed' | 'failed';
   result_state: 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';

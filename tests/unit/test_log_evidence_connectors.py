@@ -139,12 +139,15 @@ async def test_loki_verify_introspect_preflight_execute_and_normalize() -> None:
     )
     verified = await connector.verify()
     catalog = await connector.introspect(
-        {"root_matchers": {"cluster": "prod", "namespace": "orders"}},
+        {"root_filter_dnf": [[
+            {"label": "cluster", "operator": "equals", "values": ["prod"]},
+            {"label": "namespace", "operator": "equals", "values": ["orders"]},
+        ]]},
         introspection_budget(),
     )
     action = {
         "adapter_kind": "loki",
-        "query": '{cluster="prod",namespace="orders",app="worker"} |= "trace"',
+        "queries": ['{cluster="prod",namespace="orders",app="worker"} |= "trace"'],
         "query_kind": "log",
         "start": "2026-08-26T09:15:00+00:00",
         "end": "2026-08-26T09:45:00+00:00",
@@ -172,6 +175,46 @@ async def test_loki_verify_introspect_preflight_execute_and_normalize() -> None:
     assert series_call["query"]["start"] == "2026-08-26T09:15:00+00:00"
     assert series_call["query"]["end"] == "2026-08-26T09:45:00+00:00"
     assert series_call["timeout_ms"] == 4_000
+
+
+@pytest.mark.asyncio
+async def test_loki_branches_share_budget_deduplicate_and_fail_atomically() -> None:
+    action = {
+        "adapter_kind": "loki",
+        "queries": ['{cluster="prod",namespace="orders"}', '{cluster="prod",namespace="billing"}'],
+        "query_kind": "log",
+        "start": "2026-08-26T09:15:00+00:00",
+        "end": "2026-08-26T09:45:00+00:00",
+        "limit": 10,
+        "direction": "forward",
+        "step_seconds": None,
+        "timeout_ms": 10_000,
+    }
+    duplicate = LokiConnector(
+        connector_config(),
+        {},
+        FakeTransport([response(fixture("loki_streams.json"))] * 2),
+    )
+
+    result = await duplicate.execute(permit(action))
+
+    assert result["record_count"] == 2
+    assert result["statistics"]["branch_count"] == 2
+    assert all(call["timeout_ms"] == 5_000 for call in duplicate.transport.calls)
+
+    partial = LokiConnector(
+        connector_config(),
+        {},
+        FakeTransport(
+            [
+                response(fixture("loki_streams.json")),
+                response(b'{"status":"error"}'),
+            ]
+        ),
+    )
+    with pytest.raises(ProviderExecutionError) as error:
+        await partial.execute(permit(action))
+    assert error.value.code == "invalid_response"
 
 
 @pytest.mark.parametrize(
@@ -324,7 +367,9 @@ async def test_introspection_budgets_reject_unbounded_or_oversized_catalogs() ->
     )
     with pytest.raises(ProviderExecutionError) as missing_window:
         await loki.introspect(
-            {"root_matchers": {"cluster": "prod"}},
+            {"root_filter_dnf": [[
+                {"label": "cluster", "operator": "equals", "values": ["prod"]},
+            ]]},
             IntrospectionBudget(timeout_ms=1_000, max_resources=10),
         )
     assert missing_window.value.code == "cost_exceeded"

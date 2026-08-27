@@ -25,17 +25,13 @@ class MySQLConnectorConfig(BaseModel):
     port: int = Field(default=3306, ge=1, le=65_535)
     database: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,63}$")
     username: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,63}$")
-    ca_certificate_pem: str = Field(min_length=1, max_length=100_000)
 
 
 class MySQLBackend(SQLBackend):
     def __init__(self, config: MySQLConnectorConfig, password: str) -> None:
         self.config = config
         self.password = password
-        try:
-            self.ssl_context = ssl.create_default_context(cadata=config.ca_certificate_pem)
-        except ssl.SSLError as exc:
-            raise ValueError("MySQL CA certificate is invalid") from exc
+        self.ssl_context = ssl.create_default_context()
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
 
     async def attest(self, timeout_ms: int) -> Mapping[str, Any]:
@@ -60,15 +56,23 @@ class MySQLBackend(SQLBackend):
         return {**row, "grants": grants}
 
     async def introspect(
-        self, tables: Sequence[str], timeout_ms: int
+        self, max_tables: int, timeout_ms: int
     ) -> Mapping[str, Mapping[str, Any]]:
         output: dict[str, Mapping[str, Any]] = {}
         async with self._connection(timeout_ms) as connection:
             await self._begin_read_only(connection, timeout_ms)
             try:
                 async with connection.cursor(DictCursor) as cursor:
-                    for qualified in tables:
-                        database, table = self._qualified_table(qualified)
+                    await cursor.execute(
+                        "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name "
+                        "FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s "
+                        "AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME LIMIT %s",
+                        (self.config.database, max_tables),
+                    )
+                    tables = await cursor.fetchall()
+                    for table_row in tables:
+                        database, table = table_row["table_schema"], table_row["table_name"]
+                        qualified = f"{database}.{table}"
                         await cursor.execute(
                             "SELECT c.COLUMN_NAME AS column_name, c.DATA_TYPE AS data_type, "
                             "c.IS_NULLABLE = 'YES' AS nullable "
@@ -80,12 +84,29 @@ class MySQLBackend(SQLBackend):
                             (database, table),
                         )
                         rows = await cursor.fetchall()
-                        output[qualified] = {
+                        columns = {
                             row["column_name"]: {
                                 "type": row["data_type"],
                                 "nullable": bool(row["nullable"]),
                             }
                             for row in rows
+                        }
+                        await cursor.execute(
+                            "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, "
+                            "COLUMN_NAME AS column_name, SEQ_IN_INDEX AS sequence_number "
+                            "FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = %s "
+                            "AND TABLE_NAME = %s AND NON_UNIQUE = 0 "
+                            "ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+                            (database, table),
+                        )
+                        index_rows = await cursor.fetchall()
+                        indexes: dict[str, list[str]] = {}
+                        for item in index_rows:
+                            indexes.setdefault(item["index_name"], []).append(item["column_name"])
+                        output[qualified] = {
+                            "columns": columns,
+                            "primary_key": indexes.pop("PRIMARY", []),
+                            "unique_indexes": indexes,
                         }
             finally:
                 await connection.rollback()

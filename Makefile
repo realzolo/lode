@@ -97,6 +97,7 @@ api-check:
 # Type-check and produce the deployable Workbench build.
 web-check:
 	npm run typecheck --prefix apps/web
+	npm run check:i18n --prefix apps/web
 	npm run build --prefix apps/web
 
 # Exercise release evaluation, adversarial security, worker bounds, and lease-loss recovery.

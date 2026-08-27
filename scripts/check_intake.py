@@ -25,6 +25,7 @@ from lode.db.models import (
     SealedEvidenceValue,
     User,
     Workspace,
+    WorkspacePermission,
 )
 from lode.db.session import AsyncSessionLocal
 from lode.security import create_token
@@ -69,6 +70,13 @@ async def main() -> None:
         session.add(investigation_policy)
         await session.flush()
         workspace.investigation_policy_revision_id = investigation_policy.id
+        session.add(
+            WorkspacePermission(
+                workspace_id=workspace.id,
+                user_id=user.id,
+                permission="operator",
+            )
+        )
         await session.commit()
         await session.refresh(user)
         await session.refresh(workspace)

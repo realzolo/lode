@@ -53,8 +53,10 @@ RULES = (
     Rule(
         "removed_service_model",
         re.compile(
-            rf"\b(?:{_REMOVED_SERVICE_BINDING}|{_REMOVED_INVESTIGATION_SNAPSHOT}|"
-            rf"{_REMOVED_SERVICE_MODEL})\b"
+            rf"\b(?:{_REMOVED_SERVICE_BINDING}|{_REMOVED_INVESTIGATION_SNAPSHOT})\b|"
+            rf"\bclass\s+{_REMOVED_SERVICE_MODEL}\b|"
+            rf"\b{_REMOVED_SERVICE_MODEL}\s*\(|"
+            rf"\b(?:from\s+[\w.]+\s+import|import)\s+{_REMOVED_SERVICE_MODEL}\b"
         ),
     ),
     Rule(

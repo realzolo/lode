@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from lode.api.audit import audit_action
 from lode.api.deps import require_admin
+from lode.api.types import EntityId
 from lode.api.schemas import PasswordResetIn, UserCreateIn, UserOut, UserUpdateIn
 from lode.db.models.user import User
 from lode.db.session import AsyncSessionLocal
@@ -35,7 +36,7 @@ async def list_users(_: int = Depends(require_admin)) -> list[UserOut]:
 
 
 @router.post("", response_model=UserOut, status_code=201)
-async def create_user(payload: UserCreateIn, admin_id: int = Depends(require_admin)) -> UserOut:
+async def create_user(payload: UserCreateIn, admin_id: EntityId = Depends(require_admin)) -> UserOut:
     username = payload.username.strip().lower()
     async with AsyncSessionLocal() as session:
         existing = await session.scalar(select(User).where(User.username == username))
@@ -60,7 +61,7 @@ async def create_user(payload: UserCreateIn, admin_id: int = Depends(require_adm
 
 @router.patch("/{user_id}", response_model=UserOut)
 async def update_user(
-    user_id: int, payload: UserUpdateIn, admin_id: int = Depends(require_admin)
+    user_id: EntityId, payload: UserUpdateIn, admin_id: EntityId = Depends(require_admin)
 ) -> UserOut:
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
@@ -82,7 +83,7 @@ async def update_user(
 
 @router.post("/{user_id}/reset-password")
 async def reset_password(
-    user_id: int, payload: PasswordResetIn, admin_id: int = Depends(require_admin)
+    user_id: EntityId, payload: PasswordResetIn, admin_id: EntityId = Depends(require_admin)
 ) -> dict[str, str]:
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)

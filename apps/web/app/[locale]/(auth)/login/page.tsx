@@ -6,7 +6,7 @@ import { useRouter } from '@/lib/navigation';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { clearToken, login, setToken } from '@/lib/api';
+import { apiErrorMessage, clearToken, login, setToken } from '@/lib/api';
 import { useUser } from '@/lib/user-context';
 import { IconArrowUpRight } from '@/components/icons';
 
@@ -35,7 +35,7 @@ export default function LoginPage() {
           : result.user.is_system_admin ? '/admin' : '/workbench',
       );
     } catch (err) {
-      setError(String(err));
+      setError(apiErrorMessage(err, tc('requestFailed')));
     } finally {
       setBusy(false);
     }
@@ -84,8 +84,9 @@ export default function LoginPage() {
               variant="primary"
               type="submit"
               disabled={busy || !username || !password}
+              loading={busy}
+              loadingText={t('submit')}
             >
-              {busy ? <span className="spinner" /> : null}
               {t('submit')}
               {!busy && <IconArrowUpRight size={16} />}
             </Button>

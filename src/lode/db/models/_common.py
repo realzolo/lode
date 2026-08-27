@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Identity, Text, text
+from sqlalchemy import BigInteger, DateTime, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,8 +14,12 @@ JSON_ARRAY_DEFAULT = text("'[]'::jsonb")
 TEXT_ARRAY_DEFAULT = text("'{}'::text[]")
 
 
-def identity_pk() -> Mapped[int]:
-    return mapped_column(BigInteger, Identity(always=True), primary_key=True)
+def snowflake_pk() -> Mapped[int]:
+    return mapped_column(
+        BigInteger,
+        primary_key=True,
+        server_default=text("next_lode_id()"),
+    )
 
 
 def json_object(*, nullable: bool = False) -> Mapped[dict]:

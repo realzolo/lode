@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.api.deps import require_user
+from lode.api.types import EntityId
 from lode.api.audit import audit_action
 from lode.api.schemas import (
     AuthLoginIn,
@@ -77,7 +78,7 @@ async def login(payload: AuthLoginIn, session: AsyncSession = Depends(get_sessio
 
 
 @router.get("/me", response_model=UserOut)
-async def me(user_id: int = Depends(require_user)) -> UserOut:
+async def me(user_id: EntityId = Depends(require_user)) -> UserOut:
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
     if user is None or user.status != "active":
@@ -96,7 +97,7 @@ async def me(user_id: int = Depends(require_user)) -> UserOut:
 @router.post("/change-password")
 async def change_password(
     payload: PasswordChangeIn,
-    user_id: int = Depends(require_user),
+    user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     """Let the authenticated user change their own password."""
