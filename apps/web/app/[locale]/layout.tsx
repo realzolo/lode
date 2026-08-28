@@ -11,7 +11,7 @@ import '../dashboard.css';
 
 export const metadata: Metadata = {
   title: 'Lode',
-  description: 'AI-powered root-cause analysis for production errors.',
+  description: 'Evidence-driven incident investigation for engineering teams.',
 };
 
 // The app is backend-backed, so render dynamically rather than prerendering per locale.

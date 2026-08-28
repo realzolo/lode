@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 32" fill="none">
+  <path d="M12 3H9C6.5 3 5 5 5 8v4c0 2.5-1 4-3 4 2 0 3 1.5 3 4v4c0 3 1.5 5 4 5h3M20 3h3c2.5 0 4 2 4 5v4c0 2.5 1 4 3 4-2 0-3 1.5-3 4v4c0 3-1.5 5-4 5h-3" stroke="#171717" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="12.5" y="12.5" width="7" height="7" rx="1.25" fill="#0070F3"/>
+  <text x="42" y="23" fill="#171717" font-family="Geist, Inter, Arial, sans-serif" font-size="21" font-weight="600" letter-spacing="0">Lode</text>
+</svg>

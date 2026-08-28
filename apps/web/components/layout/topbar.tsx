@@ -3,6 +3,7 @@
 import { Menu } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/lib/navigation';
+import { LodeMark } from '@/components/brand/lode-logo';
 
 export function Topbar({ portal, onMenu }: { portal: 'admin' | 'workbench'; onMenu: () => void }) {
   const t = useTranslations('navigation');
@@ -22,7 +23,10 @@ export function Topbar({ portal, onMenu }: { portal: 'admin' | 'workbench'; onMe
   return <header className="topbar">
     <div className="topbar-project">
       <button className="mobile-menu-button" aria-label={t('openNavigation')} onClick={onMenu}><Menu size={17} /></button>
-      <Link href={controlPlane ? '/admin' : '/workbench'}><span aria-hidden="true">▲</span><span>{controlPlane ? t('controlPlane') : t('workbench')}</span></Link>
+      <Link href={controlPlane ? '/admin' : '/workbench'}>
+        <LodeMark className="topbar-brand-mark" />
+        <span>{controlPlane ? t('controlPlane') : t('workbench')}</span>
+      </Link>
     </div>
     <span className="topbar-section topbar-title">{title}</span>
     <div aria-hidden="true" />

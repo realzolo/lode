@@ -15,6 +15,20 @@ description: Operational dashboard design language inspired by the structure and
 - Light and dark themes preserve geometry, hierarchy, keyboard behavior, and status meaning. Theme changes never rearrange information.
 - Do not use marketing gradients, hero bands, oversized headlines, illustration cards, or pill-shaped CTAs on authenticated product routes.
 
+## Brand Identity
+
+- The canonical mark is the Bounded Scope symbol documented in
+  `docs/brand/README.md`: paired analytical boundaries around one structured
+  Evidence Blue input.
+- Product UI renders the theme-aware React mark from
+  `components/brand/lode-logo.tsx`; exported material uses the SVG assets under
+  `public/brand`.
+- The mark is never recolored with operational status colors, placed in a badge,
+  shadowed, or substituted with the previous triangle placeholder.
+- Authentication surfaces use a quiet full-height split frame: an abstract
+  Bounded Scope analysis field, an unframed form workspace, structural
+  hairlines, and no marketing content. Narrow screens collapse to one column.
+
 ## Tokens
 
 | Token | Light | Dark | Use |

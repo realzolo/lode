@@ -7,6 +7,7 @@ import { useTheme } from 'next-themes';
 import { Link, usePathname, useRouter } from '@/lib/navigation';
 import { useUser } from '@/lib/user-context';
 import type { Portal } from '@/components/layout/app-shell';
+import { LodeMark } from '@/components/brand/lode-logo';
 import { cx } from '@/lib/cn';
 
 export function Sidebar({ portal, onFind, onNavigate }: { portal: Portal; onFind: () => void; onNavigate?: () => void }) {
@@ -29,7 +30,10 @@ export function Sidebar({ portal, onFind, onNavigate }: { portal: Portal; onFind
 
   return <aside className="sidebar">
     <div className="workspace-switcher">
-      <Link href={home} className="sidebar-logo" onClick={onNavigate}>Lode</Link>
+      <Link href={home} className="sidebar-logo" onClick={onNavigate} aria-label="Lode">
+        <LodeMark className="sidebar-brand-mark" />
+        <span className="sidebar-brand-name">Lode</span>
+      </Link>
       <span className="workspace-plan">{portal === 'admin' ? t('controlPlane') : t('workbench')}</span>
       <ChevronsUpDown className="workspace-switcher-icon" size={14} aria-hidden="true" />
     </div>

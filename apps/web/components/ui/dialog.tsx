@@ -41,7 +41,8 @@ const DialogContent = React.forwardRef<
       ref={ref}
       data-variant={variant}
       className={cn(
-        'dialog-surface fixed z-50 border border-border bg-card text-card-foreground shadow-elevation-5 focus:outline-none focus-visible:shadow-geist-focus data-[state=open]:animate-in data-[state=closed]:animate-out',
+        'dialog-surface fixed z-50 border border-border bg-card text-card-foreground shadow-elevation-5 focus:outline-none data-[state=open]:animate-in data-[state=closed]:animate-out',
+        variant !== 'drawer' && 'focus-visible:shadow-geist-focus',
         variant === 'drawer'
           ? 'inset-y-0 right-0 flex h-dvh w-full max-w-none flex-col gap-4 overflow-y-auto border-y-0 border-r-0 p-6 data-[state=open]:slide-in-from-right data-[state=open]:duration-200 data-[state=closed]:slide-out-to-right data-[state=closed]:duration-150 sm:w-[min(600px,calc(100vw-48px))]'
           : 'left-1/2 top-1/2 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-md p-6 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:duration-200 data-[state=open]:[--tw-enter-translate-x:-50%] data-[state=open]:[--tw-enter-translate-y:-50%] data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:duration-150 data-[state=closed]:[--tw-exit-translate-x:-50%] data-[state=closed]:[--tw-exit-translate-y:-50%]',

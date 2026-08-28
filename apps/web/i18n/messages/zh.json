@@ -456,18 +456,32 @@
     "evidenceClasses": {"runtime": "运行时", "incident_source": "事件源码", "repository_search_candidate": "候选仓库", "runtime_identified": "运行时识别"}
   },
   "login": {
-    "title": "登录",
-    "subtitle": "登录后进入你的专属门户。",
+    "title": "欢迎回来",
+    "subtitle": "使用你的工作区凭据登录。",
+    "secureAccess": "安全访问工作区",
     "username": "用户名",
     "password": "密码",
     "submit": "继续",
+    "showPassword": "显示密码",
+    "hidePassword": "隐藏密码",
+    "footer": "证据驱动的智能故障调查",
     "newHere": ""
   },
   "passwordChange": {
-    "title": "修改密码",
+    "title": "设置新密码",
+    "subtitle": "继续使用 Lode 前，请先更新你的临时密码。",
+    "secureAccess": "账户安全",
     "current": "当前密码",
     "new": "新密码",
-    "submit": "继续"
+    "confirm": "确认新密码",
+    "submit": "更新密码",
+    "showPassword": "显示密码",
+    "hidePassword": "隐藏密码",
+    "requirements": "密码要求",
+    "minimumLength": "至少 8 个字符",
+    "differentFromCurrent": "与当前密码不同",
+    "passwordsMatch": "两次输入一致",
+    "footer": "证据驱动的智能故障调查"
   },
   "users": {
     "title": "用户",

@@ -456,18 +456,32 @@
     "evidenceClasses": {"runtime": "Runtime", "incident_source": "Incident source", "repository_search_candidate": "Repository candidate", "runtime_identified": "Runtime identified"}
   },
   "login": {
-    "title": "Sign in",
-    "subtitle": "Sign in to continue to your assigned portal.",
+    "title": "Welcome back",
+    "subtitle": "Sign in with your workspace credentials.",
+    "secureAccess": "Secure workspace access",
     "username": "Username",
     "password": "Password",
     "submit": "Continue",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "footer": "Evidence-driven incident investigation",
     "newHere": ""
   },
   "passwordChange": {
-    "title": "Change password",
+    "title": "Create a new password",
+    "subtitle": "Update your temporary password before continuing to Lode.",
+    "secureAccess": "Account security",
     "current": "Current password",
     "new": "New password",
-    "submit": "Continue"
+    "confirm": "Confirm new password",
+    "submit": "Update password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "requirements": "Password requirements",
+    "minimumLength": "At least 8 characters",
+    "differentFromCurrent": "Different from your current password",
+    "passwordsMatch": "Passwords match",
+    "footer": "Evidence-driven incident investigation"
   },
   "users": {
     "title": "Users",
