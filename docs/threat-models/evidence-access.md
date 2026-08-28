@@ -45,10 +45,10 @@ regeneration.
 | Language | Primary threats | Required proof | Infrastructure backstop |
 |---|---|---|---|
 | LogQL | selector escape, DNF expansion, parser differential, unbounded range, attacker regexp/cardinality, rule or delete endpoints | Full maintained AST, normalized bounded condition tree, positive exact matcher per branch, server-only regexp escaping, bounded absolute time, allowed pipeline/aggregation nodes | Query-only token, endpoint allowlist, provider limits |
-| Elasticsearch DSL | index escape, script/runtime fields, async/scroll persistence, aggregation explosion, management API | JSON duplicate-key rejection, recursive node allowlist, exact `_search` path, forced range/size/source/bucket limits | Read-only role restricted to frozen indices |
-| OpenSearch DSL | Elasticsearch policy reuse despite version/plugin differences, scripts, PPL/SQL, management API | Independent versioned parser/policy and contract corpus, exact `_search` path | Read-only role, plugins disabled |
-| SQL | operator-selected unsafe tables, multi-statement, writable CTE, locking reads, file/network/UDF side effects, system catalogs, TLS interception, cost exhaustion | Fixed dialect AST, every node read-only, introspected safe-table catalog, enforced limit/timeouts, optional non-executing explain | TLS 1.2+ with system CA/hostname verification, attested replica/snapshot, read-only role and transaction, resource group |
-| HTTPS | Ambiguous normalization, redirects, credential override, nominal GET with side effects | Canonical HTTPS URL, safe-read endpoint catalog, host/port/path/schema and response checks | Zero redirects, adapter-injected identity |
+| Elasticsearch DSL | index escape, script/runtime fields, async/scroll persistence, aggregation explosion, management API | Exact non-reserved index allowlist at creation, JSON duplicate-key rejection, recursive node allowlist, exact `_search` path, forced range/size/source/bucket limits | Read-only role restricted to frozen indices |
+| OpenSearch DSL | Elasticsearch policy reuse despite version/plugin differences, scripts, PPL/SQL, management API | Exact non-reserved index allowlist at creation, independent versioned parser/policy and contract corpus, exact `_search` path | Read-only role, plugins disabled |
+| SQL | operator-selected unsafe tables, multi-statement, writable CTE, locking reads, file/network/UDF side effects, system catalogs, TLS interception, cost exhaustion | Fixed dialect AST, every node read-only, introspected safe-table catalog, enforced limit/timeouts, optional non-executing explain | Explicit TLS 1.2+ `verify_full` or encryption-only `require`, no plaintext/fallback, non-privileged identity, read-only transaction, scoped no-write grant proof, resource group |
+| HTTP(S) | Ambiguous normalization, redirects, credential override, nominal GET with side effects, plaintext transport | Canonical HTTP(S) URL, safe-read endpoint catalog, exact scheme/host/port/path/schema and response checks | Zero redirects, adapter-injected identity, operator-controlled network for HTTP |
 | Command | shell injection, interpreter escape, path/symlink escape, writable mount, inherited environment/network, binary replacement | Structured executable/argv/working-set, exact flag grammar, fixed binary path and hash | Separate uid/image, read-only mounts/root, empty environment, no network, syscall/resource limits |
 
 The SQL policy uses the fixed SQLGlot parser for PostgreSQL and MySQL and
@@ -67,15 +67,62 @@ literal values in server code. The model parser continues to reject regex. Each 
 of the total timeout and the same global row/byte/window budget. Results merge
 by timestamp, labels, and value with stable ordering. One failed or partial
 branch fails the read, so no partial result is archived.
+Third-party HTTP evidence Connectors may use canonical HTTP or HTTPS origins,
+including authentication on operator-controlled private networks. The chosen
+scheme and exact port are mandatory in generic endpoint scopes. Redirect,
+embedded-credential, timeout, and response-bound checks remain unchanged.
+Operators own the confidentiality
+risk when credentials or evidence traverse plaintext HTTP.
+Generic HTTP(S) Connector kind version 2 requires this explicit scheme; older
+scope payloads are not inferred or upgraded.
 
 PostgreSQL and MySQL connector forms expose no allowed-table, time-column,
-stable-order, TLS-disable, or custom-CA authority. After topology and identity
-attestation, the server enumerates readable non-system base tables and fails
-when more than 200 candidates are visible. A safe table requires a non-null
+stable-order, `search_path`, plaintext, or TLS-fallback authority. `verify_full`
+is the default and verifies hostname against system roots plus an optional
+bounded Connector CA PEM; parsing rejects malformed certificates and private
+keys. Explicit `require` keeps TLS mandatory while accepting the documented
+server-identity risk, and cannot carry a CA value.
+New PostgreSQL
+Connectors require one to 32 exact non-system Schema names. The discovery query
+parameterizes the frozen allowlist, requires every requested Schema to exist and
+be accessible to the current role, and enumerates only SELECT-readable tables in
+that range. PostgreSQL scopes without the field are invalid rather than inferred;
+MySQL remains bounded to its configured database.
+PostgreSQL may connect to a primary or replica. A replica remains the preferred
+deployment boundary, but creation instead requires the server to honor an
+explicit read-only transaction and rejects superuser, role/database creation,
+replication, `BYPASSRLS`, database ownership, and `pg_write_all_data` authority.
+Scope discovery also rejects table- or column-level writes, sequence updates,
+and Schema creation within every allowed Schema. This proof composes with the
+fixed SELECT/function allowlist and explicit read-only execution transactions.
+PostgreSQL discovery performs a fixed four-query catalog sequence for all
+selected tables and is bounded by one 10-second wall-clock deadline, avoiding
+an attacker-amplifiable per-table network round trip.
+After topology and identity attestation, discovery fails when more than 200
+candidates are visible. A safe table requires a non-null
 temporal column and either a primary key or an all-non-null unique index;
 selection order is deterministic and every excluded table receives a reason
-code. An empty discovery is not snapshot-ready. Connections use the system
-trust store, hostname verification, and TLS 1.2 or newer.
+code. An empty discovery is not snapshot-ready. Connections use the system plus
+optional Connector-scoped trust store, hostname verification, and TLS 1.2 or
+newer.
+
+Connector creation is fail-before-write: strict kind-specific validation, remote
+verification, and scope discovery finish before one transaction persists the
+healthy Connector, encrypted credentials, final scope, catalog, and success
+audit. Verification, inaccessible scope, empty safe discovery, and provider
+failure leave no Connector or audit residue.
+Connector verification and discovery errors expose only code-authored provider
+reasons plus an allowlist of non-secret details such as observed/supported
+versions, failed PostgreSQL read-only checks, safe SQLSTATE values, and HTTP
+status. PostgreSQL authentication, database selection, TLS, connection-capacity,
+permission, timeout, writable-session, scoped-write-grant, and privileged-account
+failures remain distinct actionable messages. Raw exceptions, response bodies,
+URLs with embedded credentials, and secret material are never returned to the
+client.
+The database secret-free trigger recursively scans ordinary Connector and scope
+configuration, but not server-generated Schema catalogues. Catalogues contain
+provider identifiers and type/policy metadata without row values, so legitimate
+column names such as `token` or `password` are not treated as credentials.
 
 The command runner is separately authenticated and replay protected. It
 revalidates binary hash, argv, budget, logical working root and every path

@@ -1,4 +1,4 @@
-"""Canonical URL and endpoint-catalog policy for generic HTTPS safe reads."""
+"""Canonical URL and endpoint-catalog policy for generic HTTP(S) safe reads."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ _SEGMENT_TYPES = {
 _ENDPOINT_KEYS = {
     "id",
     "method",
+    "scheme",
     "host",
     "port",
     "path_template",
@@ -45,24 +46,24 @@ _ENDPOINT_KEYS = {
 class HTTPSPolicy:
     language = "https"
     parser_name = "python-urllib-split"
-    parser_version = "3.12-safe-url.1"
-    policy_version = "https-safe-read.1"
+    parser_version = "3.12-safe-http-url.2"
+    policy_version = "http-safe-read.2"
 
     def parse(self, candidate: NativeReadCandidateInput) -> ParsedNativeAction:
         if not isinstance(candidate.payload, HTTPSPayload):
-            raise AccessRejection("invalid_syntax", "HTTPS requires a structured request")
+            raise AccessRejection("invalid_syntax", "HTTP(S) requires a structured request")
         if candidate.payload.body is not None:
-            raise AccessRejection("unsupported_node", "generic HTTPS request bodies are disabled")
+            raise AccessRejection("unsupported_node", "generic HTTP(S) request bodies are disabled")
         url = self._canonical_url(candidate.payload.url)
         query = candidate.payload.query
         if any(not isinstance(key, str) or not key or len(key) > 128 for key in query):
-            raise AccessRejection("invalid_syntax", "HTTPS query key is invalid")
+            raise AccessRejection("invalid_syntax", "HTTP(S) query key is invalid")
         if any(not isinstance(value, (str, int, bool)) for value in query.values()):
-            raise AccessRejection("unsupported_node", "HTTPS query value type is disabled")
+            raise AccessRejection("unsupported_node", "HTTP(S) query value type is disabled")
         action = {"method": candidate.payload.method, "url": url, "query": deepcopy(query)}
         slots = find_exact_value_slots(action, set(candidate.value_bindings))
         if any(path[:1] != ("query",) for path in slots.values()):
-            raise AccessRejection("invalid_syntax", "HTTPS sentinel must be a query value")
+            raise AccessRejection("invalid_syntax", "HTTP(S) sentinel must be a query value")
         return ParsedNativeAction(
             language=self.language,
             canonical_action=action,
@@ -83,7 +84,7 @@ class HTTPSPolicy:
         parsed = urlsplit(str(action.canonical_action["url"]))
         endpoints = context.scope_config.get("safe_read_endpoints")
         if not isinstance(endpoints, list) or not endpoints:
-            raise AccessRejection("scope_violation", "HTTPS endpoint catalog is unavailable")
+            raise AccessRejection("scope_violation", "HTTP(S) endpoint catalog is unavailable")
         matches = [
             endpoint
             for endpoint in endpoints
@@ -91,16 +92,19 @@ class HTTPSPolicy:
         ]
         if len(matches) != 1:
             raise AccessRejection(
-                "scope_violation", "HTTPS request does not match one safe endpoint"
+                "scope_violation", "HTTP(S) request does not match one safe endpoint"
             )
         endpoint = matches[0]
         query = self._effective_query(dict(action.canonical_action["query"]), endpoint, budget)
-        port = parsed.port or 443
+        default_port = 80 if parsed.scheme == "http" else 443
+        port = parsed.port or default_port
+        rendered_host = f"[{parsed.hostname}]" if ":" in str(parsed.hostname) else parsed.hostname
         effective = {
             "adapter_kind": "https",
             "endpoint_id": endpoint["id"],
             "method": action.canonical_action["method"],
-            "origin": f"https://{parsed.hostname}" + (f":{port}" if port != 443 else ""),
+            "origin": f"{parsed.scheme}://{rendered_host}"
+            + (f":{port}" if port != default_port else ""),
             "path": parsed.path,
             "query": query,
             "timeout_ms": budget.timeout_ms,
@@ -140,14 +144,14 @@ class HTTPSPolicy:
         effective = deepcopy(dict(evaluation.effective_action))
         slots = find_exact_value_slots(effective, set(values))
         if any(path[:1] != ("query",) for path in slots.values()):
-            raise AccessRejection("invalid_syntax", "HTTPS sentinel moved outside query")
+            raise AccessRejection("invalid_syntax", "HTTP(S) sentinel moved outside query")
         bound = bind_exact_values(effective, slots, dict(values))
         for name, descriptor in bound["query_constraints"].items():
             if name in bound["query"]:
                 bound["query"][name] = self._query_value(bound["query"][name], descriptor)
         shape = structural_hash(bound)
         if shape != evaluation.effective_structural_hash:
-            raise AccessRejection("invalid_syntax", "ValueRef binding changed HTTPS structure")
+            raise AccessRejection("invalid_syntax", "ValueRef binding changed HTTP(S) structure")
         return BoundNativeAction(
             language=self.language,
             canonical_action=bound,
@@ -161,9 +165,9 @@ class HTTPSPolicy:
         try:
             parsed_port = parsed.port
         except ValueError as exc:
-            raise AccessRejection("invalid_syntax", "HTTPS URL port is invalid") from exc
+            raise AccessRejection("invalid_syntax", "HTTP(S) URL port is invalid") from exc
         if (
-            parsed.scheme != "https"
+            parsed.scheme not in {"http", "https"}
             or not parsed.hostname
             or parsed.username
             or parsed.password
@@ -175,11 +179,14 @@ class HTTPSPolicy:
             or not _PATH.fullmatch(parsed.path)
             or any(segment in {".", ".."} for segment in parsed.path.split("/"))
         ):
-            raise AccessRejection("invalid_syntax", "HTTPS URL is not canonical")
+            raise AccessRejection("invalid_syntax", "HTTP(S) URL is not canonical")
         hostname = parsed.hostname
-        port = parsed_port or 443
+        default_port = 80 if parsed.scheme == "http" else 443
+        port = parsed_port or default_port
         rendered_host = f"[{hostname}]" if ":" in hostname else hostname
-        origin = f"https://{rendered_host}" + (f":{port}" if port != 443 else "")
+        origin = f"{parsed.scheme}://{rendered_host}" + (
+            f":{port}" if port != default_port else ""
+        )
         return origin + (parsed.path or "/")
 
     def _endpoint_matches(
@@ -191,8 +198,12 @@ class HTTPSPolicy:
         self.validate_endpoint(endpoint)
         if (
             action["method"] != endpoint["method"]
+            or parsed_url.scheme != endpoint["scheme"]
             or parsed_url.hostname != endpoint["host"]
-            or (parsed_url.port or 443) != endpoint["port"]
+            or (
+                parsed_url.port
+                or (80 if parsed_url.scheme == "http" else 443)
+            ) != endpoint["port"]
         ):
             return False
         template = endpoint["path_template"].split("/")
@@ -217,6 +228,7 @@ class HTTPSPolicy:
             or not isinstance(endpoint["id"], str)
             or not endpoint["id"]
             or endpoint["method"] not in {"GET", "HEAD"}
+            or endpoint["scheme"] not in {"http", "https"}
             or not isinstance(endpoint["host"], str)
             or endpoint["host"] != endpoint["host"].lower()
             or isinstance(endpoint["port"], bool)
@@ -236,19 +248,21 @@ class HTTPSPolicy:
             or not isinstance(endpoint["max_response_bytes"], int)
             or not 1 <= endpoint["max_response_bytes"] <= 2 * 1024 * 1024
         ):
-            raise AccessRejection("scope_violation", "HTTPS endpoint catalog entry is invalid")
+            raise AccessRejection("scope_violation", "HTTP(S) endpoint catalog entry is invalid")
         try:
             hostname = endpoint["host"]
+            scheme = endpoint["scheme"]
+            default_port = 80 if scheme == "http" else 443
             rendered_host = f"[{hostname}]" if ":" in hostname else hostname
             canonical = HTTPSPolicy._canonical_url(
-                f"https://{rendered_host}"
-                + (f":{endpoint['port']}" if endpoint["port"] != 443 else "")
+                f"{scheme}://{rendered_host}"
+                + (f":{endpoint['port']}" if endpoint["port"] != default_port else "")
                 + endpoint["path_template"]
             )
         except AccessRejection as exc:
-            raise AccessRejection("scope_violation", "HTTPS endpoint origin is invalid") from exc
+            raise AccessRejection("scope_violation", "HTTP(S) endpoint origin is invalid") from exc
         if not canonical:
-            raise AccessRejection("scope_violation", "HTTPS endpoint origin is invalid")
+            raise AccessRejection("scope_violation", "HTTP(S) endpoint origin is invalid")
         placeholders = {
             segment[1:-1]
             for segment in endpoint["path_template"].split("/")
@@ -257,13 +271,13 @@ class HTTPSPolicy:
         if placeholders != set(endpoint["path_parameters"]) or any(
             kind not in _SEGMENT_TYPES for kind in endpoint["path_parameters"].values()
         ):
-            raise AccessRejection("scope_violation", "HTTPS path parameter catalog is invalid")
+            raise AccessRejection("scope_violation", "HTTP(S) path parameter catalog is invalid")
         if any(
             ("{" in segment or "}" in segment)
             and not (segment.startswith("{") and segment.endswith("}"))
             for segment in endpoint["path_template"].split("/")
         ):
-            raise AccessRejection("scope_violation", "HTTPS path template is invalid")
+            raise AccessRejection("scope_violation", "HTTP(S) path template is invalid")
         allowed_descriptor_keys = {
             "type",
             "source",

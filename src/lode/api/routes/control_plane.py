@@ -2435,7 +2435,7 @@ _CONNECTOR_SECRET_FIELDS = {
     "opensearch": ["api_key", "bearer_token", "username", "password"],
     "postgresql": ["password"],
     "mysql": ["password"],
-    "https": ["bearer_token", "api_key"],
+    "https": ["api_key", "bearer_token", "username", "password"],
 }
 
 
@@ -2466,13 +2466,16 @@ def _unique_pairs(values):
 
 
 def _connector_out(row: EvidenceConnector) -> ConnectorOut:
+    public_config = {
+        key: value for key, value in row.config.items() if key != "ca_certificate_pem"
+    }
     return ConnectorOut(
         id=row.id,
         workspace_id=row.workspace_id,
         name=row.name,
         kind=row.kind,
         kind_version=row.kind_version,
-        config=row.config,
+        config=public_config,
         instance_revision=row.instance_revision,
         state=row.state,
         verification_status=row.verification_status,
@@ -2547,8 +2550,6 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
         )
     if payload.kind in {"elasticsearch", "opensearch"}:
         indices = list(payload.allowed_indices)
-        if len(indices) != len(set(indices)):
-            raise ValueError("allowed index patterns must be unique")
         return (
             {"base_url": payload.endpoint},
             _connector_secrets(payload),
@@ -2558,45 +2559,140 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
     if payload.kind == "https":
         parsed = urlsplit(payload.endpoint or "")
         try:
-            port = parsed.port or 443
+            default_port = 80 if parsed.scheme == "http" else 443
+            port = parsed.port or default_port
         except ValueError as exc:
-            raise ValueError("HTTPS connector port is invalid") from exc
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise ValueError("HTTPS connector endpoint must be an HTTPS origin")
+            raise ValueError("HTTP connector port is invalid") from exc
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("HTTP connector endpoint must be an HTTP or HTTPS origin")
         return (
-            {"base_url": payload.endpoint, "verification_path": payload.verification_path},
+            {"base_url": payload.endpoint, "verification_path": payload.verification_path or "/health"},
             _connector_secrets(payload),
             {
                 "safe_read_endpoints": [{
                     "id": "default-read",
                     "method": "GET",
+                    "scheme": parsed.scheme,
                     "host": parsed.hostname.lower(),
                     "port": port,
                     "path_template": payload.safe_read_path,
                     "path_parameters": {},
                     "query_parameters": {},
-                    "allowed_content_types": [payload.safe_read_content_type],
+                    "allowed_content_types": ["application/json"],
                     "max_response_bytes": 1_000_000,
                 }]
             },
             budget,
         )
     if payload.kind in {"postgresql", "mysql"}:
+        allowed_schemas = (
+            {"allowed_schemas": list(payload.allowed_schemas)}
+            if payload.kind == "postgresql"
+            else {}
+        )
         return (
             {
                 "host": payload.host,
                 "port": payload.port or (5432 if payload.kind == "postgresql" else 3306),
                 "database": payload.database,
                 "username": payload.database_username,
+                "tls_mode": payload.tls_mode,
+                **(
+                    {"ca_certificate_pem": payload.ca_certificate_pem}
+                    if payload.ca_certificate_pem is not None
+                    else {}
+                ),
             },
             {"password": payload.database_password or ""},
             {
+                **allowed_schemas,
                 "allowed_tables": [],
                 "table_policies": {},
             },
             budget,
         )
     raise ValueError("unsupported connector kind")
+
+
+def _connector_introspection_budget(kind: str, now: datetime) -> IntrospectionBudget:
+    return IntrospectionBudget(
+        timeout_ms=10_000 if kind in {"postgresql", "mysql"} else 5_000,
+        max_resources=500,
+        window_start=now - timedelta(minutes=30),
+        window_end=now,
+    )
+
+
+_CONNECTOR_PROVIDER_ERROR_STATUS = {
+    "authentication_failed": 422,
+    "unsupported_version": 422,
+    "provider_timeout": 504,
+}
+_CONNECTOR_PROVIDER_DETAIL_FIELDS = frozenset(
+    {
+        "provider",
+        "observed_version",
+        "supported_major_versions",
+        "status_code",
+        "failed_checks",
+        "sqlstate",
+    }
+)
+
+
+def _connector_operation_error(
+    operation: str, exc: Exception, fallback_message: str
+) -> HTTPException:
+    if not isinstance(exc, ProviderExecutionError):
+        return _error(502, f"connector_{operation}_failed", fallback_message)
+    safe_details = {
+        key: value
+        for key, value in exc.detail.items()
+        if key in _CONNECTOR_PROVIDER_DETAIL_FIELDS
+    }
+    return _error(
+        _CONNECTOR_PROVIDER_ERROR_STATUS.get(exc.code, 502),
+        f"connector_{operation}_{exc.code}",
+        exc.reason,
+        provider_error=exc.code,
+        **safe_details,
+    )
+
+
+def _scope_config_from_catalog(
+    kind: str, current_scope: dict, resources: dict
+) -> dict:
+    if kind not in {"postgresql", "mysql"}:
+        return current_scope
+    tables = resources.get("tables")
+    if not isinstance(tables, dict):
+        raise ValueError("SQL discovery returned an invalid catalog")
+    if any(
+        not isinstance(table, str)
+        or not isinstance(descriptor, dict)
+        or not isinstance(descriptor.get("time_column"), str)
+        or not isinstance(descriptor.get("stable_order"), list)
+        or not descriptor["stable_order"]
+        for table, descriptor in tables.items()
+    ):
+        raise ValueError("SQL discovery returned an invalid catalog")
+    allowed_schemas = {}
+    if kind == "postgresql":
+        schemas = current_scope.get("allowed_schemas")
+        if not isinstance(schemas, list) or not schemas:
+            raise ValueError("PostgreSQL Schema allowlist is required")
+        allowed_schemas = {"allowed_schemas": list(schemas)}
+    return {
+        **allowed_schemas,
+        "allowed_tables": sorted(tables),
+        "table_policies": {
+            table: {
+                "time_column": descriptor["time_column"],
+                "stable_order": descriptor["stable_order"],
+            }
+            for table, descriptor in tables.items()
+        },
+    }
 
 
 @router.post(
@@ -2609,11 +2705,46 @@ async def create_connector(
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
+    duplicate = await session.scalar(
+        select(EvidenceConnector.id).where(
+            EvidenceConnector.workspace_id == workspace_id,
+            EvidenceConnector.name == payload.name,
+        )
+    )
+    if duplicate is not None:
+        raise _error(409, "connector_name_conflict", "Connector name is already used.")
+    actor_id, actor_username = user.id, user.username
+    # Do not keep the authorization read transaction open across remote I/O.
+    await session.rollback()
     try:
         config, secrets, scope_config, budget = _connector_storage(payload)
-        create_evidence_connector(payload.kind, config, secrets)
+        adapter = create_evidence_connector(payload.kind, config, secrets)
     except ValueError as exc:
         raise _error(422, "connector_configuration_invalid", str(exc)) from exc
+    try:
+        await adapter.verify()
+    except Exception as exc:
+        raise _connector_operation_error(
+            "verification", exc, "Read-only connector verification failed."
+        ) from exc
+    now = datetime.now(UTC)
+    try:
+        catalog = await adapter.introspect(
+            scope_config, _connector_introspection_budget(payload.kind, now)
+        )
+        final_scope_config = _scope_config_from_catalog(
+            payload.kind, scope_config, dict(catalog.resources)
+        )
+    except Exception as exc:
+        raise _connector_operation_error(
+            "introspection", exc, "Connector scope discovery failed."
+        ) from exc
+    if payload.kind in {"postgresql", "mysql"} and not final_scope_config["allowed_tables"]:
+        raise _error(
+            422,
+            "connector_scope_empty",
+            "No safely queryable tables were found in the configured database scope.",
+        )
     language, capabilities = _connector_capability(payload.kind)
     ciphertext = (
         encrypt_secret(
@@ -2625,11 +2756,15 @@ async def create_connector(
         workspace_id=workspace_id,
         name=payload.name,
         kind=payload.kind,
-        kind_version=1,
+        kind_version=2 if payload.kind == "https" else 1,
         config=config,
         secret_ciphertext=ciphertext,
         instance_revision=1,
         capabilities=capabilities,
+        verification_status="healthy",
+        verified_at=now,
+        last_error=None,
+        last_introspected_at=now,
     )
     session.add(row)
     try:
@@ -2641,8 +2776,8 @@ async def create_connector(
         EvidenceAccessScope(
             connector_id=row.id,
             allowed_languages=[language],
-            scope_config=scope_config,
-            schema_catalog={},
+            scope_config=final_scope_config,
+            schema_catalog=dict(catalog.resources),
             schema_catalog_revision=1,
             read_policy_revision=1,
             execution_budget_policy=budget,
@@ -2651,7 +2786,16 @@ async def create_connector(
         )
     )
     session.add(
-        _audit(user, "evidence_connector.create", "evidence_connector", row.id, workspace_id)
+        AuditEvent(
+            actor_id=actor_id,
+            actor_username=actor_username,
+            action="evidence_connector.create",
+            target_type="evidence_connector",
+            target_id=str(row.id),
+            workspace_id=workspace_id,
+            result="ok",
+            detail={},
+        )
     )
     await session.commit()
     await session.refresh(row)
@@ -2691,8 +2835,8 @@ async def test_connector(
         row.verified_at = None
         row.last_error = type(exc).__name__
         await session.commit()
-        raise _error(
-            502, "connector_verification_failed", "Read-only connector verification failed."
+        raise _connector_operation_error(
+            "verification", exc, "Read-only connector verification failed."
         ) from exc
     row.verification_status = "healthy"
     row.verified_at = datetime.now(UTC)
@@ -2722,30 +2866,24 @@ async def introspect_connector(
     scope = await _latest_scope(session, connector_id)
     adapter = create_evidence_connector(row.kind, row.config, _connector_secret_map(row))
     now = datetime.now(UTC)
-    catalog = await adapter.introspect(
-        scope.scope_config,
-        IntrospectionBudget(
-            timeout_ms=5_000,
-            max_resources=500,
-            window_start=now - timedelta(minutes=30),
-            window_end=now,
-        ),
-    )
-    scope_config = scope.scope_config
-    if row.kind in {"postgresql", "mysql"}:
-        tables = catalog.resources.get("tables")
-        if not isinstance(tables, dict):
-            raise _error(502, "connector_introspection_invalid", "SQL discovery returned an invalid catalog.")
-        scope_config = {
-            "allowed_tables": sorted(tables),
-            "table_policies": {
-                table: {
-                    "time_column": descriptor["time_column"],
-                    "stable_order": descriptor["stable_order"],
-                }
-                for table, descriptor in tables.items()
-            },
-        }
+    try:
+        catalog = await adapter.introspect(
+            scope.scope_config, _connector_introspection_budget(row.kind, now)
+        )
+    except Exception as exc:
+        raise _connector_operation_error(
+            "introspection", exc, "Connector scope discovery failed."
+        ) from exc
+    try:
+        scope_config = _scope_config_from_catalog(
+            row.kind, scope.scope_config, dict(catalog.resources)
+        )
+    except ValueError as exc:
+        raise _error(
+            502,
+            "connector_introspection_invalid",
+            "SQL discovery returned an invalid catalog.",
+        ) from exc
     new_scope = EvidenceAccessScope(
         connector_id=row.id,
         allowed_languages=scope.allowed_languages,

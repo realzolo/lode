@@ -132,12 +132,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     # fails to serialize. Keep loc / msg / type which are what clients need.
     raw = exc.errors()
     details = [{k: v for k, v in err.items() if k not in ("ctx", "input")} for err in raw]
+    first = details[0] if details else {}
+    location = first.get("loc")
+    field = str(location[-1]) if isinstance(location, (list, tuple)) and location else "request"
+    reason = str(first.get("msg", "is invalid"))
+    if reason.startswith("Value error, "):
+        reason = reason.removeprefix("Value error, ")
     return JSONResponse(
         status_code=422,
         content={
             "error": {
                 "code": 422,
-                "message": "validation error",
+                "message": f"Invalid {field}: {reason}",
                 "details": details,
             }
         },

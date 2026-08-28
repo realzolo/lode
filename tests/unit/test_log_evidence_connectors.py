@@ -243,7 +243,7 @@ async def test_search_product_version_proofs_are_mutually_exclusive(
     )
     with pytest.raises(ProviderExecutionError) as error:
         await rejected.verify()
-    assert error.value.code == "invalid_response"
+    assert error.value.code == "unsupported_version"
 
     malformed = connector_type(
         connector_config(),
@@ -340,8 +340,10 @@ def test_connectors_reject_forged_permits_and_invalid_origins() -> None:
 
     with pytest.raises(PermissionError):
         connector._action(Forged())
-    with pytest.raises(ValueError):
-        validate_base_url("http://logs.example.test")
+    assert validate_base_url("http://logs.example.test:3100") == (
+        "http://logs.example.test:3100",
+        "logs.example.test",
+    )
     assert validate_base_url("https://127.0.0.1") == ("https://127.0.0.1", "127.0.0.1")
     with pytest.raises(ValueError):
         ElasticsearchConnector(
@@ -356,6 +358,56 @@ def test_connectors_reject_forged_permits_and_invalid_origins() -> None:
         max_response_bytes=1024,
     )
     assert custom_port.port == 8443
+
+
+def test_loki_allows_http_with_or_without_bearer_tokens() -> None:
+    connector = LokiConnector(
+        {"base_url": "http://logs.example.test:3100"},
+        {"bearer_token": "secret"},
+    )
+
+    assert connector.config.base_url == "http://logs.example.test:3100"
+    assert connector.transport.base_url == "http://logs.example.test:3100"
+    assert connector.transport.port == 3100
+
+
+@pytest.mark.asyncio
+async def test_loki_reports_an_actionable_sanitized_unsupported_version() -> None:
+    connector = LokiConnector(
+        {"base_url": "http://logs.example.test:3100"},
+        {},
+        FakeTransport(
+            [
+                response(b"ready", content_type="text/plain"),
+                response(b'{"version":"2.9.4-attacker-controlled-suffix"}'),
+            ]
+        ),
+    )
+
+    with pytest.raises(ProviderExecutionError) as failure:
+        await connector.verify()
+
+    assert failure.value.code == "unsupported_version"
+    assert failure.value.reason == (
+        "Unsupported Loki version 2.9.4. This connector requires Loki 3.x."
+    )
+    assert failure.value.detail == {
+        "provider": "loki",
+        "observed_version": "2.9.4",
+        "supported_major_versions": [3],
+    }
+
+
+@pytest.mark.parametrize("connector_type", [ElasticsearchConnector, OpenSearchConnector])
+def test_search_connectors_allow_authenticated_http_origins(connector_type) -> None:
+    connector = connector_type(
+        {"base_url": "http://search.example.test:9200"},
+        {"api_key": "secret"},
+    )
+
+    assert connector.config.base_url == "http://search.example.test:9200"
+    assert connector.transport.base_url == "http://search.example.test:9200"
+    assert connector.transport.port == 9200
 
 
 @pytest.mark.asyncio

@@ -39,10 +39,11 @@ class FakeTransport:
         return self.responses.pop(0)
 
 
-def endpoint() -> dict[str, Any]:
+def endpoint(*, scheme: str = "https") -> dict[str, Any]:
     return {
         "id": "order-events",
         "method": "GET",
+        "scheme": scheme,
         "host": "evidence.example.test",
         "port": 443,
         "path_template": "/v1/orders/{order_id}/events",
@@ -98,7 +99,7 @@ def candidate(
     )
 
 
-def context() -> AccessContext:
+def context(*, catalog_endpoint: Mapping[str, Any] | None = None) -> AccessContext:
     from datetime import UTC, datetime
 
     return AccessContext(
@@ -111,8 +112,8 @@ def context() -> AccessContext:
         snapshot_hash="a" * 64,
         allowed_languages=("https",),
         allowed_evidence_anchors=("incident.trace_id",),
-        scope_config={"safe_read_endpoints": [endpoint()]},
-        schema_catalog={"safe_read_endpoints": [endpoint()]},
+        scope_config={"safe_read_endpoints": [dict(catalog_endpoint or endpoint())]},
+        schema_catalog={"safe_read_endpoints": [dict(catalog_endpoint or endpoint())]},
         execution_budget_policy={
             "max_result_limit": 20,
             "max_timeout_ms": 4_000,
@@ -164,10 +165,25 @@ def test_https_policy_matches_catalog_injects_server_query_and_binds_value() -> 
     assert bound.structural_hash == evaluated.effective_structural_hash
 
 
+def test_http_policy_freezes_scheme_and_port_for_private_services() -> None:
+    policy = HTTPSPolicy()
+    http_endpoint = endpoint(scheme="http")
+    http_endpoint["port"] = 8080
+    http_context = context(catalog_endpoint=http_endpoint)
+    raw = candidate(url="http://evidence.example.test:8080/v1/orders/42/events")
+
+    evaluated = policy.evaluate(policy.parse(raw), raw, http_context)
+
+    assert evaluated.effective_action["origin"] == "http://evidence.example.test:8080"
+    https_raw = candidate()
+    with pytest.raises(AccessRejection) as mismatch:
+        policy.evaluate(policy.parse(https_raw), https_raw, http_context)
+    assert mismatch.value.code == "scope_violation"
+
+
 @pytest.mark.parametrize(
     "url",
     [
-        "http://evidence.example.test/v1/orders/42/events",
         "https://user@evidence.example.test/v1/orders/42/events",
         "https://evidence.example.test/v1/orders/%2e%2e/admin",
         "https://evidence.example.test/v1//orders/42/events",
@@ -247,6 +263,27 @@ async def test_https_connector_verifies_catalog_executes_and_masks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_https_connector_accepts_authenticated_http_origin_and_catalog() -> None:
+    config = {**connector_config(), "base_url": "http://evidence.example.test:8080"}
+    http_endpoint = endpoint(scheme="http")
+    http_endpoint["port"] = 8080
+    connector = HTTPSConnector(
+        config,
+        {"username": "reader", "password": "secret"},
+        FakeTransport([ProviderHTTPResponse(204, {}, b"")]),
+    )
+
+    await connector.verify()
+    catalog = await connector.introspect(
+        {"safe_read_endpoints": [http_endpoint]},
+        IntrospectionBudget(timeout_ms=2_000, max_resources=10),
+    )
+
+    assert connector.config.base_url == "http://evidence.example.test:8080"
+    assert catalog.resources["safe_read_endpoints"][0]["scheme"] == "http"
+
+
+@pytest.mark.asyncio
 async def test_https_connector_rejects_noncanonical_origin_and_invalid_catalog() -> None:
     with pytest.raises(ValueError):
         HTTPSConnector(
@@ -270,3 +307,12 @@ async def test_https_connector_rejects_noncanonical_origin_and_invalid_catalog()
             IntrospectionBudget(timeout_ms=1_000, max_resources=10),
         )
     assert error.value.code == "invalid_response"
+
+    missing_scheme = endpoint()
+    del missing_scheme["scheme"]
+    with pytest.raises(ProviderExecutionError) as missing_scheme_error:
+        await connector.introspect(
+            {"safe_read_endpoints": [missing_scheme]},
+            IntrospectionBudget(timeout_ms=1_000, max_resources=10),
+        )
+    assert missing_scheme_error.value.code == "invalid_response"

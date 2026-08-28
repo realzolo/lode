@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ssl
+
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from lode.api.control_schemas import (
     ConnectorCreate,
@@ -19,6 +21,11 @@ from lode.api.control_schemas import (
     WorkspaceCreate,
     WorkspacePatch,
 )
+
+
+def system_ca_pem() -> str:
+    certificate = ssl.create_default_context().get_ca_certs(binary_form=True)[0]
+    return ssl.DER_cert_to_PEM_cert(certificate)
 
 
 def test_model_binding_rejects_duplicate_roles() -> None:
@@ -70,12 +77,245 @@ def test_patch_rejects_explicit_null_for_required_storage_fields(schema, values)
 
 def test_connector_creation_rejects_raw_configuration_documents() -> None:
     with pytest.raises(ValidationError):
-        ConnectorCreate.model_validate(
+        TypeAdapter(ConnectorCreate).validate_python(
             {
                 "name": "logs",
                 "kind": "loki",
                 "config": {"base_url": "https://logs.example.com"},
                 "scope_config": {"root_matchers": {"cluster": "production"}},
+            }
+        )
+
+
+def test_connector_creation_uses_strict_kind_specific_contracts() -> None:
+    adapter = TypeAdapter(ConnectorCreate)
+    postgresql = adapter.validate_python(
+        {
+            "name": "warehouse",
+            "kind": "postgresql",
+            "host": "replica.example.test",
+            "database": "analytics",
+            "database_username": "lode_reader",
+            "database_password": "secret",
+            "tls_mode": "verify_full",
+            "ca_certificate_pem": system_ca_pem(),
+            "allowed_schemas": ["billing", "public"],
+        }
+    )
+    assert postgresql.allowed_schemas == ("billing", "public")
+    assert postgresql.ca_certificate_pem == system_ca_pem()
+
+    pooler = adapter.validate_python(
+        {
+            "name": "supabase-pooler",
+            "kind": "postgresql",
+            "host": "aws-1-us-east-1.pooler.supabase.com",
+            "database": "postgres",
+            "database_username": "postgres.project-ref",
+            "database_password": "secret",
+            "tls_mode": "require",
+            "allowed_schemas": ["public"],
+        }
+    )
+    assert pooler.database_username == "postgres.project-ref"
+    assert pooler.tls_mode == "require"
+
+    with pytest.raises(ValidationError):
+        adapter.validate_python(
+            {
+                "name": "warehouse",
+                "kind": "postgresql",
+                "host": "replica.example.test",
+                "database": "analytics",
+                "database_username": "lode_reader",
+                "database_password": "secret",
+                "tls_mode": "verify_full",
+                "allowed_schemas": ["public"],
+                "endpoint": "https://unexpected.example.test",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "name": "logs",
+            "kind": "loki",
+            "endpoint": "https://loki.example.test",
+            "authentication": "none",
+            "root_filter": {
+                "kind": "group",
+                "combinator": "all",
+                "items": [
+                    {
+                        "kind": "condition",
+                        "label": "app",
+                        "operator": "any_of",
+                        "values": ["payments", "checkout"],
+                    }
+                ],
+            },
+        },
+        {
+            "name": "elastic",
+            "kind": "elasticsearch",
+            "endpoint": "https://elastic.example.test",
+            "authentication": "api_key",
+            "credential": "secret",
+            "allowed_indices": ["logs-production"],
+        },
+        {
+            "name": "open-search",
+            "kind": "opensearch",
+            "endpoint": "https://search.example.test",
+            "authentication": "bearer_token",
+            "credential": "secret",
+            "allowed_indices": ["events-2026"],
+        },
+        {
+            "name": "postgres",
+            "kind": "postgresql",
+            "host": "replica.example.test",
+            "database": "analytics",
+            "database_username": "lode_reader",
+            "database_password": "secret",
+            "tls_mode": "verify_full",
+            "allowed_schemas": ["public"],
+        },
+        {
+            "name": "mysql",
+            "kind": "mysql",
+            "host": "replica.example.test",
+            "database": "analytics",
+            "database_username": "lode_reader",
+            "database_password": "secret",
+            "tls_mode": "require",
+        },
+        {
+            "name": "events",
+            "kind": "https",
+            "endpoint": "https://events.example.test",
+            "authentication": "basic",
+            "credential_username": "lode_reader",
+            "credential": "secret",
+            "safe_read_path": "/v1/events",
+        },
+    ],
+)
+def test_connector_creation_accepts_each_strict_variant(payload) -> None:
+    validated = TypeAdapter(ConnectorCreate).validate_python(payload)
+    assert validated.kind == payload["kind"]
+
+
+@pytest.mark.parametrize(
+    "allowed_schemas",
+    [[], ["public", "public"], ["pg_catalog"], ["pg_toast_temp_1"], ["pg_temp_1"], ["billing*"]],
+)
+def test_postgresql_creation_rejects_invalid_schema_scopes(allowed_schemas) -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(ConnectorCreate).validate_python(
+            {
+                "name": "warehouse",
+                "kind": "postgresql",
+                "host": "replica.example.test",
+                "database": "analytics",
+                "database_username": "lode_reader",
+                "database_password": "secret",
+                "tls_mode": "verify_full",
+                "allowed_schemas": allowed_schemas,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "kind,invalid_ca",
+    [
+        ("postgresql", "not a PEM certificate"),
+        ("mysql", "-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----"),
+    ],
+)
+def test_database_creation_rejects_invalid_ca_configuration(
+    kind: str, invalid_ca: str
+) -> None:
+    payload = {
+        "name": "warehouse",
+        "kind": kind,
+        "host": "replica.example.test",
+        "database": "analytics",
+        "database_username": "lode_reader",
+        "database_password": "secret",
+        "tls_mode": "verify_full",
+        "ca_certificate_pem": invalid_ca,
+    }
+    if kind == "postgresql":
+        payload["allowed_schemas"] = ["public"]
+
+    with pytest.raises(ValidationError):
+        TypeAdapter(ConnectorCreate).validate_python(payload)
+
+
+def test_database_creation_rejects_ca_when_server_identity_is_not_verified() -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(ConnectorCreate).validate_python(
+            {
+                "name": "warehouse",
+                "kind": "postgresql",
+                "host": "replica.example.test",
+                "database": "analytics",
+                "database_username": "lode_reader",
+                "database_password": "secret",
+                "tls_mode": "require",
+                "ca_certificate_pem": system_ca_pem(),
+                "allowed_schemas": ["public"],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "index",
+    ["logs-*", "logs,errors", "../logs", "logs..archive", "Logs", ".internal", "_all"],
+)
+def test_search_creation_requires_exact_non_reserved_indices(index: str) -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(ConnectorCreate).validate_python(
+            {
+                "name": "search",
+                "kind": "elasticsearch",
+                "endpoint": "https://search.example.test",
+                "authentication": "api_key",
+                "credential": "secret",
+                "allowed_indices": [index],
+            }
+        )
+
+
+def test_https_creation_accepts_complete_basic_authentication() -> None:
+    payload = TypeAdapter(ConnectorCreate).validate_python(
+        {
+            "name": "events",
+            "kind": "https",
+            "endpoint": "https://events.example.test",
+            "authentication": "basic",
+            "credential_username": "lode_reader",
+            "credential": "secret",
+            "safe_read_path": "/v1/events",
+        }
+    )
+    assert payload.authentication == "basic"
+
+
+def test_non_basic_connector_authentication_rejects_a_username() -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(ConnectorCreate).validate_python(
+            {
+                "name": "events",
+                "kind": "https",
+                "endpoint": "https://events.example.test",
+                "authentication": "bearer_token",
+                "credential_username": "unused",
+                "credential": "secret",
+                "safe_read_path": "/v1/events",
             }
         )
 

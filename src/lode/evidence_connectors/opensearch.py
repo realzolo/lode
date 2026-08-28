@@ -76,8 +76,16 @@ class OpenSearchConnector(SearchConnectorMechanics):
             or distribution != "opensearch"
             or payload.get("tagline") != "The OpenSearch Project: https://opensearch.org/"
         ):
+            observed_version = match.group(0) if match is not None else "unknown"
             raise ProviderExecutionError(
-                "invalid_response", "provider is not a supported OpenSearch version"
+                "unsupported_version",
+                f"Unsupported OpenSearch version {observed_version}. "
+                "This connector requires OpenSearch 2.x or 3.x.",
+                {
+                    "provider": "opensearch",
+                    "observed_version": observed_version,
+                    "supported_major_versions": [2, 3],
+                },
             )
         self.version = number
         return VerificationResult(

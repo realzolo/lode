@@ -182,7 +182,9 @@ deployment-canary observations to pass the statistical and non-regression gate.
   matcher. Only server code escapes set values into regex matchers. Branches
   execute independently under one shared budget, then deduplicate and sort;
   any branch failure rejects the complete read. Exact ValueRef string nodes are
-  reparsed after binding.
+  reparsed after binding. Third-party HTTP evidence Connectors accept canonical
+  HTTP or HTTPS origins, including authenticated private-network deployments;
+  redirects and URL-embedded credentials remain disabled.
 - Elasticsearch 8/9 and OpenSearch 2/3 use separate parser/policy versions,
   product verification, connector classes, and contract fixtures. Each permits
   only an exact single-index `_search`, a recursive positive query allowlist,
@@ -197,17 +199,32 @@ deployment-canary observations to pass the statistical and non-regression gate.
   system schemas, unsafe joins, locking and write semantics; validates the exact
   table/column catalog; injects tenant/time predicates, stable ordering and
   LIMIT; and enforces EXPLAIN row/cost plus result row/byte budgets. PostgreSQL
-  must attest a read-only replica and non-write-capable role; MySQL must attest
-  both read-only flags and an exact SELECT/SHOW VIEW grant set. Both use TLS
-  1.2 or newer with system roots and hostname verification; custom CA and TLS
-  disable controls do not exist. Successful verification discovers all readable
-  non-system base tables. A table is safe only when it has a non-null temporal
+  accepts a primary or replica only when its explicit read-only transaction is
+  honored and the identity is non-privileged; scope discovery rejects table,
+  column, sequence, or Schema-creation write authority in every allowed Schema.
+  A physical read replica is recommended but is not a creation requirement.
+  MySQL must attest both read-only flags and an exact SELECT/SHOW VIEW grant set. Both require an
+  explicit non-fallback TLS mode: `verify_full` is the UI default and verifies
+  CA plus hostname; `require` enforces TLS 1.2+ but explicitly does not verify
+  server identity. An optional bounded per-Connector CA PEM extends the system
+  roots only for `verify_full`; private keys, plaintext, and `prefer` controls
+  are rejected. New PostgreSQL Connectors require an explicit
+  one-to-32 exact non-system Schema allowlist; discovery parameterizes that
+  allowlist, rejects any inaccessible Schema, and considers only readable tables
+  within it. MySQL remains bounded to its configured database. A table is safe
+  only when it has a non-null temporal
   column and a primary key or all-non-null unique index; time/stable-key choice
   is deterministic, exclusions carry reason codes, and more than 200 candidate
-  tables fails instead of truncating. Execution uses explicit read-only
-  transactions and server timeouts.
-- Generic HTTPS accepts only cataloged GET/HEAD endpoints with canonical HTTPS
-  origins, exact ports and typed path/query schemas. It has no
+  tables fails instead of truncating. PostgreSQL catalog discovery uses four
+  fixed, parameterized batch queries rather than per-table round trips; SQL
+  creation and refresh use one 10-second wall-clock discovery budget while other
+  Connector kinds retain five seconds. Execution uses explicit read-only
+  transactions and one wall-clock deadline per verification, discovery,
+  planning, or read operation. PostgreSQL maps known authentication, database,
+  TLS, capacity, permission, timeout, and read-only-attestation failures to
+  code-authored actionable messages; raw driver errors remain private.
+- Generic HTTP(S) accepts only cataloged GET/HEAD endpoints with canonical HTTP
+  or HTTPS origins, exact schemes/ports and typed path/query schemas. It has no
   request-body, redirect, proxy, credential-header, arbitrary content-type, or
   unchecked decompression capability. ValueRefs occupy complete query values;
   server-owned window, limit, and constant values cannot be overridden.
@@ -443,7 +460,7 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/evidence_connectors/loki.py`: Loki 3 verification, absolute-window scoped introspection, bounded query-range execution, and normalization.
 - `src/lode/evidence_connectors/elasticsearch.py`: Elasticsearch 8/9 verification and bounded search adapter.
 - `src/lode/evidence_connectors/opensearch.py`: OpenSearch 2/3 verification and bounded search adapter.
-- `src/lode/evidence_connectors/postgresql.py`: replica/role-attested PostgreSQL read adapter.
+- `src/lode/evidence_connectors/postgresql.py`: transaction/role/grant-attested PostgreSQL read adapter.
 - `src/lode/evidence_connectors/mysql.py`: topology/grant-attested MySQL read adapter.
 - `src/lode/evidence_connectors/https.py`: generic cataloged GET/HEAD adapter.
 - `src/lode/evidence_connectors/command.py`: signed worker client for the isolated runner.
@@ -733,12 +750,27 @@ The isolated command runner remains an internal execution component and is not
 exposed as a user-configurable evidence connector.
 
 Database connectors support PostgreSQL and MySQL through structured host,
-port, database, username, mandatory system-trusted TLS, encrypted password,
-automatically discovered safe-table scope, AST-validated model candidates, and
-server-injected predicates and budgets. Operators cannot submit allowed tables,
-time columns, stable ordering, or a CA certificate. The model never receives
+optional defaulted port, database, username, mandatory verified TLS,
+encrypted password, automatically discovered safe-table scope, AST-validated
+model candidates, and server-injected predicates and budgets. New PostgreSQL
+Connectors require an explicit exact Schema allowlist stored only in the access
+scope; MySQL uses its configured database as the Schema boundary. PostgreSQL
+scope revisions without `allowed_schemas` are invalid; there is no historical
+range fallback. Operators cannot submit allowed tables, time columns,
+stable ordering or `search_path`. The model never receives
 credentials or direct database access, and an effective action can execute only
 through a one-use permit.
+An optional 64 KB CA certificate PEM may extend only that Connector's system
+trust store in `verify_full` mode. It is parsed before remote I/O, frozen with
+the Connector config, omitted from control-plane responses, and never permits a
+private key or hostname mismatch. The explicit `require` mode keeps encryption
+mandatory but makes its lack of server-identity verification visible; switching
+to it clears and rejects CA input.
+Database and account names are bounded driver parameters rather than SQL
+identifiers, so provider-valid punctuation such as Supabase Pooler's dotted
+PostgreSQL usernames is accepted; surrounding whitespace and control characters
+remain invalid. Request-validation responses identify the first invalid field
+without echoing submitted values.
 Kafka evidence connectors are independent of `Workspace.ingestion_topic` and
 are limited to administrator-allowlisted topics and consumer groups.
 
@@ -841,11 +873,16 @@ reconnects with the last observed cursor and preserves the last canonical view.
 
 ## Database
 
-The project has not released its database baseline.
+Database revisions may already be deployed and are immutable once executed.
 `alembic/versions/0001_initial.py` creates the original 72-table baseline and
 `0002_repository_binding_analysis.py` is the forward migration to the current
-73-table schema. There is one current schema and no compatibility view or dual
-write. The forward migration preserves historical jobs as non-current records,
+73-table schema. `0003_schema_catalog_secret_scope.py` updates only the
+secret-rejection trigger function: ordinary Connector and scope configuration
+still rejects credential keys recursively, while server-generated Schema
+catalogues may preserve legitimate provider identifiers such as `token` or
+`password`. It changes no table, trigger inventory, or stored row. Executed
+V1/V2 migration files remain immutable. There is one current schema and no
+compatibility view or dual write. The V2 forward migration preserves historical jobs as non-current records,
 freezes available inputs for legacy queued/running tasks, maps the retired
 manifest failure category to `repository_analysis_failed`, and backfills terminal
 result state before enforcing new constraints. Future schema changes use ordinary
@@ -862,7 +899,9 @@ The schema trigger inventory is frozen with the initial migration and database
 contract. `set_updated_at()` uses
 `clock_timestamp()` so updates within one transaction still advance the value.
 Ordinary connector/scope JSON is traversed structurally and rejects credential
-keys at any object depth.
+keys at any object depth. Schema catalogues are excluded from that key-name
+heuristic because provider table/field identifiers are metadata rather than
+credential values; only server-generated catalog structures are persisted.
 
 Native-read attempts are terminal immutable audit records. An executor inserts
 one after the operation finishes, with a non-null `finished_at`; success has no
@@ -924,7 +963,7 @@ image. The Python image also installs the `git` runtime required by the exact-
 revision Git source reader.
 
 `make native-connectors-check` additionally runs the PostgreSQL/MySQL AST and
-replica/grant-attestation suites, generic HTTPS canonicalization/SSRF and
+read-only transaction/grant-attestation suites, generic HTTPS canonicalization/SSRF and
 endpoint-schema corpus, command argv/path corpus, signed runner protocol,
 replay and Connector lifecycle checks, exact-file bubblewrap mapping, high-risk
 secret hashing, and Compose privilege/network/key-ownership assertions.
@@ -978,11 +1017,23 @@ internal binding revision. The repository table includes the actual account used
 every binding plus edit, soft-unbind, and restore actions; unbind confirmation makes
 clear that history is retained. There is no separate Workspace Git-account
 authorization step or entitlement selector.
-Connector forms use provider-specific fields and require verification before
-introspection; secrets are password inputs and are never rendered after
-submission. PostgreSQL/MySQL creation automatically chains connection
-verification and safe-table discovery and surfaces readiness, exclusions,
-failure reason, and retry. Loki uses the recursive condition-tree editor. The
+Connector forms are one provider-specific page grouped into basic information,
+connection information, and read scope. Optional values stay empty and identify
+themselves as optional in placeholders. Multi-value inputs preserve editing text,
+accept Enter/comma/paste, then trim, drop empty values, and deduplicate. The
+primary `Create and verify` action remains enabled outside request processing;
+submission reports field errors and focuses the first invalid field.
+`POST /workspaces/{id}/evidence-connectors` validates configuration, verifies the
+remote identity, and discovers the final scope before opening the persistence
+transaction. Only success atomically writes a healthy Connector, encrypted
+secret, scope, catalog, and audit event; failure writes none and the Web form
+retains its values. Provider failures expose code-owned actionable reasons and
+allowlisted structured details (for example observed/supported versions,
+failed PostgreSQL read-only checks, or a safe SQLSTATE), never raw exception
+text, response bodies, or credentials. The Web failure banner renders those safe
+diagnostic identifiers next to the actionable reason. Existing test/introspection
+endpoints remain operational refresh actions. Secrets are password inputs and are never rendered after
+submission. Loki uses the recursive condition-tree editor. The
 system administrator manages bindings, immutable model-policy revisions,
 read-only repositories, connector instances, structured architecture context,
 and ingestion transitions. Investigation depth has no control-plane field or UI;
@@ -1006,6 +1057,18 @@ define empty, filtered-empty, inline-error, and retry states. All visible labels
 accessibility names, enum values, placeholders, validation messages, and client
 API errors use `next-intl`. `npm run check:i18n` enforces English/Chinese key
 parity and scans TSX literals; dates and numbers use the active locale.
+The PostgreSQL scope/create-workflow change adds no dependency or kind-version
+bump. Its catalog-trigger correction is delivered only through the V3 forward
+migration; V1 and V2 remain unchanged. Generic HTTP(S) scope is intentionally strict:
+new instances use kind version 2 and every endpoint requires an explicit
+`scheme`; there is no legacy scope fallback. It adds no dependency or database
+schema migration.
+Database TLS-mode/custom-CA support also adds no dependency, migration,
+kind-version change, or compatibility path. Persisted configs and every new API
+request must explicitly select a mode.
+PostgreSQL primary acceptance, scoped write-grant proof, and batched discovery
+add no dependency, database migration, kind-version change, or operator-tunable
+timeout. They change only verification/discovery policy and its fixed budget.
 
 Authentication uses normalized lowercase usernames. The initial migration
 creates exactly one system administrator, `admin`, with password `123456` and
@@ -1115,7 +1178,7 @@ imports.
 
 SQL/HTTPS/Command changes must additionally cover PostgreSQL and MySQL dialect
 AST differentials, safe CTE and non-executing EXPLAIN, write/locking/function/
-system-catalog rejection, replica and grant attestation, system-CA TLS 1.2 and
+system-catalog rejection, read-only transaction and grant attestation, system-CA TLS 1.2 and
 hostname verification, readable base-table discovery, deterministic time/stable
 key inference, candidate-table overflow, exclusion reasons, no-safe-table
 readiness, read-only transaction and cost budgets, canonical URL/SSRF/DNS/redirect/decompression controls, exact

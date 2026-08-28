@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
+import ssl
 from datetime import datetime
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -555,54 +557,204 @@ class LokiConditionGroupInput(_StrictInput):
 LokiConditionGroupInput.model_rebuild()
 
 
-class ConnectorCreate(_StrictInput):
+_SEARCH_INDEX = r"^[a-z0-9][a-z0-9_.-]{0,254}$"
+_POSTGRES_SCHEMA = r"^[A-Za-z_][A-Za-z0-9_$-]{0,62}$"
+_SYSTEM_POSTGRES_SCHEMAS = frozenset({"information_schema", "pg_catalog"})
+
+
+def _validate_connector_authentication(
+    authentication: str, credential: str | None, credential_username: str | None
+) -> None:
+    if authentication == "basic" and not credential_username:
+        raise ValueError("basic authentication requires a username")
+    if authentication != "basic" and credential_username is not None:
+        raise ValueError("a username is valid only for basic authentication")
+    if not credential:
+        raise ValueError("the selected authentication method requires a credential")
+
+
+def _validate_database_connection_name(value: str) -> str:
+    if value != value.strip() or re.search(r"[\x00-\x1f\x7f]", value):
+        raise ValueError(
+            "database connection names must not contain surrounding whitespace "
+            "or control characters"
+        )
+    return value
+
+
+def _validate_database_ca_certificate(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if "PRIVATE KEY-----" in value.upper():
+        raise ValueError("database CA configuration must not contain a private key")
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=value)
+    except (ssl.SSLError, ValueError) as exc:
+        raise ValueError(
+            "database CA certificate must contain valid PEM-encoded certificate data"
+        ) from exc
+    return value
+
+
+def _validate_database_tls_configuration(
+    tls_mode: str, ca_certificate_pem: str | None
+) -> None:
+    if tls_mode == "require" and ca_certificate_pem is not None:
+        raise ValueError(
+            "database CA certificate is valid only with full TLS verification"
+        )
+
+
+class _ConnectorCreateBase(_StrictInput):
     name: str = Field(min_length=1, max_length=200)
-    kind: Literal["loki", "elasticsearch", "opensearch", "postgresql", "mysql", "https"]
-    endpoint: str | None = Field(default=None, min_length=1, max_length=1_000)
-    authentication: Literal["none", "bearer_token", "api_key", "basic"] = "none"
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("connector name must not be blank")
+        return value
+
+
+class LokiConnectorCreate(_ConnectorCreateBase):
+    kind: Literal["loki"]
+    endpoint: str = Field(min_length=1, max_length=1_000)
+    authentication: Literal["none", "bearer_token"] = "none"
     credential: str | None = Field(default=None, min_length=1, max_length=8_000)
-    credential_username: str | None = Field(default=None, min_length=1, max_length=200)
     tenant_id: str | None = Field(default=None, min_length=1, max_length=200)
-    root_filter: LokiConditionGroupInput | None = None
-    allowed_indices: tuple[str, ...] = Field(default=(), max_length=500)
-    verification_path: str = Field(default="/health", min_length=1, max_length=1_000)
-    safe_read_path: str | None = Field(default=None, min_length=1, max_length=1_000)
-    safe_read_content_type: str = Field(default="application/json", min_length=3, max_length=200)
-    host: str | None = Field(default=None, min_length=1, max_length=253)
-    port: int | None = Field(default=None, ge=1, le=65_535)
-    database: str | None = Field(default=None, min_length=1, max_length=64)
-    database_username: str | None = Field(default=None, min_length=1, max_length=64)
-    database_password: str | None = Field(default=None, min_length=1, max_length=8_000)
+    root_filter: LokiConditionGroupInput
 
     @model_validator(mode="after")
-    def valid_kind_specific_form(self):
-        if self.kind in {"loki", "elasticsearch", "opensearch", "https"} and not self.endpoint:
-            raise ValueError("an HTTPS endpoint is required")
-        if self.kind == "loki" and self.root_filter is None:
-            raise ValueError("Loki requires a root label filter")
-        if self.kind == "loki" and self.root_filter is not None:
-            from lode.evidence_access.loki_scope import normalize_loki_filter
-
-            normalize_loki_filter(self.root_filter.model_dump())
-        if self.kind in {"elasticsearch", "opensearch"} and not self.allowed_indices:
-            raise ValueError("search connectors require at least one allowed index")
-        if self.kind == "https" and not self.safe_read_path:
-            raise ValueError("HTTPS connectors require one allowed read path")
-        if self.kind in {"postgresql", "mysql"} and not all(
-            (self.host, self.database, self.database_username, self.database_password)
-        ):
-            raise ValueError("database connectors require database connection fields")
-        if self.kind == "loki" and self.authentication not in {"none", "bearer_token"}:
-            raise ValueError("Loki supports only bearer-token authentication")
-        if self.kind in {"elasticsearch", "opensearch", "https"} and self.authentication == "none":
-            raise ValueError("this connector requires an authentication method")
-        if self.kind in {"loki", "elasticsearch", "opensearch", "https"} and self.authentication == "basic" and not self.credential_username:
-            raise ValueError("basic authentication requires a username")
-        if self.kind in {"loki", "elasticsearch", "opensearch", "https"} and self.authentication != "none" and not self.credential:
-            raise ValueError("the selected authentication method requires a credential")
-        if self.kind in {"loki", "elasticsearch", "opensearch", "https"} and self.authentication == "none" and self.credential is not None:
+    def valid_loki_form(self):
+        if self.authentication == "bearer_token" and not self.credential:
+            raise ValueError("bearer-token authentication requires a credential")
+        if self.authentication == "none" and self.credential is not None:
             raise ValueError("a credential requires an authentication method")
+        from lode.evidence_access.loki_scope import normalize_loki_filter
+
+        normalize_loki_filter(self.root_filter.model_dump())
         return self
+
+
+class SearchConnectorCreate(_ConnectorCreateBase):
+    kind: Literal["elasticsearch", "opensearch"]
+    endpoint: str = Field(min_length=1, max_length=1_000)
+    authentication: Literal["bearer_token", "api_key", "basic"]
+    credential: str = Field(min_length=1, max_length=8_000)
+    credential_username: str | None = Field(default=None, min_length=1, max_length=200)
+    allowed_indices: tuple[str, ...] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def valid_search_form(self):
+        _validate_connector_authentication(
+            self.authentication, self.credential, self.credential_username
+        )
+        if len(self.allowed_indices) != len(set(self.allowed_indices)):
+            raise ValueError("allowed indices must be unique")
+        for index in self.allowed_indices:
+            if (
+                re.fullmatch(_SEARCH_INDEX, index) is None
+                or index.startswith(".")
+                or ".." in index
+                or index in {"_all", "all"}
+                or any(character in index for character in "*,/")
+            ):
+                raise ValueError("allowed indices must be exact non-reserved index names")
+        return self
+
+
+class PostgreSQLConnectorCreate(_ConnectorCreateBase):
+    kind: Literal["postgresql"]
+    host: str = Field(min_length=1, max_length=253)
+    port: int | None = Field(default=None, ge=1, le=65_535)
+    database: str = Field(min_length=1, max_length=63)
+    database_username: str = Field(min_length=1, max_length=63)
+    database_password: str = Field(min_length=1, max_length=8_000)
+    tls_mode: Literal["verify_full", "require"]
+    ca_certificate_pem: str | None = Field(default=None, min_length=1, max_length=64_000)
+    allowed_schemas: tuple[str, ...] = Field(min_length=1, max_length=32)
+
+    @field_validator("database", "database_username")
+    @classmethod
+    def valid_connection_name(cls, value: str) -> str:
+        return _validate_database_connection_name(value)
+
+    @field_validator("ca_certificate_pem")
+    @classmethod
+    def valid_ca_certificate(cls, value: str | None) -> str | None:
+        return _validate_database_ca_certificate(value)
+
+    @model_validator(mode="after")
+    def valid_allowed_schemas(self):
+        _validate_database_tls_configuration(
+            self.tls_mode, self.ca_certificate_pem
+        )
+        if len(self.allowed_schemas) != len(set(self.allowed_schemas)):
+            raise ValueError("PostgreSQL allowed schemas must be unique")
+        if any(
+            re.fullmatch(_POSTGRES_SCHEMA, schema) is None
+            or schema.lower() in _SYSTEM_POSTGRES_SCHEMAS
+            or schema.lower().startswith("pg_")
+            for schema in self.allowed_schemas
+        ):
+            raise ValueError("PostgreSQL allowed schemas must be exact non-system names")
+        return self
+
+
+class MySQLConnectorCreate(_ConnectorCreateBase):
+    kind: Literal["mysql"]
+    host: str = Field(min_length=1, max_length=253)
+    port: int | None = Field(default=None, ge=1, le=65_535)
+    database: str = Field(min_length=1, max_length=64)
+    database_username: str = Field(min_length=1, max_length=64)
+    database_password: str = Field(min_length=1, max_length=8_000)
+    tls_mode: Literal["verify_full", "require"]
+    ca_certificate_pem: str | None = Field(default=None, min_length=1, max_length=64_000)
+
+    @field_validator("database", "database_username")
+    @classmethod
+    def valid_connection_name(cls, value: str) -> str:
+        return _validate_database_connection_name(value)
+
+    @field_validator("ca_certificate_pem")
+    @classmethod
+    def valid_ca_certificate(cls, value: str | None) -> str | None:
+        return _validate_database_ca_certificate(value)
+
+    @model_validator(mode="after")
+    def valid_tls_configuration(self):
+        _validate_database_tls_configuration(
+            self.tls_mode, self.ca_certificate_pem
+        )
+        return self
+
+
+class HTTPSConnectorCreate(_ConnectorCreateBase):
+    kind: Literal["https"]
+    endpoint: str = Field(min_length=1, max_length=1_000)
+    authentication: Literal["bearer_token", "api_key", "basic"]
+    credential: str = Field(min_length=1, max_length=8_000)
+    credential_username: str | None = Field(default=None, min_length=1, max_length=200)
+    verification_path: str | None = Field(default=None, min_length=1, max_length=1_000)
+    safe_read_path: str = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def valid_https_form(self):
+        _validate_connector_authentication(
+            self.authentication, self.credential, self.credential_username
+        )
+        return self
+
+
+ConnectorCreate: TypeAlias = Annotated[
+    LokiConnectorCreate
+    | SearchConnectorCreate
+    | PostgreSQLConnectorCreate
+    | MySQLConnectorCreate
+    | HTTPSConnectorCreate,
+    Field(discriminator="kind"),
+]
 
 
 class ConnectorOut(_StrictInput):

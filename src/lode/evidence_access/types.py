@@ -24,6 +24,7 @@ EXECUTION_FAILURE_CODES = frozenset(
         "rate_limited",
         "provider_timeout",
         "provider_unavailable",
+        "unsupported_version",
         "invalid_response",
         "partial_response",
         "cost_exceeded",

@@ -1,4 +1,4 @@
-"""Generic endpoint-catalog HTTPS safe-read connector."""
+"""Generic endpoint-catalog HTTP(S) safe-read connector."""
 
 from __future__ import annotations
 
@@ -67,11 +67,11 @@ class HTTPSConnector:
         )
         if not 200 <= response.status_code < 300:
             raise ProviderExecutionError(
-                "provider_unavailable", "HTTPS safe-read endpoint is unavailable"
+                "provider_unavailable", "HTTP(S) safe-read endpoint is unavailable"
             )
         return VerificationResult(
             self.kind,
-            "https/1.1",
+            "http/1.1",
             credential_identity_hash(self.secrets),
             self.read_capabilities,
         )
@@ -81,26 +81,28 @@ class HTTPSConnector:
     ) -> NativeSchemaCatalog:
         endpoints = scope.get("safe_read_endpoints")
         if not isinstance(endpoints, list) or not 1 <= len(endpoints) <= budget.max_resources:
-            raise ProviderExecutionError("invalid_response", "HTTPS endpoint catalog is invalid")
+            raise ProviderExecutionError("invalid_response", "HTTP(S) endpoint catalog is invalid")
         origin = validate_base_url(self.config.base_url)[0]
         for endpoint in endpoints:
             if not isinstance(endpoint, dict):
-                raise ProviderExecutionError("invalid_response", "HTTPS endpoint entry is invalid")
+                raise ProviderExecutionError("invalid_response", "HTTP(S) endpoint entry is invalid")
             try:
                 HTTPSPolicy.validate_endpoint(endpoint)
             except AccessRejection as exc:
                 raise ProviderExecutionError(
-                    "invalid_response", "HTTPS endpoint entry is invalid"
+                    "invalid_response", "HTTP(S) endpoint entry is invalid"
                 ) from exc
-            hostname = str(endpoint.get("host"))
-            endpoint_origin = f"https://[{hostname}]" if ":" in hostname else f"https://{hostname}"
-            if endpoint.get("port", 443) != 443:
-                endpoint_origin += f":{endpoint.get('port')}"
+            hostname = str(endpoint["host"])
+            scheme = str(endpoint["scheme"])
+            default_port = 80 if scheme == "http" else 443
+            endpoint_origin = f"{scheme}://[{hostname}]" if ":" in hostname else f"{scheme}://{hostname}"
+            if endpoint["port"] != default_port:
+                endpoint_origin += f":{endpoint['port']}"
             if endpoint_origin != origin:
                 raise ProviderExecutionError(
-                    "scope_violation", "HTTPS endpoint exceeds connector origin"
+                    "scope_violation", "HTTP(S) endpoint exceeds connector origin"
                 )
-        return NativeSchemaCatalog(self.kind, "https/1.1", {"safe_read_endpoints": endpoints})
+        return NativeSchemaCatalog(self.kind, "http/1.1", {"safe_read_endpoints": endpoints})
 
     async def preflight(self, permit: ExecutionPermit) -> Mapping[str, Any]:
         action = self._action(permit)
@@ -109,7 +111,7 @@ class HTTPSConnector:
     async def execute(self, permit: ExecutionPermit) -> Mapping[str, Any]:
         action = self._action(permit)
         if action["origin"] != self.config.base_url:
-            raise ProviderExecutionError("invalid_response", "HTTPS permit origin changed")
+            raise ProviderExecutionError("invalid_response", "HTTP(S) permit origin changed")
         response = await self.transport.request(
             action["method"],
             action["path"],
@@ -123,10 +125,10 @@ class HTTPSConnector:
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
         if action["method"] != "HEAD" and content_type not in action["allowed_content_types"]:
             raise ProviderExecutionError(
-                "invalid_response", "HTTPS content type is outside endpoint scope"
+                "invalid_response", "HTTP(S) content type is outside endpoint scope"
             )
         if len(response.body) > action["output_bytes"]:
-            raise ProviderExecutionError("cost_exceeded", "HTTPS output byte budget exceeded")
+            raise ProviderExecutionError("cost_exceeded", "HTTP(S) output byte budget exceeded")
         if action["method"] == "HEAD":
             value: Any = {"status_code": response.status_code}
         elif content_type == "application/json":
@@ -135,9 +137,9 @@ class HTTPSConnector:
             try:
                 value = response.body.decode("utf-8", errors="strict")
             except UnicodeDecodeError as exc:
-                raise ProviderExecutionError("invalid_response", "HTTPS text is not UTF-8") from exc
+                raise ProviderExecutionError("invalid_response", "HTTP(S) text is not UTF-8") from exc
         else:
-            raise ProviderExecutionError("invalid_response", "HTTPS response type is disabled")
+            raise ProviderExecutionError("invalid_response", "HTTP(S) response type is disabled")
         sanitized, categories, injection = sanitize_evidence(
             {"provider": self.kind, "endpoint_id": action["endpoint_id"], "record": value}
         )
@@ -151,7 +153,7 @@ class HTTPSConnector:
     @staticmethod
     def _action(permit: ExecutionPermit) -> Mapping[str, Any]:
         if not isinstance(permit, ExecutionPermit):
-            raise PermissionError("HTTPS adapter requires an internal execution permit")
+            raise PermissionError("HTTP(S) adapter requires an internal execution permit")
         permit.assert_valid()
         action = permit.action
         required = {
@@ -166,5 +168,5 @@ class HTTPSConnector:
             "allowed_content_types",
         }
         if action.get("adapter_kind") != "https" or not required <= set(action):
-            raise PermissionError("execution permit is not authorized for HTTPS")
+            raise PermissionError("execution permit is not authorized for HTTP(S)")
         return action

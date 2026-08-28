@@ -76,8 +76,16 @@ class ElasticsearchConnector(SearchConnectorMechanics):
             or distribution == "opensearch"
             or payload.get("tagline") != "You Know, for Search"
         ):
+            observed_version = match.group(0) if match is not None else "unknown"
             raise ProviderExecutionError(
-                "invalid_response", "provider is not a supported Elasticsearch version"
+                "unsupported_version",
+                f"Unsupported Elasticsearch version {observed_version}. "
+                "This connector requires Elasticsearch 8.x or 9.x.",
+                {
+                    "provider": "elasticsearch",
+                    "observed_version": observed_version,
+                    "supported_major_versions": [8, 9],
+                },
             )
         self.version = number
         return VerificationResult(

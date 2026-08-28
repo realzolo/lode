@@ -86,7 +86,16 @@ class LokiConnector:
         version = payload.get("version") if isinstance(payload, dict) else None
         match = _VERSION.match(version) if isinstance(version, str) else None
         if match is None or int(match.group("major")) != 3:
-            raise ProviderExecutionError("invalid_response", "unsupported Loki major version")
+            observed_version = match.group(0) if match is not None else "unknown"
+            raise ProviderExecutionError(
+                "unsupported_version",
+                f"Unsupported Loki version {observed_version}. This connector requires Loki 3.x.",
+                {
+                    "provider": "loki",
+                    "observed_version": observed_version,
+                    "supported_major_versions": [3],
+                },
+            )
         self._version = version
         identity = credential_identity_hash(self.secrets or {"anonymous": self.config.base_url})
         return VerificationResult(self.kind, version, identity, self.read_capabilities)

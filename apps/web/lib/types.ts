@@ -278,6 +278,59 @@ export interface EvidenceConnector {
   configured_secret_fields: string[];
 }
 
+export type LokiFilterInput = {
+  kind: 'group';
+  combinator: 'all' | 'any';
+  items: Array<LokiFilterInput | {
+    kind: 'condition';
+    label: string;
+    operator: 'equals' | 'not_equals' | 'any_of' | 'not_any_of';
+    values: string[];
+  }>;
+};
+
+type ConnectorCreateBase = { name: string };
+type AuthenticatedConnectorCreate = {
+  authentication: 'bearer_token' | 'api_key' | 'basic';
+  credential: string;
+  credential_username?: string;
+};
+type DatabaseConnectorCreate = ConnectorCreateBase & {
+  host: string;
+  port?: number;
+  database: string;
+  database_username: string;
+  database_password: string;
+  tls_mode: 'verify_full' | 'require';
+  ca_certificate_pem?: string;
+};
+
+export type ConnectorCreateInput =
+  | (ConnectorCreateBase & {
+    kind: 'loki';
+    endpoint: string;
+    authentication: 'none' | 'bearer_token';
+    credential?: string;
+    tenant_id?: string;
+    root_filter: LokiFilterInput;
+  })
+  | (ConnectorCreateBase & AuthenticatedConnectorCreate & {
+    kind: 'elasticsearch' | 'opensearch';
+    endpoint: string;
+    allowed_indices: string[];
+  })
+  | (DatabaseConnectorCreate & {
+    kind: 'postgresql';
+    allowed_schemas: string[];
+  })
+  | (DatabaseConnectorCreate & { kind: 'mysql' })
+  | (ConnectorCreateBase & AuthenticatedConnectorCreate & {
+    kind: 'https';
+    endpoint: string;
+    verification_path?: string;
+    safe_read_path: string;
+  });
+
 export type EntityId = number;
 
 export interface InvestigationSummary {

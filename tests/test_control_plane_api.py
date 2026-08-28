@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ssl
 import uuid
 from datetime import UTC, datetime
 
@@ -13,6 +14,9 @@ from lode.api.main import app
 from lode.api.routes import control_plane
 from lode.config import settings
 from lode.db.models import (
+    AuditEvent,
+    EvidenceAccessScope,
+    EvidenceConnector,
     GitAccount,
     GitAccountRepositoryAccess,
     GitRepository,
@@ -21,7 +25,17 @@ from lode.db.models import (
     WorkspacePermission,
 )
 from lode.db.session import AsyncSessionLocal
+from lode.evidence_connectors.types import (
+    NativeSchemaCatalog,
+    ProviderExecutionError,
+    VerificationResult,
+)
 from lode.security import create_token, hash_password
+
+
+def _system_ca_pem() -> str:
+    certificate = ssl.create_default_context().get_ca_certs(binary_form=True)[0]
+    return ssl.DER_cert_to_PEM_cert(certificate)
 
 
 async def _admin_headers() -> dict[str, str]:
@@ -35,6 +49,278 @@ async def _admin_headers() -> dict[str, str]:
         "Authorization": "Bearer "
         + create_token(admin_id, settings.jwt_signing_key, 3600)
     }
+
+
+class _StubEvidenceConnector:
+    def __init__(self, kind: str, *, fail_stage: str | None = None) -> None:
+        self.kind = kind
+        self.fail_stage = fail_stage
+        self.scope: dict | None = None
+        self.introspection_timeout_ms: int | None = None
+
+    async def verify(self) -> VerificationResult:
+        if self.fail_stage == "verify":
+            raise ProviderExecutionError("authentication_failed", "stub verification failed")
+        if self.fail_stage == "version":
+            raise ProviderExecutionError(
+                "unsupported_version",
+                "Unsupported Loki version 2.9.4. This connector requires Loki 3.x.",
+                {
+                    "provider": "loki",
+                    "observed_version": "2.9.4",
+                    "supported_major_versions": [3],
+                    "unsafe_internal_value": "must-not-leak",
+                },
+            )
+        if self.fail_stage == "postgres_unsafe":
+            raise ProviderExecutionError(
+                "authentication_failed",
+                "PostgreSQL did not honor the connector's read-only transaction.",
+                {
+                    "provider": "postgresql",
+                    "failed_checks": ["read_only_session"],
+                    "unsafe_internal_value": "must-not-leak",
+                },
+            )
+        if self.fail_stage == "unexpected":
+            raise RuntimeError("secret provider response must not leak")
+        return VerificationResult(self.kind, "test/1", "a" * 64, ("schema_introspection",))
+
+    async def introspect(self, scope, budget) -> NativeSchemaCatalog:
+        self.scope = dict(scope)
+        self.introspection_timeout_ms = budget.timeout_ms
+        if self.fail_stage == "introspect":
+            raise ProviderExecutionError("provider_unavailable", "stub discovery failed")
+        if self.kind == "postgresql":
+            resources = {
+                "dialect": "postgres",
+                "tables": {
+                    "billing.events": {
+                        "columns": {
+                            "id": {"type": "bigint", "nullable": False},
+                            "created_at": {"type": "timestamp", "nullable": False},
+                            "token": {"type": "text", "nullable": True},
+                        },
+                        "time_column": "created_at",
+                        "stable_order": ["id"],
+                    }
+                },
+                "excluded_tables": {},
+            }
+        else:
+            resources = dict(scope)
+        return NativeSchemaCatalog(self.kind, "test/1", resources)
+
+
+@pytest.mark.asyncio
+async def test_connector_creation_verifies_discovers_and_persists_atomically(monkeypatch) -> None:
+    suffix = uuid.uuid4().hex
+    headers = await _admin_headers()
+    created_adapters: list[_StubEvidenceConnector] = []
+
+    def create_adapter(kind, config, secrets, runtime=None):
+        del runtime
+        assert kind == "postgresql"
+        assert "allowed_schemas" not in config
+        assert config["tls_mode"] == "verify_full"
+        assert config["ca_certificate_pem"] == _system_ca_pem()
+        assert secrets == {"password": "postgres-private-value"}
+        adapter = _StubEvidenceConnector(kind)
+        created_adapters.append(adapter)
+        return adapter
+
+    monkeypatch.setattr(control_plane, "create_evidence_connector", create_adapter)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace = await client.post(
+            "/workspaces",
+            headers=headers,
+            json={"name": f"connectors-{suffix}", "ingestion_topic": f"connectors-{suffix}"},
+        )
+        assert workspace.status_code == 201
+        workspace_id = workspace.json()["id"]
+        response = await client.post(
+            f"/workspaces/{workspace_id}/evidence-connectors",
+            headers=headers,
+            json={
+                "name": f"warehouse-{suffix}",
+                "kind": "postgresql",
+                "host": "replica.example.test",
+                "database": "analytics",
+                "database_username": "lode_reader",
+                "database_password": "postgres-private-value",
+                "tls_mode": "verify_full",
+                "ca_certificate_pem": _system_ca_pem(),
+                "allowed_schemas": ["billing"],
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["verification_status"] == "healthy"
+    assert response.json()["last_introspected_at"] is not None
+    assert response.json()["configured_secret_fields"] == ["password"]
+    assert "postgres-private-value" not in response.text
+    assert "BEGIN CERTIFICATE" not in response.text
+    assert created_adapters[0].scope["allowed_schemas"] == ["billing"]
+    assert created_adapters[0].introspection_timeout_ms == 10_000
+    connector_id = response.json()["id"]
+    async with AsyncSessionLocal() as session:
+        scope = await session.scalar(
+            select(EvidenceAccessScope).where(EvidenceAccessScope.connector_id == connector_id)
+        )
+        assert scope is not None
+        assert scope.scope_config["allowed_schemas"] == ["billing"]
+        assert scope.scope_config["allowed_tables"] == ["billing.events"]
+        assert "billing.events" in scope.schema_catalog["tables"]
+        connector = await session.get(EvidenceConnector, connector_id)
+        assert connector is not None
+        assert connector.config["ca_certificate_pem"] == _system_ca_pem()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fail_stage", "expected_status", "expected_code", "expected_message"),
+    [
+        (
+            "verify",
+            422,
+            "connector_verification_authentication_failed",
+            "stub verification failed",
+        ),
+        (
+            "version",
+            422,
+            "connector_verification_unsupported_version",
+            "Unsupported Loki version 2.9.4. This connector requires Loki 3.x.",
+        ),
+        (
+            "introspect",
+            502,
+            "connector_introspection_provider_unavailable",
+            "stub discovery failed",
+        ),
+        (
+            "postgres_unsafe",
+            422,
+            "connector_verification_authentication_failed",
+            "PostgreSQL did not honor the connector's read-only transaction.",
+        ),
+        (
+            "unexpected",
+            502,
+            "connector_verification_failed",
+            "Read-only connector verification failed.",
+        ),
+    ],
+)
+async def test_failed_connector_creation_leaves_no_persisted_record(
+    monkeypatch,
+    fail_stage: str,
+    expected_status: int,
+    expected_code: str,
+    expected_message: str,
+) -> None:
+    suffix = uuid.uuid4().hex
+    headers = await _admin_headers()
+    connector_name = f"failed-{fail_stage}-{suffix}"
+    monkeypatch.setattr(
+        control_plane,
+        "create_evidence_connector",
+        lambda *_args, **_kwargs: _StubEvidenceConnector("https", fail_stage=fail_stage),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace = await client.post(
+            "/workspaces",
+            headers=headers,
+            json={"name": f"failed-{suffix}", "ingestion_topic": f"failed-{suffix}"},
+        )
+        workspace_id = workspace.json()["id"]
+        response = await client.post(
+            f"/workspaces/{workspace_id}/evidence-connectors",
+            headers=headers,
+            json={
+                "name": connector_name,
+                "kind": "https",
+                "endpoint": "https://events.example.test",
+                "authentication": "bearer_token",
+                "credential": "secret",
+                "safe_read_path": "/v1/events",
+            },
+        )
+
+    assert response.status_code == expected_status
+    assert response.json()["error"]["code"] == expected_code
+    assert response.json()["error"]["message"] == expected_message
+    assert "must-not-leak" not in response.text
+    assert "secret provider response" not in response.text
+    if fail_stage == "version":
+        assert response.json()["error"]["details"] == {
+            "provider_error": "unsupported_version",
+            "provider": "loki",
+            "observed_version": "2.9.4",
+            "supported_major_versions": [3],
+        }
+    if fail_stage == "postgres_unsafe":
+        assert response.json()["error"]["details"] == {
+            "provider_error": "authentication_failed",
+            "provider": "postgresql",
+            "failed_checks": ["read_only_session"],
+        }
+    async with AsyncSessionLocal() as session:
+        assert await session.scalar(
+            select(EvidenceConnector).where(EvidenceConnector.name == connector_name)
+        ) is None
+        assert await session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.workspace_id == workspace_id,
+                AuditEvent.action == "evidence_connector.create",
+            )
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_https_basic_authentication_is_stored_as_one_supported_secret_form(
+    monkeypatch,
+) -> None:
+    suffix = uuid.uuid4().hex
+    headers = await _admin_headers()
+    created_adapters: list[_StubEvidenceConnector] = []
+
+    def create_adapter(kind, config, secrets, runtime=None):
+        del runtime
+        assert kind == "https"
+        assert config["base_url"] == "http://events.example.test:8080"
+        assert secrets == {"username": "reader", "password": "https-private-value"}
+        adapter = _StubEvidenceConnector(kind)
+        created_adapters.append(adapter)
+        return adapter
+
+    monkeypatch.setattr(control_plane, "create_evidence_connector", create_adapter)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace = await client.post(
+            "/workspaces",
+            headers=headers,
+            json={"name": f"https-{suffix}", "ingestion_topic": f"https-{suffix}"},
+        )
+        response = await client.post(
+            f"/workspaces/{workspace.json()['id']}/evidence-connectors",
+            headers=headers,
+            json={
+                "name": f"https-basic-{suffix}",
+                "kind": "https",
+                "endpoint": "http://events.example.test:8080",
+                "authentication": "basic",
+                "credential_username": "reader",
+                "credential": "https-private-value",
+                "safe_read_path": "/v1/events",
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["kind_version"] == 2
+    assert response.json()["configured_secret_fields"] == ["password", "username"]
+    assert "https-private-value" not in response.text
+    assert created_adapters[0].scope["safe_read_endpoints"][0]["scheme"] == "http"
+    assert created_adapters[0].scope["safe_read_endpoints"][0]["port"] == 8080
 
 
 @pytest.mark.asyncio

@@ -62,9 +62,31 @@ BEGIN
         schema_catalog_revision, read_policy_revision, execution_budget_policy,
         normalization_policy_revision, revision
     ) VALUES (
-        connector_id, ARRAY['https']::text[], '{}'::jsonb, '{}'::jsonb,
+        connector_id, ARRAY['https']::text[], '{}'::jsonb,
+        '{"tables":{"public.accounts":{"columns":{"password":{"type":"text"},"token":{"type":"text"}}}}}'::jsonb,
         1, 1, '{}'::jsonb, 1, 1
     ) RETURNING id INTO scope_id;
+
+    rejected := false;
+    BEGIN
+        INSERT INTO evidence_access_scopes (
+            connector_id, allowed_languages, scope_config, schema_catalog,
+            schema_catalog_revision, read_policy_revision, execution_budget_policy,
+            normalization_policy_revision, revision
+        ) VALUES (
+            connector_id, ARRAY['https']::text[],
+            '{"nested":{"token":"plaintext"}}'::jsonb, '{}'::jsonb,
+            2, 1, '{}'::jsonb, 1, 2
+        );
+    EXCEPTION WHEN raise_exception THEN
+        IF position('ordinary JSON config may not contain credentials' IN SQLERRM) = 0 THEN
+            RAISE;
+        END IF;
+        rejected := true;
+    END;
+    IF NOT rejected THEN
+        RAISE EXCEPTION 'secret-free scope trigger accepted a credential';
+    END IF;
 
     rejected := false;
     BEGIN

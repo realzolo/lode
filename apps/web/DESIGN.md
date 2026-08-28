@@ -77,6 +77,37 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 - Icon-only buttons require a tooltip and accessible name. Text buttons are reserved for explicit commands such as Save, Retry, or Clear filters.
 - All interactive controls expose hover, active, disabled, loading, and `focus-visible` states. Keyboard focus always has a visible ring. Async buttons preserve their dimensions, replace the icon/text with a spinner and action label, set `aria-busy`, and reject duplicate submission. Row actions own independent busy state.
 - Creation and edit workflows use the right-side `DialogContent` drawer variant at every viewport. The drawer is full-width on phones, constrained on larger screens, scrolls its body independently, and keeps its action footer at the bottom. Destructive confirmations remain centered dialogs.
+- Evidence Connector creation is a single provider-specific form grouped into
+  Basic information, Connection information, and Read scope. Render only fields
+  used by the selected kind. Mark required fields explicitly; every optional
+  field must say `Optional` in its localized placeholder and remain empty until
+  submission so the hint stays visible.
+- Connector list inputs use compact removable values plus one text input. They
+  accept Enter, commas, and pasted delimiters while preserving draft text during
+  editing; confirmation trims whitespace, drops empty values, and deduplicates.
+  Loki equality operators use a single-value input and set operators use this
+  list input.
+- PostgreSQL/MySQL require an explicit TLS security selection. Full certificate
+  and hostname verification is the default; encryption-only is visibly labeled
+  as not verifying server identity. The optional CA PEM appears only for full
+  verification and identifies the database provider as its source. Switching
+  modes clears stale CA state. Plaintext and automatic fallback are unavailable.
+- `Create and verify` is disabled only while its request is running. Submission
+  validates all visible fields, focuses the first invalid field, and keeps both
+  values and field-level errors after remote failure. Remote failures display the
+  server's sanitized actionable reason, such as the observed and required
+  provider versions or the exact failed PostgreSQL connection/read-only check.
+  Request-shape failures name the first invalid field instead
+  of displaying a generic validation error. A successful response is
+  already healthy and introspected; the client never creates a temporary row and
+  chains follow-up verification calls.
+- Connector failure banners render allowlisted diagnostic identifiers such as a
+  PostgreSQL SQLSTATE alongside the code-authored explanation. They never render
+  raw driver messages, provider response bodies, connection strings, or secrets.
+- Third-party HTTP connectors accept canonical HTTP or HTTPS origins, including
+  authenticated deployments on trusted private networks. The form does not
+  silently upgrade or reject HTTP; redirects and embedded URL credentials remain
+  disabled.
 
 ## Operational Surfaces
 

@@ -214,8 +214,9 @@ uv run python scripts/check_forbidden_contracts.py
 ```
 
 Schema verification must use a fresh PostgreSQL database and run both
-`alembic upgrade head` and `alembic check`. The only migration is
-`alembic/versions/0001_initial.py`.
+`alembic upgrade head` and `alembic check`. The immutable baseline and forward
+migrations are under `alembic/versions/`; never edit a revision after it has
+been executed in an environment.
 
 `make web-check` runs TypeScript validation, English/Chinese key parity and
 untranslated-literal scanning, then the production Next.js build.

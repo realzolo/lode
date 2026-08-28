@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import json
 import re
-import ssl
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import asyncmy
 from asyncmy.cursors import DictCursor
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from lode.evidence_connectors.sql import SQLBackend, SQLConnectorMechanics
+from lode.evidence_connectors.sql import (
+    SQLBackend,
+    SQLConnectorMechanics,
+    database_ssl_context,
+)
 from lode.evidence_connectors.types import ProviderExecutionError
 
 _GRANT = re.compile(r"^GRANT (?P<privileges>.+) ON (?P<resource>.+) TO ", re.IGNORECASE)
@@ -23,16 +26,41 @@ class MySQLConnectorConfig(BaseModel):
 
     host: str = Field(min_length=1, max_length=253)
     port: int = Field(default=3306, ge=1, le=65_535)
-    database: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,63}$")
-    username: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_$-]{0,63}$")
+    database: str = Field(min_length=1, max_length=64)
+    username: str = Field(min_length=1, max_length=64)
+    tls_mode: str = Field(pattern=r"^(verify_full|require)$")
+    ca_certificate_pem: str | None = Field(default=None, min_length=1, max_length=64_000)
+
+    @field_validator("database", "username")
+    @classmethod
+    def connection_name_is_safe(cls, value: str) -> str:
+        if value != value.strip() or any(
+            ord(character) < 32 or ord(character) == 127 for character in value
+        ):
+            raise ValueError(
+                "database connection names must not contain surrounding whitespace "
+                "or control characters"
+            )
+        return value
+
+    @field_validator("ca_certificate_pem")
+    @classmethod
+    def ca_certificate_is_valid(cls, value: str | None) -> str | None:
+        return value
+
+    @model_validator(mode="after")
+    def tls_configuration_is_valid(self):
+        database_ssl_context(self.tls_mode, self.ca_certificate_pem)
+        return self
 
 
 class MySQLBackend(SQLBackend):
     def __init__(self, config: MySQLConnectorConfig, password: str) -> None:
         self.config = config
         self.password = password
-        self.ssl_context = ssl.create_default_context()
-        self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.ssl_context = database_ssl_context(
+            config.tls_mode, config.ca_certificate_pem
+        )
 
     async def attest(self, timeout_ms: int) -> Mapping[str, Any]:
         async with (
@@ -56,8 +84,12 @@ class MySQLBackend(SQLBackend):
         return {**row, "grants": grants}
 
     async def introspect(
-        self, max_tables: int, timeout_ms: int
+        self,
+        allowed_schemas: Sequence[str] | None,
+        max_tables: int,
+        timeout_ms: int,
     ) -> Mapping[str, Mapping[str, Any]]:
+        del allowed_schemas
         output: dict[str, Mapping[str, Any]] = {}
         async with self._connection(timeout_ms) as connection:
             await self._begin_read_only(connection, timeout_ms)

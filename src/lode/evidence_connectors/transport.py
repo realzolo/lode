@@ -1,4 +1,4 @@
-"""Bounded HTTPS transport for provider and connector requests."""
+"""Bounded HTTP transport for provider and connector requests."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def validate_base_url(base_url: str) -> tuple[str, str]:
     except ValueError as exc:
         raise ValueError("provider base_url port is invalid") from exc
     if (
-        parsed.scheme != "https"
+        parsed.scheme not in {"http", "https"}
         or not parsed.hostname
         or parsed.username
         or parsed.password
@@ -27,12 +27,13 @@ def validate_base_url(base_url: str) -> tuple[str, str]:
         or parsed.path not in {"", "/"}
         or parsed.netloc != parsed.netloc.lower()
     ):
-        raise ValueError("provider base_url must be a credential-free HTTPS origin")
+        raise ValueError("provider base_url must be a credential-free HTTP(S) origin")
     if parsed_port is not None and parsed_port <= 0:
         raise ValueError("provider base_url port is invalid")
     hostname = parsed.hostname.lower()
-    origin = f"https://[{hostname}]" if ":" in hostname else f"https://{hostname}"
-    if parsed_port is not None and parsed_port != 443:
+    origin = f"{parsed.scheme}://[{hostname}]" if ":" in hostname else f"{parsed.scheme}://{hostname}"
+    default_port = 80 if parsed.scheme == "http" else 443
+    if parsed_port is not None and parsed_port != default_port:
         origin += f":{parsed_port}"
     return origin, hostname
 
@@ -48,7 +49,9 @@ class BoundedHTTPTransport:
         max_timeout_ms: int = 60_000,
     ) -> None:
         self.base_url, self.hostname = validate_base_url(base_url)
-        self.port = urlsplit(self.base_url).port or 443
+        self.port = urlsplit(self.base_url).port or (
+            80 if self.base_url.startswith("http://") else 443
+        )
         if not 1 <= max_response_bytes <= 16 * 1024 * 1024:
             raise ValueError("provider max_response_bytes is invalid")
         self.headers = dict(headers)

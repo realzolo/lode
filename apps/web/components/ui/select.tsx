@@ -31,6 +31,9 @@ export interface SelectProps {
   name?: string;
   'aria-label'?: string;
   'aria-labelledby'?: string;
+  'aria-describedby'?: string;
+  'aria-invalid'?: boolean;
+  'aria-required'?: boolean;
   /** Label to show while the controlled value is empty. If omitted, an empty
    * option supplies it, preserving the existing native-select call sites. */
   placeholder?: string;
@@ -46,6 +49,9 @@ export function Select({
   name,
   'aria-label': ariaLabel,
   'aria-labelledby': ariaLabelledBy,
+  'aria-describedby': ariaDescribedBy,
+  'aria-invalid': ariaInvalid,
+  'aria-required': ariaRequired,
   placeholder: placeholderProp,
 }: SelectProps) {
   // Build Radix SelectItems from any <option> children. We support plain
@@ -93,6 +99,9 @@ export function Select({
         id={id}
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
+        aria-required={ariaRequired}
         className={cn(
           'flex h-9 w-full items-center justify-between rounded-sm border border-hairline bg-canvas px-3 text-sm text-ink',
           'font-sans',

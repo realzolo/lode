@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import ssl
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -23,7 +25,10 @@ class SQLBackend(Protocol):
     async def attest(self, timeout_ms: int) -> Mapping[str, Any]: ...
 
     async def introspect(
-        self, max_tables: int, timeout_ms: int
+        self,
+        allowed_schemas: Sequence[str] | None,
+        max_tables: int,
+        timeout_ms: int,
     ) -> Mapping[str, Mapping[str, Any]]: ...
 
     async def explain(self, query: str, timeout_ms: int) -> Mapping[str, Any]: ...
@@ -34,6 +39,36 @@ class SQLBackend(Protocol):
 
 
 T = TypeVar("T")
+
+
+def database_ssl_context(
+    tls_mode: str, ca_certificate_pem: str | None = None
+) -> ssl.SSLContext:
+    if tls_mode == "require":
+        if ca_certificate_pem is not None:
+            raise ValueError(
+                "database CA certificate is valid only with full TLS verification"
+            )
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        return context
+    if tls_mode != "verify_full":
+        raise ValueError("database TLS mode must be verify_full or require")
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if ca_certificate_pem is None:
+        return context
+    if "PRIVATE KEY-----" in ca_certificate_pem.upper():
+        raise ValueError("database CA configuration must not contain a private key")
+    try:
+        context.load_verify_locations(cadata=ca_certificate_pem)
+    except (ssl.SSLError, ValueError) as exc:
+        raise ValueError(
+            "database CA certificate must contain valid PEM-encoded certificate data"
+        ) from exc
+    return context
 
 
 class SQLConnectorMechanics:
@@ -48,7 +83,9 @@ class SQLConnectorMechanics:
         self.version: str | None = None
 
     async def verify(self) -> VerificationResult:
-        attestation = await self._backend_call(self.backend.attest(5_000))
+        attestation = await self._backend_call(
+            self.backend.attest(5_000), phase="verification", timeout_ms=5_000
+        )
         version = self._validate_attestation(attestation)
         self.version = version
         return VerificationResult(
@@ -61,8 +98,24 @@ class SQLConnectorMechanics:
     async def introspect(
         self, scope: Mapping[str, Any], budget: IntrospectionBudget
     ) -> NativeSchemaCatalog:
-        del scope
-        raw = await self._backend_call(self.backend.introspect(201, budget.timeout_ms))
+        allowed_schemas_value = scope.get("allowed_schemas")
+        if self.kind == "postgres_sql" and (
+            isinstance(allowed_schemas_value, list)
+            and allowed_schemas_value
+            and all(isinstance(schema, str) and schema for schema in allowed_schemas_value)
+        ):
+            allowed_schemas = tuple(allowed_schemas_value)
+        elif self.kind != "postgres_sql" and allowed_schemas_value is None:
+            allowed_schemas = None
+        else:
+            raise ProviderExecutionError(
+                "invalid_response", "SQL allowed schema scope is invalid"
+            )
+        raw = await self._backend_call(
+            self.backend.introspect(allowed_schemas, 201, budget.timeout_ms),
+            phase="scope discovery",
+            timeout_ms=budget.timeout_ms,
+        )
         if len(raw) > 200:
             raise ProviderExecutionError(
                 "cost_exceeded", "more than 200 readable SQL tables were discovered"
@@ -159,7 +212,9 @@ class SQLConnectorMechanics:
                 "prompt_injection_detected": False,
             }
         rows = await self._backend_call(
-            self.backend.fetch(action["query"], action["row_limit"] + 1, action["timeout_ms"])
+            self.backend.fetch(action["query"], action["row_limit"] + 1, action["timeout_ms"]),
+            phase="read",
+            timeout_ms=action["timeout_ms"],
         )
         if len(rows) > action["row_limit"]:
             raise ProviderExecutionError("cost_exceeded", "SQL row budget exceeded")
@@ -206,7 +261,9 @@ class SQLConnectorMechanics:
 
     async def _validated_estimate(self, action: Mapping[str, Any]) -> Mapping[str, int | float]:
         estimate = await self._backend_call(
-            self.backend.explain(action["query"], action["timeout_ms"])
+            self.backend.explain(action["query"], action["timeout_ms"]),
+            phase="query planning",
+            timeout_ms=action["timeout_ms"],
         )
         rows = estimate.get("estimated_rows")
         cost = estimate.get("estimated_cost")
@@ -226,15 +283,22 @@ class SQLConnectorMechanics:
     def _validate_attestation(self, attestation: Mapping[str, Any]) -> str:
         raise NotImplementedError
 
-    @staticmethod
-    async def _backend_call(operation: Awaitable[T]) -> T:
+    async def _backend_call(
+        self, operation: Awaitable[T], *, phase: str, timeout_ms: int
+    ) -> T:
         try:
-            return await operation
+            async with asyncio.timeout(timeout_ms / 1_000):
+                return await operation
         except ProviderExecutionError:
             raise
-        except TimeoutError as exc:
-            raise ProviderExecutionError("provider_timeout", "SQL provider timed out") from exc
         except Exception as exc:
+            mapper = getattr(self.backend, "map_exception", None)
+            if callable(mapper):
+                raise mapper(exc, phase) from exc
+            if isinstance(exc, TimeoutError):
+                raise ProviderExecutionError(
+                    "provider_timeout", f"SQL provider {phase} timed out"
+                ) from exc
             raise ProviderExecutionError(
                 "provider_unavailable", "SQL provider operation failed"
             ) from exc

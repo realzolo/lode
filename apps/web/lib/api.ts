@@ -2,6 +2,7 @@ import type {
   BuildUnit,
   Component,
   CurrentUser,
+  ConnectorCreateInput,
   EvidenceConnector,
   InvestigationDetail,
   InvestigationAuditKind,
@@ -262,7 +263,7 @@ export function fetchConnectorKinds() {
 export function fetchConnectors(workspaceId: number | string) {
   return get<EvidenceConnector[]>(`/workspaces/${workspaceId}/evidence-connectors`);
 }
-export function createConnector(workspaceId: number | string, input: Record<string, unknown>) {
+export function createConnector(workspaceId: number | string, input: ConnectorCreateInput) {
   return send<EvidenceConnector>(`/workspaces/${workspaceId}/evidence-connectors`, 'POST', input);
 }
 export function testConnector(workspaceId: number | string, connectorId: number) {
