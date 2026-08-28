@@ -24,11 +24,15 @@ from lode.git_accounts import credential_identity_hash, decode_credential_secret
 from lode.infrastructure.git_source import (
     GitCredentialMaterial,
     GitRemoteRevisionResolver,
+    GitRevisionResolver,
     GitSourceReader,
 )
 from lode.resource_understanding.scanner import ManifestScanner, RepositoryScanLimitError
 from lode.resource_understanding.store import BoundRepositoryScan, ResourceGraphStore
-from lode.resource_understanding.types import SemanticAnnotationDraft
+from lode.resource_understanding.types import (
+    SemanticAnnotationDraft,
+    repository_candidate_namespace,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,11 +197,30 @@ class RepositoryAnalysisLeaseStore:
 
 
 class RepositoryAnalysisService:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        resolver: GitRevisionResolver | None = None,
+        reader: GitSourceReader | None = None,
+        scanner: ManifestScanner | None = None,
+    ) -> None:
         self.session_factory = session_factory
-        self.resolver = GitRemoteRevisionResolver()
-        self.reader = GitSourceReader()
-        self.scanner = ManifestScanner()
+        self.resolver = resolver or GitRemoteRevisionResolver()
+        self.reader = reader or GitSourceReader()
+        self.scanner = scanner or ManifestScanner()
+
+    async def _scan_repository(self, binding, repository, revision: str, credential):
+        return await self.reader.read_checkout(
+            repo_url=repository.repo_url,
+            revision=revision,
+            credential=credential,
+            reader=lambda root: self.scanner.scan(
+                root,
+                revision,
+                candidate_namespace=repository_candidate_namespace(binding.id),
+            ),
+        )
 
     async def analyze(self, job_id: int) -> RepositoryAnalysisResult:
         async with self.session_factory() as session:
@@ -274,15 +297,11 @@ class RepositoryAnalysisService:
 
         async def scan_one(binding, repository, revision: str):
             async with semaphore:
-                return await self.reader.read_checkout(
-                    repo_url=repository.repo_url,
-                    revision=revision,
-                    credential=credentials[binding.id],
-                    reader=lambda root: self.scanner.scan(
-                        root,
-                        revision,
-                        candidate_namespace=f"repo-{binding.id}",
-                    ),
+                return await self._scan_repository(
+                    binding,
+                    repository,
+                    revision,
+                    credentials[binding.id],
                 )
 
         scans = await asyncio.gather(

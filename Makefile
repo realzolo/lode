@@ -3,11 +3,12 @@
 # which uses the project .venv created by `make install` (uv sync). `make` itself
 # does NOT read .env — only the Python app does via pydantic-settings.
 
-.PHONY: install migrate serve consume work dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check investigation-check analysis-check api-check web-check hardening-check local-release-check provider-release-check
+.PHONY: install migrate serve consume work dev-up dev-down verify test contracts schema-check intake-check resource-check evidence-access-check log-connectors-check native-connectors-check investigation-check analysis-check api-check web-check hardening-check local-release-check _local-release-check provider-release-check
 
 # uv binary to use. Override from the shell if it is not on PATH, e.g.
 #   make serve UV=/Users/lixm/.local/bin/uv
 UV ?= uv
+ISOLATED_DB = env UV="$(UV)" ./scripts/run_with_isolated_postgres.sh
 
 # Defaults for the `serve` target. Override from the shell if needed — make does
 # NOT read .env (only the Python app does, via pydantic-settings), so without
@@ -48,51 +49,52 @@ verify:
 	./scripts/verify.sh
 
 test:
-	$(UV) run pytest -q
+	$(ISOLATED_DB) $(UV) run pytest -q
 
 # Validate and fingerprint the frozen current contracts and release-test corpus.
 contracts:
 	$(UV) run python scripts/check_contracts.py
 
-# Verify an already-migrated PostgreSQL database against the current invariant contract.
+# Verify a fresh disposable PostgreSQL database against the current invariant contract.
 schema-check:
-	$(UV) run python scripts/check_schema.py
-	$(UV) run python scripts/check_database_behavior.py
+	$(ISOLATED_DB) $(UV) run python scripts/check_schema.py
+	$(ISOLATED_DB) $(UV) run python scripts/check_database_behavior.py
+	$(ISOLATED_DB) $(UV) run alembic check
 
 # Exercise Kafka/manual intake, idempotency races, DLQ, replay, and ValueRef storage.
 intake-check:
-	$(UV) run python scripts/check_intake.py
+	$(ISOLATED_DB) $(UV) run python scripts/check_intake.py
 
 # Exercise repository discovery, deterministic validation, publication, and snapshots.
 resource-check:
-	$(UV) run python scripts/check_resource_graph.py
+	$(ISOLATED_DB) $(UV) run python scripts/check_resource_graph.py
 
 # Exercise native-read policy, ValueRef binding, immutable audit, and replay defense.
 evidence-access-check:
-	$(UV) run python scripts/check_evidence_access.py
+	$(ISOLATED_DB) $(UV) run python scripts/check_evidence_access.py
 
 # Run fixed parser/policy/provider request-response contract tests.
 log-connectors-check:
-	$(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py
 
 # Run the complete native parser/connector/isolated-runner security contract suite.
 native-connectors-check:
-	$(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py tests/unit/test_sql_evidence_policy.py tests/unit/test_sql_evidence_connectors.py tests/unit/test_https_evidence.py tests/unit/test_command_evidence_policy.py tests/unit/test_command_runner.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py tests/unit/test_sql_evidence_policy.py tests/unit/test_sql_evidence_connectors.py tests/unit/test_https_evidence.py tests/unit/test_command_evidence_policy.py tests/unit/test_command_runner.py
 
 # Exercise connector snapshots, durable waves, Evidence Graph, and lease recovery.
 investigation-check:
-	$(UV) run pytest -q tests/unit/test_decision_policy.py tests/unit/test_evidence_graph.py tests/unit/test_investigation_orchestration.py
-	$(UV) run python scripts/check_investigation_orchestration.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_decision_policy.py tests/unit/test_evidence_graph.py tests/unit/test_investigation_orchestration.py
+	$(ISOLATED_DB) $(UV) run python scripts/check_investigation_orchestration.py
 
 # Exercise frozen multi-model routing, exact context, replay, role isolation, and drift failure.
 analysis-check:
-	$(UV) run pytest -q tests/unit/test_model_routing.py tests/unit/test_context_manager.py tests/unit/test_context_compaction.py tests/unit/test_conclusion_authority.py tests/unit/test_model_planner.py tests/unit/test_git_source.py tests/evals/test_analysis_quality.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_model_routing.py tests/unit/test_context_manager.py tests/unit/test_context_compaction.py tests/unit/test_conclusion_authority.py tests/unit/test_model_planner.py tests/unit/test_git_source.py tests/evals/test_analysis_quality.py
 	$(UV) run python scripts/check_analysis_quality.py
-	$(UV) run python scripts/check_analysis_execution.py
+	$(ISOLATED_DB) $(UV) run python scripts/check_analysis_execution.py
 
 # Verify the frozen API surface, control-plane permissions, secret redaction, and SSE lifecycle.
 api-check:
-	$(UV) run pytest -q tests/contract/test_api_surface.py tests/unit/test_control_api_schemas.py tests/unit/test_provider_introspection.py tests/test_control_plane_api.py tests/test_investigation_api.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/contract/test_api_surface.py tests/unit/test_control_api_schemas.py tests/unit/test_provider_introspection.py tests/test_control_plane_api.py tests/test_investigation_api.py
 
 # Type-check and produce the deployable Workbench build.
 web-check:
@@ -102,10 +104,13 @@ web-check:
 
 # Exercise release evaluation, adversarial security, worker bounds, and lease-loss recovery.
 hardening-check:
-	$(UV) run pytest -q tests/evals tests/security tests/performance tests/unit/test_evidence_access_kernel.py tests/unit/test_command_runner.py tests/unit/test_metrics_contract.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/evals tests/security tests/performance tests/unit/test_evidence_access_kernel.py tests/unit/test_command_runner.py tests/unit/test_metrics_contract.py
 
 # Run every deterministic local release gate. Use a fresh isolated upgraded database.
 local-release-check:
+	$(ISOLATED_DB) $(MAKE) _local-release-check
+
+_local-release-check:
 	$(MAKE) contracts
 	$(MAKE) schema-check
 	$(MAKE) intake-check
@@ -118,7 +123,7 @@ local-release-check:
 	$(MAKE) api-check
 	$(MAKE) hardening-check
 	$(UV) run python -m compileall -q src scripts alembic tests
-	$(UV) run pytest -q
+	$(ISOLATED_DB) $(UV) run pytest -q
 	$(UV) run python scripts/check_forbidden_contracts.py
 	$(MAKE) web-check
 

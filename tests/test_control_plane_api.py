@@ -364,6 +364,7 @@ async def test_workspace_topic_changes_require_a_non_active_workspace() -> None:
         workspace = await session.get(Workspace, first_id)
         assert workspace is not None
         workspace.ingestion_state = "paused"
+        workspace.ingestion_version = 1
         workspace.ingestion_start_position = "latest"
         workspace.ingestion_activation_kind = "resume"
         workspace.ingestion_started_at = datetime.now(UTC)
@@ -384,8 +385,10 @@ async def test_workspace_topic_changes_require_a_non_active_workspace() -> None:
         workspace = await session.get(Workspace, second_id)
         assert workspace is not None
         workspace.ingestion_state = "active"
+        workspace.ingestion_version = 1
         workspace.ingestion_start_position = "earliest"
         workspace.ingestion_activation_kind = "start"
+        workspace.ingestion_started_at = datetime.now(UTC)
         await session.commit()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

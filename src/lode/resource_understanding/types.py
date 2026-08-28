@@ -16,6 +16,14 @@ def content_hash(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode()).hexdigest()
 
 
+def repository_candidate_namespace(repository_binding_id: int) -> str:
+    """Return the canonical scanner namespace owned by one repository binding."""
+
+    if repository_binding_id <= 0:
+        raise ValueError("repository_binding_id must be positive")
+    return f"repository:{repository_binding_id}"
+
+
 @dataclass(frozen=True, slots=True)
 class ObservationDraft:
     source_kind: str

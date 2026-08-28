@@ -8,6 +8,7 @@ from lode.resource_understanding.types import (
     ScanIssue,
     ScanResult,
     SemanticAnnotationDraft,
+    repository_candidate_namespace,
 )
 from lode.resource_understanding.validator import ResourceIdentityValidator
 
@@ -21,4 +22,5 @@ __all__ = [
     "ScanLimits",
     "ScanResult",
     "SemanticAnnotationDraft",
+    "repository_candidate_namespace",
 ]

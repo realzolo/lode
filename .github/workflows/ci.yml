@@ -30,19 +30,20 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: lode
+          POSTGRES_DB: lode_test_ci
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d lode"
+          --health-cmd "pg_isready -U postgres -d lode_test_ci"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
 
     env:
-      # CI-only values. The app requires LODE_SECRET_KEY; tests need a migrated DB.
-      LODE_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/lode
-      LODE_SECRET_KEY: ci-test-secret-key-not-for-production
+      # CI-only values. Tests fail closed unless the database is explicitly isolated.
+      LODE_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/lode_test_ci
+      LODE_TOOLING_ISOLATED_DATABASE: "1"
+      LODE_MASTER_KEY: ci-test-master-key-not-for-production
 
     steps:
       - name: Checkout

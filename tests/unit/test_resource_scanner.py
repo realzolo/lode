@@ -8,10 +8,10 @@ from lode.resource_understanding import (
     ManifestScanner,
     ResourceIdentityValidator,
     SemanticAnnotationDraft,
+    repository_candidate_namespace,
 )
 from lode.resource_understanding.scanner import RepositoryScanLimitError, ScanLimits
 from lode.resource_understanding.validator import ResourceValidationError
-
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "resource_scanner"
 REVISION = "a" * 40
@@ -209,10 +209,14 @@ def test_duplicate_aliases_are_ambiguous() -> None:
 def test_validator_combines_namespaced_multi_repository_candidates() -> None:
     scanner = ManifestScanner()
     source = scanner.scan(
-        FIXTURES / "single", "1" * 40, candidate_namespace="repository:10"
+        FIXTURES / "single",
+        "1" * 40,
+        candidate_namespace=repository_candidate_namespace(10),
     )
     worker = scanner.scan(
-        FIXTURES / "python", "2" * 40, candidate_namespace="repository:20"
+        FIXTURES / "python",
+        "2" * 40,
+        candidate_namespace=repository_candidate_namespace(20),
     )
     annotation = SemanticAnnotationDraft(
         annotation_kind="component_identity",
@@ -233,3 +237,9 @@ def test_validator_combines_namespaced_multi_repository_candidates() -> None:
         "repository:10/build-unit:.",
         "repository:20/build-unit:.",
     }
+
+
+def test_repository_candidate_namespace_is_canonical_and_positive() -> None:
+    assert repository_candidate_namespace(42) == "repository:42"
+    with pytest.raises(ValueError, match="positive"):
+        repository_candidate_namespace(0)

@@ -8,6 +8,7 @@ from lode.application.model_planner import (
     StructuredInvestigationPlanner,
 )
 from lode.domain.investigation import DecisionBudget, Hypothesis
+from lode.infrastructure.investigation_planner import AuditedInvestigationDecisionModel
 
 
 def state() -> InvestigationState:
@@ -30,6 +31,21 @@ class FakeModel:
 
     async def decide(self, _state, _catalog, _rejection):
         return ModelDecisionResult(invocation_id=7, payload=self.payload)
+
+
+class MissingSnapshotSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def get(self, *_args):
+        return None
+
+
+def missing_snapshot_session_factory():
+    return MissingSnapshotSession()
 
 
 def payload() -> dict:
@@ -88,3 +104,13 @@ async def test_model_cannot_supply_its_own_invocation_id() -> None:
 
     with pytest.raises(PlannerUnavailable, match="invalid_structured_output"):
         await StructuredInvestigationPlanner(FakeModel(value)).decide(state(), ())
+
+
+async def test_missing_frozen_model_policy_is_an_expected_unavailable_result() -> None:
+    model = AuditedInvestigationDecisionModel(
+        missing_snapshot_session_factory,  # type: ignore[arg-type]
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(PlannerUnavailable, match="model_capability_unavailable"):
+        await model.decide(state(), (), ())

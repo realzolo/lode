@@ -32,6 +32,7 @@ from lode.db.models import (
     WorkspaceArchitectureContextRevision,
 )
 from lode.db.session import AsyncSessionLocal, engine
+from lode.development.isolated_database import require_isolated_database
 from lode.domain.investigation import (
     CapabilityEntry,
     DecisionBudget,
@@ -238,6 +239,7 @@ async def _fixture() -> tuple[int, int, int]:
 
 
 async def main() -> None:
+    require_isolated_database("investigation orchestration check")
     workspace_id, investigation_id, connector_id = await _fixture()
     snapshots = ConnectorSnapshotStore(AsyncSessionLocal)
     frozen = await snapshots.capabilities(investigation_id)

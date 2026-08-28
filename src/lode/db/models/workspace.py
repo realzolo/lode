@@ -71,6 +71,20 @@ class Workspace(TimestampMixin, Base):
             "ingestion_activation_kind IS NULL OR ingestion_activation_kind IN ('start', 'resume')",
             name="ingestion_activation_kind",
         ),
+        CheckConstraint(
+            "(ingestion_state = 'draft' AND ingestion_start_position IS NULL "
+            "AND ingestion_activation_kind IS NULL AND ingestion_started_at IS NULL "
+            "AND ingestion_paused_at IS NULL) OR "
+            "(ingestion_state = 'active' AND ingestion_version > 0 "
+            "AND ingestion_start_position IS NOT NULL "
+            "AND ingestion_activation_kind IS NOT NULL "
+            "AND ingestion_started_at IS NOT NULL AND ingestion_paused_at IS NULL) OR "
+            "(ingestion_state = 'paused' AND ingestion_version > 0 "
+            "AND ingestion_start_position IS NOT NULL "
+            "AND ingestion_activation_kind IS NOT NULL "
+            "AND ingestion_started_at IS NOT NULL AND ingestion_paused_at IS NOT NULL)",
+            name="ingestion_state_shape",
+        ),
     )
 
 

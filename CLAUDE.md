@@ -47,6 +47,12 @@ deployment-canary observations to pass the statistical and non-regression gate.
   separate final objects. Deprecated global workload identity, single-model,
   per-repository Git credentials, and product-specific integration tables and
   routes are not registered.
+- Workspace ingestion state is database-shaped rather than API-conventional:
+  draft rows have no activation fields, while active/paused rows require a
+  positive generation, a frozen start position and activation kind, and
+  coherent lifecycle timestamps. Migration `0004_workspace_ingestion_state`
+  fail-closes incomplete legacy active rows back to draft without deleting
+  their audit history.
 - Every generated business-entity primary key uses PostgreSQL `next_lode_id()`,
   a single-node compact snowflake allocator with the `2020-01-01 UTC` epoch,
   42 millisecond bits, and 10 sequence bits. A session advisory lock and
@@ -92,7 +98,11 @@ deployment-canary observations to pass the statistical and non-regression gate.
   Workspace from the Kafka topic and persists the alert, incident,
   investigation, immutable input, sealed values, graph snapshot, and durable
   job. `src/lode/consumer/main.py` commits Kafka offsets only after that
-  transaction succeeds. Manual `POST /investigations` uses the same service.
+  transaction succeeds. The consumer uses an exact escaped pattern over the
+  active topic inventory, so metadata discovery cannot auto-create a missing
+  Workspace topic. A partition-initialization error remains visible until a
+  later successful initialization of the same activation generation. Manual
+  `POST /investigations` uses the same service.
 - Intake has three independent idempotency boundaries: topic/partition/offset,
   Workspace/producer alert ID, and the active incident signature. Invalid and
   unassigned records are durably masked before optional Kafka DLQ mirroring;
@@ -317,20 +327,29 @@ deployment-canary observations to pass the statistical and non-regression gate.
   actively handled investigations share the same hard concurrency bound. Lease
   heartbeat loss cancels the handler and never completes or fails a job no
   longer owned; expired work is resumed only through durable lease recovery.
+  A missing frozen model policy is an expected `model_capability_unavailable`
+  terminal result with an unavailable report, not an unhandled worker failure.
+
+- Repository scanner keys and observation refs use the single canonical
+  `repository:<binding-id>/...` namespace constructed by
+  `repository_candidate_namespace`. Repository analysis, verification scripts,
+  and graph persistence consume that constructor instead of defining prefixes
+  independently.
 
 Run `make contracts` (or `uv run python scripts/check_contracts.py`) whenever
 a frozen contract or evaluation fixture changes. Run
-`make schema-check` against an upgraded PostgreSQL database whenever ORM or
-migration definitions change. Run `make intake-check` against an upgraded
-PostgreSQL database whenever intake, encryption, idempotency, or replay changes.
+`make schema-check` whenever ORM or migration definitions change. Run
+`make intake-check` whenever intake, encryption, idempotency, or replay changes.
 Run `make resource-check` whenever scanning, identity validation, graph
 publication, derived-resource views, or investigation graph snapshots change.
 Run `make evidence-access-check` whenever candidate validation, policy,
 ValueRef binding, authorization, execution permits, audit, or Connector
-lifecycle checks change. The check writes immutable audit rows, so every invocation creates a
-unique fixture identity and reports counts scoped to that invocation's
-investigation; repeated runs against the same upgraded development database
-must remain valid.
+lifecycle checks change. Database-writing verification targets and every pytest
+invocation launched by Make run inside a freshly migrated temporary PostgreSQL
+cluster on a private Unix socket. Direct pytest and write-capable check scripts
+fail closed unless `LODE_TOOLING_ISOLATED_DATABASE=1` and
+`LODE_DATABASE_URL` names a `lode_test_*` database. Verification fixtures must
+never share the API/consumer/worker database or its global queues.
 Run `make log-connectors-check` whenever LogQL parsing, search JSON policy,
 provider config/version/introspection, HTTP serialization, pagination,
 normalization, masking, or provider failure classification changes.
@@ -339,8 +358,8 @@ HTTPS adapter, command runner protocol/sandbox, connector registry, or native
 deployment boundary changes.
 Run `make investigation-check` whenever capability construction, decision
 policy, dynamic waves, connector snapshots, graph projection/persistence,
-operation replay, or worker leases change. Database checks that claim the
-global job queue must run serially or against isolated databases.
+operation replay, or worker leases change. Global queue checks run only in the
+isolated tooling database.
 Run `make analysis-check` whenever repository resolution/source archival, model
 policy/binding snapshots, routing, tokenizer/context assembly, compaction,
 planner roles, synthesis/verification, authority gates, or report publication
@@ -617,6 +636,11 @@ limits, and scheduling intervals are reviewed code constants in
 capabilities have no feature-specific boolean switches. Registered abilities are available
 to the planner, and Connector lifecycle/health plus per-read authorization are
 the only execution gates.
+Kafka supports `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT`, and `SASL_SSL` deployment
+profiles. `SASL_PLAINTEXT` remains an explicit compatibility mode; remote
+deployments should prefer `SASL_SSL` with certificate and hostname verification.
+An optional deployment-mounted CA file may extend the system roots. Roles that
+do not use Kafka do not validate Kafka transport configuration at startup.
 
 `platform_settings` is a singleton revisioned product setting. Its
 `ai_output_language` is restricted to the system-supported language list
@@ -913,30 +937,29 @@ Retries insert a new `(authorized_read_id, attempt)` row.
 rewrite historical audit identity. Users and Workspaces referenced by audit are
 disabled rather than physically deleted.
 
-Verify a fresh schema upgraded through the migration head:
+The supported verification workflow creates, migrates, and destroys its own
+PostgreSQL cluster:
 
 ```bash
-LODE_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lode_migration_test \
-LODE_MASTER_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-uv run alembic upgrade head
-uv run alembic check
-uv run python scripts/check_schema.py
-uv run python scripts/check_database_behavior.py
-uv run python scripts/check_intake.py
-uv run python scripts/check_resource_graph.py
-uv run python scripts/check_evidence_access.py
+make schema-check
+make intake-check
+make resource-check
+make evidence-access-check
 make log-connectors-check
 make native-connectors-check
 make investigation-check
 make analysis-check
+make test
 ```
 
 Alembic autogeneration against that database must produce no schema difference.
-The behavior checker rolls back all fixtures, including its concurrent unique
+Each Make target requires local PostgreSQL server tools (`initdb`, `pg_ctl`, and
+`createdb`) and uses `scripts/run_with_isolated_postgres.sh`. The behavior
+checker rolls back all fixtures, including its concurrent unique
 topic writes. The intake checker verifies strict validation, all dedupe layers,
 concurrent races, durable DLQ/unassigned handling, current-validator replay,
-manual HTTP intake, and exact encrypted trace round trips. `uv run python
-scripts/check_resource_graph.py` verifies single/monorepo and multi-repository
+manual HTTP intake, and exact encrypted trace round trips. `make resource-check`
+verifies single/monorepo and multi-repository
 identity, non-runtime repository exclusion, recovery reuse, alias conflict,
 revision invalidation, immutable historical membership, investigation snapshot
 freezing, access-boundary preservation, and the authenticated read-only graph

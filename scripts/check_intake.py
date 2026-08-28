@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
 import httpx
 from pydantic import ValidationError
@@ -27,6 +28,7 @@ from lode.db.models import (
     WorkspacePermission,
 )
 from lode.db.session import AsyncSessionLocal
+from lode.development.isolated_database import require_isolated_database
 from lode.security import create_token
 
 
@@ -49,6 +51,7 @@ def _payload(*, alert_id: str, trace_id: str, event: str = "payment.order_create
 
 
 async def main() -> None:
+    require_isolated_database("intake check")
     trace_id = '  引号\'" {job=~".*"} | json  '
     async with AsyncSessionLocal() as session:
         user = User(username="intake-check", display_name="Intake Check", password_hash="checker", status="active")
@@ -56,6 +59,10 @@ async def main() -> None:
             name="Intake behavior",
             ingestion_topic="incident.intake.behavior.v1",
             ingestion_state="active",
+            ingestion_version=1,
+            ingestion_start_position="earliest",
+            ingestion_activation_kind="start",
+            ingestion_started_at=datetime.now(UTC),
         )
         session.add_all([user, workspace])
         await session.flush()

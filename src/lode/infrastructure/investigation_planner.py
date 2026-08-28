@@ -63,7 +63,7 @@ class AuditedInvestigationDecisionModel:
             investigation = await session.get(Investigation, state.investigation_id)
             policy = await session.get(InvestigationModelPolicySnapshot, state.investigation_id)
             if investigation is None or policy is None:
-                raise RuntimeError("model_capability_unavailable")
+                raise PlannerUnavailable("model_capability_unavailable")
             artifacts = tuple(
                 (
                     await session.execute(

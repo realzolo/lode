@@ -7,19 +7,25 @@ import json
 from pathlib import Path
 
 import httpx
+from current_git_fixture import (
+    FIXTURE_ADAPTER_ID,
+    FIXTURE_ENDPOINT_HASH,
+    ensure_repository_access,
+)
 from sqlalchemy import func, select
 
 from lode.application.intake import ManualIncidentRequest, normalize_manual
+from lode.config import settings
 from lode.db.models import (
     BuildUnit,
     Component,
     ComponentSourceBinding,
     EvidenceAccessScope,
     GitRepository,
+    IdentityResolution,
     InvestigationResourceGraphSnapshot,
     ResourceGraphRevision,
     ResourceGraphRevisionMember,
-    IdentityResolution,
     User,
     Workspace,
     WorkspaceArchitectureContextRevision,
@@ -27,17 +33,15 @@ from lode.db.models import (
     WorkspaceRepositoryBinding,
 )
 from lode.db.session import AsyncSessionLocal, engine
+from lode.development.isolated_database import require_isolated_database
 from lode.infrastructure.intake_store import PostgresIntakeStore
-from lode.resource_understanding import ManifestScanner, SemanticAnnotationDraft
+from lode.resource_understanding import (
+    ManifestScanner,
+    SemanticAnnotationDraft,
+    repository_candidate_namespace,
+)
 from lode.resource_understanding.store import BoundRepositoryScan, ResourceGraphStore
 from lode.security import create_token
-from lode.config import settings
-from current_git_fixture import (
-    FIXTURE_ADAPTER_ID,
-    FIXTURE_ENDPOINT_HASH,
-    ensure_repository_access,
-)
-
 
 ROOT = Path(__file__).parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "resource_scanner"
@@ -101,6 +105,7 @@ async def _binding(session, workspace: Workspace, suffix: str, role: str) -> Wor
 
 
 async def main() -> None:
+    require_isolated_database("resource graph check")
     scanner = ManifestScanner()
     async with AsyncSessionLocal() as session:
         workspace = await _workspace(session)
@@ -138,19 +143,19 @@ async def main() -> None:
 
         source_scan = scanner.scan(
             FIXTURES / "single", "1" * 40,
-            candidate_namespace=f"repository:{source.id}",
+            candidate_namespace=repository_candidate_namespace(source.id),
         )
         worker_scan = scanner.scan(
             FIXTURES / "python", "2" * 40,
-            candidate_namespace=f"repository:{worker.id}",
+            candidate_namespace=repository_candidate_namespace(worker.id),
         )
         docs_scan = scanner.scan(
             FIXTURES / "jvm", "3" * 40,
-            candidate_namespace=f"repository:{docs.id}",
+            candidate_namespace=repository_candidate_namespace(docs.id),
         )
         conflict_scan = scanner.scan(
             FIXTURES / "jvm", "4" * 40,
-            candidate_namespace=f"repository:{conflict.id}",
+            candidate_namespace=repository_candidate_namespace(conflict.id),
         )
         source_root = next(item for item in source_scan.build_units if item.source_root == ".")
         worker_root = next(item for item in worker_scan.build_units if item.source_root == ".")
@@ -257,7 +262,7 @@ async def main() -> None:
 
         changed_source_scan = scanner.scan(
             FIXTURES / "pnpm", "5" * 40,
-            candidate_namespace=f"repository:{source.id}",
+            candidate_namespace=repository_candidate_namespace(source.id),
         )
         current_graph = await ResourceGraphStore(session).publish(
             workspace_id=workspace.id,

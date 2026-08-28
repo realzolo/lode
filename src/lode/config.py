@@ -10,7 +10,9 @@ from __future__ import annotations
 import base64
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
+from aiokafka.helpers import create_ssl_context
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pydantic import model_validator
@@ -38,15 +40,15 @@ class Settings(BaseSettings):
 
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"
-    # SASL/PLAIN authentication. Defaults are the unauthenticated local-dev
-    # profile (PLAINTEXT, no credentials). For a secured broker set
-    # ``kafka_security_protocol=SASL_PLAINTEXT`` and supply the PLAIN username
-    # and password. When ``kafka_sasl_username`` is empty, no SASL handshake is
-    # attempted even if a security protocol is set.
-    kafka_security_protocol: str = "PLAINTEXT"
-    kafka_sasl_mechanism: str = "PLAIN"
+    # Local and compatibility deployments may use plaintext transports.
+    # Internet-facing brokers should prefer certificate-verified SASL_SSL.
+    kafka_security_protocol: Literal["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"] = (
+        "PLAINTEXT"
+    )
+    kafka_sasl_mechanism: Literal["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"] = "PLAIN"
     kafka_sasl_username: str = ""
     kafka_sasl_password: str = ""
+    kafka_ssl_ca_file: str = ""
     # Different investigations may run concurrently. Each investigation itself
     # owns one strictly serial action lane.
     worker_concurrency: int = 5
@@ -71,6 +73,16 @@ class Settings(BaseSettings):
             raise ValueError(f"security keys must contain at least 32 bytes: {sorted(invalid)}")
         if len(configured.values()) != len(set(configured.values())):
             raise ValueError("security keys must be independent values")
+        has_username = bool(self.kafka_sasl_username)
+        has_password = bool(self.kafka_sasl_password)
+        uses_sasl = self.kafka_security_protocol.startswith("SASL_")
+        uses_tls = self.kafka_security_protocol in {"SSL", "SASL_SSL"}
+        if uses_sasl and not (has_username and has_password):
+            raise ValueError("Kafka SASL requires both username and password")
+        if not uses_sasl and (has_username or has_password):
+            raise ValueError("Kafka credentials require a SASL security protocol")
+        if self.kafka_ssl_ca_file and not uses_tls:
+            raise ValueError("Kafka CA configuration requires an SSL security protocol")
         return self
 
     def _derive_key(self, purpose: bytes) -> str:
@@ -107,19 +119,21 @@ def get_settings() -> Settings:
 settings = get_settings()
 
 
-def kafka_security_kwargs() -> dict:
-    """Build SASL/security kwargs for aiokafka clients from the current settings.
+def kafka_security_kwargs(configured: Settings | None = None) -> dict:
+    """Build the validated, certificate-verifying aiokafka security boundary."""
 
-    Returns an empty dict when no username is configured, so the default
-    (unauthenticated PLAINTEXT) is used for local development. When a username
-    is present the security protocol and PLAIN credentials are returned for
-    aiokafka to perform the SASL handshake.
-    """
-    if not settings.kafka_sasl_username:
+    configured = configured or settings
+    if configured.kafka_security_protocol == "PLAINTEXT":
         return {}
-    return {
-        "security_protocol": settings.kafka_security_protocol,
-        "sasl_mechanism": settings.kafka_sasl_mechanism,
-        "sasl_plain_username": settings.kafka_sasl_username,
-        "sasl_plain_password": settings.kafka_sasl_password,
-    }
+    result: dict = {"security_protocol": configured.kafka_security_protocol}
+    if configured.kafka_security_protocol in {"SSL", "SASL_SSL"}:
+        result["ssl_context"] = create_ssl_context(
+            cafile=configured.kafka_ssl_ca_file or None
+        )
+    if configured.kafka_security_protocol in {"SASL_PLAINTEXT", "SASL_SSL"}:
+        result.update(
+            sasl_mechanism=configured.kafka_sasl_mechanism,
+            sasl_plain_username=configured.kafka_sasl_username,
+            sasl_plain_password=configured.kafka_sasl_password,
+        )
+    return result

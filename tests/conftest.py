@@ -1,19 +1,20 @@
 """Pytest configuration.
 
-``pytest-asyncio`` gives each test a fresh event loop, but the module-level async
-engine keeps a connection pool whose asyncpg connections are bound to the loop
-they were opened on. Without intervention, a connection opened in test N would
-be reused in test N+1's loop and asyncpg raises
-``Future attached to a different loop``. Disposing the pool after every test
-forces a fresh connection (in the current loop) on the next test, keeping the
-DB-backed integration tests stable without a dedicated test database.
+The suite is allowed to run only against a disposable ``lode_test_*`` database.
+The module-level async engine also needs its pool disposed between pytest event
+loops so an asyncpg connection from one test is never reused by another.
 """
 
 from __future__ import annotations
 
+from importlib import import_module
+
 import pytest_asyncio
 
-from lode.db.session import engine
+from lode.development.isolated_database import require_isolated_database
+
+require_isolated_database("pytest")
+engine = import_module("lode.db.session").engine
 
 
 @pytest_asyncio.fixture(autouse=True)

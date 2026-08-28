@@ -8,6 +8,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
+from current_git_fixture import (
+    FIXTURE_ADAPTER_ID,
+    FIXTURE_ENDPOINT_HASH,
+    ensure_repository_access,
+)
 from sqlalchemy import func, select
 
 from lode.application.intake import ManualIncidentRequest, normalize_manual
@@ -24,9 +29,9 @@ from lode.db.models import (
     GitRepository,
     InvestigationModelBindingSnapshot,
     InvestigationRepositorySnapshot,
-    ProviderAccountModel,
     ModelPolicyRevision,
     ModelRoutingDecision,
+    ProviderAccountModel,
     User,
     Workspace,
     WorkspaceArchitectureContextRevision,
@@ -34,6 +39,7 @@ from lode.db.models import (
     WorkspaceRepositoryBinding,
 )
 from lode.db.session import AsyncSessionLocal, engine
+from lode.development.isolated_database import require_isolated_database
 from lode.domain.investigation import canonical_hash
 from lode.domain.model_execution import ContextEvidence, ModelTask
 from lode.domain.types import ModelRole
@@ -50,11 +56,6 @@ from lode.infrastructure.report_store import (
 )
 from lode.infrastructure.source_store import PostgresSourceStore
 from lode.model_catalog import require_model
-from current_git_fixture import (
-    FIXTURE_ADAPTER_ID,
-    FIXTURE_ENDPOINT_HASH,
-    ensure_repository_access,
-)
 
 
 class FixtureGateway:
@@ -306,6 +307,7 @@ def _task(role: ModelRole, **changes) -> ModelTask:
 
 
 async def main() -> None:
+    require_isolated_database("analysis execution check")
     (
         investigation_id,
         workspace_id,

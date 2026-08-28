@@ -193,6 +193,13 @@ PostgreSQL database, is:
 make local-release-check
 ```
 
+All database-writing verification targets and pytest runs launched by Make use
+a freshly migrated temporary PostgreSQL cluster on a private Unix socket and
+destroy it afterward. Local PostgreSQL server tools (`initdb`, `pg_ctl`, and
+`createdb`) must be available. Direct `uv run pytest` and direct write-capable
+check scripts intentionally refuse to use the application database; use
+`make test` and the targets below.
+
 Its constituent targets are:
 
 ```bash
@@ -209,7 +216,7 @@ make api-check
 make hardening-check
 make web-check
 uv run python -m compileall -q src scripts alembic tests
-uv run pytest -q
+make test
 uv run python scripts/check_forbidden_contracts.py
 ```
 

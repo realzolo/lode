@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import platform
+import re
 import time
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -276,6 +277,13 @@ async def _set_runtime_state(
                 runtime = WorkspaceIngestionRuntime(workspace_id=workspace.id)
                 session.add(runtime)
             partitions = counts.get(workspace.ingestion_topic, 0)
+            if (
+                runtime.observed_state == "error"
+                and runtime.observed_version == workspace.ingestion_version
+            ):
+                runtime.last_heartbeat_at = now
+                runtime.consumer_id = consumer_id
+                continue
             runtime.observed_state = "listening" if partitions else "starting"
             runtime.observed_version = workspace.ingestion_version
             runtime.consumer_id = consumer_id
@@ -432,7 +440,7 @@ class WorkspaceRebalanceListener(ConsumerRebalanceListener):
                 self.session_factory,
                 assigned,
             )
-        except Exception as exc:
+        except Exception:
             logger.exception("failed to initialize Workspace Kafka positions")
             topics = sorted({item.topic for item in assigned})
             async with self.session_factory() as session:
@@ -453,7 +461,7 @@ class WorkspaceRebalanceListener(ConsumerRebalanceListener):
                     runtime.consumer_id = CONSUMER_ID
                     runtime.assigned_partitions = 0
                     runtime.last_heartbeat_at = datetime.now(UTC)
-                    runtime.last_error = type(exc).__name__
+                    runtime.last_error = "partition_initialization_failed"
                 await session.commit()
             raise
 
@@ -480,6 +488,14 @@ async def process_record(
         }
     )
     return result
+
+
+def _topic_subscription_pattern(topics: list[str]) -> str:
+    """Match only the active topic inventory without requesting missing topics."""
+
+    if not topics:
+        raise ValueError("topic subscription requires at least one topic")
+    return r"\A(?:" + "|".join(re.escape(topic) for topic in topics) + r")\Z"
 
 
 async def main() -> None:
@@ -509,7 +525,10 @@ async def main() -> None:
             CONSUMER_HEARTBEAT.set(time.time())
             if topics != subscribed:
                 if topics:
-                    consumer.subscribe(topics=topics, listener=listener)
+                    consumer.subscribe(
+                        pattern=_topic_subscription_pattern(topics),
+                        listener=listener,
+                    )
                 else:
                     consumer.unsubscribe()
                 subscribed = topics
@@ -559,6 +578,15 @@ async def main() -> None:
         await producer.stop()
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Run the consumer process and treat operator interruption as a clean stop."""
+
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("consumer stopped")
+
+
+if __name__ == "__main__":
+    run()

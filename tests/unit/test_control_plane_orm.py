@@ -10,7 +10,6 @@ from sqlalchemy import CheckConstraint, UniqueConstraint
 from lode.db import models  # noqa: F401
 from lode.db.base import Base
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -74,11 +73,17 @@ def test_workspace_model_binding_has_portfolio_and_budget_constraints() -> None:
 
 def test_workspace_activation_schema_has_no_repository_or_component_gate() -> None:
     workspace = Base.metadata.tables["workspaces"]
+    checks = {
+        constraint.name
+        for constraint in workspace.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
 
     assert "ingestion_topic" in workspace.c
     assert "model_policy_revision_id" in workspace.c
     assert "primary_component_id" not in workspace.c
     assert "repository_id" not in workspace.c
+    assert "ck_workspaces_ingestion_state_shape" in checks
     assert any(
         isinstance(constraint, UniqueConstraint) and {column.name for column in constraint.columns} == {"ingestion_topic"}
         for constraint in workspace.constraints

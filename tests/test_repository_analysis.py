@@ -6,6 +6,7 @@ import uuid
 
 from sqlalchemy import select
 
+from lode.application.intake import canonical_hash
 from lode.db.models import (
     RepositoryAnalysisIssue,
     RepositoryAnalysisJob,
@@ -36,6 +37,18 @@ async def test_repository_analysis_job_claims_heartbeats_and_fails_durably() -> 
         job = RepositoryAnalysisJob(
             workspace_id=workspace.id,
             requested_binding_ids=[1],
+            binding_snapshot=[
+                {
+                    "binding_id": 1,
+                    "configuration_revision": 1,
+                    "repository_id": 2,
+                    "account_connection_id": 3,
+                    "role": "runtime_source",
+                    "branch_mode": "default",
+                    "effective_branch": "main",
+                }
+            ],
+            input_hash=canonical_hash({"repository_bindings": [1]}),
         )
         session.add(job)
         await session.commit()

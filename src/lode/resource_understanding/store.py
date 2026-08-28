@@ -23,18 +23,19 @@ from lode.db.models import (
     Workspace,
     WorkspaceRepositoryBinding,
 )
-from lode.resource_understanding.types import (
-    IdentityResolutionDraft,
-    ScanResult,
-    SemanticAnnotationDraft,
-    content_hash,
-)
-from lode.resource_understanding.validator import ResourceIdentityValidator
 from lode.metrics import (
     IDENTITY_RESOLUTIONS,
     RESOURCE_EVENTS,
     RESOURCE_INVALIDATION_LATENCY,
 )
+from lode.resource_understanding.types import (
+    IdentityResolutionDraft,
+    ScanResult,
+    SemanticAnnotationDraft,
+    content_hash,
+    repository_candidate_namespace,
+)
+from lode.resource_understanding.validator import ResourceIdentityValidator
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,7 +239,7 @@ class ResourceGraphStore:
         for item in scans:
             if by_id[item.repository_binding_id].repository_id != item.repository_id:
                 raise ValueError("scan repository does not match its binding")
-            namespace = f"repository:{item.repository_binding_id}/"
+            namespace = f"{repository_candidate_namespace(item.repository_binding_id)}/"
             if any(not unit.candidate_key.startswith(namespace) for unit in item.scan.build_units):
                 raise ValueError("scan build units are not binding-namespaced")
             if any(not obs.source_ref.startswith(namespace) for obs in item.scan.observations):

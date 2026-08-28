@@ -135,7 +135,7 @@ async def test_executor_attests_runs_masks_and_rejects_path_or_hash_changes(
 
     assert catalog["profiles"]["rg_fixed_search"]["binary_sha256"] == value.binary_sha256
     assert preflight["working_root"] == "/worksets/orders"
-    assert result.status == "succeeded"
+    assert result.status == "succeeded", result.model_dump()
     assert "topsecret" not in result.stdout
     assert "<REDACTED:credential_assignment>" in result.stdout
     assert result.prompt_injection_detected is True

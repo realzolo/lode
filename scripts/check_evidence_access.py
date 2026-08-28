@@ -30,16 +30,17 @@ from lode.db.models import (
     InvestigationModelPolicySnapshot,
     InvestigationOperation,
     InvestigationStep,
-    ProviderAccountModel,
     ModelPolicyRevision,
     ModelRoutingDecision,
     NativeReadCandidate,
+    ProviderAccountModel,
     User,
     Workspace,
     WorkspaceArchitectureContextRevision,
     WorkspaceModelBinding,
 )
 from lode.db.session import AsyncSessionLocal, engine
+from lode.development.isolated_database import require_isolated_database
 from lode.domain.investigation import PlannedOperation
 from lode.evidence_access.authorizer import EvidenceAccessAuthorizer
 from lode.evidence_access.candidate import NativeReadCandidateInput
@@ -642,6 +643,7 @@ def _context(workspace, investigation, connector, connector_snapshot, operation,
 
 
 async def main() -> None:
+    require_isolated_database("evidence access check")
     async with AsyncSessionLocal() as session:
         fixture = await _create_fixture(session)
         workspace, investigation, connector, snapshot, operations, invocations = fixture
