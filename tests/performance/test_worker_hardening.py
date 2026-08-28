@@ -9,7 +9,7 @@ import pytest
 
 import lode.worker.main as worker
 from lode.config import settings
-from lode.application.investigation_policy import investigation_policy_values
+from lode.application.investigation_limits import INVESTIGATION_HARD_LIMITS
 from lode.infrastructure.investigation_leases import ClaimedInvestigationJob
 
 
@@ -137,9 +137,10 @@ async def test_worker_failure_matrix_preserves_retry_classification(
     assert store.failed == [(job.job_id, retryable)]
 
 
-def test_balanced_investigation_profile_matches_the_final_plan() -> None:
-    policy = investigation_policy_values("balanced")
-    assert policy.timeout_seconds == 600
-    assert policy.max_evidence_steps == 12
-    assert policy.max_model_calls == 10
+def test_investigation_hard_limits_match_the_final_plan() -> None:
+    assert INVESTIGATION_HARD_LIMITS.timeout_seconds == 900
+    assert INVESTIGATION_HARD_LIMITS.max_decision_waves == 16
+    assert INVESTIGATION_HARD_LIMITS.max_model_calls == 14
+    assert INVESTIGATION_HARD_LIMITS.max_native_reads == 12
+    assert INVESTIGATION_HARD_LIMITS.max_parallel_operations == 4
     assert settings.worker_concurrency > 0

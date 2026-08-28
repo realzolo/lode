@@ -11,7 +11,6 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from lode.api.main import app
-from lode.application.investigation_policy import investigation_policy_columns
 from lode.config import settings
 from lode.consumer.main import KafkaIntakeHandler
 from lode.crypto import decrypt_value
@@ -21,7 +20,6 @@ from lode.db.models import (
     Incident,
     IngestionEvent,
     Investigation,
-    InvestigationPolicyRevision,
     SealedEvidenceValue,
     User,
     Workspace,
@@ -61,16 +59,6 @@ async def main() -> None:
         )
         session.add_all([user, workspace])
         await session.flush()
-        investigation_policy = InvestigationPolicyRevision(
-            workspace_id=workspace.id,
-            profile="balanced",
-            **investigation_policy_columns("balanced"),
-            revision=1,
-            created_by=user.id,
-        )
-        session.add(investigation_policy)
-        await session.flush()
-        workspace.investigation_policy_revision_id = investigation_policy.id
         architecture_context = WorkspaceArchitectureContextRevision(
             workspace_id=workspace.id,
             entries=[],

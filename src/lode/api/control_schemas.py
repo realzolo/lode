@@ -171,15 +171,16 @@ class WorkspaceCreate(_StrictInput):
 class WorkspacePatch(_StrictPatch):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=1_000)
+    ingestion_topic: str | None = Field(default=None, min_length=1, max_length=500)
 
-    @field_validator("name")
+    @field_validator("name", "ingestion_topic")
     @classmethod
-    def strip_name(cls, value: str | None) -> str | None:
+    def strip_nonblank_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         value = value.strip()
         if not value:
-            raise ValueError("name must not be blank")
+            raise ValueError("value must not be blank")
         return value
 
 
@@ -189,7 +190,6 @@ class WorkspaceOut(_ORMOutput):
     description: str
     ingestion_topic: str
     model_policy_revision_id: EntityId | None
-    investigation_policy_revision_id: EntityId | None
     architecture_context_revision_id: EntityId | None
     ingestion_state: str
     ingestion_version: int
@@ -359,26 +359,6 @@ class ModelPolicyOut(_ORMOutput):
     created_at: datetime
 
 
-class InvestigationPolicyPut(_StrictInput):
-    profile: Literal["fast", "balanced", "deep"]
-
-
-class InvestigationPolicyOut(_ORMOutput):
-    id: EntityId
-    workspace_id: EntityId
-    profile: Literal["fast", "balanced", "deep"]
-    max_evidence_steps: int
-    max_model_calls: int
-    max_native_reads: int
-    max_output_bytes: int
-    max_cost: float
-    timeout_seconds: int
-    window_before_seconds: int
-    window_after_seconds: int
-    revision: int
-    created_at: datetime
-
-
 class PlatformSettingsUpdate(_StrictInput):
     ai_output_language: Literal["en", "zh"]
     expected_revision: int = Field(gt=0)
@@ -437,51 +417,9 @@ class GitAccountRepositoryOut(_StrictInput):
     archived: bool
 
 
-class WorkspaceGitAccountGrantCreate(_StrictInput):
-    account_connection_id: EntityId = Field(gt=0)
-    repository_scope: Literal["selected", "all_visible"] = "selected"
-    repository_ids: tuple[EntityId, ...] = Field(default=(), max_length=1_000)
-
-    @model_validator(mode="after")
-    def selected_scope_requires_repositories(self):
-        if len(self.repository_ids) != len(set(self.repository_ids)):
-            raise ValueError("repository IDs must be unique")
-        if self.repository_scope == "selected" and not self.repository_ids:
-            raise ValueError("selected repository access requires at least one repository")
-        return self
-
-
-class WorkspaceGitAccountGrantOut(_ORMOutput):
-    id: EntityId
-    workspace_id: EntityId
-    account_connection_id: EntityId
-    account_name: str
-    provider_kind: Literal["github", "gitlab", "gitee"]
-    external_account_login: str
-    repository_scope: Literal["selected", "all_visible"]
-    state: Literal["active", "disabled"]
-    repository_count: int
-    revision: int
-    created_at: datetime
-    updated_at: datetime
-
-
-class WorkspaceRepositoryCandidateOut(_StrictInput):
-    entitlement_id: EntityId
-    repository_id: EntityId
-    provider_kind: Literal["github", "gitlab", "gitee"]
-    full_name: str
-    repo_url: str
-    web_url: str
-    default_branch: str
-    visibility: Literal["public", "private", "internal"]
-    archived: bool
-    account_connection_id: EntityId
-    account_name: str
-
-
 class RepositoryBind(_StrictInput):
-    repository_entitlement_id: EntityId = Field(gt=0)
+    account_connection_id: EntityId = Field(gt=0)
+    repository_id: EntityId = Field(gt=0)
     role: Literal["runtime_source", "shared_library", "infrastructure", "documentation"]
     priority: int = Field(default=0, ge=0)
     description: str = Field(default="", max_length=2_000)
@@ -500,7 +438,9 @@ class RepositoryBindingOut(_StrictInput):
     id: EntityId
     workspace_id: EntityId
     repository_id: EntityId
-    repository_entitlement_id: EntityId
+    account_connection_id: EntityId
+    account_name: str
+    external_account_login: str
     provider_kind: Literal["github", "gitlab", "gitee"]
     name: str
     full_name: str

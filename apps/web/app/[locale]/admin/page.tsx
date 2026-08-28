@@ -52,12 +52,11 @@ export default function WorkspacesPage() {
     </header>
     {error && <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{error}</div>}
     {loading ? <ListSkeleton rows={5} columns={7} /> : <div className="operational-table">
-      <div className="table-wrap"><table className="table"><thead><tr><th>{t('name')}</th><th>{t('kafkaTopic')}</th><th>{t('policy')}</th><th>{t('investigationDepth')}</th><th>{t('ingestion')}</th><th>{t('updated')}</th><th /></tr></thead>
+      <div className="table-wrap"><table className="table"><thead><tr><th>{t('name')}</th><th>{t('kafkaTopic')}</th><th>{t('policy')}</th><th>{t('ingestion')}</th><th>{t('updated')}</th><th /></tr></thead>
         <tbody>{rows.map((row) => <tr key={row.id}>
           <td><Link href={`/admin/workspaces/${row.id}`} className="font-medium hover:text-link">{row.name}</Link></td>
           <td className="mono text-xs">{row.ingestion_topic}</td>
           <td>{row.model_policy_revision_id ? t('published') : <span className="text-warning">{t('notPublished')}</span>}</td>
-          <td>{row.investigation_policy_revision_id ? t('configured') : '-'}</td>
           <td><span className={`table-status table-status-${row.ingestion_state === 'active' ? 'success' : row.ingestion_state === 'paused' ? 'warning' : 'neutral'}`}><i />{t(`ingestionState.${row.ingestion_state}`)}</span></td>
           <td className="text-xs text-muted-foreground">{new Date(row.updated_at).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US')}</td>
           <td><div className="flex justify-end"><Button size="icon" variant="ghost" asChild><Link href={`/admin/workspaces/${row.id}`} aria-label={tc('open')} title={tc('open')}><ArrowUpRight size={16} /></Link></Button></div></td>

@@ -38,6 +38,9 @@ def test_removed_control_plane_tables_are_not_registered() -> None:
         "application_architecture_contexts",
         "ai_model_configs",
         "user_application_perms",
+        "investigation" + "_policy_revisions",
+        "workspace_git" + "_account_grants",
+        "workspace_git_repository" + "_entitlements",
     }
     assert removed.isdisjoint(Base.metadata.tables)
 
@@ -82,21 +85,19 @@ def test_workspace_activation_schema_has_no_repository_or_component_gate() -> No
     )
 
 
-def test_global_language_and_investigation_profiles_are_first_class_schema() -> None:
+def test_global_language_is_first_class_and_investigation_limits_are_not_configurable() -> None:
     settings = Base.metadata.tables["platform_settings"]
-    policy = Base.metadata.tables["investigation_policy_revisions"]
     workspace = Base.metadata.tables["workspaces"]
 
     assert {"id", "ai_output_language", "revision", "updated_by"}.issubset(settings.c.keys())
-    assert {"profile", "max_evidence_steps", "max_model_calls", "revision"}.issubset(policy.c.keys())
-    assert "investigation_policy_revision_id" in workspace.c
+    assert "investigation" + "_policy_revision_id" not in workspace.c
 
 
 def test_repository_build_unit_and_component_identities_are_separate() -> None:
     repository = Base.metadata.tables["git_repositories"]
     account = Base.metadata.tables["git_accounts"]
     credential_revision = Base.metadata.tables["git_account_credential_revisions"]
-    entitlement = Base.metadata.tables["workspace_git_repository_entitlements"]
+    access = Base.metadata.tables["git_account_repository_access"]
     binding = Base.metadata.tables["workspace_repository_bindings"]
     build_unit = Base.metadata.tables["build_units"]
     component = Base.metadata.tables["components"]
@@ -107,10 +108,11 @@ def test_repository_build_unit_and_component_identities_are_separate() -> None:
     assert {"account_connection_id", "secret_ciphertext", "credential_identity_hash"}.issubset(
         credential_revision.c.keys()
     )
-    assert {"workspace_id", "grant_id", "repository_id"}.issubset(entitlement.c.keys())
-    assert {"repository_id", "repository_entitlement_id", "workspace_id", "role"}.issubset(
+    assert {"account_connection_id", "repository_id", "state"}.issubset(access.c.keys())
+    assert {"account_connection_id", "repository_id", "workspace_id", "role"}.issubset(
         binding.c.keys()
     )
+    assert "repository" + "_entitlement_id" not in binding.c
     assert {"repository_binding_id", "source_root", "build_system"}.issubset(build_unit.c.keys())
     assert "repository_id" not in component.c
     assert "service" + "_name" not in component.c

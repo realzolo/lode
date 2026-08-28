@@ -1,4 +1,4 @@
-"""Current-schema Git entitlement fixtures for local verification scripts."""
+"""Current-schema Git access fixtures for local verification scripts."""
 
 from __future__ import annotations
 
@@ -11,8 +11,6 @@ from lode.db.models import (
     GitAccountCredentialRevision,
     GitAccountRepositoryAccess,
     GitRepository,
-    WorkspaceGitAccountGrant,
-    WorkspaceGitRepositoryEntitlement,
 )
 from lode.crypto import encrypt_secret
 from lode.git_accounts import (
@@ -26,7 +24,7 @@ FIXTURE_ADAPTER_ID = "github"
 FIXTURE_ENDPOINT_HASH = "d" * 64
 
 
-async def ensure_repository_entitlement(session, workspace_id: int, repository: GitRepository) -> int:
+async def ensure_repository_access(session, workspace_id: int, repository: GitRepository) -> int:
     account = await session.scalar(
         select(GitAccount).where(
             GitAccount.adapter_id == FIXTURE_ADAPTER_ID,
@@ -76,34 +74,5 @@ async def ensure_repository_entitlement(session, workspace_id: int, repository: 
                 last_seen_at=datetime.now(UTC),
             )
         )
-
-    grant = await session.scalar(
-        select(WorkspaceGitAccountGrant).where(
-            WorkspaceGitAccountGrant.workspace_id == workspace_id,
-            WorkspaceGitAccountGrant.account_connection_id == account.id,
-        )
-    )
-    if grant is None:
-        grant = WorkspaceGitAccountGrant(
-            workspace_id=workspace_id,
-            account_connection_id=account.id,
-            repository_scope="selected",
-        )
-        session.add(grant)
         await session.flush()
-
-    entitlement = await session.scalar(
-        select(WorkspaceGitRepositoryEntitlement).where(
-            WorkspaceGitRepositoryEntitlement.grant_id == grant.id,
-            WorkspaceGitRepositoryEntitlement.repository_id == repository.id,
-        )
-    )
-    if entitlement is None:
-        entitlement = WorkspaceGitRepositoryEntitlement(
-            workspace_id=workspace_id,
-            grant_id=grant.id,
-            repository_id=repository.id,
-        )
-        session.add(entitlement)
-        await session.flush()
-    return entitlement.id
+    return account.id

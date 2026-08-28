@@ -14,7 +14,6 @@ export interface Workspace {
   description: string;
   ingestion_topic: string;
   model_policy_revision_id: number | null;
-  investigation_policy_revision_id: number | null;
   architecture_context_revision_id: number | null;
   ingestion_state: 'draft' | 'active' | 'paused';
   ingestion_version: number;
@@ -67,22 +66,6 @@ export interface PlatformSettings {
   supported_languages: Array<'en' | 'zh'>;
   revision: number;
   updated_at: string;
-}
-
-export interface InvestigationPolicy {
-  id: number;
-  workspace_id: number;
-  profile: 'fast' | 'balanced' | 'deep';
-  max_evidence_steps: number;
-  max_model_calls: number;
-  max_native_reads: number;
-  max_output_bytes: number;
-  max_cost: number;
-  timeout_seconds: number;
-  window_before_seconds: number;
-  window_after_seconds: number;
-  revision: number;
-  created_at: string;
 }
 
 export interface ProviderAccount {
@@ -149,7 +132,9 @@ export interface RepositoryBinding {
   id: number;
   workspace_id: number;
   repository_id: number;
-  repository_entitlement_id: number;
+  account_connection_id: number;
+  account_name: string;
+  external_account_login: string;
   provider_kind: 'github' | 'gitlab' | 'gitee';
   name: string;
   full_name: string;
@@ -216,35 +201,6 @@ export interface GitAccountRepository {
   default_branch: string;
   visibility: 'public' | 'private' | 'internal';
   archived: boolean;
-}
-
-export interface WorkspaceGitAccountGrant {
-  id: number;
-  workspace_id: number;
-  account_connection_id: number;
-  account_name: string;
-  provider_kind: 'github' | 'gitlab' | 'gitee';
-  external_account_login: string;
-  repository_scope: 'selected' | 'all_visible';
-  state: 'active' | 'disabled';
-  repository_count: number;
-  revision: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkspaceRepositoryCandidate {
-  entitlement_id: number;
-  repository_id: number;
-  provider_kind: 'github' | 'gitlab' | 'gitee';
-  full_name: string;
-  repo_url: string;
-  web_url: string;
-  default_branch: string;
-  visibility: 'public' | 'private' | 'internal';
-  archived: boolean;
-  account_connection_id: number;
-  account_name: string;
 }
 
 export interface BuildUnit {

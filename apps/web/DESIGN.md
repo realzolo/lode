@@ -83,7 +83,19 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 - Every route and shared component uses `next-intl` for visible labels, placeholders, empty/error/validation text, icon accessible names, and dialog controls. API response messages are not rendered directly.
 - Closed enums use explicit typed translation maps. Internal snake_case values, connector capability IDs, role IDs, visibility, readiness, and health states never appear as fallback UI text.
 - `en.json` and `zh.json` have identical key sets. `npm run check:i18n` verifies parity and scans TSX for visible string literals. Dates and numbers use the active locale.
-- Repository binding searches full name, account, and provider. Repository access also searches visibility, preserves selected values under filtering, displays selected count, and supports selecting or clearing the current results.
+- Repository binding uses two dependent `SearchableSelect` controls: choose a
+  healthy Git account, then search only that account's available repositories.
+  Search lives inside each popover, and changing the account clears the
+  repository immediately. No separate Workspace authorization surface exists.
+- Workspace Overview groups the Kafka topic and description under one settings
+  action and submits both through a single Workspace patch. Architecture context
+  remains an immutable revision workflow and uses the distinct command
+  `Publish new revision`; do not render a generic Save button beside every field.
+- Workspace Members follows the Vercel Members hierarchy: title, description,
+  count, right-aligned add action, combined search, permission/status filters,
+  compact bordered rows, and row menus. Each row owns its busy/error state;
+  removal is confirmed and adding uses a right-side drawer with a searchable
+  active-user combobox.
 
 ## Authenticated UI Checklist
 

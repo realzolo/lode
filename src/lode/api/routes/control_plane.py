@@ -22,8 +22,6 @@ from lode.api.control_schemas import (
     GitAccountRepositoryOut,
     GitAccountTokenRotate,
     IngestionStart,
-    InvestigationPolicyOut,
-    InvestigationPolicyPut,
     ModelBindingInput,
     ModelBindingOut,
     ModelBindingPatch,
@@ -48,9 +46,6 @@ from lode.api.control_schemas import (
     WorkspacePatch,
     WorkspaceArchitectureContextOut,
     WorkspaceArchitectureContextPut,
-    WorkspaceGitAccountGrantCreate,
-    WorkspaceGitAccountGrantOut,
-    WorkspaceRepositoryCandidateOut,
     WorkspaceOut,
     WorkspaceReadinessOut,
 )
@@ -59,7 +54,6 @@ from lode.api.types import EntityId
 from lode.api.deps import assert_workspace_permission, require_admin, require_user
 from lode.api.audit import audit_action
 from lode.ai_output import SUPPORTED_AI_OUTPUT_LANGUAGES
-from lode.application.investigation_policy import investigation_policy_columns
 from lode.config import kafka_security_kwargs, settings
 from lode.crypto import CryptoError, decrypt_secret, encrypt_secret
 from lode.db.models import (
@@ -74,15 +68,12 @@ from lode.db.models import (
     GitAccountSyncJob,
     GitRepository,
     Investigation,
-    InvestigationPolicyRevision,
     ProviderAccountModel,
     ModelPolicyRevision,
     ModelRoutingDecision,
     PlatformSettings,
     User,
     Workspace,
-    WorkspaceGitAccountGrant,
-    WorkspaceGitRepositoryEntitlement,
     WorkspaceModelBinding,
     WorkspacePermission,
     WorkspaceRepositoryBinding,
@@ -222,10 +213,6 @@ async def _provider_out(session: AsyncSession, row: AIProviderAccount) -> Provid
 
 def _binding_out(row: WorkspaceModelBinding) -> ModelBindingOut:
     return ModelBindingOut.model_validate(row)
-
-
-def _investigation_policy_out(row: InvestigationPolicyRevision) -> InvestigationPolicyOut:
-    return InvestigationPolicyOut.model_validate(row)
 
 
 def _platform_settings_out(row: PlatformSettings) -> PlatformSettingsOut:
@@ -876,15 +863,6 @@ async def create_workspace(
         raise _error(
             409, "workspace_topic_conflict", "Ingestion topic is already assigned."
         ) from exc
-    policy = InvestigationPolicyRevision(
-        workspace_id=row.id,
-        profile="balanced",
-        **investigation_policy_columns("balanced"),
-        revision=1,
-        created_by=user.id,
-    )
-    session.add(policy)
-    await session.flush()
     architecture_context = WorkspaceArchitectureContextRevision(
         workspace_id=row.id,
         entries=[],
@@ -893,12 +871,8 @@ async def create_workspace(
     )
     session.add(architecture_context)
     await session.flush()
-    row.investigation_policy_revision_id = policy.id
     row.architecture_context_revision_id = architecture_context.id
     session.add(_audit(user, "workspace.create", "workspace", row.id, row.id))
-    session.add(
-        _audit(user, "investigation_policy.publish", "investigation_policy_revision", policy.id, row.id)
-    )
     await session.commit()
     await session.refresh(row)
     return WorkspaceOut.model_validate(row)
@@ -912,10 +886,31 @@ async def patch_workspace(
     session: AsyncSession = Depends(get_session),
 ):
     user, workspace = await _workspace_access(session, user_id, workspace_id, "admin")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    next_topic = changes.pop("ingestion_topic", None)
+    if next_topic is not None and next_topic != workspace.ingestion_topic:
+        if workspace.ingestion_state == "active":
+            raise _error(
+                409,
+                "ingestion_topic_change_requires_pause",
+                "Pause ingestion before changing its Kafka topic.",
+            )
+        workspace.ingestion_topic = next_topic
+        workspace.ingestion_state = "draft"
+        workspace.ingestion_start_position = None
+        workspace.ingestion_activation_kind = None
+        workspace.ingestion_started_at = None
+        workspace.ingestion_paused_at = None
+    for key, value in changes.items():
         setattr(workspace, key, value)
     session.add(_audit(user, "workspace.update", "workspace", workspace.id, workspace.id))
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise _error(
+            409, "workspace_topic_conflict", "Ingestion topic is already assigned."
+        ) from exc
     await session.refresh(workspace)
     return WorkspaceOut.model_validate(workspace)
 
@@ -1254,6 +1249,7 @@ async def _set_ingestion(
     workspace: Workspace,
     target: str,
     start_position: str | None = None,
+    activation_kind: str | None = None,
 ):
     if target == "active":
         readiness = await _workspace_readiness(session, workspace)
@@ -1269,7 +1265,9 @@ async def _set_ingestion(
                 ],
             )
         workspace.ingestion_version += 1
-        workspace.ingestion_start_position = start_position or workspace.ingestion_start_position
+        workspace.ingestion_activation_kind = activation_kind
+        if activation_kind == "start":
+            workspace.ingestion_start_position = start_position
         workspace.ingestion_started_at = datetime.now(UTC)
         workspace.ingestion_paused_at = None
     else:
@@ -1293,7 +1291,9 @@ async def start_ingestion(
     user, workspace = await _workspace_access(session, user_id, workspace_id, "admin")
     if workspace.ingestion_state != "draft":
         raise _error(409, "ingestion_transition_invalid", "Only draft ingestion can start.")
-    return await _set_ingestion(session, user, workspace, "active", payload.start_position)
+    return await _set_ingestion(
+        session, user, workspace, "active", payload.start_position, "start"
+    )
 
 
 @router.post("/workspaces/{workspace_id}/ingestion/pause", response_model=WorkspaceOut)
@@ -1317,69 +1317,7 @@ async def resume_ingestion(
     user, workspace = await _workspace_access(session, user_id, workspace_id, "admin")
     if workspace.ingestion_state != "paused":
         raise _error(409, "ingestion_transition_invalid", "Only paused ingestion can resume.")
-    return await _set_ingestion(session, user, workspace, "active")
-
-
-@router.get(
-    "/workspaces/{workspace_id}/investigation-policy",
-    response_model=InvestigationPolicyOut,
-)
-async def get_investigation_policy(
-    workspace_id: EntityId,
-    user_id: EntityId = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    _, workspace = await _workspace_access(session, user_id, workspace_id, "read")
-    if workspace.investigation_policy_revision_id is None:
-        raise _error(409, "investigation_policy_missing", "Workspace investigation policy is missing.")
-    row = await session.get(InvestigationPolicyRevision, workspace.investigation_policy_revision_id)
-    if row is None or row.workspace_id != workspace_id:
-        raise _error(409, "investigation_policy_missing", "Workspace investigation policy is missing.")
-    return _investigation_policy_out(row)
-
-
-@router.put(
-    "/workspaces/{workspace_id}/investigation-policy",
-    response_model=InvestigationPolicyOut,
-)
-async def put_investigation_policy(
-    workspace_id: EntityId,
-    payload: InvestigationPolicyPut,
-    user_id: EntityId = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
-    workspace = await session.scalar(
-        select(Workspace).where(Workspace.id == workspace_id).with_for_update()
-    )
-    assert workspace is not None
-    revision = int(
-        (
-            await session.scalar(
-                select(func.coalesce(func.max(InvestigationPolicyRevision.revision), 0)).where(
-                    InvestigationPolicyRevision.workspace_id == workspace_id
-                )
-            )
-            or 0
-        )
-        + 1
-    )
-    row = InvestigationPolicyRevision(
-        workspace_id=workspace_id,
-        profile=payload.profile,
-        **investigation_policy_columns(payload.profile),
-        revision=revision,
-        created_by=user.id,
-    )
-    session.add(row)
-    await session.flush()
-    workspace.investigation_policy_revision_id = row.id
-    session.add(
-        _audit(user, "investigation_policy.publish", "investigation_policy_revision", row.id, workspace_id)
-    )
-    await session.commit()
-    await session.refresh(row)
-    return _investigation_policy_out(row)
+    return await _set_ingestion(session, user, workspace, "active", activation_kind="resume")
 
 
 @router.get(
@@ -1710,12 +1648,15 @@ async def workspace_readiness(
 def _repository_out(
     binding: WorkspaceRepositoryBinding,
     repository: GitRepository,
+    account: GitAccount,
 ):
     return RepositoryBindingOut(
         id=binding.id,
         workspace_id=binding.workspace_id,
         repository_id=repository.id,
-        repository_entitlement_id=binding.repository_entitlement_id,
+        account_connection_id=account.id,
+        account_name=account.name,
+        external_account_login=account.external_account_login,
         provider_kind=repository.adapter_id,
         name=repository.name,
         full_name=repository.full_name,
@@ -1815,51 +1756,6 @@ async def _account_secret(
     return secret
 
 
-async def _ensure_all_visible_entitlements(
-    session: AsyncSession,
-    account_connection_id: EntityId,
-    repository_ids: set[int],
-) -> None:
-    if not repository_ids:
-        return
-    grants = tuple(
-        (
-            await session.execute(
-                select(WorkspaceGitAccountGrant).where(
-                    WorkspaceGitAccountGrant.account_connection_id == account_connection_id,
-                    WorkspaceGitAccountGrant.repository_scope == "all_visible",
-                    WorkspaceGitAccountGrant.state == "active",
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for grant in grants:
-        existing = set(
-            (
-                await session.execute(
-                    select(WorkspaceGitRepositoryEntitlement.repository_id).where(
-                        WorkspaceGitRepositoryEntitlement.grant_id == grant.id,
-                        WorkspaceGitRepositoryEntitlement.repository_id.in_(repository_ids),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for repository_id in repository_ids - existing:
-            session.add(
-                WorkspaceGitRepositoryEntitlement(
-                    workspace_id=grant.workspace_id,
-                    grant_id=grant.id,
-                    repository_id=repository_id,
-                    state="active",
-                    revision=1,
-                )
-            )
-
-
 async def _sync_git_account(session: AsyncSession, account: GitAccount) -> GitAccountSyncJob:
     job = GitAccountSyncJob(account_connection_id=account.id, state="running", attempt=1)
     session.add(job)
@@ -1937,7 +1833,6 @@ async def _sync_git_account(session: AsyncSession, account: GitAccount) -> GitAc
         for access in prior_access:
             if access.repository_id not in visible_ids:
                 access.state = "lost"
-        await _ensure_all_visible_entitlements(session, account.id, visible_ids)
         account.verification_status = "healthy"
         account.verified_at = now
         account.last_synced_at = now
@@ -2139,20 +2034,21 @@ async def list_repositories(
     await _workspace_access(session, user_id, workspace_id, "read")
     rows = (
         await session.execute(
-            select(WorkspaceRepositoryBinding, GitRepository)
+            select(WorkspaceRepositoryBinding, GitRepository, GitAccount)
             .join(GitRepository, GitRepository.id == WorkspaceRepositoryBinding.repository_id)
+            .join(GitAccount, GitAccount.id == WorkspaceRepositoryBinding.account_connection_id)
             .where(WorkspaceRepositoryBinding.workspace_id == workspace_id)
             .order_by(WorkspaceRepositoryBinding.priority, WorkspaceRepositoryBinding.id)
         )
     ).all()
-    return [_repository_out(binding, repository) for binding, repository in rows]
+    return [_repository_out(binding, repository, account) for binding, repository, account in rows]
 
 
-async def _create_repository_binding(session, workspace_id, user, entitlement, repository, payload):
+async def _create_repository_binding(session, workspace_id, user, account, repository, payload):
     row = WorkspaceRepositoryBinding(
         workspace_id=workspace_id,
         repository_id=repository.id,
-        repository_entitlement_id=entitlement.id,
+        account_connection_id=account.id,
         role=payload.role,
         priority=payload.priority,
         description=payload.description,
@@ -2168,7 +2064,7 @@ async def _create_repository_binding(session, workspace_id, user, entitlement, r
     )
     await session.commit()
     await session.refresh(row)
-    return _repository_out(row, repository)
+    return _repository_out(row, repository, account)
 
 
 @router.post(
@@ -2181,218 +2077,18 @@ async def bind_repository(
     session: AsyncSession = Depends(get_session),
 ):
     user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
-    entitlement = await session.get(
-        WorkspaceGitRepositoryEntitlement, payload.repository_entitlement_id
-    )
-    if entitlement is None or entitlement.workspace_id != workspace_id or entitlement.state != "active":
-        raise _error(404, "repository_not_authorized", "Repository is not authorized for this Workspace.")
-    grant = await session.get(WorkspaceGitAccountGrant, entitlement.grant_id)
-    repository = await session.get(GitRepository, entitlement.repository_id)
-    if (
-        grant is None
-        or grant.workspace_id != workspace_id
-        or grant.state != "active"
-        or repository is None
-    ):
-        raise _error(404, "repository_not_authorized", "Repository is not authorized for this Workspace.")
+    account = await session.get(GitAccount, payload.account_connection_id)
+    repository = await session.get(GitRepository, payload.repository_id)
+    if account is None or account.state != "active" or account.verification_status != "healthy":
+        raise _error(422, "git_account_connection_invalid", "A healthy active Git account is required.")
+    if repository is None or repository.archived:
+        raise _error(404, "repository_not_found", "Repository was not found.")
     access = await session.get(
-        GitAccountRepositoryAccess, (grant.account_connection_id, repository.id)
+        GitAccountRepositoryAccess, (account.id, repository.id)
     )
     if access is None or access.state != "available":
         raise _error(409, "repository_access_lost", "Git account no longer has read access to this repository.")
-    return await _create_repository_binding(session, workspace_id, user, entitlement, repository, payload)
-
-
-@router.get(
-    "/workspaces/{workspace_id}/repository-candidates",
-    response_model=list[WorkspaceRepositoryCandidateOut],
-)
-async def list_workspace_repository_candidates(
-    workspace_id: EntityId,
-    user_id: EntityId = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    await _workspace_access(session, user_id, workspace_id, "read")
-    rows = tuple(
-        (
-            await session.execute(
-                select(
-                    WorkspaceGitRepositoryEntitlement,
-                    GitRepository,
-                    GitAccount,
-                )
-                .join(
-                    WorkspaceGitAccountGrant,
-                    WorkspaceGitAccountGrant.id == WorkspaceGitRepositoryEntitlement.grant_id,
-                )
-                .join(GitRepository, GitRepository.id == WorkspaceGitRepositoryEntitlement.repository_id)
-                .join(
-                    GitAccount,
-                    GitAccount.id == WorkspaceGitAccountGrant.account_connection_id,
-                )
-                .join(
-                    GitAccountRepositoryAccess,
-                    (GitAccountRepositoryAccess.account_connection_id == GitAccount.id)
-                    & (GitAccountRepositoryAccess.repository_id == GitRepository.id),
-                )
-                .where(
-                    WorkspaceGitRepositoryEntitlement.workspace_id == workspace_id,
-                    WorkspaceGitRepositoryEntitlement.state == "active",
-                    WorkspaceGitAccountGrant.state == "active",
-                    GitAccount.state == "active",
-                    GitAccountRepositoryAccess.state == "available",
-                )
-                .order_by(GitAccount.adapter_id, GitRepository.full_name)
-            )
-        ).all()
-    )
-    return [
-        WorkspaceRepositoryCandidateOut(
-            entitlement_id=entitlement.id,
-            repository_id=repository.id,
-            provider_kind=repository.adapter_id,
-            full_name=repository.full_name,
-            repo_url=repository.repo_url,
-            web_url=repository.web_url,
-            default_branch=repository.default_branch,
-            visibility=repository.visibility,
-            archived=repository.archived,
-            account_connection_id=account.id,
-            account_name=account.name,
-        )
-        for entitlement, repository, account in rows
-    ]
-
-
-@router.get(
-    "/workspaces/{workspace_id}/git-account-grants",
-    response_model=list[WorkspaceGitAccountGrantOut],
-)
-async def list_workspace_git_account_grants(
-    workspace_id: EntityId,
-    user_id: EntityId = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    await _workspace_access(session, user_id, workspace_id, "read")
-    rows = tuple(
-        (
-            await session.execute(
-                select(WorkspaceGitAccountGrant, GitAccount)
-                .join(
-                    GitAccount,
-                    GitAccount.id == WorkspaceGitAccountGrant.account_connection_id,
-                )
-                .where(WorkspaceGitAccountGrant.workspace_id == workspace_id)
-                .order_by(GitAccount.adapter_id, GitAccount.name)
-            )
-        ).all()
-    )
-    return [
-        WorkspaceGitAccountGrantOut(
-            id=grant.id,
-            workspace_id=grant.workspace_id,
-            account_connection_id=account.id,
-            account_name=account.name,
-            provider_kind=account.adapter_id,
-            external_account_login=account.external_account_login,
-            repository_scope=grant.repository_scope,
-            state=grant.state,
-            repository_count=int(
-                await session.scalar(
-                    select(func.count())
-                    .select_from(WorkspaceGitRepositoryEntitlement)
-                    .where(
-                        WorkspaceGitRepositoryEntitlement.grant_id == grant.id,
-                        WorkspaceGitRepositoryEntitlement.state == "active",
-                    )
-                )
-                or 0
-            ),
-            revision=grant.revision,
-            created_at=grant.created_at,
-            updated_at=grant.updated_at,
-        )
-        for grant, account in rows
-    ]
-
-
-@router.post(
-    "/workspaces/{workspace_id}/git-account-grants",
-    response_model=WorkspaceGitAccountGrantOut,
-    status_code=201,
-)
-async def create_workspace_git_account_grant(
-    workspace_id: EntityId,
-    payload: WorkspaceGitAccountGrantCreate,
-    user_id: EntityId = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    workspace = await session.get(Workspace, workspace_id)
-    if workspace is None:
-        raise _error(404, "workspace_not_found", "Workspace was not found.")
-    account = await session.get(GitAccount, payload.account_connection_id)
-    if account is None or account.state != "active" or account.verification_status != "healthy":
-        raise _error(422, "git_account_connection_invalid", "A healthy active Git account is required.")
-    visible_repository_ids = set(
-        (
-            await session.execute(
-                select(GitAccountRepositoryAccess.repository_id).where(
-                    GitAccountRepositoryAccess.account_connection_id == account.id,
-                    GitAccountRepositoryAccess.state == "available",
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    requested_repository_ids = (
-        visible_repository_ids
-        if payload.repository_scope == "all_visible"
-        else set(payload.repository_ids)
-    )
-    if not requested_repository_ids.issubset(visible_repository_ids):
-        raise _error(422, "repository_not_visible_to_git_account", "One or more repositories are not visible to the Git account.")
-    grant = WorkspaceGitAccountGrant(
-        workspace_id=workspace_id,
-        account_connection_id=account.id,
-        repository_scope=payload.repository_scope,
-        state="active",
-        revision=1,
-    )
-    session.add(grant)
-    try:
-        await session.flush()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise _error(409, "workspace_git_account_grant_conflict", "Git account is already authorized for this Workspace.") from exc
-    for repository_id in requested_repository_ids:
-        session.add(
-            WorkspaceGitRepositoryEntitlement(
-                workspace_id=workspace_id,
-                grant_id=grant.id,
-                repository_id=repository_id,
-                state="active",
-                revision=1,
-            )
-        )
-    session.add(_audit(user, "workspace_git_account_grant.create", "workspace_git_account_grant", grant.id, workspace_id))
-    await session.commit()
-    await session.refresh(grant)
-    return WorkspaceGitAccountGrantOut(
-        id=grant.id,
-        workspace_id=grant.workspace_id,
-        account_connection_id=account.id,
-        account_name=account.name,
-        provider_kind=account.adapter_id,
-        external_account_login=account.external_account_login,
-        repository_scope=grant.repository_scope,
-        state=grant.state,
-        repository_count=len(requested_repository_ids),
-        revision=grant.revision,
-        created_at=grant.created_at,
-        updated_at=grant.updated_at,
-    )
+    return await _create_repository_binding(session, workspace_id, user, account, repository, payload)
 
 
 @router.patch(
@@ -2421,7 +2117,9 @@ async def patch_repository_binding(
     await session.commit()
     await session.refresh(row)
     assert repository is not None
-    return _repository_out(row, repository)
+    account = await session.get(GitAccount, row.account_connection_id)
+    assert account is not None
+    return _repository_out(row, repository, account)
 
 
 @router.delete("/workspaces/{workspace_id}/repositories/{binding_id}", status_code=204)

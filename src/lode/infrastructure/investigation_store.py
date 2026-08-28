@@ -15,7 +15,9 @@ from lode.application.investigation import (
     PreparedOperation,
     PreparedWave,
 )
+from lode.application.investigation_limits import INVESTIGATION_HARD_LIMITS
 from lode.db.models import (
+    AIInvocation,
     EvidenceArtifact,
     EvidenceAssertion,
     Investigation,
@@ -162,31 +164,79 @@ class PostgresInvestigationStore:
                 row.policy_outcome in {"allow", "trim"} and row.decision == "continue"
                 for row in decisions
             )
-            max_steps = _positive_int(configured.get("max_evidence_steps"), 12)
-            max_operations = max_steps * _positive_int(configured.get("max_parallel_operations"), 4)
+            limits = INVESTIGATION_HARD_LIMITS
+            max_steps = min(
+                _positive_int(configured.get("max_decision_waves"), limits.max_decision_waves),
+                limits.max_decision_waves,
+            )
+            max_parallel_operations = min(
+                _positive_int(
+                    configured.get("max_parallel_operations"), limits.max_parallel_operations
+                ),
+                limits.max_parallel_operations,
+            )
+            max_operations = max_steps * max_parallel_operations
+            model_calls = int(
+                (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(AIInvocation)
+                        .where(AIInvocation.investigation_id == investigation_id)
+                    )
+                ).scalar_one()
+            )
+            max_model_calls = min(
+                _positive_int(configured.get("max_model_calls"), limits.max_model_calls),
+                limits.max_model_calls,
+            )
+            elapsed_ms = 0
+            if investigation.started_at is not None:
+                elapsed_ms = max(
+                    0,
+                    int((datetime.now(UTC) - investigation.started_at).total_seconds() * 1_000),
+                )
             remaining = DecisionBudget(
                 remaining_operations=max(
                     0, max_operations - _nonnegative_int(usage.get("operations"))
                 ),
                 remaining_native_reads=max(
                     0,
-                    _positive_int(configured.get("max_native_reads"), 8)
+                    min(
+                        _positive_int(
+                            configured.get("max_native_reads"), limits.max_native_reads
+                        ),
+                        limits.max_native_reads,
+                    )
                     - _nonnegative_int(usage.get("native_reads")),
                 ),
                 remaining_output_bytes=max(
                     0,
-                    _positive_int(configured.get("max_output_bytes"), 8 * 1024 * 1024)
+                    min(
+                        _positive_int(
+                            configured.get("max_output_bytes"), limits.max_output_bytes
+                        ),
+                        limits.max_output_bytes,
+                    )
                     - _nonnegative_int(usage.get("output_bytes")),
                 ),
                 remaining_cost=max(
                     0.0,
-                    _nonnegative_float(configured.get("max_cost"), 100.0)
+                    min(
+                        _nonnegative_float(configured.get("max_cost"), float(limits.max_cost)),
+                        float(limits.max_cost),
+                    )
                     - _nonnegative_float(usage.get("cost"), 0.0),
                 ),
                 remaining_timeout_ms=max(
                     0,
-                    _positive_int(configured.get("timeout_seconds"), 600) * 1_000
-                    - _nonnegative_int(usage.get("duration_ms")),
+                    min(
+                        _positive_int(
+                            configured.get("timeout_seconds"), limits.timeout_seconds
+                        ),
+                        limits.timeout_seconds,
+                    )
+                    * 1_000
+                    - max(_nonnegative_int(usage.get("duration_ms")), elapsed_ms),
                 ),
             )
             return InvestigationState(
@@ -211,6 +261,7 @@ class PostgresInvestigationStore:
                     "budget_usage": usage,
                 },
                 max_waves=max_steps,
+                remaining_model_calls=max(0, max_model_calls - model_calls),
             )
 
     async def prepare_wave(

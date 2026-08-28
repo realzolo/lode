@@ -37,10 +37,10 @@ deployment-canary observations to pass the statistical and non-regression gate.
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
-- The current ORM registry and the only migration register exactly the 75 tables in
+- The current ORM registry and the only migration register exactly the 72 tables in
   `contracts/v1/database/tables.json`. Provider accounts, account models,
-  static Git adapters/accounts/catalogue, Workspace Git grants and repository
-  entitlements, Workspace bindings, build units, components, resource graph
+  static Git adapters/accounts/catalogue and account-to-repository access,
+  direct Workspace repository bindings, build units, components, resource graph
   revisions, durable repository-analysis jobs, structured Workspace architecture
   context revisions, connectors, immutable investigation snapshots, the evidence graph,
   native-read audit chain, source assessments, findings, and reports are
@@ -58,12 +58,15 @@ deployment-canary observations to pass the statistical and non-regression gate.
   nullable entity pagination cursors use the snowflake ID directly.
 - Git adapters are static reviewed code registrations. Token-only Git accounts,
   encrypted immutable credential revisions, and discovered repository facts are
-  global reusable objects. A
-  global admin explicitly grants an account to a Workspace and selects its
-  repository entitlements; all cross-Workspace grant, entitlement, binding, and
-  credential-revision references are database-constrained. Private repositories
-  are accessed only through the approved account connection, never through a
-  per-repository secret. GitHub, GitLab, and Gitee account tokens are verified
+  global reusable objects. A global admin binds a repository directly by first
+  selecting a healthy account and then one repository currently visible to that
+  account. `workspace_repository_bindings` stores both IDs and has a composite
+  foreign key to `git_account_repository_access`; one repository has at most one
+  active binding per Workspace. Investigation and analysis snapshots resolve the
+  binding's exact account and current credential revision and fail closed on
+  unhealthy accounts, lost access, archived repositories, or credential drift.
+  Private repositories are never accessed through a per-repository secret.
+  GitHub, GitLab, and Gitee account tokens are verified
   before their repository catalogues are used. GitHub Enterprise Server and
   GitLab Self-Managed may override the API root; Gitee is official-endpoint only.
 - `contracts/v1/database/invariants.json` freezes the required trigger inventory. The
@@ -436,8 +439,9 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/application/capabilities.py`: minimal frozen capability catalog and credential-free model view.
 - `src/lode/application/decision_policy.py`: deterministic relevance, dependency, duplicate, resource, counter-evidence, and budget gates.
 - `src/lode/application/investigation.py`: provider-neutral serial-wave orchestration ports and four-operation sibling isolation.
-- `src/lode/application/investigation_policy.py`: server-owned `fast`,
-  `balanced`, and `deep` immutable investigation policy profiles.
+- `src/lode/application/investigation_limits.py`: code-owned hard investigation
+  ceilings frozen into each investigation; users and models cannot configure or
+  enlarge them.
 - `src/lode/application/evidence_graph.py`: deterministic timeline, entity matching, observations, and evidence-backed causal projection.
 - `src/lode/infrastructure/investigation_snapshots.py`: immutable active/healthy connector capability freezing.
 - `src/lode/infrastructure/investigation_store.py`: decision, step, operation, event, budget, and replay persistence.
@@ -498,6 +502,15 @@ unless all three blocking conditions hold:
 Initial start and resume call the same backend readiness gate. Current
 repository analysis, healthy evidence connectors, and non-empty architecture
 context are explicit warnings; they do not block alert ingestion.
+The globally unique topic is editable only while ingestion is `draft` or
+`paused`. Changing it resets ingestion to `draft`, clears the prior start
+position and listener timestamps, and requires a fresh `earliest`/`latest`
+start after readiness passes. A `start` activation ignores historical Kafka
+consumer-group commits and freezes explicit per-partition targets; `resume`
+continues from committed offsets. Rebalances within the same activation
+generation never rewind an initialized partition. Active topic changes return
+HTTP 409 `ingestion_topic_change_requires_pause`, and the consumer drops the old
+topic on its next active-subscription refresh.
 Missing requirements return HTTP 409 using the canonical business-error
 envelope:
 
@@ -549,12 +562,17 @@ An investigation owns exactly one active decision wave:
 
 Parallelism is allowed only inside an explicit wave and must remain at or below four operations. Allocate operation IDs/ordinals before launching work, use `return_exceptions=True`, and persist each result separately. Do not overlap decision waves. `LODE_WORKER_CONCURRENCY` separately controls how many investigations workers may run.
 
-Investigation limits are immutable Workspace policy revisions, selected only as
-one of three server-owned profiles: `fast` (6 evidence steps, 5 model calls,
-4 native reads, 2 MiB, cost 25, 300 seconds), `balanced` (12, 10, 8, 8 MiB,
-100, 600 seconds), or `deep` (16, 14, 12, 16 MiB, 200, 900 seconds). New
-investigations freeze the selected revision; no budget is supplied through
-environment variables or model-policy JSON.
+Investigation depth is a runtime decision, not Workspace configuration. After
+every committed wave the planner receives the input, current hypotheses,
+archived evidence, conflicts, gaps, and remaining budget, then chooses
+`finish` or one to four next operations. The service owns immutable ceilings of
+16 decision waves, 14 model calls, 12 native reads, 16 MiB output, cost 200,
+900 wall-clock seconds, a 30-minute incident window on each side, and four
+parallel operations per wave. The complete ceiling and exact time window are
+frozen into each new investigation. Retry inherits the parent's exact budget
+and window but starts with independent usage. The runtime clamps stored values
+to the code ceiling and terminates as `investigation_budget_exhausted`; neither
+environment variables, model-policy JSON, nor model output can enlarge it.
 
 ## Configuration Authority
 
@@ -811,7 +829,7 @@ reconnects with the last observed cursor and preserves the last canonical view.
 
 The project has not released its database baseline.
 `alembic/versions/0001_initial.py` is the only revision and creates exactly the
-75 final business tables. There is one current schema and no parallel version,
+72 final business tables. There is one current schema and no parallel version,
 compatibility view, dual write, backfill, or old-schema adapter; unreleased
 development databases are recreated from the unique initial migration. After
 the first release, schema changes use ordinary forward migrations.
@@ -916,23 +934,31 @@ review date, context/output limits, capabilities, protocols, and immutable
 profile hash. A disappeared discovered model is marked `missing` and disabled;
 a manual selection remains usable only after a successful probe.
 Workspace creation atomically requires name and the globally unique Kafka topic,
-creates the balanced investigation policy, and creates architecture-context
-revision 1. The optional Workspace description is editable operator metadata.
+and creates architecture-context revision 1. The optional Workspace description
+and inactive Kafka topic are editable operator metadata.
 `/[locale]/admin/git` manages reusable GitHub, GitLab, and Gitee token accounts
 and repository-catalogue refreshes. It does not manage Git services, OAuth, or
 GitHub App credentials.
 `admin/workspaces/[id]` provides Overview, Model policy, Repositories,
 Connectors, and Members tabs. Each tab loads through an independent failure
 boundary, so a broken integration cannot hide readiness or other healthy
-configuration areas. The sole system administrator creates ordinary
-users and grants each Workspace `viewer` or `operator` access; it also grants a
-Git account to a Workspace and selects its repository access. There are no
-Workspace administrators. The Repositories tab starts and polls durable
+configuration areas. Overview groups the Kafka topic and Workspace description
+under one settings action and sends a single Workspace patch; architecture
+context uses a separate `Publish new revision` action because each update creates
+an immutable revision. Per-field generic Save buttons are not part of this flow.
+The Members tab independently loads its own member/user
+data, provides combined search plus permission/status filters, and uses compact
+rows with initials, status, permission, independent row actions, destructive
+confirmation, and a right-side add drawer. The sole system administrator creates
+ordinary users and grants each Workspace `viewer` or `operator` access. There
+are no Workspace administrators. The Repositories tab selects a searchable
+healthy Git account and then a searchable repository within the two combobox
+popovers; changing the account clears the repository immediately. It starts and polls durable
 repository analysis, shows the exact analyzed commit for every binding, and
 presents identified build units and components only after a successful run,
-not raw resource-graph payloads or the internal binding revision. Repository binding
-is searchable; repository access is a searchable multi-selector that preserves
-selection while filtering and can select or clear the current result set.
+not raw resource-graph payloads or the internal binding revision. The repository
+table includes the actual account used by every binding. There is no separate
+Workspace Git-account authorization step or entitlement selector.
 Connector forms use provider-specific fields and require verification before
 introspection; secrets are password inputs and are never rendered after
 submission. PostgreSQL/MySQL creation automatically chains connection
@@ -940,9 +966,8 @@ verification and safe-table discovery and surfaces readiness, exclusions,
 failure reason, and retry. Loki uses the recursive condition-tree editor. The
 system administrator manages bindings, immutable model-policy revisions,
 read-only repositories, connector instances, structured architecture context,
-and ingestion transitions. Investigation depth is presented as a server-owned
-evidence/model/time/cost budget profile; its immutable revision remains
-supporting audit information rather than the primary user concept.
+and ingestion transitions. Investigation depth has no control-plane field or UI;
+the planner decides whether to finish or continue inside the code-owned ceiling.
 
 The authenticated shell follows `apps/web/DESIGN.md`: 256px fixed desktop
 sidebar, 64px tablet rail, mobile navigation drawer, 56px context bar, neutral
@@ -1008,9 +1033,9 @@ against a fresh isolated upgraded PostgreSQL database. The external statistical
 gate is:
 
 Local release and seed fixtures use the current Git authorization chain:
-account, encrypted credential revision, repository visibility, Workspace grant,
-repository entitlement, then repository binding. Verification scripts must not
-bypass that chain with nullable entitlement IDs or removed repository fields.
+account, encrypted credential revision, current repository visibility/access,
+then a direct Workspace repository binding containing the account and repository
+IDs. Verification scripts must preserve that composite access constraint.
 
 ```bash
 make provider-release-check \

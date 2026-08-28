@@ -8,7 +8,6 @@ import type {
   InvestigationAuditPage,
   InvestigationListPage,
   InvestigationOverview,
-  InvestigationPolicy,
   InvestigationSummary,
   ModelBinding,
   ProviderAccountModel,
@@ -19,8 +18,6 @@ import type {
   RepositoryBinding,
   GitAccount,
   GitAccountRepository,
-  WorkspaceGitAccountGrant,
-  WorkspaceRepositoryCandidate,
   Workspace,
   WorkspaceArchitectureContext,
   WorkspaceReadiness,
@@ -152,7 +149,7 @@ export function removeWorkspaceMember(workspaceId: number | string, userId: numb
 export function createWorkspace(input: { name: string; description?: string; ingestion_topic: string }) {
   return send<Workspace>('/workspaces', 'POST', input);
 }
-export function updateWorkspace(id: number | string, input: { name?: string; description?: string }) {
+export function updateWorkspace(id: number | string, input: { name?: string; description?: string; ingestion_topic?: string }) {
   return send<Workspace>(`/workspaces/${id}`, 'PATCH', input);
 }
 export function startIngestion(id: number, startPosition: 'earliest' | 'latest') {
@@ -177,13 +174,6 @@ export function fetchPlatformSettings() { return get<PlatformSettings>('/platfor
 export function updatePlatformSettings(input: { ai_output_language: 'en' | 'zh'; expected_revision: number }) {
   return send<PlatformSettings>('/platform-settings', 'PUT', input);
 }
-export function fetchInvestigationPolicy(workspaceId: number | string) {
-  return get<InvestigationPolicy>(`/workspaces/${workspaceId}/investigation-policy`);
-}
-export function updateInvestigationPolicy(workspaceId: number | string, profile: InvestigationPolicy['profile']) {
-  return send<InvestigationPolicy>(`/workspaces/${workspaceId}/investigation-policy`, 'PUT', { profile });
-}
-
 export function fetchProviderAccounts() { return get<ProviderAccount[]>('/ai-provider-accounts'); }
 export function createProviderAccount(input: Record<string, unknown>) {
   return send<ProviderAccount>('/ai-provider-accounts', 'POST', input);
@@ -230,15 +220,6 @@ export function syncGitAccount(id: number) { return send<GitAccount>(`/git-accou
 export function fetchGitAccountRepositories(id: number) {
   return get<GitAccountRepository[]>(`/git-accounts/${id}/repositories`);
 }
-export function fetchWorkspaceGitAccountGrants(workspaceId: number | string) {
-  return get<WorkspaceGitAccountGrant[]>(`/workspaces/${workspaceId}/git-account-grants`);
-}
-export function createWorkspaceGitAccountGrant(workspaceId: number | string, input: { account_connection_id: number; repository_scope: 'selected' | 'all_visible'; repository_ids?: number[] }) {
-  return send<WorkspaceGitAccountGrant>(`/workspaces/${workspaceId}/git-account-grants`, 'POST', input);
-}
-export function fetchWorkspaceRepositoryCandidates(workspaceId: number | string) {
-  return get<WorkspaceRepositoryCandidate[]>(`/workspaces/${workspaceId}/repository-candidates`);
-}
 export function fetchBuildUnits(workspaceId: number | string) {
   return get<{ items: BuildUnit[] }>(`/workspaces/${workspaceId}/build-units`);
 }
@@ -251,7 +232,7 @@ export function fetchRepositoryAnalysis(workspaceId: number | string) {
 export function startRepositoryAnalysis(workspaceId: number | string) {
   return send<RepositoryAnalysisJob>(`/workspaces/${workspaceId}/repository-analysis`, 'POST');
 }
-export function bindRepository(workspaceId: number | string, input: { repository_entitlement_id: number; role: string; priority?: number; description?: string }) {
+export function bindRepository(workspaceId: number | string, input: { account_connection_id: number; repository_id: number; role: string; priority?: number; description?: string }) {
   return send<RepositoryBinding>(`/workspaces/${workspaceId}/repositories`, 'POST', input);
 }
 export function fetchConnectorKinds() {

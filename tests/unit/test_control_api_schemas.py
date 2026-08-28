@@ -8,15 +8,15 @@ from pydantic import ValidationError
 from lode.api.control_schemas import (
     ConnectorCreate,
     GitAccountCreate,
-    WorkspaceGitAccountGrantCreate,
     ModelBindingInput,
     ProviderAccountModelSelection,
     ModelPolicyInput,
     PlatformSettingsUpdate,
     ProviderAccountPatch,
-    InvestigationPolicyPut,
+    RepositoryBind,
     WorkspaceArchitectureContextPut,
     WorkspaceCreate,
+    WorkspacePatch,
 )
 
 
@@ -79,7 +79,7 @@ def test_connector_creation_rejects_raw_configuration_documents() -> None:
         )
 
 
-def test_git_account_and_workplace_access_forms_require_complete_authorization() -> None:
+def test_git_account_and_repository_binding_forms_require_complete_authorization() -> None:
     with pytest.raises(ValidationError):
         GitAccountCreate.model_validate(
             {
@@ -87,10 +87,14 @@ def test_git_account_and_workplace_access_forms_require_complete_authorization()
                 "name": "GitHub",
             }
         )
-    with pytest.raises(ValidationError):
-        WorkspaceGitAccountGrantCreate.model_validate(
-            {"account_connection_id": 1, "repository_scope": "selected"}
-        )
+    binding = RepositoryBind.model_validate(
+        {
+            "account_connection_id": 1,
+            "repository_id": 2,
+            "role": "runtime_source",
+        }
+    )
+    assert binding.repository_id == 2
 
 
 def test_provider_patch_rejects_removed_organization_and_project_fields() -> None:
@@ -115,22 +119,25 @@ def test_provider_protocol_matrix_is_closed() -> None:
 def test_entity_ids_are_positive_javascript_safe_integers() -> None:
     for value in (0, 2**52):
         with pytest.raises(ValidationError):
-            WorkspaceGitAccountGrantCreate.model_validate(
+            RepositoryBind.model_validate(
                 {
                     "account_connection_id": value,
-                    "repository_scope": "all_visible",
-                    "repository_ids": [],
+                    "repository_id": 1,
+                    "role": "runtime_source",
                 }
             )
 
 
-def test_investigation_profile_and_ai_output_language_are_closed_sets() -> None:
-    assert InvestigationPolicyPut(profile="balanced").profile == "balanced"
+def test_ai_output_language_is_a_closed_set() -> None:
     assert PlatformSettingsUpdate(ai_output_language="zh", expected_revision=1).ai_output_language == "zh"
     with pytest.raises(ValidationError):
-        InvestigationPolicyPut(profile="custom")
-    with pytest.raises(ValidationError):
         PlatformSettingsUpdate(ai_output_language="ja", expected_revision=1)
+
+
+def test_workspace_topic_patch_is_trimmed_and_nonblank() -> None:
+    assert WorkspacePatch(ingestion_topic=" incident.checkout.v2 ").ingestion_topic == "incident.checkout.v2"
+    with pytest.raises(ValidationError):
+        WorkspacePatch(ingestion_topic="  ")
 
 
 def test_workspace_description_and_architecture_context_are_bounded_structured_inputs() -> None:

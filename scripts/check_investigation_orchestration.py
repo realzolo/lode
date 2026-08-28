@@ -13,7 +13,6 @@ from sqlalchemy import func, select
 from lode.application.decision_policy import DecisionPolicyEngine
 from lode.application.evidence_graph import EvidenceGraphProjector
 from lode.application.intake import ManualIncidentRequest, normalize_manual
-from lode.application.investigation_policy import investigation_policy_columns
 from lode.application.investigation import DurableWaveCoordinator
 from lode.crypto import encrypt_value
 from lode.db.models import (
@@ -24,7 +23,6 @@ from lode.db.models import (
     InvestigationJob,
     InvestigationOperation,
     InvestigationStep,
-    InvestigationPolicyRevision,
     ObservedEntity,
     ObservedEvent,
     ObservedRelation,
@@ -147,16 +145,6 @@ async def _fixture() -> tuple[int, int, int]:
         )
         session.add_all([user, workspace])
         await session.flush()
-        investigation_policy = InvestigationPolicyRevision(
-            workspace_id=workspace.id,
-            profile="balanced",
-            **investigation_policy_columns("balanced"),
-            revision=1,
-            created_by=user.id,
-        )
-        session.add(investigation_policy)
-        await session.flush()
-        workspace.investigation_policy_revision_id = investigation_policy.id
         architecture_context = WorkspaceArchitectureContextRevision(
             workspace_id=workspace.id,
             entries=[],

@@ -14,7 +14,7 @@ dual writes, or historical payload converters.
 
 Each investigation freezes its Workspace control state at intake: repository
 bindings, resource graph, Connector scopes and health, model bindings and
-policy, the selected investigation-depth policy revision, output language, and
+policy, its code-owned execution ceiling and time window, output language, and
 immutable normalized input. The worker then runs
 serial decision waves. Independent operations inside one wave may run in
 parallel, with a hard maximum of four.
@@ -63,6 +63,11 @@ resuming ingestion is allowed only when:
 
 Repository, ResourceGraph, and evidence capability gaps remain visible but do
 not block intake.
+
+The topic can change while ingestion is draft or paused. A real change resets
+ingestion to draft, releases the old subscription, and requires a new explicit
+`earliest` or `latest` start. Fresh starts ignore historical consumer-group
+commits; resume alone continues from committed offsets.
 
 The sole system administrator manages encrypted AI provider credentials,
 Workspace configuration, users, and Workspace grants. Ordinary users enter
@@ -137,7 +142,8 @@ operation events by sequence, accepts `Last-Event-ID`, emits
 canonical reload.
 
 The Next.js Web app provides global model and AI-output-language settings,
-Workspace settings including a three-profile investigation-depth selector,
+Workspace topic/readiness settings, searchable direct account/repository
+binding, and a searchable/filterable member list with row-level actions,
 manual intake, a searchable investigation list, and a responsive investigation
 detail that leads with the incident summary, cause, diagnosis, evidence, and
 next action. Technical snapshots remain available only in an explicit technical

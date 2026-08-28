@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -11,9 +12,198 @@ from sqlalchemy import select
 from lode.api.main import app
 from lode.api.routes import control_plane
 from lode.config import settings
-from lode.db.models import User, WorkspacePermission
+from lode.db.models import (
+    GitAccount,
+    GitAccountRepositoryAccess,
+    GitRepository,
+    User,
+    Workspace,
+    WorkspacePermission,
+)
 from lode.db.session import AsyncSessionLocal
 from lode.security import create_token, hash_password
+
+
+async def _admin_headers() -> dict[str, str]:
+    async with AsyncSessionLocal() as session:
+        admin = await session.scalar(select(User).where(User.is_system_admin))
+        assert admin is not None
+        admin.must_change_password = False
+        await session.commit()
+        admin_id = admin.id
+    return {
+        "Authorization": "Bearer "
+        + create_token(admin_id, settings.jwt_signing_key, 3600)
+    }
+
+
+@pytest.mark.asyncio
+async def test_workspace_topic_changes_require_a_non_active_workspace() -> None:
+    suffix = uuid.uuid4().hex
+    headers = await _admin_headers()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/workspaces",
+            headers=headers,
+            json={"name": f"topic-first-{suffix}", "ingestion_topic": f"topic-a-{suffix}"},
+        )
+        second = await client.post(
+            "/workspaces",
+            headers=headers,
+            json={"name": f"topic-second-{suffix}", "ingestion_topic": f"topic-b-{suffix}"},
+        )
+        assert first.status_code == second.status_code == 201
+        first_id = first.json()["id"]
+        second_id = second.json()["id"]
+
+        draft_changed = await client.patch(
+            f"/workspaces/{first_id}",
+            headers=headers,
+            json={"ingestion_topic": f"topic-c-{suffix}"},
+        )
+        assert draft_changed.status_code == 200
+        assert draft_changed.json()["ingestion_topic"] == f"topic-c-{suffix}"
+        assert draft_changed.json()["ingestion_state"] == "draft"
+        assert draft_changed.json()["ingestion_start_position"] is None
+
+        conflict = await client.patch(
+            f"/workspaces/{first_id}",
+            headers=headers,
+            json={"ingestion_topic": f"topic-b-{suffix}"},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "workspace_topic_conflict"
+
+    async with AsyncSessionLocal() as session:
+        workspace = await session.get(Workspace, first_id)
+        assert workspace is not None
+        workspace.ingestion_state = "paused"
+        workspace.ingestion_start_position = "latest"
+        workspace.ingestion_activation_kind = "resume"
+        workspace.ingestion_started_at = datetime.now(UTC)
+        workspace.ingestion_paused_at = datetime.now(UTC)
+        await session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        paused_changed = await client.patch(
+            f"/workspaces/{first_id}",
+            headers=headers,
+            json={"ingestion_topic": f"topic-d-{suffix}"},
+        )
+        assert paused_changed.status_code == 200
+        assert paused_changed.json()["ingestion_state"] == "draft"
+        assert paused_changed.json()["ingestion_start_position"] is None
+
+    async with AsyncSessionLocal() as session:
+        workspace = await session.get(Workspace, second_id)
+        assert workspace is not None
+        workspace.ingestion_state = "active"
+        workspace.ingestion_start_position = "earliest"
+        workspace.ingestion_activation_kind = "start"
+        await session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        rejected = await client.patch(
+            f"/workspaces/{second_id}",
+            headers=headers,
+            json={"ingestion_topic": f"topic-e-{suffix}"},
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["error"]["code"] == "ingestion_topic_change_requires_pause"
+
+        profile_only = await client.patch(
+            f"/workspaces/{second_id}",
+            headers=headers,
+            json={"name": f"renamed-{suffix}", "description": "Still editable while active."},
+        )
+        assert profile_only.status_code == 200
+        assert profile_only.json()["name"] == f"renamed-{suffix}"
+
+
+@pytest.mark.asyncio
+async def test_repository_binding_uses_account_repository_access_directly() -> None:
+    suffix = uuid.uuid4().hex
+    headers = await _admin_headers()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace = await client.post(
+            "/workspaces",
+            headers=headers,
+            json={"name": f"repository-{suffix}", "ingestion_topic": f"repository-{suffix}"},
+        )
+        assert workspace.status_code == 201
+        workspace_id = workspace.json()["id"]
+
+    async with AsyncSessionLocal() as session:
+        account = GitAccount(
+            adapter_id="github",
+            api_url="https://api.github.invalid",
+            endpoint_identity_hash=suffix[:64].ljust(64, "a"),
+            name=f"account-{suffix}",
+            external_account_id=suffix,
+            external_account_login=f"login-{suffix}",
+            account_url=f"https://github.invalid/{suffix}",
+            verification_status="healthy",
+            verified_at=datetime.now(UTC),
+        )
+        repository = GitRepository(
+            adapter_id="github",
+            endpoint_identity_hash=account.endpoint_identity_hash,
+            external_repository_id=suffix,
+            name="checkout",
+            full_name=f"example/checkout-{suffix}",
+            repo_url=f"https://github.invalid/example/checkout-{suffix}.git",
+            web_url=f"https://github.invalid/example/checkout-{suffix}",
+            visibility="private",
+        )
+        session.add_all([account, repository])
+        await session.flush()
+        access = GitAccountRepositoryAccess(
+            account_connection_id=account.id,
+            repository_id=repository.id,
+            access_level="read",
+            state="available",
+            last_seen_at=datetime.now(UTC),
+        )
+        session.add(access)
+        await session.commit()
+        account_id = account.id
+        repository_id = repository.id
+
+    payload = {
+        "account_connection_id": account_id,
+        "repository_id": repository_id,
+        "role": "runtime_source",
+        "priority": 0,
+        "description": "Primary runtime source",
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created = await client.post(
+            f"/workspaces/{workspace_id}/repositories", headers=headers, json=payload
+        )
+        assert created.status_code == 201
+        assert created.json()["account_connection_id"] == account_id
+        assert created.json()["repository_id"] == repository_id
+        assert created.json()["account_name"] == f"account-{suffix}"
+        assert created.json()["external_account_login"] == f"login-{suffix}"
+
+        duplicate = await client.post(
+            f"/workspaces/{workspace_id}/repositories", headers=headers, json=payload
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["error"]["code"] == "repository_binding_conflict"
+
+    async with AsyncSessionLocal() as session:
+        access = await session.get(GitAccountRepositoryAccess, (account_id, repository_id))
+        assert access is not None
+        access.state = "lost"
+        await session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        lost = await client.post(
+            f"/workspaces/{workspace_id}/repositories", headers=headers, json=payload
+        )
+        assert lost.status_code == 409
+        assert lost.json()["error"]["code"] == "repository_access_lost"
 
 
 @pytest.mark.asyncio

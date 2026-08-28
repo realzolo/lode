@@ -142,62 +142,6 @@ class GitAccountRepositoryAccess(TimestampMixin, Base):
     )
 
 
-class WorkspaceGitAccountGrant(TimestampMixin, Base):
-    __tablename__ = "workspace_git_account_grants"
-
-    id: Mapped[int] = snowflake_pk()
-    workspace_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
-    )
-    account_connection_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_accounts.id", ondelete="RESTRICT"), nullable=False
-    )
-    repository_scope: Mapped[str] = mapped_column(Text, nullable=False, server_default="selected")
-    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
-    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
-
-    __table_args__ = (
-        CheckConstraint("repository_scope IN ('selected', 'all_visible')", name="repository_scope"),
-        CheckConstraint("state IN ('active', 'disabled')", name="state"),
-        CheckConstraint("revision > 0", name="revision_positive"),
-        UniqueConstraint("id", "workspace_id", name="uq_workspace_git_account_grant_workspace"),
-        UniqueConstraint("workspace_id", "account_connection_id", name="uq_workspace_git_account_grant"),
-    )
-
-
-class WorkspaceGitRepositoryEntitlement(TimestampMixin, Base):
-    __tablename__ = "workspace_git_repository_entitlements"
-
-    id: Mapped[int] = snowflake_pk()
-    workspace_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
-    )
-    grant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    repository_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False
-    )
-    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
-    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
-
-    __table_args__ = (
-        CheckConstraint("state IN ('active', 'disabled')", name="state"),
-        CheckConstraint("revision > 0", name="revision_positive"),
-        ForeignKeyConstraint(
-            ["grant_id", "workspace_id"],
-            ["workspace_git_account_grants.id", "workspace_git_account_grants.workspace_id"],
-            ondelete="CASCADE",
-            name="fk_workspace_git_repository_entitlements_grant_workspace",
-        ),
-        UniqueConstraint(
-            "id",
-            "workspace_id",
-            "repository_id",
-            name="uq_workspace_git_repository_entitlement_identity",
-        ),
-        UniqueConstraint("grant_id", "repository_id", name="uq_workspace_git_repository_entitlement"),
-    )
-
-
 class GitAccountSyncJob(TimestampMixin, Base):
     __tablename__ = "git_account_sync_jobs"
 
@@ -227,9 +171,9 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
     repository_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT"), nullable=False
+        BigInteger, nullable=False
     )
-    repository_entitlement_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    account_connection_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
@@ -247,14 +191,13 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
         CheckConstraint("descriptor_revision > 0", name="descriptor_revision_positive"),
         CheckConstraint("revision > 0", name="revision_positive"),
         ForeignKeyConstraint(
-            ["repository_entitlement_id", "workspace_id", "repository_id"],
+            ["account_connection_id", "repository_id"],
             [
-                "workspace_git_repository_entitlements.id",
-                "workspace_git_repository_entitlements.workspace_id",
-                "workspace_git_repository_entitlements.repository_id",
+                "git_account_repository_access.account_connection_id",
+                "git_account_repository_access.repository_id",
             ],
             ondelete="RESTRICT",
-            name="fk_workspace_repo_bindings_entitlement_scope",
+            name="fk_workspace_repo_bindings_account_repository_access",
         ),
         Index(
             "uq_workspace_repository_binding_active",

@@ -189,7 +189,6 @@ async def list_workbench_workspaces(
             "name": row.name,
             "ingestion_topic": row.ingestion_topic,
             "model_policy_revision_id": row.model_policy_revision_id,
-            "investigation_policy_revision_id": row.investigation_policy_revision_id,
             "ingestion_state": row.ingestion_state,
             "ingestion_version": row.ingestion_version,
             "ingestion_start_position": row.ingestion_start_position,

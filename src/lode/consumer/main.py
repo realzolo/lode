@@ -323,11 +323,11 @@ def _partition_resume_target(
     *,
     initialized_target: int | None,
     committed: int | None,
-    ingestion_version: int,
+    activation_kind: str | None,
 ) -> int | None:
     if initialized_target is not None:
         return initialized_target if committed is None else max(initialized_target, committed)
-    if ingestion_version > 1 and committed is not None:
+    if activation_kind == "resume" and committed is not None:
         return committed
     return None
 
@@ -372,7 +372,7 @@ async def initialize_partition_positions(
             target = _partition_resume_target(
                 initialized_target=None if initialized is None else initialized.target_offset,
                 committed=None if committed is None else int(committed),
-                ingestion_version=workspace.ingestion_version,
+                activation_kind=workspace.ingestion_activation_kind,
             )
             if target is None:
                 target = await _reset_offset(

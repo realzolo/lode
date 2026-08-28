@@ -11,7 +11,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    Numeric,
     Text,
     UniqueConstraint,
     text,
@@ -39,15 +38,6 @@ class Workspace(TimestampMixin, Base):
             name="fk_workspaces_model_policy_revision_id_model_policy_revisions",
         ),
     )
-    investigation_policy_revision_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey(
-            "investigation_policy_revisions.id",
-            ondelete="SET NULL",
-            use_alter=True,
-            name="fk_workspace_investigation_policy",
-        ),
-    )
     architecture_context_revision_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey(
@@ -60,6 +50,7 @@ class Workspace(TimestampMixin, Base):
     ingestion_state: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     ingestion_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     ingestion_start_position: Mapped[str | None] = mapped_column(Text)
+    ingestion_activation_kind: Mapped[str | None] = mapped_column(Text)
     ingestion_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ingestion_paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[int | None] = mapped_column(
@@ -75,6 +66,10 @@ class Workspace(TimestampMixin, Base):
         CheckConstraint(
             "ingestion_start_position IS NULL OR ingestion_start_position IN ('earliest', 'latest')",
             name="ingestion_start_position",
+        ),
+        CheckConstraint(
+            "ingestion_activation_kind IS NULL OR ingestion_activation_kind IN ('start', 'resume')",
+            name="ingestion_activation_kind",
         ),
     )
 
@@ -94,44 +89,6 @@ class PlatformSettings(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("id = 1", name="single_row"),
         CheckConstraint("ai_output_language IN ('en', 'zh')", name="output_language"),
-        CheckConstraint("revision > 0", name="revision_positive"),
-    )
-
-
-class InvestigationPolicyRevision(CreatedAtMixin, Base):
-    """Immutable, server-expanded investigation budget selected by a Workspace."""
-
-    __tablename__ = "investigation_policy_revisions"
-
-    id: Mapped[int] = snowflake_pk()
-    workspace_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
-    )
-    profile: Mapped[str] = mapped_column(Text, nullable=False)
-    max_evidence_steps: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_model_calls: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_native_reads: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_output_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_cost: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
-    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
-    window_before_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
-    window_after_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_by: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
-    )
-
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "revision", name="uq_investigation_policy_revision"),
-        CheckConstraint("profile IN ('fast', 'balanced', 'deep')", name="profile"),
-        CheckConstraint("max_evidence_steps > 0", name="max_evidence_steps_positive"),
-        CheckConstraint("max_model_calls > 0", name="max_model_calls_positive"),
-        CheckConstraint("max_native_reads >= 0", name="max_native_reads_nonnegative"),
-        CheckConstraint("max_output_bytes > 0", name="max_output_bytes_positive"),
-        CheckConstraint("max_cost >= 0", name="max_cost_nonnegative"),
-        CheckConstraint("timeout_seconds > 0", name="timeout_seconds_positive"),
-        CheckConstraint("window_before_seconds >= 0", name="window_before_nonnegative"),
-        CheckConstraint("window_after_seconds >= 0", name="window_after_nonnegative"),
         CheckConstraint("revision > 0", name="revision_positive"),
     )
 

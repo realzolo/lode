@@ -248,6 +248,37 @@ async def test_model_capability_failure_finishes_unavailable_without_operations(
     assert executor.calls == []
 
 
+async def test_model_call_budget_exhaustion_stops_before_planner_invocation() -> None:
+    class ExhaustedRepository(FakeRepository):
+        async def load_state(self, investigation_id):
+            state = await super().load_state(investigation_id)
+            return InvestigationState(
+                investigation_id=state.investigation_id,
+                wave_count=state.wave_count,
+                hypotheses=state.hypotheses,
+                evidence_refs=state.evidence_refs,
+                evidence_anchors=state.evidence_anchors,
+                allowed_value_refs=state.allowed_value_refs,
+                completed_fingerprints=state.completed_fingerprints,
+                budget=state.budget,
+                remaining_model_calls=0,
+            )
+
+    class UnexpectedPlanner:
+        async def decide(self, state, catalog, rejection=()):
+            raise AssertionError("planner must not run after its hard budget is exhausted")
+
+    repository = ExhaustedRepository()
+    result = await InvestigationOrchestrator(
+        planner=UnexpectedPlanner(),
+        repository=repository,
+        wave_coordinator=DurableWaveCoordinator(repository, CaptureExecutor()),
+    ).run(42)
+
+    assert result.result_state == "insufficient"
+    assert result.terminal_reason == "investigation_budget_exhausted"
+
+
 class ConcurrentExecutor:
     def __init__(self):
         self.in_flight = 0

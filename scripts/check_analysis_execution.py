@@ -11,7 +11,6 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from lode.application.intake import ManualIncidentRequest, normalize_manual
-from lode.application.investigation_policy import investigation_policy_columns
 from lode.crypto import encrypt_secret
 from lode.db.models import (
     AIInvocation,
@@ -24,7 +23,6 @@ from lode.db.models import (
     GitAccountCredentialRevision,
     GitRepository,
     InvestigationModelBindingSnapshot,
-    InvestigationPolicyRevision,
     InvestigationRepositorySnapshot,
     ProviderAccountModel,
     ModelPolicyRevision,
@@ -55,7 +53,7 @@ from lode.model_catalog import require_model
 from current_git_fixture import (
     FIXTURE_ADAPTER_ID,
     FIXTURE_ENDPOINT_HASH,
-    ensure_repository_entitlement,
+    ensure_repository_access,
 )
 
 
@@ -177,16 +175,6 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
         )
         session.add_all([user, workspace])
         await session.flush()
-        investigation_policy = InvestigationPolicyRevision(
-            workspace_id=workspace.id,
-            profile="balanced",
-            **investigation_policy_columns("balanced"),
-            revision=1,
-            created_by=user.id,
-        )
-        session.add(investigation_policy)
-        await session.flush()
-        workspace.investigation_policy_revision_id = investigation_policy.id
         architecture_context = WorkspaceArchitectureContextRevision(
             workspace_id=workspace.id,
             entries=[
@@ -575,7 +563,7 @@ async def _check_report_publication(
         )
         session.add(repository)
         await session.flush()
-        entitlement_id = await ensure_repository_entitlement(
+        account_connection_id = await ensure_repository_access(
             session, workspace_id, repository
         )
         account = (
@@ -594,7 +582,7 @@ async def _check_report_publication(
         binding = WorkspaceRepositoryBinding(
             workspace_id=workspace_id,
             repository_id=repository.id,
-            repository_entitlement_id=entitlement_id,
+            account_connection_id=account_connection_id,
             role="runtime_source",
             priority=0,
             state="active",

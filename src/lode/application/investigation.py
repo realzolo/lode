@@ -34,6 +34,7 @@ class InvestigationState:
     budget: DecisionBudget
     state_packet: Mapping[str, Any] = field(default_factory=dict)
     max_waves: int = 100
+    remaining_model_calls: int = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +188,12 @@ class InvestigationOrchestrator:
         rejections = 0
         while True:
             state = await self.repository.load_state(investigation_id)
-            if state.wave_count >= state.max_waves or state.budget.remaining_operations == 0:
+            if (
+                state.wave_count >= state.max_waves
+                or state.remaining_model_calls == 0
+                or state.budget.remaining_operations == 0
+                or state.budget.remaining_timeout_ms == 0
+            ):
                 await self.repository.finish_investigation(
                     investigation_id,
                     result_state="insufficient",

@@ -62,24 +62,24 @@ async def test_transient_handler_failure_leaves_offset_uncommitted() -> None:
 
 
 @pytest.mark.parametrize(
-    ("initialized", "committed", "version", "expected"),
+    ("initialized", "committed", "activation_kind", "expected"),
     [
-        (100, None, 1, 100),
-        (100, 80, 1, 100),
-        (100, 140, 1, 140),
-        (None, 140, 2, 140),
-        (None, 140, 1, None),
-        (None, None, 2, None),
+        (100, None, "start", 100),
+        (100, 80, "start", 100),
+        (100, 140, "start", 140),
+        (None, 140, "resume", 140),
+        (None, 140, "start", None),
+        (None, None, "resume", None),
     ],
 )
 def test_partition_position_never_rewinds_a_frozen_activation_target(
     initialized: int | None,
     committed: int | None,
-    version: int,
+    activation_kind: str,
     expected: int | None,
 ) -> None:
     assert _partition_resume_target(
         initialized_target=initialized,
         committed=committed,
-        ingestion_version=version,
+        activation_kind=activation_kind,
     ) == expected

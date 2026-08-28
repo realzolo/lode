@@ -6,14 +6,13 @@
     "workspace": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "description", "ingestion_topic", "model_policy_revision_id", "investigation_policy_revision_id", "architecture_context_revision_id", "ingestion_state", "ingestion_version", "ingestion_start_position"],
+      "required": ["id", "name", "description", "ingestion_topic", "model_policy_revision_id", "architecture_context_revision_id", "ingestion_state", "ingestion_version", "ingestion_start_position"],
       "properties": {
         "id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
         "name": {"type": "string", "minLength": 1},
         "description": {"type": "string", "maxLength": 1000},
         "ingestion_topic": {"type": "string", "minLength": 1},
         "model_policy_revision_id": {"type": ["integer", "null"], "minimum": 1, "maximum": 4503599627370495},
-        "investigation_policy_revision_id": {"type": ["integer", "null"], "minimum": 1, "maximum": 4503599627370495},
         "architecture_context_revision_id": {"type": ["integer", "null"], "minimum": 1, "maximum": 4503599627370495},
         "ingestion_state": {"type": "string", "enum": ["draft", "active", "paused"]},
         "ingestion_version": {"type": "integer", "minimum": 0},
@@ -103,25 +102,6 @@
       "required": ["ai_output_language", "revision"],
       "properties": {
         "ai_output_language": {"type": "string", "enum": ["en", "zh"]},
-        "revision": {"type": "integer", "minimum": 1}
-      }
-    },
-    "investigationPolicyRevision": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "workspace_id", "profile", "max_evidence_steps", "max_model_calls", "max_native_reads", "max_output_bytes", "max_cost", "timeout_seconds", "window_before_seconds", "window_after_seconds", "revision"],
-      "properties": {
-        "id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
-        "workspace_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
-        "profile": {"type": "string", "enum": ["fast", "balanced", "deep"]},
-        "max_evidence_steps": {"type": "integer", "minimum": 1},
-        "max_model_calls": {"type": "integer", "minimum": 1},
-        "max_native_reads": {"type": "integer", "minimum": 0},
-        "max_output_bytes": {"type": "integer", "minimum": 1},
-        "max_cost": {"type": "number", "minimum": 0},
-        "timeout_seconds": {"type": "integer", "minimum": 1},
-        "window_before_seconds": {"type": "integer", "minimum": 0},
-        "window_after_seconds": {"type": "integer", "minimum": 0},
         "revision": {"type": "integer", "minimum": 1}
       }
     },

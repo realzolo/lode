@@ -11,7 +11,6 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from lode.application.intake import ManualIncidentRequest, normalize_manual
-from lode.application.investigation_policy import investigation_policy_columns
 from lode.crypto import decrypt_value, encrypt_value
 from lode.db.models import (
     AIInvocation,
@@ -25,7 +24,6 @@ from lode.db.models import (
     EvidenceConnector,
     EvidenceReadAttempt,
     Investigation,
-    InvestigationPolicyRevision,
     InvestigationConnectorSnapshot,
     InvestigationDecision,
     InvestigationModelBindingSnapshot,
@@ -174,16 +172,6 @@ async def _create_fixture(session):
     )
     session.add_all([user, workspace])
     await session.flush()
-    investigation_policy = InvestigationPolicyRevision(
-        workspace_id=workspace.id,
-        profile="balanced",
-        **investigation_policy_columns("balanced"),
-        revision=1,
-        created_by=user.id,
-    )
-    session.add(investigation_policy)
-    await session.flush()
-    workspace.investigation_policy_revision_id = investigation_policy.id
     architecture_context = WorkspaceArchitectureContextRevision(
         workspace_id=workspace.id,
         entries=[],

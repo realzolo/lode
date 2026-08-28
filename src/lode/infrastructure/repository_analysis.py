@@ -17,8 +17,6 @@ from lode.db.models import (
     GitAccountRepositoryAccess,
     GitRepository,
     RepositoryAnalysisJob,
-    WorkspaceGitAccountGrant,
-    WorkspaceGitRepositoryEntitlement,
     WorkspaceRepositoryBinding,
 )
 from lode.git_accounts import credential_identity_hash, decode_credential_secret
@@ -178,15 +176,9 @@ class RepositoryAnalysisService:
                         )
                         .join(GitRepository, GitRepository.id == WorkspaceRepositoryBinding.repository_id)
                         .join(
-                            WorkspaceGitRepositoryEntitlement,
-                            WorkspaceGitRepositoryEntitlement.id
-                            == WorkspaceRepositoryBinding.repository_entitlement_id,
+                            GitAccount,
+                            GitAccount.id == WorkspaceRepositoryBinding.account_connection_id,
                         )
-                        .join(
-                            WorkspaceGitAccountGrant,
-                            WorkspaceGitAccountGrant.id == WorkspaceGitRepositoryEntitlement.grant_id,
-                        )
-                        .join(GitAccount, GitAccount.id == WorkspaceGitAccountGrant.account_connection_id)
                         .join(
                             GitAccountCredentialRevision,
                             GitAccountCredentialRevision.id == GitAccount.current_credential_revision_id,
@@ -200,8 +192,6 @@ class RepositoryAnalysisService:
                             WorkspaceRepositoryBinding.workspace_id == job.workspace_id,
                             WorkspaceRepositoryBinding.id.in_(job.requested_binding_ids),
                             WorkspaceRepositoryBinding.state == "active",
-                            WorkspaceGitRepositoryEntitlement.state == "active",
-                            WorkspaceGitAccountGrant.state == "active",
                             GitAccount.state == "active",
                             GitAccount.verification_status == "healthy",
                             GitAccountRepositoryAccess.state == "available",

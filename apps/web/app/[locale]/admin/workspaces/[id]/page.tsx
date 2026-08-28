@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, CirclePause, CirclePlay, Database, GitBranch, Link2, Plus, RefreshCw, ScanSearch, ShieldCheck, Trash2, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, CirclePause, CirclePlay, Database, GitBranch, Plus, RefreshCw, Save, ScanSearch, Trash2, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
@@ -11,13 +11,15 @@ import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs } from '@/components/ui/tabs';
 import { ListSkeleton } from '@/components/ui/list-skeleton';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { EvidenceConnectorDialog as ConnectorDialog } from '@/components/evidence-connector-dialog';
+import { WorkspaceMembersTab } from '@/components/workspace-members-tab';
 import {
   bindRepository,
   apiErrorMessage,
   fetchBuildUnits,
   createModelBinding,
-  createWorkspaceGitAccountGrant,
   fetchWorkspaceReadiness,
   fetchWorkspaceArchitectureContext,
   updateWorkspaceArchitectureContext,
@@ -32,21 +34,13 @@ import {
   fetchConnectors,
   fetchGitAccounts,
   fetchGitAccountRepositories,
-  fetchInvestigationPolicy,
   fetchModelBindings,
   fetchProviderAccounts,
   fetchRepositories,
   fetchWorkspace,
-  fetchWorkspaceMembers,
-  fetchUsers,
-  fetchWorkspaceGitAccountGrants,
-  fetchWorkspaceRepositoryCandidates,
   introspectConnector,
   publishModelPolicy,
   testConnector,
-  updateInvestigationPolicy,
-  putWorkspaceMember,
-  removeWorkspaceMember,
 } from '@/lib/api';
 import { Link } from '@/lib/navigation';
 import type {
@@ -55,7 +49,6 @@ import type {
   EvidenceConnector,
   GitAccount,
   GitAccountRepository,
-  InvestigationPolicy,
   ModelBinding,
   ProviderAccount,
   ProviderAccountModel,
@@ -65,10 +58,6 @@ import type {
   WorkspaceArchitectureContext,
   WorkspaceReadiness,
   ArchitectureContextKind,
-  WorkspaceGitAccountGrant,
-  WorkspaceRepositoryCandidate,
-  WorkspaceMember,
-  CurrentUser,
 } from '@/lib/types';
 
 const roles = ['planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor'];
@@ -103,31 +92,24 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
   const [repositories, setRepositories] = useState<RepositoryBinding[]>([]);
   const [buildUnits, setBuildUnits] = useState<BuildUnit[]>([]);
   const [components, setComponents] = useState<Component[]>([]);
-  const [candidates, setCandidates] = useState<WorkspaceRepositoryCandidate[]>([]);
-  const [grants, setGrants] = useState<WorkspaceGitAccountGrant[]>([]);
   const [connectors, setConnectors] = useState<EvidenceConnector[]>([]);
-  const [investigationPolicy, setInvestigationPolicy] = useState<InvestigationPolicy | null>(null);
   const [kinds, setKinds] = useState<Array<{ kind: string; language: string; capabilities: string[]; secret_fields: string[] }>>([]);
-  const [members, setMembers] = useState<WorkspaceMember[]>([]);
-  const [users, setUsers] = useState<CurrentUser[]>([]);
   const [readiness, setReadiness] = useState<WorkspaceReadiness | null>(null);
   const [architectureContext, setArchitectureContext] = useState<WorkspaceArchitectureContext | null>(null);
   const [repositoryAnalysis, setRepositoryAnalysis] = useState<RepositoryAnalysisJob | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [dialog, setDialog] = useState<'binding' | 'repository' | 'grant' | 'connector' | null>(null);
+  const [dialog, setDialog] = useState<'binding' | 'repository' | 'connector' | null>(null);
 
   const load = useCallback(async () => {
     try {
       const ws = await fetchWorkspace(params.id);
       setWorkspace(ws);
-      const [modelResult, repositoryResult, connectorResult, overviewResult, memberResult] = await Promise.allSettled([
+      const [modelResult, repositoryResult, connectorResult, overviewResult] = await Promise.allSettled([
         Promise.all([fetchModelBindings(params.id), fetchProviderAccounts()]),
         Promise.all([
           fetchRepositories(params.id),
-          fetchWorkspaceRepositoryCandidates(params.id),
-          fetchWorkspaceGitAccountGrants(params.id),
           fetchBuildUnits(params.id),
           fetchComponents(params.id),
           fetchRepositoryAnalysis(params.id),
@@ -136,9 +118,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
         Promise.all([
           fetchWorkspaceReadiness(params.id),
           fetchWorkspaceArchitectureContext(params.id),
-          fetchInvestigationPolicy(params.id),
         ]),
-        Promise.all([fetchWorkspaceMembers(params.id), fetchUsers()]),
       ]);
 
       if (modelResult.status === 'fulfilled') {
@@ -146,10 +126,8 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
         setAccountModels(flattenAccountModels(modelResult.value[1]));
       }
       if (repositoryResult.status === 'fulfilled') {
-        const [repoRows, candidateRows, grantRows, buildUnitRows, componentRows, analysis] = repositoryResult.value;
+        const [repoRows, buildUnitRows, componentRows, analysis] = repositoryResult.value;
         setRepositories(repoRows);
-        setCandidates(candidateRows);
-        setGrants(grantRows);
         setBuildUnits(buildUnitRows.items);
         setComponents(componentRows.items);
         setRepositoryAnalysis(analysis);
@@ -161,13 +139,8 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
       if (overviewResult.status === 'fulfilled') {
         setReadiness(overviewResult.value[0]);
         setArchitectureContext(overviewResult.value[1]);
-        setInvestigationPolicy(overviewResult.value[2]);
       }
-      if (memberResult.status === 'fulfilled') {
-        setMembers(memberResult.value[0]);
-        setUsers(memberResult.value[1].filter((user) => !user.is_system_admin));
-      }
-      const failures = [modelResult, repositoryResult, connectorResult, overviewResult, memberResult]
+      const failures = [modelResult, repositoryResult, connectorResult, overviewResult]
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result) => apiErrorMessage(result.reason, tc('requestFailed')));
       setError([...new Set(failures)].join(' '));
@@ -184,12 +157,12 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
   }, [load, repositoryAnalysis?.state, workspace?.ingestion_state]);
 
   const tabs = useMemo(() => [
-    { value: 'overview', label: t('overview'), content: <Overview workspace={workspace} readiness={readiness} policy={investigationPolicy} architectureContext={architectureContext} onChanged={load} onWorkspaceChanged={setWorkspace} /> },
+    { value: 'overview', label: t('overview'), content: <Overview workspace={workspace} readiness={readiness} architectureContext={architectureContext} onChanged={load} onWorkspaceChanged={setWorkspace} /> },
     { value: 'models', label: t('modelPolicy'), content: <Models workspaceId={params.id} bindings={bindings} accountModels={accountModels} onAdd={() => setDialog('binding')} onChanged={load} /> },
-    { value: 'repositories', label: t('repositories'), content: <Repositories workspaceId={params.id} rows={repositories} grants={grants} buildUnits={buildUnits} components={components} analysis={repositoryAnalysis} onAuthorize={() => setDialog('grant')} onBind={() => setDialog('repository')} onChanged={load} /> },
+    { value: 'repositories', label: t('repositories'), content: <Repositories workspaceId={params.id} rows={repositories} buildUnits={buildUnits} components={components} analysis={repositoryAnalysis} onBind={() => setDialog('repository')} onChanged={load} /> },
     { value: 'connectors', label: t('connectors'), content: <Connectors workspaceId={params.id} rows={connectors} onAdd={() => setDialog('connector')} onChanged={load} /> },
-    { value: 'members', label: t('members'), content: <Members workspaceId={params.id} members={members} users={users} onChanged={load} /> },
-  ], [accountModels, architectureContext, bindings, buildUnits, components, connectors, grants, investigationPolicy, load, members, params.id, readiness, repositories, repositoryAnalysis, t, users, workspace]);
+    { value: 'members', label: t('members'), content: <WorkspaceMembersTab workspaceId={params.id} /> },
+  ], [accountModels, architectureContext, bindings, buildUnits, components, connectors, load, params.id, readiness, repositories, repositoryAnalysis, t, workspace]);
 
   if (loading) return <main className="dashboard-page space-y-6"><div className="h-16 border-b" /><ListSkeleton rows={7} columns={5} /></main>;
 
@@ -205,33 +178,27 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     {error && <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
     <Tabs items={tabs} />
     <BindingDialog open={dialog === 'binding'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} accountModels={accountModels} onCreated={load} />
-    <RepositoryDialog open={dialog === 'repository'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} candidates={candidates} onCreated={load} />
-    <GrantDialog open={dialog === 'grant'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} onCreated={load} />
+    <RepositoryDialog open={dialog === 'repository'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} onCreated={load} />
     <ConnectorDialog open={dialog === 'connector'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} kinds={kinds} onCreated={load} />
   </main>;
 }
 
-function Members({ workspaceId, members, users, onChanged }: { workspaceId: string; members: WorkspaceMember[]; users: CurrentUser[]; onChanged: () => Promise<void> }) {
+function Overview({ workspace, readiness, architectureContext, onChanged, onWorkspaceChanged }: { workspace: Workspace | null; readiness: WorkspaceReadiness | null; architectureContext: WorkspaceArchitectureContext | null; onChanged: () => Promise<void>; onWorkspaceChanged: (workspace: Workspace) => void }) {
   const t = useTranslations('workspace');
   const tc = useTranslations('common');
-  const [userId, setUserId] = useState('');
-  const [permission, setPermission] = useState<'viewer' | 'operator'>('viewer');
-  const [busy, setBusy] = useState<string | null>(null);
-  async function save() { if (!userId) return; setBusy('grant'); try { await putWorkspaceMember(workspaceId, Number(userId), permission); await onChanged(); setUserId(''); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setBusy(null); } }
-  async function update(memberId: number, next: 'viewer' | 'operator') { setBusy(`update-${memberId}`); try { await putWorkspaceMember(workspaceId, memberId, next); await onChanged(); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setBusy(null); } }
-  async function revoke(memberId: number) { setBusy(`revoke-${memberId}`); try { await removeWorkspaceMember(workspaceId, memberId); await onChanged(); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setBusy(null); } }
-  return <section className="space-y-4"><div className="flex flex-wrap gap-2"><Select value={userId} disabled={busy !== null} onChange={(event) => setUserId(event.target.value)}><option value="">{t('selectUser')}</option>{users.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}</Select><Select value={permission} disabled={busy !== null} onChange={(event) => setPermission(event.target.value as 'viewer' | 'operator')}><option value="viewer">{t('viewer')}</option><option value="operator">{t('operator')}</option></Select><Button loading={busy === 'grant'} loadingText={tc('saving')} disabled={!userId || busy !== null} onClick={() => void save()}>{t('grant')}</Button></div><div className="table-wrap"><table className="table"><thead><tr><th>{t('member')}</th><th>{t('permissions')}</th><th /></tr></thead><tbody>{members.map((member) => <tr key={member.user_id}><td>{member.username}</td><td><Select value={member.permission} disabled={busy !== null} onChange={(event) => void update(member.user_id, event.target.value as 'viewer' | 'operator')}><option value="viewer">{t('viewer')}</option><option value="operator">{t('operator')}</option></Select></td><td><Button size="sm" variant="outline" loading={busy === `revoke-${member.user_id}`} disabled={busy !== null} onClick={() => void revoke(member.user_id)}>{t('revoke')}</Button></td></tr>)}{!members.length ? <tr><td colSpan={3} className="py-8 text-center text-sm text-muted-foreground">{t('noMembers')}</td></tr> : null}</tbody></table></div></section>;
-}
-
-function Overview({ workspace, readiness, policy, architectureContext, onChanged, onWorkspaceChanged }: { workspace: Workspace | null; readiness: WorkspaceReadiness | null; policy: InvestigationPolicy | null; architectureContext: WorkspaceArchitectureContext | null; onChanged: () => Promise<void>; onWorkspaceChanged: (workspace: Workspace) => void }) {
-  const t = useTranslations('workspace');
-  const tc = useTranslations('common');
-  const [savingProfile, setSavingProfile] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const [startPosition, setStartPosition] = useState<'earliest' | 'latest'>('latest');
   const [description, setDescription] = useState(workspace?.description || '');
-  const [savingDescription, setSavingDescription] = useState(false);
+  const [topic, setTopic] = useState(workspace?.ingestion_topic || '');
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [confirmTopicChange, setConfirmTopicChange] = useState(false);
   useEffect(() => setDescription(workspace?.description || ''), [workspace?.description]);
+  useEffect(() => setTopic(workspace?.ingestion_topic || ''), [workspace?.ingestion_topic]);
+  const descriptionDirty = workspace !== null && description !== workspace.description;
+  const topicDirty = workspace !== null && topic.trim() !== workspace.ingestion_topic;
+  const settingsDirty = descriptionDirty || topicDirty;
+  const canSaveSettings = settingsDirty
+    && (!topicDirty || (workspace?.ingestion_state !== 'active' && Boolean(topic.trim())));
   function checkDetail(check: WorkspaceReadiness['checks'][number]): string {
     if (check.code === 'kafka_topic') return String(check.details.topic || '');
     if (check.code === 'model_policy') {
@@ -241,11 +208,6 @@ function Overview({ workspace, readiness, policy, architectureContext, onChanged
     if (check.code === 'repositories') return t('activeRepositoryCount', { count: Number(check.details.active_count || 0) });
     if (check.code === 'evidence_connectors') return t('healthyConnectorCount', { count: Number(check.details.healthy_count || 0) });
     return t('architectureContextEntryCount', { count: Number(check.details.entry_count || 0) });
-  }
-  async function changeProfile(profile: InvestigationPolicy['profile']) {
-    if (!workspace || profile === policy?.profile) return;
-    setSavingProfile(true);
-    try { await updateInvestigationPolicy(workspace.id, profile); await onChanged(); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setSavingProfile(false); }
   }
   async function transition() {
     if (!workspace) return;
@@ -260,21 +222,43 @@ function Overview({ workspace, readiness, policy, architectureContext, onChanged
       await onChanged();
     } finally { setTransitioning(false); }
   }
-  async function saveDescription() {
+  async function persistSettings() {
     if (!workspace) return;
-    setSavingDescription(true);
-    try { onWorkspaceChanged(await updateWorkspace(workspace.id, { description })); }
-    catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); }
-    finally { setSavingDescription(false); }
+    const input: { description?: string; ingestion_topic?: string } = {};
+    if (descriptionDirty) input.description = description;
+    if (topicDirty) input.ingestion_topic = topic.trim();
+    if (!Object.keys(input).length) return;
+    setSavingSettings(true);
+    try {
+      const updated = await updateWorkspace(workspace.id, input);
+      onWorkspaceChanged(updated);
+      if (topicDirty) await onChanged();
+    } finally {
+      setSavingSettings(false);
+    }
   }
-  return <section className="space-y-5">
+  function saveSettings() {
+    if (topicDirty && workspace?.ingestion_state === 'paused') setConfirmTopicChange(true);
+    else void persistSettings()
+      .then(() => toast.success(t('workspaceSettingsUpdated')))
+      .catch((cause) => toast.error(apiErrorMessage(cause, tc('requestFailed'))));
+  }
+  return <><section className="space-y-5">
     <div className="flex flex-wrap items-center justify-between gap-4 border-b pb-5"><div><p className="text-xs text-muted-foreground">{t('configurationState')}</p><div className="mt-2 flex items-center gap-2 text-sm font-medium">{readiness?.can_start ? <CheckCircle2 className="text-success" size={18} /> : <XCircle className="text-destructive" size={18} />}{readiness?.can_start ? t('ready') : t('notReady')}</div></div><div className="flex flex-wrap items-end gap-2">{workspace?.ingestion_state === 'draft' ? <label className="field"><span className="field-label">{t('startPosition')}</span><Select value={startPosition} disabled={transitioning} onChange={(event) => setStartPosition(event.target.value as 'earliest' | 'latest')}><option value="latest">{t('startPositions.latest')}</option><option value="earliest">{t('startPositions.earliest')}</option></Select></label> : null}<Button loading={transitioning} disabled={!workspace || (workspace.ingestion_state !== 'active' && !readiness?.can_start)} onClick={() => void transition()}>{workspace?.ingestion_state === 'active' ? <CirclePause size={16} /> : <CirclePlay size={16} />}{workspace?.ingestion_state === 'active' ? t('pauseListening') : workspace?.ingestion_state === 'paused' ? t('resumeListening') : t('startListening')}</Button></div></div>
     <div><h2 className="text-sm font-semibold">{t('readiness')}</h2><div className="mt-3 divide-y border-y">{readiness?.checks.map((check) => <div key={check.code} className="flex items-center gap-3 py-3 text-sm">{check.outcome === 'passed' ? <CheckCircle2 className="shrink-0 text-success" size={17} /> : check.outcome === 'blocked' ? <XCircle className="shrink-0 text-destructive" size={17} /> : <AlertTriangle className="shrink-0 text-warning-deep" size={17} />}<div className="min-w-0"><p className="font-medium">{t(readinessCheckKeys[check.code])}</p><p className="mt-0.5 break-words text-xs text-muted-foreground">{checkDetail(check)}</p></div><span className="ml-auto shrink-0 text-xs text-muted-foreground">{t(`readinessOutcomes.${check.outcome}`)}</span></div>)}</div></div>
     <div className="border-t pt-5"><h2 className="text-sm font-semibold">{t('ingestionRuntime')}</h2><dl className="mt-3 grid gap-3 text-sm sm:grid-cols-4"><div><dt className="text-muted-foreground">{t('desiredState')}</dt><dd>{workspace ? t(`ingestionState.${workspace.ingestion_state}`) : '-'}</dd></div><div><dt className="text-muted-foreground">{t('observedState')}</dt><dd>{readiness ? t(`runtimeState.${readiness.runtime.observed_state}`) : '-'}</dd></div><div><dt className="text-muted-foreground">{t('assignedPartitions')}</dt><dd>{readiness?.runtime.assigned_partitions ?? 0}</dd></div><div><dt className="text-muted-foreground">{t('lastHeartbeat')}</dt><dd>{readiness?.runtime.last_heartbeat_at ? new Date(readiness.runtime.last_heartbeat_at).toLocaleString() : '-'}</dd></div></dl></div>
-    <div className="border-t pt-5"><h2 className="text-sm font-semibold">{t('workspaceDescription')}</h2><div className="mt-3 max-w-3xl space-y-2"><Textarea value={description} maxLength={1000} onChange={(event) => setDescription(event.target.value)} /><div className="flex justify-end"><Button size="sm" loading={savingDescription} disabled={!workspace || description === workspace.description} onClick={() => void saveDescription()}>{tc('save')}</Button></div></div></div>
-    <div className="border-t pt-5"><h2 className="text-sm font-semibold">{t('investigationDepth')}</h2><div className="mt-3 max-w-sm"><Select value={policy?.profile || ''} disabled={savingProfile} aria-busy={savingProfile} onChange={(event) => void changeProfile(event.target.value as InvestigationPolicy['profile'])}><option value="fast">{t('fast')}</option><option value="balanced">{t('balanced')}</option><option value="deep">{t('deep')}</option></Select><p className="mt-2 text-xs text-muted-foreground">{t('depthHelp', { revision: policy?.revision || '-' })}</p></div></div>
+    <div className="border-t pt-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h2 className="text-sm font-semibold">{t('workspaceSettings')}</h2>
+        <Button size="sm" loading={savingSettings} loadingText={tc('saving')} disabled={!workspace || !canSaveSettings} onClick={saveSettings}><Save size={15} />{t('saveSettings')}</Button>
+      </div>
+      <div className="mt-4 max-w-3xl space-y-5">
+        <label className="field"><span className="field-label">{t('kafkaTopic')}</span><Input className="mono" value={topic} maxLength={500} disabled={workspace?.ingestion_state === 'active' || savingSettings} onChange={(event) => setTopic(event.target.value)} /><span className="text-xs text-muted-foreground">{workspace?.ingestion_state === 'active' ? t('topicActiveHelp') : workspace?.ingestion_state === 'paused' ? t('topicPausedHelp') : t('topicDraftHelp')}</span></label>
+        <label className="field"><span className="field-label">{t('workspaceDescription')}</span><Textarea value={description} maxLength={1000} disabled={savingSettings} onChange={(event) => setDescription(event.target.value)} /></label>
+      </div>
+    </div>
     <ArchitectureContextEditor workspaceId={workspace?.id} context={architectureContext} onChanged={onChanged} />
-  </section>;
+  </section><ConfirmDialog open={confirmTopicChange} onOpenChange={setConfirmTopicChange} title={t('changeTopicTitle')} description={t('changeTopicDescription')} confirmLabel={t('changeTopic')} cancelLabel={tc('cancel')} onConfirm={persistSettings} successMessage={t('workspaceSettingsUpdated')} errorMessage={tc('requestFailed')} /></>;
 }
 
 function ArchitectureContextEditor({ workspaceId, context, onChanged }: { workspaceId: number | undefined; context: WorkspaceArchitectureContext | null; onChanged: () => Promise<void> }) {
@@ -282,13 +266,15 @@ function ArchitectureContextEditor({ workspaceId, context, onChanged }: { worksp
   const [entries, setEntries] = useState<WorkspaceArchitectureContext['entries']>(context?.entries || []);
   const [saving, setSaving] = useState(false);
   useEffect(() => setEntries(context?.entries || []), [context]);
+  const dirty = JSON.stringify(entries) !== JSON.stringify(context?.entries || []);
+  const invalid = entries.some((entry) => !entry.title.trim() || !entry.content.trim());
   function update(index: number, value: WorkspaceArchitectureContext['entries'][number]) { setEntries((current) => current.map((entry, position) => position === index ? value : entry)); }
-  async function save() { if (!workspaceId) return; setSaving(true); try { await updateWorkspaceArchitectureContext(workspaceId, entries); await onChanged(); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setSaving(false); } }
+  async function save() { if (!workspaceId) return; setSaving(true); try { await updateWorkspaceArchitectureContext(workspaceId, entries); await onChanged(); toast.success(t('contextPublished')); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setSaving(false); } }
   const kinds: ArchitectureContextKind[] = ['system_purpose', 'architecture', 'critical_flow', 'dependency', 'operational_convention'];
   return <div className="border-t pt-5">
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 className="text-sm font-semibold">{t('architectureContext')}</h2><p className="mt-1 text-xs text-muted-foreground">{t('contextRevision', { revision: context?.revision || 1 })}</p></div>
-      <Button size="sm" variant="outline" onClick={() => setEntries((current) => [...current, { kind: 'architecture', title: '', content: '' }])}><Plus size={14} />{t('addContextEntry')}</Button>
+      <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={saving} onClick={() => setEntries((current) => [...current, { kind: 'architecture', title: '', content: '' }])}><Plus size={14} />{t('addContextEntry')}</Button><Button size="sm" loading={saving} loadingText={t('publishingContext')} disabled={!workspaceId || !dirty || invalid} onClick={() => void save()}>{t('publishContextRevision')}</Button></div>
     </div>
     <div className="mt-3 space-y-3">
       {entries.map((entry, index) => <div key={index} className="grid gap-2 border-y py-3 sm:grid-cols-[180px_1fr_32px]">
@@ -298,7 +284,6 @@ function ArchitectureContextEditor({ workspaceId, context, onChanged }: { worksp
       </div>)}
       {!entries.length ? <p className="border-y py-8 text-center text-sm text-muted-foreground">{t('noArchitectureContext')}</p> : null}
     </div>
-    <div className="mt-3 flex justify-end"><Button size="sm" loading={saving} disabled={!workspaceId || entries.some((entry) => !entry.title.trim() || !entry.content.trim())} onClick={() => void save()}>{tc('save')}</Button></div>
   </div>;
 }
 
@@ -316,15 +301,15 @@ function Models({ workspaceId, bindings, accountModels, onAdd, onChanged }: { wo
   return <section className="space-y-4"><div className="flex flex-wrap justify-between gap-3"><p className="text-sm text-muted-foreground">{t('policyHelp')}</p><div className="flex gap-2"><Button size="sm" variant="outline" loading={publishing} loadingText={tc('saving')} onClick={() => void publish()} disabled={!bindings.length}>{t('publishPolicy')}</Button><Button size="sm" onClick={onAdd}><Plus size={15} />{t('addBinding')}</Button></div></div><div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('accountModel')}</th><th>{t('roles')}</th><th>{t('classes')}</th><th>{t('budget')}</th><th>{t('revision')}</th></tr></thead><tbody>{bindings.map((row) => <tr key={row.id}><td>{accountModels.find((item) => item.id === row.provider_account_model_id)?.display_name || row.provider_account_model_id}</td><td>{row.allowed_roles.map((role) => t(modelRoleKeys[role as keyof typeof modelRoleKeys])).join(', ')}</td><td>{row.execution_classes.map((value) => t(executionClassKeys[value as keyof typeof executionClassKeys])).join(', ')}</td><td>{t('calls', { calls: row.max_calls })}</td><td>{row.revision}</td></tr>)}{!bindings.length ? <tr><td colSpan={5} className="py-8 text-center text-sm text-muted-foreground">{t('noModelBindings')}</td></tr> : null}</tbody></table></div></div></section>;
 }
 
-function Repositories({ workspaceId, rows, grants, buildUnits, components, analysis, onAuthorize, onBind, onChanged }: { workspaceId: string; rows: RepositoryBinding[]; grants: WorkspaceGitAccountGrant[]; buildUnits: BuildUnit[]; components: Component[]; analysis: RepositoryAnalysisJob | null; onAuthorize: () => void; onBind: () => void; onChanged: () => Promise<void> }) {
+function Repositories({ workspaceId, rows, buildUnits, components, analysis, onBind, onChanged }: { workspaceId: string; rows: RepositoryBinding[]; buildUnits: BuildUnit[]; components: Component[]; analysis: RepositoryAnalysisJob | null; onBind: () => void; onChanged: () => Promise<void> }) {
   const t = useTranslations('workspace'); const tc = useTranslations('common');
   const [startingAnalysis, setStartingAnalysis] = useState(false);
   async function analyze() { setStartingAnalysis(true); try { await startRepositoryAnalysis(workspaceId); await onChanged(); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setStartingAnalysis(false); } }
   const analyzing = analysis?.state === 'queued' || analysis?.state === 'running';
   return <section className="space-y-4">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2 text-sm text-muted-foreground"><ShieldCheck size={16} />{t('authorizedAccounts', { count: grants.filter((grant) => grant.state === 'active').length })}</div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" loading={startingAnalysis || analyzing} disabled={!rows.length || analyzing} onClick={() => void analyze()}><ScanSearch size={15} />{analysis?.state === 'succeeded' || analysis?.state === 'failed' ? t('reanalyzeRepositories') : t('analyzeRepositories')}</Button><Button size="sm" variant="outline" onClick={onAuthorize}><Link2 size={15} />{t('authorizeGitAccount')}</Button><Button size="sm" onClick={onBind}><Plus size={15} />{t('bindRepository')}</Button></div></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">{t('repositoriesDescription')}</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" loading={startingAnalysis || analyzing} disabled={!rows.length || analyzing} onClick={() => void analyze()}><ScanSearch size={15} />{analysis?.state === 'succeeded' || analysis?.state === 'failed' ? t('reanalyzeRepositories') : t('analyzeRepositories')}</Button><Button size="sm" onClick={onBind}><Plus size={15} />{t('bindRepository')}</Button></div></div>
     {analysis ? <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-y py-3 text-sm"><span className="font-medium">{t('analysisState')}: {t(`repositoryAnalysisState.${analysis.state}`)}</span><span className="text-muted-foreground">{t('scannedFiles', { count: analysis.scanned_file_count })}</span><span className="text-muted-foreground">{t('analysisIssues', { count: analysis.issue_count })}</span>{analysis.failure_code ? <span className="text-destructive">{t(`repositoryAnalysisFailures.${analysis.failure_code}`)}</span> : null}</div> : null}
-    <div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('name')}</th><th>{t('provider')}</th><th>{t('role')}</th><th>{t('branch')}</th><th>{t('analyzedCommit')}</th></tr></thead><tbody>{rows.map((row) => { const revision = analysis?.source_revisions[String(row.id)]; return <tr key={row.id}><td className="font-medium" title={t('configurationRevision', { revision: row.revision })}><GitBranch className="mr-2 inline" size={15} />{row.full_name}</td><td>{row.provider_kind}</td><td>{t(repositoryRoleKeys[row.role as keyof typeof repositoryRoleKeys])}</td><td className="mono text-xs">{row.default_branch}</td><td className="mono text-xs">{revision ? revision.slice(0, 12) : '-'}</td></tr>; })}{!rows.length ? <tr><td colSpan={5} className="py-8 text-center text-sm text-muted-foreground">{t('noRepositories')}</td></tr> : null}</tbody></table></div></div>
+    <div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('name')}</th><th>{t('gitAccount')}</th><th>{t('provider')}</th><th>{t('role')}</th><th>{t('branch')}</th><th>{t('analyzedCommit')}</th></tr></thead><tbody>{rows.map((row) => { const revision = analysis?.source_revisions[String(row.id)]; return <tr key={row.id}><td className="font-medium" title={t('configurationRevision', { revision: row.revision })}><GitBranch className="mr-2 inline" size={15} />{row.full_name}</td><td><span className="block text-sm">{row.account_name}</span><span className="text-xs text-muted-foreground">@{row.external_account_login}</span></td><td>{row.provider_kind}</td><td>{t(repositoryRoleKeys[row.role as keyof typeof repositoryRoleKeys])}</td><td className="mono text-xs">{row.default_branch}</td><td className="mono text-xs">{revision ? revision.slice(0, 12) : '-'}</td></tr>; })}{!rows.length ? <tr><td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">{t('noRepositories')}</td></tr> : null}</tbody></table></div></div>
     <div className="space-y-3 border-t pt-5"><h2 className="text-sm font-semibold">{t('detectedProjectStructure')}</h2>{analysis?.state === 'succeeded' ? <div className="grid gap-5 lg:grid-cols-2"><div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('buildUnits')}</th><th>{t('buildSystem')}</th><th>{t('identity')}</th></tr></thead><tbody>{buildUnits.map((unit) => <tr key={unit.id}><td><span className="mono text-xs">{unit.source_root || unit.stable_key}</span><span className="mt-1 block text-xs text-muted-foreground">{unit.manifest_paths.join(', ')}</span></td><td>{t(buildSystemKeys[unit.build_system as keyof typeof buildSystemKeys])}</td><td>{t(identityStatusKeys[unit.identity_status])}</td></tr>)}{!buildUnits.length ? <tr><td colSpan={3} className="py-6 text-center text-sm text-muted-foreground">{t('noBuildUnits')}</td></tr> : null}</tbody></table></div></div><div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('components')}</th><th>{t('kind')}</th><th>{t('buildUnits')}</th></tr></thead><tbody>{components.map((component) => <tr key={component.id}><td className="font-medium">{component.display_name}</td><td>{t(componentKindKeys[component.kind as keyof typeof componentKindKeys])}</td><td className="mono text-xs">{component.source_bindings.map((binding) => binding.build_unit_key).join(', ')}</td></tr>)}{!components.length ? <tr><td colSpan={3} className="py-6 text-center text-sm text-muted-foreground">{t('noComponents')}</td></tr> : null}</tbody></table></div></div></div> : <div className="border-y py-8 text-center text-sm text-muted-foreground">{analyzing ? t('repositoryAnalysisRunning') : t('repositoryAnalysisNotRun')}</div>}</div>
   </section>;
 }
@@ -345,29 +330,85 @@ function BindingDialog({ open, onOpenChange, workspaceId, accountModels, onCreat
   return <Dialog open={open} onOpenChange={(value) => !saving && onOpenChange(value)}><DialogContent variant="drawer"><DialogHeader><DialogTitle>{t('addModelBinding')}</DialogTitle></DialogHeader><Select value={accountModel} disabled={saving} onChange={(event) => setAccountModel(event.target.value)}><option value="">{t('selectAccountModel')}</option>{accountModels.filter((row) => row.state === 'active').map((row) => <option key={row.id} value={row.id}>{row.display_name}</option>)}</Select><fieldset disabled={saving} className="grid gap-2 sm:grid-cols-2"><legend className="mb-2 text-sm font-medium">{t('allowedRoles')}</legend>{roles.map((role) => <label key={role} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selectedRoles.includes(role)} onChange={(event) => setRoles((current) => event.target.checked ? [...current, role] : current.filter((item) => item !== role))} />{t(modelRoleKeys[role as keyof typeof modelRoleKeys])}</label>)}</fieldset><DialogFooter><Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" loading={saving} loadingText={tc('saving')} disabled={!accountModel || !selectedRoles.length} onClick={() => void create()}>{t('create')}</Button></DialogFooter></DialogContent></Dialog>;
 }
 
-function RepositoryDialog({ open, onOpenChange, workspaceId, candidates, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; candidates: WorkspaceRepositoryCandidate[]; onCreated: () => Promise<void> }) {
-  const t = useTranslations('workspace'); const tc = useTranslations('common');
-  const [candidateId, setCandidateId] = useState(''); const [role, setRole] = useState('runtime_source');
+function RepositoryDialog({ open, onOpenChange, workspaceId, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; onCreated: () => Promise<void> }) {
+  const t = useTranslations('workspace');
+  const tc = useTranslations('common');
+  const [accounts, setAccounts] = useState<GitAccount[]>([]);
+  const [repositories, setRepositories] = useState<GitAccountRepository[]>([]);
+  const [accountId, setAccountId] = useState('');
+  const [repositoryId, setRepositoryId] = useState('');
+  const [role, setRole] = useState<keyof typeof repositoryRoleKeys>('runtime_source');
   const [description, setDescription] = useState('');
-  const [search, setSearch] = useState('');
+  const [loadingAccounts, setLoadingAccounts] = useState(false);
+  const [loadingRepositories, setLoadingRepositories] = useState(false);
   const [saving, setSaving] = useState(false);
-  const normalizedSearch = search.trim().toLowerCase();
-  const activeCandidates = candidates.filter((candidate) => !candidate.archived && (!normalizedSearch || `${candidate.full_name} ${candidate.account_name} ${candidate.provider_kind}`.toLowerCase().includes(normalizedSearch)));
-  async function create() { setSaving(true); try { await bindRepository(workspaceId, { repository_entitlement_id: Number(candidateId), role, priority: 0, description }); onOpenChange(false); setDescription(''); await onCreated(); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setSaving(false); } }
-  return <Dialog open={open} onOpenChange={(value) => !saving && onOpenChange(value)}><DialogContent variant="drawer"><DialogHeader><DialogTitle>{t('bindRepository')}</DialogTitle></DialogHeader><div className="space-y-3"><label className="field"><span className="field-label">{t('searchRepositories')}</span><Input type="search" disabled={saving} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('searchRepositoriesPlaceholder')} /></label><label className="field"><span className="field-label">{t('repository')}</span><Select value={candidateId} disabled={saving} onChange={(event) => setCandidateId(event.target.value)}><option value="">{t('selectRepository')}</option>{activeCandidates.map((candidate) => <option key={candidate.entitlement_id} value={candidate.entitlement_id}>{candidate.full_name} ({candidate.account_name})</option>)}</Select></label><label className="field"><span className="field-label">{t('role')}</span><Select value={role} disabled={saving} onChange={(event) => setRole(event.target.value)}>{repositoryRoles.map((value) => <option key={value} value={value}>{t(repositoryRoleKeys[value])}</option>)}</Select></label><label className="field"><span className="field-label">{t('repositoryDescription')}</span><Textarea value={description} maxLength={2000} disabled={saving} onChange={(event) => setDescription(event.target.value)} /></label>{!activeCandidates.length ? <p className="text-sm text-muted-foreground">{search ? t('noRepositorySearchResults') : t('noAuthorizedRepositories')}</p> : null}</div><DialogFooter><Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" loading={saving} loadingText={tc('saving')} disabled={!candidateId} onClick={() => void create()}>{t('create')}</Button></DialogFooter></DialogContent></Dialog>;
-}
 
-function GrantDialog({ open, onOpenChange, workspaceId, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; onCreated: () => Promise<void> }) {
-  const t = useTranslations('workspace'); const tc = useTranslations('common');
-  const [accounts, setAccounts] = useState<GitAccount[]>([]); const [repositories, setRepositories] = useState<GitAccountRepository[]>([]); const [accountId, setAccountId] = useState(''); const [scope, setScope] = useState<'selected' | 'all_visible'>('selected'); const [selected, setSelected] = useState<number[]>([]); const [search, setSearch] = useState('');
-  const [saving, setSaving] = useState(false);
-  useEffect(() => { if (!open) return; void fetchGitAccounts().then(setAccounts).catch((cause) => toast.error(apiErrorMessage(cause, tc('requestFailed')))); }, [open, tc]);
-  useEffect(() => { if (!accountId) { setRepositories([]); setSelected([]); return; } void fetchGitAccountRepositories(Number(accountId)).then((values) => { setRepositories(values); setSelected([]); }).catch((cause) => toast.error(apiErrorMessage(cause, tc('requestFailed')))); }, [accountId, tc]);
-  async function create() { setSaving(true); try { await createWorkspaceGitAccountGrant(workspaceId, { account_connection_id: Number(accountId), repository_scope: scope, repository_ids: scope === 'selected' ? selected : [] }); onOpenChange(false); await onCreated(); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setSaving(false); } }
-  function toggle(repositoryId: number, checked: boolean) { setSelected((current) => checked ? [...current, repositoryId] : current.filter((value) => value !== repositoryId)); }
-  const filtered = repositories.filter((repository) => !search.trim() || `${repository.full_name} ${repository.visibility}`.toLowerCase().includes(search.trim().toLowerCase()));
-  const visibleIds = filtered.filter((repository) => !repository.archived).map((repository) => repository.repository_id);
-  return <Dialog open={open} onOpenChange={(value) => !saving && onOpenChange(value)}><DialogContent variant="drawer"><DialogHeader><DialogTitle>{t('authorizeGitAccount')}</DialogTitle></DialogHeader><div className="space-y-3"><label className="field"><span className="field-label">{t('gitAccount')}</span><Select value={accountId} disabled={saving} onChange={(event) => setAccountId(event.target.value)}><option value="">{t('selectGitAccount')}</option>{accounts.filter((account) => account.state === 'active' && account.verification_status === 'healthy').map((account) => <option key={account.id} value={account.id}>{account.adapter_id} / {account.name} ({account.repository_count})</option>)}</Select></label><label className="field"><span className="field-label">{t('repositoryAccess')}</span><Select value={scope} disabled={saving} onChange={(event) => setScope(event.target.value as 'selected' | 'all_visible')}><option value="all_visible">{t('allVisibleRepositories')}</option><option value="selected">{t('selectedRepositories')}</option></Select></label>{scope === 'selected' ? <><Input type="search" disabled={saving} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('searchRepositoriesPlaceholder')} /><div className="flex items-center justify-between text-xs text-muted-foreground"><span>{t('repositoriesSelected', { count: selected.length })}</span><div className="flex gap-2"><button disabled={saving} className="hover:text-foreground disabled:opacity-50" onClick={() => setSelected((current) => [...new Set([...current, ...visibleIds])])}>{t('selectVisible')}</button><button disabled={saving} className="hover:text-foreground disabled:opacity-50" onClick={() => setSelected((current) => current.filter((id) => !visibleIds.includes(id)))}>{t('clearVisible')}</button></div></div><div className="max-h-56 overflow-auto border">{filtered.map((repository) => <label key={repository.repository_id} className="flex items-center gap-2 border-b px-3 py-2 text-sm last:border-0"><input type="checkbox" checked={selected.includes(repository.repository_id)} onChange={(event) => toggle(repository.repository_id, event.target.checked)} disabled={saving || repository.archived} />{repository.full_name}<span className="ml-auto text-xs text-muted-foreground">{t(`visibility.${repository.visibility}`)}</span></label>)}{!filtered.length ? <p className="px-3 py-8 text-center text-sm text-muted-foreground">{t('noRepositorySearchResults')}</p> : null}</div></> : null}</div><DialogFooter><Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" loading={saving} loadingText={tc('saving')} disabled={!accountId || (scope === 'selected' && !selected.length)} onClick={() => void create()}>{t('authorize')}</Button></DialogFooter></DialogContent></Dialog>;
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoadingAccounts(true);
+    void fetchGitAccounts()
+      .then((values) => { if (!cancelled) setAccounts(values); })
+      .catch((cause) => { if (!cancelled) toast.error(apiErrorMessage(cause, tc('requestFailed'))); })
+      .finally(() => { if (!cancelled) setLoadingAccounts(false); });
+    return () => { cancelled = true; };
+  }, [open, tc]);
+
+  useEffect(() => {
+    setRepositoryId('');
+    if (!accountId) {
+      setRepositories([]);
+      setLoadingRepositories(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingRepositories(true);
+    void fetchGitAccountRepositories(Number(accountId))
+      .then((values) => { if (!cancelled) setRepositories(values); })
+      .catch((cause) => {
+        if (!cancelled) {
+          setRepositories([]);
+          toast.error(apiErrorMessage(cause, tc('requestFailed')));
+        }
+      })
+      .finally(() => { if (!cancelled) setLoadingRepositories(false); });
+    return () => { cancelled = true; };
+  }, [accountId, tc]);
+
+  function close() {
+    onOpenChange(false);
+    setAccountId('');
+    setRepositoryId('');
+    setRepositories([]);
+    setDescription('');
+    setRole('runtime_source');
+  }
+
+  async function create() {
+    setSaving(true);
+    try {
+      await bindRepository(workspaceId, {
+        account_connection_id: Number(accountId),
+        repository_id: Number(repositoryId),
+        role,
+        priority: 0,
+        description,
+      });
+      close();
+      await onCreated();
+    } catch (cause) {
+      toast.error(apiErrorMessage(cause, tc('requestFailed')));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const healthyAccounts = accounts.filter(
+    (account) => account.state === 'active' && account.verification_status === 'healthy',
+  );
+  const availableRepositories = repositories.filter((repository) => !repository.archived);
+
+  return <Dialog open={open} onOpenChange={(value) => { if (!saving) value ? onOpenChange(true) : close(); }}><DialogContent variant="drawer"><DialogHeader><DialogTitle>{t('bindRepository')}</DialogTitle></DialogHeader><div className="space-y-4"><label className="field"><span className="field-label">{t('gitAccount')}</span><SearchableSelect value={accountId} onValueChange={setAccountId} options={healthyAccounts.map((account) => ({ value: String(account.id), label: account.name, description: `@${account.external_account_login}`, keywords: `${account.adapter_id} ${account.external_account_login}` }))} placeholder={t('selectGitAccount')} searchPlaceholder={t('searchGitAccountsPlaceholder')} emptyMessage={t('noHealthyGitAccounts')} disabled={saving} loading={loadingAccounts} ariaLabel={t('selectGitAccount')} /></label><label className="field"><span className="field-label">{t('repository')}</span><SearchableSelect value={repositoryId} onValueChange={setRepositoryId} options={availableRepositories.map((repository) => ({ value: String(repository.repository_id), label: repository.full_name, keywords: `${repository.visibility} ${repository.provider_kind}` }))} placeholder={accountId ? t('selectRepository') : t('selectGitAccountFirst')} searchPlaceholder={t('searchRepositoriesPlaceholder')} emptyMessage={t('noRepositorySearchResults')} disabled={saving || !accountId} loading={loadingRepositories} ariaLabel={t('selectRepository')} /></label><label className="field"><span className="field-label">{t('role')}</span><Select value={role} disabled={saving} onChange={(event) => setRole(event.target.value as keyof typeof repositoryRoleKeys)}>{repositoryRoles.map((value) => <option key={value} value={value}>{t(repositoryRoleKeys[value])}</option>)}</Select></label><label className="field"><span className="field-label">{t('repositoryDescription')}</span><Textarea value={description} maxLength={2000} disabled={saving} onChange={(event) => setDescription(event.target.value)} /></label></div><DialogFooter><Button variant="outline" disabled={saving} onClick={close}>{tc('cancel')}</Button><Button variant="primary" loading={saving} loadingText={tc('saving')} disabled={!accountId || !repositoryId} onClick={() => void create()}>{t('create')}</Button></DialogFooter></DialogContent></Dialog>;
 }
 
 function splitValues(value: string): string[] { return value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean); }

@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from lode.application.investigation import InvestigationState, PlannerUnavailable
+from lode.application.investigation_limits import INVESTIGATION_HARD_LIMITS
 from lode.application.model_planner import (
     ModelDecisionResult,
     decision_json_schema,
@@ -133,8 +134,22 @@ class AuditedInvestigationDecisionModel:
                     )
                 ).scalar_one()
             )
-            max_calls = int(investigation.execution_budget.get("max_model_calls", 10))
-            max_cost = float(investigation.execution_budget.get("max_cost", 100.0))
+            max_calls = min(
+                int(
+                    investigation.execution_budget.get(
+                        "max_model_calls", INVESTIGATION_HARD_LIMITS.max_model_calls
+                    )
+                ),
+                INVESTIGATION_HARD_LIMITS.max_model_calls,
+            )
+            max_cost = min(
+                float(
+                    investigation.execution_budget.get(
+                        "max_cost", INVESTIGATION_HARD_LIMITS.max_cost
+                    )
+                ),
+                float(INVESTIGATION_HARD_LIMITS.max_cost),
+            )
             context_policy = policy.context_policy
         state_packet = {
             "investigation": _plain(state.state_packet),
@@ -163,6 +178,7 @@ class AuditedInvestigationDecisionModel:
                 "output_bytes": state.budget.remaining_output_bytes,
                 "cost": state.budget.remaining_cost,
                 "timeout_ms": state.budget.remaining_timeout_ms,
+                "model_calls": state.remaining_model_calls,
             },
         }
         try:

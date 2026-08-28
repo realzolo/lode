@@ -14,7 +14,6 @@ from lode.db.models import (
     GitRepository,
     ProviderAccountModel,
     ModelPolicyRevision,
-    InvestigationPolicyRevision,
     User,
     Workspace,
     WorkspaceArchitectureContextRevision,
@@ -22,12 +21,11 @@ from lode.db.models import (
     WorkspaceRepositoryBinding,
 )
 from lode.model_catalog import require_model
-from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.session import AsyncSessionLocal
 from current_git_fixture import (
     FIXTURE_ADAPTER_ID,
     FIXTURE_ENDPOINT_HASH,
-    ensure_repository_entitlement,
+    ensure_repository_access,
 )
 WORKSPACE_NAME = "Checkout"
 INGESTION_TOPIC = "incident.checkout.v1"
@@ -58,16 +56,6 @@ async def main() -> None:
         )
         session.add(workspace)
         await session.flush()
-        investigation_policy = InvestigationPolicyRevision(
-            workspace_id=workspace.id,
-            profile="balanced",
-            **investigation_policy_columns("balanced"),
-            revision=1,
-            created_by=admin.id,
-        )
-        session.add(investigation_policy)
-        await session.flush()
-        workspace.investigation_policy_revision_id = investigation_policy.id
         architecture_context = WorkspaceArchitectureContextRevision(
             workspace_id=workspace.id,
             entries=[
@@ -98,12 +86,12 @@ async def main() -> None:
         )
         session.add(repository)
         await session.flush()
-        entitlement_id = await ensure_repository_entitlement(session, workspace.id, repository)
+        account_connection_id = await ensure_repository_access(session, workspace.id, repository)
         session.add(
             WorkspaceRepositoryBinding(
                 workspace_id=workspace.id,
                 repository_id=repository.id,
-                repository_entitlement_id=entitlement_id,
+                account_connection_id=account_connection_id,
                 role="runtime_source",
                 priority=0,
                 description="Seed runtime source",

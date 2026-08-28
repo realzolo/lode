@@ -12,6 +12,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.application.intake import NormalizedIncident, canonical_hash, mask_failure_payload
+from lode.application.investigation_limits import (
+    INVESTIGATION_HARD_LIMITS,
+    investigation_execution_budget,
+)
 from lode.crypto import encrypt_value
 from lode.db.models import (
     Alert,
@@ -21,7 +25,6 @@ from lode.db.models import (
     Investigation,
     InvestigationInput,
     InvestigationJob,
-    InvestigationPolicyRevision,
     InvestigationResourceGraphSnapshot,
     PlatformSettings,
     ResourceGraphRevision,
@@ -370,41 +373,34 @@ class PostgresIntakeStore:
             platform_settings = await self.session.get(PlatformSettings, 1)
             if platform_settings is None:
                 raise ValueError("Platform settings are unavailable")
-            policy_id = workspace.investigation_policy_revision_id
             output_language = platform_settings.ai_output_language
+            limits = INVESTIGATION_HARD_LIMITS
+            window_started_at = incident.occurred_at - timedelta(
+                seconds=limits.window_before_seconds
+            )
+            window_finished_at = incident.occurred_at + timedelta(
+                seconds=limits.window_after_seconds
+            )
+            execution_budget = investigation_execution_budget()
         else:
             parent = await self.session.get(Investigation, retry_of_id)
             if parent is None or parent.workspace_id != workspace_id:
                 raise ValueError("Retry investigation ownership is invalid")
-            policy_id = parent.investigation_policy_revision_id
             output_language = parent.output_language
-        if policy_id is None:
-            raise ValueError("Workspace investigation policy is unavailable")
-        policy = await self.session.get(InvestigationPolicyRevision, policy_id)
-        if policy is None or policy.workspace_id != workspace_id:
-            raise ValueError("Investigation policy ownership is invalid")
+            window_started_at = parent.window_started_at
+            window_finished_at = parent.window_finished_at
+            execution_budget = dict(parent.execution_budget)
         signature_hash = _signature(workspace_id, incident.event, incident.trace_id)
         investigation = Investigation(
             workspace_id=workspace_id,
-            investigation_policy_revision_id=policy.id,
             alert_id=alert_row_id,
             incident_id=incident_id,
             retry_of_id=retry_of_id,
             trigger_signature_hash=signature_hash,
             output_language=output_language,
-            window_started_at=incident.occurred_at
-            - timedelta(seconds=policy.window_before_seconds),
-            window_finished_at=incident.occurred_at
-            + timedelta(seconds=policy.window_after_seconds),
-            execution_budget={
-                "max_evidence_steps": policy.max_evidence_steps,
-                "max_model_calls": policy.max_model_calls,
-                "max_native_reads": policy.max_native_reads,
-                "max_output_bytes": policy.max_output_bytes,
-                "max_cost": float(policy.max_cost),
-                "timeout_seconds": policy.timeout_seconds,
-                "max_parallel_operations": 4,
-            },
+            window_started_at=window_started_at,
+            window_finished_at=window_finished_at,
+            execution_budget=execution_budget,
             engine_version="lode",
         )
         self.session.add(investigation)

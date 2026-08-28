@@ -48,6 +48,18 @@ _REMOVED_APPLICATION_ROUTE = "applica" + "tions"
 _REMOVED_SERVICE_FIELD = "service" + "_name"
 _REMOVED_REQUEST_FIELD = "request" + "_id"
 _REMOVED_COMMIT_FIELD = "git" + "_commit"
+_REMOVED_INVESTIGATION_POLICY_MODEL = "Investigation" + "PolicyRevision"
+_REMOVED_INVESTIGATION_POLICY_TABLE = "investigation" + "_policy_revisions"
+_REMOVED_INVESTIGATION_POLICY_FIELD = "investigation" + "_policy_revision_id"
+_REMOVED_EVIDENCE_STEP_LIMIT = "max" + "_evidence_steps"
+_REMOVED_GIT_GRANT_MODEL = "WorkspaceGit" + "AccountGrant"
+_REMOVED_GIT_ENTITLEMENT_MODEL = "WorkspaceGitRepository" + "Entitlement"
+_REMOVED_GIT_GRANT_TABLE = "workspace_git" + "_account_grants"
+_REMOVED_GIT_ENTITLEMENT_TABLE = "workspace_git_repository" + "_entitlements"
+_REMOVED_GIT_ENTITLEMENT_FIELD = "repository" + "_entitlement_id"
+_REMOVED_INVESTIGATION_POLICY_ROUTE = "investigation" + "-policy"
+_REMOVED_REPOSITORY_CANDIDATES_ROUTE = "repository" + "-candidates"
+_REMOVED_GIT_GRANTS_ROUTE = "git-account" + "-grants"
 
 RULES = (
     Rule(
@@ -74,6 +86,25 @@ RULES = (
     Rule(
         "removed_application_resource",
         re.compile(rf"/(?:{_REMOVED_APPLICATION_ROUTE})(?:\b|/)"),
+    ),
+    Rule(
+        "removed_investigation_policy",
+        re.compile(
+            rf"\b(?:{_REMOVED_INVESTIGATION_POLICY_MODEL}|"
+            rf"{_REMOVED_INVESTIGATION_POLICY_TABLE}|"
+            rf"{_REMOVED_INVESTIGATION_POLICY_FIELD}|"
+            rf"{_REMOVED_EVIDENCE_STEP_LIMIT})\b|"
+            rf"/(?:{_REMOVED_INVESTIGATION_POLICY_ROUTE})(?:\b|/)"
+        ),
+    ),
+    Rule(
+        "removed_git_authorization_layer",
+        re.compile(
+            rf"\b(?:{_REMOVED_GIT_GRANT_MODEL}|{_REMOVED_GIT_ENTITLEMENT_MODEL}|"
+            rf"{_REMOVED_GIT_GRANT_TABLE}|{_REMOVED_GIT_ENTITLEMENT_TABLE}|"
+            rf"{_REMOVED_GIT_ENTITLEMENT_FIELD})\b|"
+            rf"/(?:{_REMOVED_REPOSITORY_CANDIDATES_ROUTE}|{_REMOVED_GIT_GRANTS_ROUTE})(?:\b|/)"
+        ),
     ),
 )
 

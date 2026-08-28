@@ -30,11 +30,6 @@ class Investigation(TimestampMixin, Base):
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    investigation_policy_revision_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("investigation_policy_revisions.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
     alert_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("alerts.id", ondelete="SET NULL")
     )

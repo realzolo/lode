@@ -29,8 +29,6 @@ from lode.db.models import (
     RepositoryDescriptor,
     Workspace,
     WorkspaceArchitectureContextRevision,
-    WorkspaceGitAccountGrant,
-    WorkspaceGitRepositoryEntitlement,
     WorkspaceModelBinding,
     WorkspaceRepositoryBinding,
 )
@@ -123,19 +121,9 @@ class InvestigationControlSnapshotStore:
                         GitRepository.id == WorkspaceRepositoryBinding.repository_id,
                     )
                     .join(
-                        WorkspaceGitRepositoryEntitlement,
-                        WorkspaceGitRepositoryEntitlement.id
-                        == WorkspaceRepositoryBinding.repository_entitlement_id,
-                    )
-                    .join(
-                        WorkspaceGitAccountGrant,
-                        WorkspaceGitAccountGrant.id
-                        == WorkspaceGitRepositoryEntitlement.grant_id,
-                    )
-                    .join(
                         GitAccount,
                         GitAccount.id
-                        == WorkspaceGitAccountGrant.account_connection_id,
+                        == WorkspaceRepositoryBinding.account_connection_id,
                     )
                     .join(
                         GitAccountCredentialRevision,
@@ -150,10 +138,6 @@ class InvestigationControlSnapshotStore:
                     .where(
                         WorkspaceRepositoryBinding.workspace_id == workspace_id,
                         WorkspaceRepositoryBinding.state == "active",
-                        WorkspaceGitRepositoryEntitlement.workspace_id == workspace_id,
-                        WorkspaceGitRepositoryEntitlement.state == "active",
-                        WorkspaceGitAccountGrant.workspace_id == workspace_id,
-                        WorkspaceGitAccountGrant.state == "active",
                         GitAccount.state == "active",
                         GitAccount.verification_status == "healthy",
                         GitAccountRepositoryAccess.state == "available",

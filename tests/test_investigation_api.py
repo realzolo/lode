@@ -11,14 +11,12 @@ from sqlalchemy import select
 
 from lode.api.main import app
 from lode.config import settings
-from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.models import (
     Investigation,
     InvestigationDecision,
     InvestigationOperation,
     InvestigationOperationEvent,
     InvestigationStep,
-    InvestigationPolicyRevision,
     User,
     Workspace,
     WorkspaceArchitectureContextRevision,
@@ -46,16 +44,6 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         )
         session.add_all([user, workspace])
         await session.flush()
-        policy = InvestigationPolicyRevision(
-            workspace_id=workspace.id,
-            profile="balanced",
-            **investigation_policy_columns("balanced"),
-            revision=1,
-            created_by=user.id,
-        )
-        session.add(policy)
-        await session.flush()
-        workspace.investigation_policy_revision_id = policy.id
         architecture_context = WorkspaceArchitectureContextRevision(
             workspace_id=workspace.id,
             entries=[],
@@ -74,7 +62,6 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         )
         investigation = Investigation(
             workspace_id=workspace.id,
-            investigation_policy_revision_id=policy.id,
             trigger_signature_hash="a" * 64,
             status="running",
             result_state="pending",

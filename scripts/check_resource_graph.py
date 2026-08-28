@@ -10,7 +10,6 @@ import httpx
 from sqlalchemy import func, select
 
 from lode.application.intake import ManualIncidentRequest, normalize_manual
-from lode.application.investigation_policy import investigation_policy_columns
 from lode.db.models import (
     BuildUnit,
     Component,
@@ -18,7 +17,6 @@ from lode.db.models import (
     EvidenceAccessScope,
     GitRepository,
     InvestigationResourceGraphSnapshot,
-    InvestigationPolicyRevision,
     ResourceGraphRevision,
     ResourceGraphRevisionMember,
     IdentityResolution,
@@ -37,7 +35,7 @@ from lode.config import settings
 from current_git_fixture import (
     FIXTURE_ADAPTER_ID,
     FIXTURE_ENDPOINT_HASH,
-    ensure_repository_entitlement,
+    ensure_repository_access,
 )
 
 
@@ -53,15 +51,6 @@ async def _workspace(session) -> Workspace:
         workspace = Workspace(name="Resource graph check", ingestion_topic="resource-graph-check")
         session.add(workspace)
         await session.flush()
-        policy = InvestigationPolicyRevision(
-            workspace_id=workspace.id,
-            profile="balanced",
-            **investigation_policy_columns("balanced"),
-            revision=1,
-        )
-        session.add(policy)
-        await session.flush()
-        workspace.investigation_policy_revision_id = policy.id
         architecture_context = WorkspaceArchitectureContextRevision(
             workspace_id=workspace.id,
             entries=[],
@@ -91,7 +80,7 @@ async def _binding(session, workspace: Workspace, suffix: str, role: str) -> Wor
         )
         session.add(repository)
         await session.flush()
-    entitlement_id = await ensure_repository_entitlement(session, workspace.id, repository)
+    account_connection_id = await ensure_repository_access(session, workspace.id, repository)
     binding = (await session.execute(
         select(WorkspaceRepositoryBinding).where(
             WorkspaceRepositoryBinding.workspace_id == workspace.id,
@@ -103,7 +92,7 @@ async def _binding(session, workspace: Workspace, suffix: str, role: str) -> Wor
         binding = WorkspaceRepositoryBinding(
             workspace_id=workspace.id,
             repository_id=repository.id,
-            repository_entitlement_id=entitlement_id,
+            account_connection_id=account_connection_id,
             role=role,
         )
         session.add(binding)

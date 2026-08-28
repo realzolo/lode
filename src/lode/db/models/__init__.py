@@ -67,8 +67,6 @@ from lode.db.models.resources import (
     ResourceGraphRevisionMember,
     ResourceObservation,
     SemanticAnnotation,
-    WorkspaceGitAccountGrant,
-    WorkspaceGitRepositoryEntitlement,
     WorkspaceRepositoryBinding,
 )
 from lode.db.models.source_report import (
@@ -81,7 +79,6 @@ from lode.db.models.source_report import (
 from lode.db.models.user import User
 from lode.db.models.workspace import (
     AuditEvent,
-    InvestigationPolicyRevision,
     PlatformSettings,
     Workspace,
     WorkspaceIngestionOffset,
@@ -138,7 +135,6 @@ __all__ = [
     "InvestigationRepositorySnapshot",
     "InvestigationResourceGraphSnapshot",
     "InvestigationStep",
-    "InvestigationPolicyRevision",
     "ProviderAccountModel",
     "ModelPolicyRevision",
     "ModelRoutingDecision",
@@ -162,8 +158,6 @@ __all__ = [
     "WorkspaceIngestionOffset",
     "WorkspaceIngestionRuntime",
     "WorkspaceModelBinding",
-    "WorkspaceGitAccountGrant",
-    "WorkspaceGitRepositoryEntitlement",
     "WorkspacePermission",
     "WorkspaceRepositoryBinding",
 ]
