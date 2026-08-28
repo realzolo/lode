@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, CirclePause, CirclePlay, Database, GitBranch, Plus, RefreshCw, Save, ScanSearch, Trash2, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, CirclePause, CirclePlay, Database, GitBranch, Pencil, Plus, RefreshCw, RotateCcw, Save, ScanSearch, Trash2, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
@@ -18,6 +18,7 @@ import { WorkspaceMembersTab } from '@/components/workspace-members-tab';
 import {
   bindRepository,
   apiErrorMessage,
+  disableRepositoryBinding,
   fetchBuildUnits,
   createModelBinding,
   fetchWorkspaceReadiness,
@@ -29,11 +30,13 @@ import {
   resumeIngestion,
   fetchComponents,
   fetchRepositoryAnalysis,
+  fetchRepositoryAnalysisIssues,
   startRepositoryAnalysis,
   fetchConnectorKinds,
   fetchConnectors,
   fetchGitAccounts,
   fetchGitAccountRepositories,
+  fetchGitAccountRepositoryBranches,
   fetchModelBindings,
   fetchProviderAccounts,
   fetchRepositories,
@@ -41,6 +44,7 @@ import {
   introspectConnector,
   publishModelPolicy,
   testConnector,
+  updateRepositoryBinding,
 } from '@/lib/api';
 import { Link } from '@/lib/navigation';
 import type {
@@ -54,6 +58,7 @@ import type {
   ProviderAccountModel,
   RepositoryBinding,
   RepositoryAnalysisJob,
+  RepositoryAnalysisIssue,
   Workspace,
   WorkspaceArchitectureContext,
   WorkspaceReadiness,
@@ -101,6 +106,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [dialog, setDialog] = useState<'binding' | 'repository' | 'connector' | null>(null);
+  const [editingRepository, setEditingRepository] = useState<RepositoryBinding | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -159,7 +165,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
   const tabs = useMemo(() => [
     { value: 'overview', label: t('overview'), content: <Overview workspace={workspace} readiness={readiness} architectureContext={architectureContext} onChanged={load} onWorkspaceChanged={setWorkspace} /> },
     { value: 'models', label: t('modelPolicy'), content: <Models workspaceId={params.id} bindings={bindings} accountModels={accountModels} onAdd={() => setDialog('binding')} onChanged={load} /> },
-    { value: 'repositories', label: t('repositories'), content: <Repositories workspaceId={params.id} rows={repositories} buildUnits={buildUnits} components={components} analysis={repositoryAnalysis} onBind={() => setDialog('repository')} onChanged={load} /> },
+    { value: 'repositories', label: t('repositories'), content: <Repositories workspaceId={params.id} rows={repositories} buildUnits={buildUnits} components={components} analysis={repositoryAnalysis} onBind={() => { setEditingRepository(null); setDialog('repository'); }} onEdit={(row) => { setEditingRepository(row); setDialog('repository'); }} onChanged={load} /> },
     { value: 'connectors', label: t('connectors'), content: <Connectors workspaceId={params.id} rows={connectors} onAdd={() => setDialog('connector')} onChanged={load} /> },
     { value: 'members', label: t('members'), content: <WorkspaceMembersTab workspaceId={params.id} /> },
   ], [accountModels, architectureContext, bindings, buildUnits, components, connectors, load, params.id, readiness, repositories, repositoryAnalysis, t, workspace]);
@@ -178,7 +184,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     {error && <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
     <Tabs items={tabs} />
     <BindingDialog open={dialog === 'binding'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} accountModels={accountModels} onCreated={load} />
-    <RepositoryDialog open={dialog === 'repository'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} onCreated={load} />
+    <RepositoryDialog open={dialog === 'repository'} onOpenChange={(value) => { if (!value) { setDialog(null); setEditingRepository(null); } }} workspaceId={params.id} binding={editingRepository} onCreated={load} />
     <ConnectorDialog open={dialog === 'connector'} onOpenChange={(value) => !value && setDialog(null)} workspaceId={params.id} kinds={kinds} onCreated={load} />
   </main>;
 }
@@ -301,16 +307,24 @@ function Models({ workspaceId, bindings, accountModels, onAdd, onChanged }: { wo
   return <section className="space-y-4"><div className="flex flex-wrap justify-between gap-3"><p className="text-sm text-muted-foreground">{t('policyHelp')}</p><div className="flex gap-2"><Button size="sm" variant="outline" loading={publishing} loadingText={tc('saving')} onClick={() => void publish()} disabled={!bindings.length}>{t('publishPolicy')}</Button><Button size="sm" onClick={onAdd}><Plus size={15} />{t('addBinding')}</Button></div></div><div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('accountModel')}</th><th>{t('roles')}</th><th>{t('classes')}</th><th>{t('budget')}</th><th>{t('revision')}</th></tr></thead><tbody>{bindings.map((row) => <tr key={row.id}><td>{accountModels.find((item) => item.id === row.provider_account_model_id)?.display_name || row.provider_account_model_id}</td><td>{row.allowed_roles.map((role) => t(modelRoleKeys[role as keyof typeof modelRoleKeys])).join(', ')}</td><td>{row.execution_classes.map((value) => t(executionClassKeys[value as keyof typeof executionClassKeys])).join(', ')}</td><td>{t('calls', { calls: row.max_calls })}</td><td>{row.revision}</td></tr>)}{!bindings.length ? <tr><td colSpan={5} className="py-8 text-center text-sm text-muted-foreground">{t('noModelBindings')}</td></tr> : null}</tbody></table></div></div></section>;
 }
 
-function Repositories({ workspaceId, rows, buildUnits, components, analysis, onBind, onChanged }: { workspaceId: string; rows: RepositoryBinding[]; buildUnits: BuildUnit[]; components: Component[]; analysis: RepositoryAnalysisJob | null; onBind: () => void; onChanged: () => Promise<void> }) {
+function Repositories({ workspaceId, rows, buildUnits, components, analysis, onBind, onEdit, onChanged }: { workspaceId: string; rows: RepositoryBinding[]; buildUnits: BuildUnit[]; components: Component[]; analysis: RepositoryAnalysisJob | null; onBind: () => void; onEdit: (row: RepositoryBinding) => void; onChanged: () => Promise<void> }) {
   const t = useTranslations('workspace'); const tc = useTranslations('common');
   const [startingAnalysis, setStartingAnalysis] = useState(false);
+  const [busyBinding, setBusyBinding] = useState<number | null>(null);
+  const [unbinding, setUnbinding] = useState<RepositoryBinding | null>(null);
+  const [issues, setIssues] = useState<RepositoryAnalysisIssue[]>([]);
+  const [loadingIssues, setLoadingIssues] = useState(false);
   async function analyze() { setStartingAnalysis(true); try { await startRepositoryAnalysis(workspaceId); await onChanged(); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setStartingAnalysis(false); } }
+  async function restore(row: RepositoryBinding) { setBusyBinding(row.id); try { await updateRepositoryBinding(workspaceId, row.id, { expected_revision: row.revision, state: 'active' }); await onChanged(); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setBusyBinding(null); } }
+  async function loadIssues() { if (!analysis) return; setLoadingIssues(true); try { const page = await fetchRepositoryAnalysisIssues(workspaceId, analysis.id); setIssues(page.items); } catch (cause) { toast.error(apiErrorMessage(cause, tc('requestFailed'))); } finally { setLoadingIssues(false); } }
   const analyzing = analysis?.state === 'queued' || analysis?.state === 'running';
+  const activeRows = rows.filter((row) => row.state === 'active');
   return <section className="space-y-4">
-    <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">{t('repositoriesDescription')}</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" loading={startingAnalysis || analyzing} disabled={!rows.length || analyzing} onClick={() => void analyze()}><ScanSearch size={15} />{analysis?.state === 'succeeded' || analysis?.state === 'failed' ? t('reanalyzeRepositories') : t('analyzeRepositories')}</Button><Button size="sm" onClick={onBind}><Plus size={15} />{t('bindRepository')}</Button></div></div>
-    {analysis ? <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-y py-3 text-sm"><span className="font-medium">{t('analysisState')}: {t(`repositoryAnalysisState.${analysis.state}`)}</span><span className="text-muted-foreground">{t('scannedFiles', { count: analysis.scanned_file_count })}</span><span className="text-muted-foreground">{t('analysisIssues', { count: analysis.issue_count })}</span>{analysis.failure_code ? <span className="text-destructive">{t(`repositoryAnalysisFailures.${analysis.failure_code}`)}</span> : null}</div> : null}
-    <div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('name')}</th><th>{t('gitAccount')}</th><th>{t('provider')}</th><th>{t('role')}</th><th>{t('branch')}</th><th>{t('analyzedCommit')}</th></tr></thead><tbody>{rows.map((row) => { const revision = analysis?.source_revisions[String(row.id)]; return <tr key={row.id}><td className="font-medium" title={t('configurationRevision', { revision: row.revision })}><GitBranch className="mr-2 inline" size={15} />{row.full_name}</td><td><span className="block text-sm">{row.account_name}</span><span className="text-xs text-muted-foreground">@{row.external_account_login}</span></td><td>{row.provider_kind}</td><td>{t(repositoryRoleKeys[row.role as keyof typeof repositoryRoleKeys])}</td><td className="mono text-xs">{row.default_branch}</td><td className="mono text-xs">{revision ? revision.slice(0, 12) : '-'}</td></tr>; })}{!rows.length ? <tr><td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">{t('noRepositories')}</td></tr> : null}</tbody></table></div></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">{t('repositoriesDescription')}</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" loading={startingAnalysis || analyzing} disabled={!activeRows.length || analyzing} onClick={() => void analyze()}><ScanSearch size={15} />{analysis?.state === 'succeeded' || analysis?.state === 'failed' ? t('reanalyzeRepositories') : t('analyzeRepositories')}</Button><Button size="sm" onClick={onBind}><Plus size={15} />{t('bindRepository')}</Button></div></div>
+    {analysis ? <div className="space-y-2 border-y py-3 text-sm"><div className="flex flex-wrap items-center gap-x-6 gap-y-2"><span className="font-medium">{t('analysisState')}: {t(`repositoryAnalysisState.${analysis.state}`)}</span>{analysis.state === 'succeeded' ? <span className={analysis.is_current ? 'text-success' : 'text-warning'}>{analysis.is_current ? t('analysisCurrent') : t('analysisOutdated')}</span> : null}<span className="text-muted-foreground">{t('scannedFiles', { count: analysis.scanned_file_count })}</span><span className="text-muted-foreground">{t('analysisIssues', { count: analysis.issue_count })}</span>{analysis.failure_code ? <span className="text-destructive">{t(`repositoryAnalysisFailures.${analysis.failure_code}`)}</span> : null}{analysis.issue_count > 0 ? <Button size="sm" variant="ghost" loading={loadingIssues} onClick={() => void loadIssues()}>{t('viewAnalysisIssues')}</Button> : null}</div>{issues.length ? <div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('repository')}</th><th>{t('analysisIssueCode')}</th><th>{t('path')}</th><th>{t('analysisIssueDetail')}</th></tr></thead><tbody>{issues.map((issue) => <tr key={issue.id}><td>{rows.find((row) => row.id === issue.repository_binding_id)?.full_name || '-'}</td><td className="mono text-xs">{issue.code}</td><td className="mono text-xs">{issue.path || '-'}</td><td className="text-sm text-muted-foreground">{issue.detail}</td></tr>)}</tbody></table></div></div> : null}</div> : null}
+    <div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('name')}</th><th>{t('gitAccount')}</th><th>{t('provider')}</th><th>{t('role')}</th><th>{t('branch')}</th><th>{t('analyzedCommit')}</th><th /></tr></thead><tbody>{rows.map((row) => { const revision = analysis?.source_revisions[String(row.id)]; const analyzedBranch = analysis?.source_branches[String(row.id)]; return <tr key={row.id} className={row.state === 'disabled' ? 'opacity-60' : undefined}><td className="font-medium" title={t('configurationRevision', { revision: row.revision })}><GitBranch className="mr-2 inline" size={15} />{row.full_name}<span className="ml-2 text-xs text-muted-foreground">{t(`repositoryBindingState.${row.state}`)}</span></td><td><span className="block text-sm">{row.account_name}</span><span className="text-xs text-muted-foreground">@{row.external_account_login}</span></td><td>{row.provider_kind}</td><td>{t(repositoryRoleKeys[row.role as keyof typeof repositoryRoleKeys])}</td><td className="mono text-xs">{row.branch_mode === 'default' ? `${t('defaultBranch')}: ${row.effective_branch}` : row.effective_branch}{analyzedBranch && analyzedBranch !== row.effective_branch ? <span className="mt-1 block text-muted-foreground">{t('analyzedBranch', { branch: analyzedBranch })}</span> : null}</td><td className="mono text-xs">{revision ? revision.slice(0, 12) : '-'}</td><td><div className="flex justify-end gap-1">{row.state === 'active' ? <><Button size="icon" variant="ghost" title={t('editRepositoryBinding')} aria-label={t('editRepositoryBinding')} onClick={() => onEdit(row)}><Pencil size={15} /></Button><Button size="icon" variant="ghost" title={t('unbindRepository')} aria-label={t('unbindRepository')} onClick={() => setUnbinding(row)}><Trash2 size={15} /></Button></> : <Button size="icon" variant="ghost" loading={busyBinding === row.id} title={t('restoreRepository')} aria-label={t('restoreRepository')} onClick={() => void restore(row)}><RotateCcw size={15} /></Button>}</div></td></tr>; })}{!rows.length ? <tr><td colSpan={7} className="py-8 text-center text-sm text-muted-foreground">{t('noRepositories')}</td></tr> : null}</tbody></table></div></div>
     <div className="space-y-3 border-t pt-5"><h2 className="text-sm font-semibold">{t('detectedProjectStructure')}</h2>{analysis?.state === 'succeeded' ? <div className="grid gap-5 lg:grid-cols-2"><div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('buildUnits')}</th><th>{t('buildSystem')}</th><th>{t('identity')}</th></tr></thead><tbody>{buildUnits.map((unit) => <tr key={unit.id}><td><span className="mono text-xs">{unit.source_root || unit.stable_key}</span><span className="mt-1 block text-xs text-muted-foreground">{unit.manifest_paths.join(', ')}</span></td><td>{t(buildSystemKeys[unit.build_system as keyof typeof buildSystemKeys])}</td><td>{t(identityStatusKeys[unit.identity_status])}</td></tr>)}{!buildUnits.length ? <tr><td colSpan={3} className="py-6 text-center text-sm text-muted-foreground">{t('noBuildUnits')}</td></tr> : null}</tbody></table></div></div><div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('components')}</th><th>{t('kind')}</th><th>{t('buildUnits')}</th></tr></thead><tbody>{components.map((component) => <tr key={component.id}><td className="font-medium">{component.display_name}</td><td>{t(componentKindKeys[component.kind as keyof typeof componentKindKeys])}</td><td className="mono text-xs">{component.source_bindings.map((binding) => binding.build_unit_key).join(', ')}</td></tr>)}{!components.length ? <tr><td colSpan={3} className="py-6 text-center text-sm text-muted-foreground">{t('noComponents')}</td></tr> : null}</tbody></table></div></div></div> : <div className="border-y py-8 text-center text-sm text-muted-foreground">{analyzing ? t('repositoryAnalysisRunning') : t('repositoryAnalysisNotRun')}</div>}</div>
+    <ConfirmDialog open={unbinding !== null} onOpenChange={(open) => !open && setUnbinding(null)} title={t('unbindRepository')} description={t('unbindRepositoryDescription')} confirmLabel={t('unbindRepository')} cancelLabel={tc('cancel')} destructive onConfirm={async () => { if (!unbinding) return; await disableRepositoryBinding(workspaceId, unbinding.id, unbinding.revision); await onChanged(); }} />
   </section>;
 }
 
@@ -330,21 +344,37 @@ function BindingDialog({ open, onOpenChange, workspaceId, accountModels, onCreat
   return <Dialog open={open} onOpenChange={(value) => !saving && onOpenChange(value)}><DialogContent variant="drawer"><DialogHeader><DialogTitle>{t('addModelBinding')}</DialogTitle></DialogHeader><Select value={accountModel} disabled={saving} onChange={(event) => setAccountModel(event.target.value)}><option value="">{t('selectAccountModel')}</option>{accountModels.filter((row) => row.state === 'active').map((row) => <option key={row.id} value={row.id}>{row.display_name}</option>)}</Select><fieldset disabled={saving} className="grid gap-2 sm:grid-cols-2"><legend className="mb-2 text-sm font-medium">{t('allowedRoles')}</legend>{roles.map((role) => <label key={role} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selectedRoles.includes(role)} onChange={(event) => setRoles((current) => event.target.checked ? [...current, role] : current.filter((item) => item !== role))} />{t(modelRoleKeys[role as keyof typeof modelRoleKeys])}</label>)}</fieldset><DialogFooter><Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" loading={saving} loadingText={tc('saving')} disabled={!accountModel || !selectedRoles.length} onClick={() => void create()}>{t('create')}</Button></DialogFooter></DialogContent></Dialog>;
 }
 
-function RepositoryDialog({ open, onOpenChange, workspaceId, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; onCreated: () => Promise<void> }) {
+function RepositoryDialog({ open, onOpenChange, workspaceId, binding, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaceId: string; binding: RepositoryBinding | null; onCreated: () => Promise<void> }) {
   const t = useTranslations('workspace');
   const tc = useTranslations('common');
   const [accounts, setAccounts] = useState<GitAccount[]>([]);
   const [repositories, setRepositories] = useState<GitAccountRepository[]>([]);
+  const [branches, setBranches] = useState<Array<{ name: string; is_default: boolean }>>([]);
   const [accountId, setAccountId] = useState('');
   const [repositoryId, setRepositoryId] = useState('');
   const [role, setRole] = useState<keyof typeof repositoryRoleKeys>('runtime_source');
+  const [branchMode, setBranchMode] = useState<'default' | 'branch'>('default');
+  const [branchName, setBranchName] = useState('');
+  const [branchQuery, setBranchQuery] = useState('');
+  const [nextBranchCursor, setNextBranchCursor] = useState<string | null>(null);
+  const [priority, setPriority] = useState('0');
   const [description, setDescription] = useState('');
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [loadingRepositories, setLoadingRepositories] = useState(false);
+  const [loadingBranches, setLoadingBranches] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
+    setAccountId(binding ? String(binding.account_connection_id) : '');
+    setRepositoryId(binding ? String(binding.repository_id) : '');
+    setRole((binding?.role || 'runtime_source') as keyof typeof repositoryRoleKeys);
+    setBranchMode(binding?.branch_mode || 'default');
+    setBranchName(binding?.branch_name || '');
+    setPriority(String(binding?.priority || 0));
+    setDescription(binding?.description || '');
+    setBranchQuery('');
+    if (binding) return;
     let cancelled = false;
     setLoadingAccounts(true);
     void fetchGitAccounts()
@@ -352,9 +382,10 @@ function RepositoryDialog({ open, onOpenChange, workspaceId, onCreated }: { open
       .catch((cause) => { if (!cancelled) toast.error(apiErrorMessage(cause, tc('requestFailed'))); })
       .finally(() => { if (!cancelled) setLoadingAccounts(false); });
     return () => { cancelled = true; };
-  }, [open, tc]);
+  }, [binding, open, tc]);
 
   useEffect(() => {
+    if (binding) return;
     setRepositoryId('');
     if (!accountId) {
       setRepositories([]);
@@ -373,27 +404,84 @@ function RepositoryDialog({ open, onOpenChange, workspaceId, onCreated }: { open
       })
       .finally(() => { if (!cancelled) setLoadingRepositories(false); });
     return () => { cancelled = true; };
-  }, [accountId, tc]);
+  }, [accountId, binding, tc]);
+
+  useEffect(() => {
+    if (!open || branchMode !== 'branch' || !accountId || !repositoryId) {
+      setBranches([]);
+      setNextBranchCursor(null);
+      setLoadingBranches(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setLoadingBranches(true);
+      void fetchGitAccountRepositoryBranches(Number(accountId), Number(repositoryId), { q: branchQuery })
+        .then((page) => {
+          if (!cancelled) {
+            setBranches(page.items);
+            setNextBranchCursor(page.next_cursor);
+          }
+        })
+        .catch((cause) => {
+          if (!cancelled) {
+            setBranches([]);
+            setNextBranchCursor(null);
+            toast.error(apiErrorMessage(cause, tc('requestFailed')));
+          }
+        })
+        .finally(() => { if (!cancelled) setLoadingBranches(false); });
+    }, 200);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [accountId, branchMode, branchQuery, open, repositoryId, tc]);
+
+  async function loadMoreBranches() {
+    if (!nextBranchCursor || !accountId || !repositoryId) return;
+    setLoadingBranches(true);
+    try {
+      const page = await fetchGitAccountRepositoryBranches(Number(accountId), Number(repositoryId), {
+        cursor: nextBranchCursor,
+        q: branchQuery,
+      });
+      setBranches((current) => {
+        const names = new Set(current.map((branch) => branch.name));
+        return [...current, ...page.items.filter((branch) => !names.has(branch.name))];
+      });
+      setNextBranchCursor(page.next_cursor);
+    } catch (cause) {
+      toast.error(apiErrorMessage(cause, tc('requestFailed')));
+    } finally {
+      setLoadingBranches(false);
+    }
+  }
 
   function close() {
     onOpenChange(false);
     setAccountId('');
     setRepositoryId('');
     setRepositories([]);
+    setBranches([]);
+    setNextBranchCursor(null);
+    setBranchName('');
+    setBranchQuery('');
+    setBranchMode('default');
+    setPriority('0');
     setDescription('');
     setRole('runtime_source');
   }
 
-  async function create() {
+  async function save() {
+    const input = {
+      role,
+      branch_mode: branchMode,
+      branch_name: branchMode === 'branch' ? branchName : null,
+      priority: Number(priority) || 0,
+      description,
+    };
     setSaving(true);
     try {
-      await bindRepository(workspaceId, {
-        account_connection_id: Number(accountId),
-        repository_id: Number(repositoryId),
-        role,
-        priority: 0,
-        description,
-      });
+      if (binding) await updateRepositoryBinding(workspaceId, binding.id, { ...input, expected_revision: binding.revision });
+      else await bindRepository(workspaceId, { account_connection_id: Number(accountId), repository_id: Number(repositoryId), ...input });
       close();
       await onCreated();
     } catch (cause) {
@@ -407,8 +495,12 @@ function RepositoryDialog({ open, onOpenChange, workspaceId, onCreated }: { open
     (account) => account.state === 'active' && account.verification_status === 'healthy',
   );
   const availableRepositories = repositories.filter((repository) => !repository.archived);
+  const branchOptions = branches.map((branch) => ({ value: branch.name, label: branch.name, description: branch.is_default ? t('defaultBranch') : undefined }));
+  if (branchName && !branchOptions.some((branch) => branch.value === branchName)) branchOptions.unshift({ value: branchName, label: branchName, description: undefined });
+  const selectedRepository = binding ? { label: binding.full_name, account: binding.account_name } : null;
+  const canSave = !!accountId && !!repositoryId && (branchMode === 'default' || !!branchName) && Number.isFinite(Number(priority));
 
-  return <Dialog open={open} onOpenChange={(value) => { if (!saving) value ? onOpenChange(true) : close(); }}><DialogContent variant="drawer"><DialogHeader><DialogTitle>{t('bindRepository')}</DialogTitle></DialogHeader><div className="space-y-4"><label className="field"><span className="field-label">{t('gitAccount')}</span><SearchableSelect value={accountId} onValueChange={setAccountId} options={healthyAccounts.map((account) => ({ value: String(account.id), label: account.name, description: `@${account.external_account_login}`, keywords: `${account.adapter_id} ${account.external_account_login}` }))} placeholder={t('selectGitAccount')} searchPlaceholder={t('searchGitAccountsPlaceholder')} emptyMessage={t('noHealthyGitAccounts')} disabled={saving} loading={loadingAccounts} ariaLabel={t('selectGitAccount')} /></label><label className="field"><span className="field-label">{t('repository')}</span><SearchableSelect value={repositoryId} onValueChange={setRepositoryId} options={availableRepositories.map((repository) => ({ value: String(repository.repository_id), label: repository.full_name, keywords: `${repository.visibility} ${repository.provider_kind}` }))} placeholder={accountId ? t('selectRepository') : t('selectGitAccountFirst')} searchPlaceholder={t('searchRepositoriesPlaceholder')} emptyMessage={t('noRepositorySearchResults')} disabled={saving || !accountId} loading={loadingRepositories} ariaLabel={t('selectRepository')} /></label><label className="field"><span className="field-label">{t('role')}</span><Select value={role} disabled={saving} onChange={(event) => setRole(event.target.value as keyof typeof repositoryRoleKeys)}>{repositoryRoles.map((value) => <option key={value} value={value}>{t(repositoryRoleKeys[value])}</option>)}</Select></label><label className="field"><span className="field-label">{t('repositoryDescription')}</span><Textarea value={description} maxLength={2000} disabled={saving} onChange={(event) => setDescription(event.target.value)} /></label></div><DialogFooter><Button variant="outline" disabled={saving} onClick={close}>{tc('cancel')}</Button><Button variant="primary" loading={saving} loadingText={tc('saving')} disabled={!accountId || !repositoryId} onClick={() => void create()}>{t('create')}</Button></DialogFooter></DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={(value) => { if (!saving) value ? onOpenChange(true) : close(); }}><DialogContent variant="drawer"><DialogHeader><DialogTitle>{binding ? t('editRepositoryBinding') : t('bindRepository')}</DialogTitle></DialogHeader><div className="space-y-4">{binding ? <div className="grid gap-3 border-y py-3 text-sm sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">{t('gitAccount')}</p><p>{selectedRepository?.account}</p></div><div><p className="text-xs text-muted-foreground">{t('repository')}</p><p className="mono break-all">{selectedRepository?.label}</p></div></div> : <><label className="field"><span className="field-label">{t('gitAccount')}</span><SearchableSelect value={accountId} onValueChange={setAccountId} options={healthyAccounts.map((account) => ({ value: String(account.id), label: account.name, description: `@${account.external_account_login}`, keywords: `${account.adapter_id} ${account.external_account_login}` }))} placeholder={t('selectGitAccount')} searchPlaceholder={t('searchGitAccountsPlaceholder')} emptyMessage={t('noHealthyGitAccounts')} disabled={saving} loading={loadingAccounts} ariaLabel={t('selectGitAccount')} /></label><label className="field"><span className="field-label">{t('repository')}</span><SearchableSelect value={repositoryId} onValueChange={(value) => { setRepositoryId(value); setBranchName(''); }} options={availableRepositories.map((repository) => ({ value: String(repository.repository_id), label: repository.full_name, keywords: `${repository.visibility} ${repository.provider_kind}` }))} placeholder={accountId ? t('selectRepository') : t('selectGitAccountFirst')} searchPlaceholder={t('searchRepositoriesPlaceholder')} emptyMessage={t('noRepositorySearchResults')} disabled={saving || !accountId} loading={loadingRepositories} ariaLabel={t('selectRepository')} /></label></>}<label className="field"><span className="field-label">{t('branchStrategy')}</span><Select value={branchMode} disabled={saving || !repositoryId} onChange={(event) => { const value = event.target.value as 'default' | 'branch'; setBranchMode(value); if (value === 'default') setBranchName(''); }}><option value="default">{t('followDefaultBranch')}</option><option value="branch">{t('fixedBranch')}</option></Select></label>{branchMode === 'branch' ? <label className="field"><span className="field-label">{t('branch')}</span><SearchableSelect value={branchName} onValueChange={setBranchName} onSearchChange={setBranchQuery} options={branchOptions} placeholder={t('selectBranch')} searchPlaceholder={t('searchBranchesPlaceholder')} emptyMessage={t('noBranchSearchResults')} disabled={saving || !repositoryId} loading={loadingBranches} hasMore={nextBranchCursor !== null} onLoadMore={() => void loadMoreBranches()} loadMoreLabel={tc('loadMore')} ariaLabel={t('selectBranch')} /></label> : null}<label className="field"><span className="field-label">{t('role')}</span><Select value={role} disabled={saving} onChange={(event) => setRole(event.target.value as keyof typeof repositoryRoleKeys)}>{repositoryRoles.map((value) => <option key={value} value={value}>{t(repositoryRoleKeys[value])}</option>)}</Select></label><label className="field"><span className="field-label">{t('priority')}</span><Input type="number" inputMode="numeric" min="0" max="100000" value={priority} disabled={saving} onChange={(event) => setPriority(event.target.value)} /></label><label className="field"><span className="field-label">{t('repositoryDescription')}</span><Textarea value={description} maxLength={2000} disabled={saving} onChange={(event) => setDescription(event.target.value)} /></label></div><DialogFooter><Button variant="outline" disabled={saving} onClick={close}>{tc('cancel')}</Button><Button variant="primary" loading={saving} loadingText={tc('saving')} disabled={!canSave} onClick={() => void save()}>{binding ? tc('save') : t('create')}</Button></DialogFooter></DialogContent></Dialog>;
 }
 
 function splitValues(value: string): string[] { return value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean); }

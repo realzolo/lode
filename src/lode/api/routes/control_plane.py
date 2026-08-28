@@ -19,6 +19,8 @@ from lode.api.control_schemas import (
     GitAccountCreate,
     GitAccountOut,
     GitAccountPatch,
+    GitBranchOut,
+    GitBranchPageOut,
     GitAccountRepositoryOut,
     GitAccountTokenRotate,
     IngestionStart,
@@ -40,6 +42,8 @@ from lode.api.control_schemas import (
     ProviderAccountPatch,
     RepositoryBind,
     RepositoryAnalysisJobOut,
+    RepositoryAnalysisIssueOut,
+    RepositoryAnalysisIssuePageOut,
     RepositoryBindingOut,
     RepositoryBindingPatch,
     WorkspaceCreate,
@@ -54,6 +58,7 @@ from lode.api.types import EntityId
 from lode.api.deps import assert_workspace_permission, require_admin, require_user
 from lode.api.audit import audit_action
 from lode.ai_output import SUPPORTED_AI_OUTPUT_LANGUAGES
+from lode.application.intake import canonical_hash
 from lode.config import kafka_security_kwargs, settings
 from lode.crypto import CryptoError, decrypt_secret, encrypt_secret
 from lode.db.models import (
@@ -80,6 +85,7 @@ from lode.db.models import (
     WorkspaceIngestionRuntime,
     WorkspaceArchitectureContextRevision,
     RepositoryAnalysisJob,
+    RepositoryAnalysisIssue,
 )
 from lode.db.session import AsyncSessionLocal
 from lode.engine.llm import ModelConfig, ResponseSchema, complete_with_usage
@@ -99,10 +105,12 @@ from lode.git_accounts.providers import (
     GitProviderError,
     authenticate_access_token,
     endpoint_identity_hash,
+    list_branches as list_provider_branches,
     list_repositories as list_provider_repositories,
     registered_adapters,
     require_adapter,
     resolve_api_url,
+    verify_branch as verify_provider_branch,
 )
 from lode.infrastructure.provider_http import provider_endpoint, provider_request, validate_provider_endpoint
 from lode.model_catalog import CATALOG_REVISION, find_model, require_model, supported_models
@@ -1664,11 +1672,62 @@ def _repository_out(
         web_url=repository.web_url,
         repo_type=repository.repo_type,
         default_branch=repository.default_branch,
+        branch_mode=binding.branch_mode,
+        branch_name=binding.branch_name,
+        effective_branch=_effective_branch(binding, repository),
         role=binding.role,
         priority=binding.priority,
         description=binding.description,
         state=binding.state,
         revision=binding.revision,
+    )
+
+
+def _effective_branch(binding: WorkspaceRepositoryBinding, repository: GitRepository) -> str:
+    return binding.branch_name if binding.branch_mode == "branch" else repository.default_branch
+
+
+def _analysis_binding_snapshot(
+    binding: WorkspaceRepositoryBinding,
+    repository: GitRepository,
+) -> dict[str, object]:
+    return {
+        "binding_id": binding.id,
+        "configuration_revision": binding.descriptor_revision,
+        "repository_id": repository.id,
+        "account_connection_id": binding.account_connection_id,
+        "role": binding.role,
+        "branch_mode": binding.branch_mode,
+        "effective_branch": _effective_branch(binding, repository),
+    }
+
+
+async def _analysis_input(
+    session: AsyncSession,
+    workspace_id: EntityId,
+) -> tuple[list[dict[str, object]], str]:
+    rows = (
+        await session.execute(
+            select(WorkspaceRepositoryBinding, GitRepository)
+            .join(GitRepository, GitRepository.id == WorkspaceRepositoryBinding.repository_id)
+            .where(
+                WorkspaceRepositoryBinding.workspace_id == workspace_id,
+                WorkspaceRepositoryBinding.state == "active",
+            )
+            .order_by(WorkspaceRepositoryBinding.id)
+        )
+    ).all()
+    snapshot = [_analysis_binding_snapshot(binding, repository) for binding, repository in rows]
+    return snapshot, canonical_hash({"repository_bindings": snapshot})
+
+
+async def _repository_analysis_out(
+    session: AsyncSession,
+    row: RepositoryAnalysisJob,
+) -> RepositoryAnalysisJobOut:
+    _, current_hash = await _analysis_input(session, row.workspace_id)
+    return RepositoryAnalysisJobOut.model_validate(row).model_copy(
+        update={"is_current": row.state == "succeeded" and row.input_hash == current_hash}
     )
 
 
@@ -2025,6 +2084,50 @@ async def list_git_account_repositories_current(
     ]
 
 
+@router.get(
+    "/git-accounts/{account_id}/repositories/{repository_id}/branches",
+    response_model=GitBranchPageOut,
+)
+async def list_git_account_repository_branches(
+    account_id: EntityId,
+    repository_id: EntityId,
+    cursor: str | None = Query(default=None, max_length=10),
+    q: str | None = Query(default=None, min_length=1, max_length=128),
+    _: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        page = int(cursor or "1")
+    except ValueError as exc:
+        raise _error(422, "invalid_branch_cursor", "Branch cursor is invalid.") from exc
+    account = await session.get(GitAccount, account_id)
+    repository = await session.get(GitRepository, repository_id)
+    access = await session.get(GitAccountRepositoryAccess, (account_id, repository_id))
+    if account is None or account.state != "active" or account.verification_status != "healthy":
+        raise _error(422, "git_account_connection_invalid", "A healthy active Git account is required.")
+    if repository is None or repository.archived:
+        raise _error(404, "repository_not_found", "Repository was not found.")
+    if access is None or access.state != "available":
+        raise _error(409, "repository_access_lost", "Git account no longer has read access to this repository.")
+    try:
+        secret = await _account_secret(session, account)
+        branches, next_cursor = await list_provider_branches(
+            adapter_id=account.adapter_id,
+            api_url=account.api_url,
+            token=secret.token,
+            external_repository_id=repository.external_repository_id,
+            full_name=repository.full_name,
+            page=page,
+            query=q,
+        )
+    except GitProviderError as exc:
+        raise _error(502, f"git_branch_catalog_{exc.code}", "Git branches could not be loaded.") from exc
+    return GitBranchPageOut(
+        items=[GitBranchOut(name=branch.name, is_default=branch.name == repository.default_branch) for branch in branches],
+        next_cursor=next_cursor,
+    )
+
+
 @router.get("/workspaces/{workspace_id}/repositories", response_model=list[RepositoryBindingOut])
 async def list_repositories(
     workspace_id: EntityId,
@@ -2050,6 +2153,8 @@ async def _create_repository_binding(session, workspace_id, user, account, repos
         repository_id=repository.id,
         account_connection_id=account.id,
         role=payload.role,
+        branch_mode=payload.branch_mode,
+        branch_name=payload.branch_name,
         priority=payload.priority,
         description=payload.description,
     )
@@ -2065,6 +2170,32 @@ async def _create_repository_binding(session, workspace_id, user, account, repos
     await session.commit()
     await session.refresh(row)
     return _repository_out(row, repository, account)
+
+
+async def _validate_fixed_branch(
+    session: AsyncSession,
+    account: GitAccount,
+    repository: GitRepository,
+    branch_mode: str,
+    branch_name: str | None,
+) -> None:
+    if branch_mode == "default":
+        return
+    assert branch_name is not None
+    try:
+        secret = await _account_secret(session, account)
+        exists = await verify_provider_branch(
+            adapter_id=account.adapter_id,
+            api_url=account.api_url,
+            token=secret.token,
+            external_repository_id=repository.external_repository_id,
+            full_name=repository.full_name,
+            branch_name=branch_name,
+        )
+    except GitProviderError as exc:
+        raise _error(502, f"git_branch_catalog_{exc.code}", "Git branch could not be verified.") from exc
+    if not exists:
+        raise _error(422, "repository_branch_not_found", "The selected branch is not available.")
 
 
 @router.post(
@@ -2088,6 +2219,9 @@ async def bind_repository(
     )
     if access is None or access.state != "available":
         raise _error(409, "repository_access_lost", "Git account no longer has read access to this repository.")
+    await _validate_fixed_branch(
+        session, account, repository, payload.branch_mode, payload.branch_name
+    )
     return await _create_repository_binding(session, workspace_id, user, account, repository, payload)
 
 
@@ -2105,10 +2239,39 @@ async def patch_repository_binding(
     row = await session.get(WorkspaceRepositoryBinding, binding_id)
     if row is None or row.workspace_id != workspace_id:
         raise _error(404, "repository_binding_not_found", "Repository binding not found.")
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(row, key, value)
-    row.revision += 1
+    if row.revision != payload.expected_revision:
+        raise _error(
+            409,
+            "repository_binding_revision_conflict",
+            "Repository binding changed. Reload and try again.",
+            current_revision=row.revision,
+        )
+    values = payload.model_dump(exclude_unset=True)
+    values.pop("expected_revision")
+    branch_mode = values.get("branch_mode", row.branch_mode)
+    branch_name = values.get("branch_name", row.branch_name)
+    if branch_mode == "default":
+        branch_name = None
+    elif not branch_name:
+        raise _error(422, "repository_branch_required", "A fixed branch must be selected.")
     repository = await session.get(GitRepository, row.repository_id)
+    account = await session.get(GitAccount, row.account_connection_id)
+    assert repository is not None and account is not None
+    if branch_mode == "branch" and (branch_mode != row.branch_mode or branch_name != row.branch_name):
+        await _validate_fixed_branch(session, account, repository, branch_mode, branch_name)
+    structural_change = (
+        values.get("role", row.role) != row.role
+        or branch_mode != row.branch_mode
+        or branch_name != row.branch_name
+        or values.get("state", row.state) != row.state
+    )
+    values["branch_mode"] = branch_mode
+    values["branch_name"] = branch_name
+    for key, value in values.items():
+        setattr(row, key, value)
+    if structural_change:
+        row.descriptor_revision += 1
+    row.revision += 1
     session.add(
         _audit(
             user, "repository_binding.update", "workspace_repository_binding", row.id, workspace_id
@@ -2116,9 +2279,6 @@ async def patch_repository_binding(
     )
     await session.commit()
     await session.refresh(row)
-    assert repository is not None
-    account = await session.get(GitAccount, row.account_connection_id)
-    assert account is not None
     return _repository_out(row, repository, account)
 
 
@@ -2126,6 +2286,7 @@ async def patch_repository_binding(
 async def disable_repository_binding(
     workspace_id: EntityId,
     binding_id: EntityId,
+    expected_revision: int = Query(gt=0),
     user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -2133,7 +2294,17 @@ async def disable_repository_binding(
     row = await session.get(WorkspaceRepositoryBinding, binding_id)
     if row is None or row.workspace_id != workspace_id:
         raise _error(404, "repository_binding_not_found", "Repository binding not found.")
+    if row.revision != expected_revision:
+        raise _error(
+            409,
+            "repository_binding_revision_conflict",
+            "Repository binding changed. Reload and try again.",
+            current_revision=row.revision,
+        )
+    if row.state == "disabled":
+        raise _error(409, "repository_binding_disabled", "Repository binding is already disabled.")
     row.state = "disabled"
+    row.descriptor_revision += 1
     row.revision += 1
     session.add(
         _audit(
@@ -2154,7 +2325,7 @@ async def get_repository_analysis(
     session: AsyncSession = Depends(get_session),
 ):
     await _workspace_access(session, user_id, workspace_id, "read")
-    return (
+    row = (
         await session.execute(
             select(RepositoryAnalysisJob)
             .where(RepositoryAnalysisJob.workspace_id == workspace_id)
@@ -2162,6 +2333,7 @@ async def get_repository_analysis(
             .limit(1)
         )
     ).scalar_one_or_none()
+    return await _repository_analysis_out(session, row) if row is not None else None
 
 
 @router.post(
@@ -2193,19 +2365,8 @@ async def start_repository_analysis(
             "A repository analysis is already in progress.",
             job_id=active.id,
         )
-    binding_ids = list(
-        (
-            await session.execute(
-                select(WorkspaceRepositoryBinding.id)
-                .where(
-                    WorkspaceRepositoryBinding.workspace_id == workspace_id,
-                    WorkspaceRepositoryBinding.state == "active",
-                )
-                .order_by(WorkspaceRepositoryBinding.id)
-            )
-        ).scalars()
-    )
-    if not binding_ids:
+    binding_snapshot, input_hash = await _analysis_input(session, workspace_id)
+    if not binding_snapshot:
         raise _error(
             409,
             "repository_analysis_requires_repository",
@@ -2213,7 +2374,9 @@ async def start_repository_analysis(
         )
     row = RepositoryAnalysisJob(
         workspace_id=workspace_id,
-        requested_binding_ids=binding_ids,
+        requested_binding_ids=[item["binding_id"] for item in binding_snapshot],
+        binding_snapshot=binding_snapshot,
+        input_hash=input_hash,
         requested_by=user.id,
     )
     session.add(row)
@@ -2231,7 +2394,39 @@ async def start_repository_analysis(
     )
     await session.commit()
     await session.refresh(row)
-    return row
+    return RepositoryAnalysisJobOut.model_validate(row)
+
+
+@router.get(
+    "/workspaces/{workspace_id}/repository-analysis/{job_id}/issues",
+    response_model=RepositoryAnalysisIssuePageOut,
+)
+async def list_repository_analysis_issues(
+    workspace_id: EntityId,
+    job_id: EntityId,
+    after: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=100, ge=1, le=200),
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _workspace_access(session, user_id, workspace_id, "read")
+    job = await session.get(RepositoryAnalysisJob, job_id)
+    if job is None or job.workspace_id != workspace_id:
+        raise _error(404, "repository_analysis_not_found", "Repository analysis was not found.")
+    statement = (
+        select(RepositoryAnalysisIssue)
+        .where(RepositoryAnalysisIssue.repository_analysis_job_id == job_id)
+        .order_by(RepositoryAnalysisIssue.ordinal)
+        .limit(limit + 1)
+    )
+    if after is not None:
+        statement = statement.where(RepositoryAnalysisIssue.ordinal > after)
+    rows = list((await session.execute(statement)).scalars())
+    page = rows[:limit]
+    return RepositoryAnalysisIssuePageOut(
+        items=[RepositoryAnalysisIssueOut.model_validate(row) for row in page],
+        next_cursor=page[-1].ordinal if len(rows) > limit and page else None,
+    )
 
 
 _CONNECTOR_SECRET_FIELDS = {

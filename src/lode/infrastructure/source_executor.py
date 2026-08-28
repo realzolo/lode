@@ -64,7 +64,7 @@ class SourceReadOperationExecutor:
                     operation_id=operation_id,
                     repository_snapshot_id=snapshot.id,
                     revision_role="repository_search_candidate",
-                    requested_ref=snapshot.default_branch,
+                    requested_ref=snapshot.selected_branch,
                     resolved_sha=None,
                     hits=(),
                 )
@@ -91,7 +91,7 @@ class SourceReadOperationExecutor:
             requested_ref = (
                 incident_input.source_revision
                 if role == "incident_source"
-                else snapshot.default_branch
+                else snapshot.selected_branch
             )
             repo_url = snapshot.repo_url
         try:

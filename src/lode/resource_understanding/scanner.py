@@ -86,6 +86,10 @@ class ScanLimits:
     max_structure_nodes: int = 20_000
 
 
+class RepositoryScanLimitError(ValueError):
+    """The complete repository scan exceeded a server-owned safety budget."""
+
+
 @dataclass(slots=True)
 class _UnitAccumulator:
     source_root: str
@@ -124,8 +128,8 @@ class ManifestScanner:
             current_path = Path(current)
             relative_dir = current_path.relative_to(root)
             depth = len(relative_dir.parts)
-            if depth >= self.limits.max_directory_depth:
-                directories[:] = []
+            if depth >= self.limits.max_directory_depth and directories:
+                raise RepositoryScanLimitError("repository directory depth limit exceeded")
             safe_directories: list[str] = []
             for name in sorted(directories):
                 path = current_path / name
@@ -137,7 +141,7 @@ class ManifestScanner:
             for name in sorted(files):
                 scanned_count += 1
                 if scanned_count > self.limits.max_files:
-                    raise ValueError("repository file limit exceeded")
+                    raise RepositoryScanLimitError("repository file limit exceeded")
                 path = current_path / name
                 relative = self._relative(root, path)
                 if path.is_symlink():
@@ -151,7 +155,15 @@ class ManifestScanner:
         for relative in sorted(candidates):
             try:
                 raw = self._read(root, relative)
+            except RepositoryScanLimitError:
+                raise
+            except ValueError:
+                issues.append(ScanIssue("invalid_manifest", relative, "manifest could not be read safely"))
+                continue
+            try:
                 parsed = self._parse(relative, raw)
+            except RepositoryScanLimitError:
+                raise
             except (
                 ValueError,
                 RecursionError,
@@ -160,8 +172,8 @@ class ManifestScanner:
                 tomllib.TOMLDecodeError,
                 yaml.YAMLError,
                 ET.ParseError,
-            ) as exc:
-                issues.append(ScanIssue("invalid_manifest", relative, str(exc)[:300]))
+            ):
+                issues.append(ScanIssue("invalid_manifest", relative, "manifest format is invalid or unsupported"))
                 continue
             for kind, family, payload in parsed:
                 local_ref = relative if len(parsed) == 1 else f"{relative}#{kind}"
@@ -225,7 +237,7 @@ class ManifestScanner:
             raise ValueError("manifest is not a regular file")
         size = resolved.stat().st_size
         if size > self.limits.max_manifest_bytes:
-            raise ValueError("manifest size limit exceeded")
+            raise RepositoryScanLimitError("repository manifest size limit exceeded")
         return resolved.read_bytes()
 
     def _parse(self, relative: str, raw: bytes) -> list[tuple[str, str, dict[str, Any]]]:
@@ -344,9 +356,9 @@ class ManifestScanner:
             item, depth = stack.pop()
             count += 1
             if count > self.limits.max_structure_nodes:
-                raise ValueError("manifest structure node limit exceeded")
+                raise RepositoryScanLimitError("repository manifest structure node limit exceeded")
             if depth > self.limits.max_structure_depth:
-                raise ValueError("manifest structure depth limit exceeded")
+                raise RepositoryScanLimitError("repository manifest structure depth limit exceeded")
             if isinstance(item, dict):
                 stack.extend((key, depth + 1) for key in item)
                 stack.extend((child, depth + 1) for child in item.values())

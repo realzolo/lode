@@ -24,6 +24,10 @@ interface SearchableSelectProps {
   disabled?: boolean;
   loading?: boolean;
   ariaLabel?: string;
+  onSearchChange?: (query: string) => void;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
+  loadMoreLabel?: string;
 }
 
 export function SearchableSelect({
@@ -36,6 +40,10 @@ export function SearchableSelect({
   disabled = false,
   loading = false,
   ariaLabel,
+  onSearchChange,
+  hasMore = false,
+  onLoadMore,
+  loadMoreLabel,
 }: SearchableSelectProps) {
   const [open, setOpen] = React.useState(false);
   const selected = options.find((option) => option.value === value);
@@ -76,6 +84,7 @@ export function SearchableSelect({
               <Command.Input
                 autoFocus
                 placeholder={searchPlaceholder}
+                onValueChange={onSearchChange}
                 className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               />
             </div>
@@ -107,6 +116,18 @@ export function SearchableSelect({
                 </Command.Item>
               ))}
             </Command.List>
+            {hasMore && onLoadMore && loadMoreLabel ? (
+              <div className="border-t p-1">
+                <button
+                  type="button"
+                  className="w-full rounded-sm px-2 py-2 text-left text-sm text-link hover:bg-accent disabled:opacity-50"
+                  disabled={loading}
+                  onClick={onLoadMore}
+                >
+                  {loadMoreLabel}
+                </button>
+              </div>
+            ) : null}
           </Command>
         </Popover.Content>
       </Popover.Portal>

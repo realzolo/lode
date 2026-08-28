@@ -417,21 +417,59 @@ class GitAccountRepositoryOut(_StrictInput):
     archived: bool
 
 
+class GitBranchOut(_StrictInput):
+    name: str
+    is_default: bool = False
+
+
+class GitBranchPageOut(_StrictInput):
+    items: list[GitBranchOut]
+    next_cursor: str | None = None
+
+
 class RepositoryBind(_StrictInput):
     account_connection_id: EntityId = Field(gt=0)
     repository_id: EntityId = Field(gt=0)
     role: Literal["runtime_source", "shared_library", "infrastructure", "documentation"]
+    branch_mode: Literal["default", "branch"] = "default"
+    branch_name: str | None = Field(default=None, min_length=1, max_length=255)
     priority: int = Field(default=0, ge=0)
     description: str = Field(default="", max_length=2_000)
 
+    @model_validator(mode="after")
+    def valid_branch_selection(self):
+        if self.branch_name is not None and self.branch_name != self.branch_name.strip():
+            raise ValueError("branch name must be trimmed")
+        if self.branch_mode == "default" and self.branch_name is not None:
+            raise ValueError("default branch mode must not include a branch name")
+        if self.branch_mode == "branch" and not self.branch_name:
+            raise ValueError("fixed branch mode requires a branch name")
+        return self
+
 
 class RepositoryBindingPatch(_StrictPatch):
+    nullable_fields: ClassVar[frozenset[str]] = frozenset({"branch_name"})
+    expected_revision: int = Field(gt=0)
     role: Literal["runtime_source", "shared_library", "infrastructure", "documentation"] | None = (
         None
     )
+    branch_mode: Literal["default", "branch"] | None = None
+    branch_name: str | None = Field(default=None, min_length=1, max_length=255)
     priority: int | None = Field(default=None, ge=0)
     description: str | None = Field(default=None, max_length=2_000)
     state: Literal["active", "disabled"] | None = None
+
+    @model_validator(mode="after")
+    def valid_branch_selection(self):
+        if self.branch_name is not None and self.branch_name != self.branch_name.strip():
+            raise ValueError("branch name must be trimmed")
+        if self.branch_mode == "default" and "branch_name" in self.model_fields_set:
+            if self.branch_name is not None:
+                raise ValueError("default branch mode must not include a branch name")
+        if self.branch_mode == "branch" and "branch_name" in self.model_fields_set:
+            if not self.branch_name:
+                raise ValueError("fixed branch mode requires a branch name")
+        return self
 
 
 class RepositoryBindingOut(_StrictInput):
@@ -448,6 +486,9 @@ class RepositoryBindingOut(_StrictInput):
     web_url: str
     repo_type: str
     default_branch: str
+    branch_mode: Literal["default", "branch"]
+    branch_name: str | None
+    effective_branch: str
     role: str
     priority: int
     description: str
@@ -460,21 +501,42 @@ class RepositoryAnalysisJobOut(_ORMOutput):
     workspace_id: EntityId
     requested_binding_ids: list[EntityId]
     state: Literal["queued", "running", "succeeded", "failed"]
+    result_status: Literal["pending", "clean", "warnings", "failed"]
+    is_current: bool = False
     attempt: int
+    source_branches: dict[str, str]
     source_revisions: dict[str, str]
     graph_revision_id: EntityId | None
     scanned_file_count: int
     issue_count: int
     failure_code: Literal[
         "repository_access_unavailable",
+        "repository_branch_unavailable",
         "repository_checkout_failed",
-        "repository_manifest_invalid",
+        "repository_scan_limit_exceeded",
         "repository_analysis_failed",
     ] | None
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class RepositoryAnalysisIssueOut(_ORMOutput):
+    id: EntityId
+    repository_analysis_job_id: EntityId
+    repository_binding_id: EntityId | None
+    ordinal: int
+    severity: Literal["warning", "error"]
+    code: str
+    path: str | None
+    detail: str
+    created_at: datetime
+
+
+class RepositoryAnalysisIssuePageOut(_StrictInput):
+    items: list[RepositoryAnalysisIssueOut]
+    next_cursor: int | None = None
 
 
 class LokiConditionInput(_StrictInput):

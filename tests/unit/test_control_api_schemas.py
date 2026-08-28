@@ -14,6 +14,7 @@ from lode.api.control_schemas import (
     PlatformSettingsUpdate,
     ProviderAccountPatch,
     RepositoryBind,
+    RepositoryBindingPatch,
     WorkspaceArchitectureContextPut,
     WorkspaceCreate,
     WorkspacePatch,
@@ -95,6 +96,32 @@ def test_git_account_and_repository_binding_forms_require_complete_authorization
         }
     )
     assert binding.repository_id == 2
+
+
+def test_repository_branch_policy_requires_a_valid_fixed_branch() -> None:
+    fixed = RepositoryBind.model_validate(
+        {
+            "account_connection_id": 1,
+            "repository_id": 2,
+            "role": "runtime_source",
+            "branch_mode": "branch",
+            "branch_name": "release/2026.08",
+        }
+    )
+    assert fixed.branch_name == "release/2026.08"
+    assert RepositoryBind.model_validate(
+        {"account_connection_id": 1, "repository_id": 2, "role": "runtime_source"}
+    ).branch_mode == "default"
+    with pytest.raises(ValidationError):
+        RepositoryBind.model_validate(
+            {"account_connection_id": 1, "repository_id": 2, "role": "runtime_source", "branch_mode": "branch"}
+        )
+    with pytest.raises(ValidationError):
+        RepositoryBind.model_validate(
+            {"account_connection_id": 1, "repository_id": 2, "role": "runtime_source", "branch_name": "main"}
+        )
+    with pytest.raises(ValidationError):
+        RepositoryBindingPatch.model_validate({"role": "runtime_source"})
 
 
 def test_provider_patch_rejects_removed_organization_and_project_fields() -> None:

@@ -175,6 +175,8 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
     )
     account_connection_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=False)
+    branch_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default="default")
+    branch_name: Mapped[str | None] = mapped_column(Text)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
@@ -185,6 +187,11 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
         CheckConstraint(
             "role IN ('runtime_source', 'shared_library', 'infrastructure', 'documentation')",
             name="role",
+        ),
+        CheckConstraint(
+            "(branch_mode = 'default' AND branch_name IS NULL) OR "
+            "(branch_mode = 'branch' AND branch_name IS NOT NULL AND char_length(branch_name) > 0)",
+            name="branch_selection",
         ),
         CheckConstraint("priority >= 0", name="priority_nonnegative"),
         CheckConstraint("state IN ('active', 'disabled')", name="state"),
@@ -482,11 +489,23 @@ class RepositoryAnalysisJob(TimestampMixin, Base):
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
     requested_binding_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    binding_snapshot: Mapped[list[dict]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    input_hash: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'0000000000000000000000000000000000000000000000000000000000000000'"),
+    )
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    result_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     lease_owner: Mapped[str | None] = mapped_column(Text)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_revisions: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    source_branches: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     graph_revision_id: Mapped[int | None] = mapped_column(
@@ -503,26 +522,34 @@ class RepositoryAnalysisJob(TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint("cardinality(requested_binding_ids) > 0", name="bindings_nonempty"),
+        CheckConstraint("jsonb_typeof(binding_snapshot) = 'array'", name="binding_snapshot_array"),
+        CheckConstraint("input_hash ~ '^[0-9a-f]{64}$'", name="input_hash_sha256"),
         CheckConstraint("state IN ('queued', 'running', 'succeeded', 'failed')", name="state"),
+        CheckConstraint(
+            "result_status IN ('pending', 'clean', 'warnings', 'failed')",
+            name="result_status",
+        ),
         CheckConstraint("attempt >= 0", name="attempt_nonnegative"),
         CheckConstraint("scanned_file_count >= 0", name="scanned_files_nonnegative"),
         CheckConstraint("issue_count >= 0", name="issue_count_nonnegative"),
         CheckConstraint(
             "failure_code IS NULL OR failure_code IN ("
-            "'repository_access_unavailable', 'repository_checkout_failed', "
-            "'repository_manifest_invalid', 'repository_analysis_failed')",
+            "'repository_access_unavailable', 'repository_branch_unavailable', "
+            "'repository_checkout_failed', 'repository_scan_limit_exceeded', "
+            "'repository_analysis_failed')",
             name="failure_code",
         ),
         CheckConstraint(
             "(state = 'queued' AND lease_owner IS NULL AND lease_expires_at IS NULL "
-            "AND finished_at IS NULL AND failure_code IS NULL) OR "
+            "AND finished_at IS NULL AND failure_code IS NULL AND result_status = 'pending') OR "
             "(state = 'running' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL "
-            "AND started_at IS NOT NULL AND finished_at IS NULL AND failure_code IS NULL) OR "
+            "AND started_at IS NOT NULL AND finished_at IS NULL AND failure_code IS NULL "
+            "AND result_status = 'pending') OR "
             "(state = 'succeeded' AND lease_owner IS NULL AND lease_expires_at IS NULL "
             "AND graph_revision_id IS NOT NULL AND finished_at IS NOT NULL "
-            "AND failure_code IS NULL) OR "
+            "AND failure_code IS NULL AND result_status IN ('clean', 'warnings')) OR "
             "(state = 'failed' AND lease_owner IS NULL AND lease_expires_at IS NULL "
-            "AND finished_at IS NOT NULL AND failure_code IS NOT NULL)",
+            "AND finished_at IS NOT NULL AND failure_code IS NOT NULL AND result_status = 'failed')",
             name="state_shape",
         ),
         CheckConstraint(
@@ -536,4 +563,30 @@ class RepositoryAnalysisJob(TimestampMixin, Base):
             postgresql_where=text("state IN ('queued', 'running')"),
         ),
         Index("ix_repository_analysis_jobs_claim", "state", "lease_expires_at", "created_at"),
+    )
+
+
+class RepositoryAnalysisIssue(CreatedAtMixin, Base):
+    __tablename__ = "repository_analysis_issues"
+
+    id: Mapped[int] = snowflake_pk()
+    repository_analysis_job_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("repository_analysis_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    repository_binding_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("workspace_repository_bindings.id", ondelete="RESTRICT")
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    severity: Mapped[str] = mapped_column(Text, nullable=False, server_default="warning")
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint("severity IN ('warning', 'error')", name="severity"),
+        CheckConstraint("char_length(code) BETWEEN 1 AND 100", name="code_length"),
+        CheckConstraint("char_length(detail) <= 500", name="detail_length"),
+        UniqueConstraint("repository_analysis_job_id", "ordinal", name="uq_repository_analysis_issue"),
+        Index("ix_repository_analysis_issues_job", "repository_analysis_job_id", "ordinal"),
     )

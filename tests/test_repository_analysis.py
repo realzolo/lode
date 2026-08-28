@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy import select
+
 from lode.db.models import (
+    RepositoryAnalysisIssue,
     RepositoryAnalysisJob,
     Workspace,
     WorkspaceArchitectureContextRevision,
@@ -43,7 +46,7 @@ async def test_repository_analysis_job_claims_heartbeats_and_fails_durably() -> 
         owner=f"test-{suffix}",
         lease_seconds=30,
     )
-    claimed = await store.claim()
+    claimed = await store.claim(job_id)
     assert claimed is not None
     assert claimed.job_id == job_id
     assert await store.heartbeat(job_id) is True
@@ -54,5 +57,14 @@ async def test_repository_analysis_job_claims_heartbeats_and_fails_durably() -> 
         assert failed is not None
         assert failed.state == "failed"
         assert failed.failure_code == "repository_access_unavailable"
+        assert failed.result_status == "failed"
+        assert failed.issue_count == 1
         assert failed.lease_owner is None
         assert failed.finished_at is not None
+        issue = await session.scalar(
+            select(RepositoryAnalysisIssue).where(
+                RepositoryAnalysisIssue.repository_analysis_job_id == job_id
+            )
+        )
+        assert issue is not None
+        assert issue.code == "repository_access_unavailable"

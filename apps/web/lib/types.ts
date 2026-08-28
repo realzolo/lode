@@ -142,6 +142,9 @@ export interface RepositoryBinding {
   web_url: string;
   repo_type: string;
   default_branch: string;
+  branch_mode: 'default' | 'branch';
+  branch_name: string | null;
+  effective_branch: string;
   role: string;
   priority: number;
   description: string;
@@ -154,7 +157,10 @@ export interface RepositoryAnalysisJob {
   workspace_id: number;
   requested_binding_ids: number[];
   state: 'queued' | 'running' | 'succeeded' | 'failed';
+  result_status: 'pending' | 'clean' | 'warnings' | 'failed';
+  is_current: boolean;
   attempt: number;
+  source_branches: Record<string, string>;
   source_revisions: Record<string, string>;
   graph_revision_id: number | null;
   scanned_file_count: number;
@@ -164,6 +170,28 @@ export interface RepositoryAnalysisJob {
   finished_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface GitBranchPage {
+  items: Array<{ name: string; is_default: boolean }>;
+  next_cursor: string | null;
+}
+
+export interface RepositoryAnalysisIssue {
+  id: number;
+  repository_analysis_job_id: number;
+  repository_binding_id: number | null;
+  ordinal: number;
+  severity: 'warning' | 'error';
+  code: string;
+  path: string | null;
+  detail: string;
+  created_at: string;
+}
+
+export interface RepositoryAnalysisIssuePage {
+  items: RepositoryAnalysisIssue[];
+  next_cursor: number | null;
 }
 
 export interface GitAccount {

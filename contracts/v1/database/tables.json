@@ -1,6 +1,6 @@
 {
   "schema_version": "lode-database-tables.v1",
-  "migration_head": "0001_initial",
+  "migration_head": "0002_repository_binding_analysis",
   "control_plane": [
     "platform_settings",
     "workspaces",
@@ -13,6 +13,7 @@
     "git_account_repository_access",
     "git_account_sync_jobs",
     "workspace_repository_bindings",
+    "repository_analysis_issues",
     "repository_descriptors",
     "build_units",
     "components",

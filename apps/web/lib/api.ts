@@ -220,6 +220,17 @@ export function syncGitAccount(id: number) { return send<GitAccount>(`/git-accou
 export function fetchGitAccountRepositories(id: number) {
   return get<GitAccountRepository[]>(`/git-accounts/${id}/repositories`);
 }
+export function fetchGitAccountRepositoryBranches(
+  accountId: number,
+  repositoryId: number,
+  input: { cursor?: string; q?: string } = {},
+) {
+  const query = new URLSearchParams();
+  if (input.cursor) query.set('cursor', input.cursor);
+  if (input.q?.trim()) query.set('q', input.q.trim());
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return get<import('./types').GitBranchPage>(`/git-accounts/${accountId}/repositories/${repositoryId}/branches${suffix}`);
+}
 export function fetchBuildUnits(workspaceId: number | string) {
   return get<{ items: BuildUnit[] }>(`/workspaces/${workspaceId}/build-units`);
 }
@@ -232,8 +243,18 @@ export function fetchRepositoryAnalysis(workspaceId: number | string) {
 export function startRepositoryAnalysis(workspaceId: number | string) {
   return send<RepositoryAnalysisJob>(`/workspaces/${workspaceId}/repository-analysis`, 'POST');
 }
-export function bindRepository(workspaceId: number | string, input: { account_connection_id: number; repository_id: number; role: string; priority?: number; description?: string }) {
+export function fetchRepositoryAnalysisIssues(workspaceId: number | string, jobId: number, after?: number) {
+  const suffix = after === undefined ? '' : `?after=${after}`;
+  return get<import('./types').RepositoryAnalysisIssuePage>(`/workspaces/${workspaceId}/repository-analysis/${jobId}/issues${suffix}`);
+}
+export function bindRepository(workspaceId: number | string, input: { account_connection_id: number; repository_id: number; role: string; branch_mode?: 'default' | 'branch'; branch_name?: string | null; priority?: number; description?: string }) {
   return send<RepositoryBinding>(`/workspaces/${workspaceId}/repositories`, 'POST', input);
+}
+export function updateRepositoryBinding(workspaceId: number | string, bindingId: number, input: { expected_revision: number; role?: string; branch_mode?: 'default' | 'branch'; branch_name?: string | null; priority?: number; description?: string; state?: 'active' | 'disabled' }) {
+  return send<RepositoryBinding>(`/workspaces/${workspaceId}/repositories/${bindingId}`, 'PATCH', input);
+}
+export function disableRepositoryBinding(workspaceId: number | string, bindingId: number, expectedRevision: number) {
+  return send<void>(`/workspaces/${workspaceId}/repositories/${bindingId}?expected_revision=${expectedRevision}`, 'DELETE');
 }
 export function fetchConnectorKinds() {
   return get<Array<{ kind: string; language: string; capabilities: string[]; secret_fields: string[] }>>('/evidence-connector-kinds');

@@ -27,9 +27,12 @@ from lode.db.models import (
     InvestigationJob,
     InvestigationResourceGraphSnapshot,
     PlatformSettings,
+    GitRepository,
+    RepositoryAnalysisJob,
     ResourceGraphRevision,
     SealedEvidenceValue,
     Workspace,
+    WorkspaceRepositoryBinding,
 )
 from lode.infrastructure.investigation_control_snapshots import (
     InvestigationControlSnapshotStore,
@@ -55,6 +58,48 @@ def _sha256(value: str) -> str:
 
 def _signature(workspace_id: int, event: str, trace_id: str | None) -> str:
     return canonical_hash({"event": event, "trace_id": trace_id, "workspace_id": workspace_id})
+
+
+async def _repository_analysis_current(session: AsyncSession, workspace_id: int) -> bool | None:
+    latest = (
+        await session.execute(
+            select(RepositoryAnalysisJob)
+            .where(
+                RepositoryAnalysisJob.workspace_id == workspace_id,
+                RepositoryAnalysisJob.state == "succeeded",
+            )
+            .order_by(RepositoryAnalysisJob.created_at.desc(), RepositoryAnalysisJob.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if latest is None:
+        return None
+    rows = (
+        await session.execute(
+            select(WorkspaceRepositoryBinding, GitRepository)
+            .join(GitRepository, GitRepository.id == WorkspaceRepositoryBinding.repository_id)
+            .where(
+                WorkspaceRepositoryBinding.workspace_id == workspace_id,
+                WorkspaceRepositoryBinding.state == "active",
+            )
+            .order_by(WorkspaceRepositoryBinding.id)
+        )
+    ).all()
+    snapshot = [
+        {
+            "binding_id": binding.id,
+            "configuration_revision": binding.descriptor_revision,
+            "repository_id": repository.id,
+            "account_connection_id": binding.account_connection_id,
+            "role": binding.role,
+            "branch_mode": binding.branch_mode,
+            "effective_branch": binding.branch_name
+            if binding.branch_mode == "branch"
+            else repository.default_branch,
+        }
+        for binding, repository in rows
+    ]
+    return bool(snapshot) and latest.input_hash == canonical_hash({"repository_bindings": snapshot})
 
 
 class PostgresIntakeStore:
@@ -435,6 +480,7 @@ class PostgresIntakeStore:
                     envelope_key_version="data-encryption-key.v1",
                 )
             )
+        analysis_current = await _repository_analysis_current(self.session, workspace_id)
         graph_revision = (
             await self.session.execute(
                 select(ResourceGraphRevision)
@@ -443,6 +489,8 @@ class PostgresIntakeStore:
                 .limit(1)
             )
         ).scalar_one_or_none()
+        if analysis_current is False:
+            graph_revision = None
         self.session.add(
             InvestigationResourceGraphSnapshot(
                 investigation_id=investigation.id,
@@ -457,6 +505,7 @@ class PostgresIntakeStore:
                         if graph_revision is None
                         else graph_revision.revision,
                         "input_hash": None if graph_revision is None else graph_revision.input_hash,
+                        "repository_analysis_current": analysis_current is not False,
                     }
                 ),
             )

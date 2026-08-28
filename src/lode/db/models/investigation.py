@@ -161,6 +161,8 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
     priority: Mapped[int] = mapped_column(Integer, nullable=False)
     repo_url: Mapped[str] = mapped_column(Text, nullable=False)
     default_branch: Mapped[str] = mapped_column(Text, nullable=False)
+    branch_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default="default")
+    selected_branch: Mapped[str] = mapped_column(Text, nullable=False, server_default="main")
     frozen_candidate_sha: Mapped[str | None] = mapped_column(Text)
     frozen_revision_role: Mapped[str] = mapped_column(Text, nullable=False)
     frozen_resolution_status: Mapped[str] = mapped_column(Text, nullable=False)
@@ -187,6 +189,8 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
         ),
         CheckConstraint("binding_revision > 0", name="binding_revision_positive"),
         CheckConstraint("priority >= 0", name="priority_nonnegative"),
+        CheckConstraint("branch_mode IN ('default', 'branch')", name="branch_mode"),
+        CheckConstraint("char_length(selected_branch) > 0", name="selected_branch_nonempty"),
         CheckConstraint(
             "frozen_candidate_sha IS NULL OR frozen_candidate_sha ~ '^[0-9a-f]{40}$'",
             name="candidate_sha",

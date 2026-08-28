@@ -9,6 +9,7 @@ from lode.resource_understanding import (
     ResourceIdentityValidator,
     SemanticAnnotationDraft,
 )
+from lode.resource_understanding.scanner import RepositoryScanLimitError, ScanLimits
 from lode.resource_understanding.validator import ResourceValidationError
 
 
@@ -78,7 +79,35 @@ def test_scanner_rejects_yaml_aliases(tmp_path: Path) -> None:
     result = ManifestScanner().scan(tmp_path, REVISION)
 
     assert result.issues[0].code == "invalid_manifest"
-    assert "aliases are forbidden" in result.issues[0].detail
+    assert result.issues[0].detail == "manifest format is invalid or unsupported"
+
+
+@pytest.mark.parametrize(
+    "limits, configure",
+    [
+        (ScanLimits(max_files=1), lambda root: [(root / "a.txt").write_text("a"), (root / "b.txt").write_text("b")]),
+        (ScanLimits(max_manifest_bytes=8), lambda root: (root / "package.json").write_text('{"name":"too-large"}')),
+        (ScanLimits(max_directory_depth=1), lambda root: ((root / "a" / "b").mkdir(parents=True), (root / "a" / "b" / "package.json").write_text('{"name":"deep"}'))),
+        (ScanLimits(max_structure_nodes=2), lambda root: ((root / "deploy").mkdir(), (root / "deploy" / "large.yaml").write_text("kind: Deployment\nmetadata:\n  name: api\n"))),
+    ],
+)
+def test_scanner_fails_closed_on_global_safety_limits(tmp_path: Path, limits: ScanLimits, configure) -> None:
+    configure(tmp_path)
+
+    with pytest.raises(RepositoryScanLimitError):
+        ManifestScanner(limits).scan(tmp_path, REVISION)
+
+
+def test_scanner_diagnostics_do_not_echo_manifest_content(tmp_path: Path) -> None:
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    secret = "not-for-diagnostics"
+    (deploy / "invalid.yaml").write_text(f"metadata: [ {secret}\n")
+
+    result = ManifestScanner().scan(tmp_path, REVISION)
+
+    assert result.issues[0].detail == "manifest format is invalid or unsupported"
+    assert secret not in result.issues[0].detail
 
 
 def test_annotation_cannot_self_verify_identity() -> None:

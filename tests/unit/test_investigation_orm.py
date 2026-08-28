@@ -45,8 +45,12 @@ def test_workspace_context_and_repository_analysis_are_first_class_revisioned_st
     assert {"workspace_id", "entries", "revision"}.issubset(context.c.keys())
     assert {
         "requested_binding_ids",
+        "binding_snapshot",
+        "input_hash",
+        "result_status",
         "state",
         "lease_owner",
+        "source_branches",
         "source_revisions",
         "graph_revision_id",
     }.issubset(analysis.c.keys())
@@ -57,6 +61,8 @@ def test_workspace_context_and_repository_analysis_are_first_class_revisioned_st
     assert "state = 'running' AND lease_owner IS NOT NULL" in analysis_sql
     assert "state = 'succeeded'" in analysis_sql
     assert "repository_access_unavailable" in analysis_sql
+    assert "repository_branch_unavailable" in analysis_sql
+    assert "repository_scan_limit_exceeded" in analysis_sql
 
 
 def test_only_one_running_wave_is_allowed_per_investigation() -> None:
@@ -99,6 +105,8 @@ def test_repository_snapshot_freezes_location_and_identity() -> None:
         "frozen_resolution_status",
         "frozen_revision_role",
         "repo_url",
+        "branch_mode",
+        "selected_branch",
         "repository_identity_hash",
     }.issubset(table.c.keys())
     assert "repository_identity_hash ~ '^[0-9a-f]{64}$'" in sql

@@ -37,11 +37,11 @@ deployment-canary observations to pass the statistical and non-regression gate.
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
-- The current ORM registry and the only migration register exactly the 72 tables in
+- The current ORM registry and migration chain register exactly the 73 tables in
   `contracts/v1/database/tables.json`. Provider accounts, account models,
   static Git adapters/accounts/catalogue and account-to-repository access,
   direct Workspace repository bindings, build units, components, resource graph
-  revisions, durable repository-analysis jobs, structured Workspace architecture
+  revisions, durable repository-analysis jobs and their persisted safe diagnostics, structured Workspace architecture
   context revisions, connectors, immutable investigation snapshots, the evidence graph,
   native-read audit chain, source assessments, findings, and reports are
   separate final objects. Deprecated global workload identity, single-model,
@@ -62,7 +62,13 @@ deployment-canary observations to pass the statistical and non-regression gate.
   selecting a healthy account and then one repository currently visible to that
   account. `workspace_repository_bindings` stores both IDs and has a composite
   foreign key to `git_account_repository_access`; one repository has at most one
-  active binding per Workspace. Investigation and analysis snapshots resolve the
+  active binding per Workspace. A binding either follows the discovered repository
+  default branch or fixes one verified remote branch; branches are provider-read,
+  pageable/searchable values and are never accepted as arbitrary refs, tags, or
+  SHAs. Repository and Git-account identity cannot be edited in place. Binding
+  edits and soft disable/restore use optimistic revisions; role, branch, and
+  enablement changes make the current analysis stale, while priority and description
+  remain metadata-only. Investigation and analysis snapshots resolve the
   binding's exact account and current credential revision and fail closed on
   unhealthy accounts, lost access, archived repositories, or credential drift.
   Private repositories are never accessed through a per-repository secret.
@@ -99,14 +105,22 @@ deployment-canary observations to pass the statistical and non-regression gate.
   workspaces, and multi-repository Components without running repository code.
 - `src/lode/infrastructure/repository_analysis.py` owns the durable, leased
   repository-analysis workflow. An operator explicitly starts analysis for the
-  current active bindings; the worker resolves every default branch to a full
-  SHA, reads disposable exact-revision checkouts, publishes the ResourceGraph,
-  and records source revisions, scan counts, stable failure codes, and the graph
-  revision. A crash may reclaim the lease and safely reuse an identical graph.
-- Repository discovery rejects symlinks, path escape, oversized/deep
-  structures, duplicate YAML keys, YAML aliases/object constructors, and XML
-  DTD/entities. `PyYAML` is a direct runtime dependency solely for safe YAML
-  parsing; JSON, TOML, and XML use standard-library structured parsers.
+  current active bindings; the job stores an immutable hash-bound binding input
+  snapshot (binding/account/repository identity, role, effective branch, and
+  structural configuration revision). The worker always uses that snapshot, while rechecking current
+  credential and repository access safety, resolves the selected branch to a full
+  SHA, reads disposable exact-revision checkouts, publishes the ResourceGraph, and
+  records actual branches, source revisions, scan counts, stable failure codes, and
+  persisted path/rule/safe-summary diagnostics. A completed analysis is current only
+  when its input hash matches the active binding configuration; stale graph revisions
+  remain audit history and are not frozen into new investigations. A crash may reclaim
+  the lease and safely reuse an identical graph.
+- Repository discovery skips symbolic links and records local malformed or unsupported
+  manifests as warnings so valid structures still publish. Repository file-count,
+  directory-depth, manifest-size, and structured-document safety limits fail the job
+  with distinct stable codes. Diagnostics never include manifest contents, raw parser
+  exceptions, credentials, or tokens. `PyYAML` is a direct runtime dependency solely
+  for safe YAML parsing; JSON, TOML, and XML use standard-library structured parsers.
 - Build Units are created only for `runtime_source` bindings. Semantic
   annotations may reference scanner-owned observations and candidate paths but
   cannot create paths, repository bindings, access scopes, or credentials and
@@ -223,7 +237,7 @@ deployment-canary observations to pass the statistical and non-regression gate.
   one current implementation and never creates `_v1`/`_v2` module variants.
   Version literals remain only where an external wire or persisted schema
   contract requires them, such as `incident.alert.v1` and migration revision
-  `0001_initial`.
+  `0001_initial` and forward migrations.
 - `src/lode/application/capabilities.py`, `decision_policy.py`,
   `evidence_graph.py`, and `investigation.py` implement the credential-free
   capability catalog, deterministic decision policy, evidence-backed graph
@@ -828,11 +842,14 @@ reconnects with the last observed cursor and preserves the last canonical view.
 ## Database
 
 The project has not released its database baseline.
-`alembic/versions/0001_initial.py` is the only revision and creates exactly the
-72 final business tables. There is one current schema and no parallel version,
-compatibility view, dual write, backfill, or old-schema adapter; unreleased
-development databases are recreated from the unique initial migration. After
-the first release, schema changes use ordinary forward migrations.
+`alembic/versions/0001_initial.py` creates the original 72-table baseline and
+`0002_repository_binding_analysis.py` is the forward migration to the current
+73-table schema. There is one current schema and no compatibility view or dual
+write. The forward migration preserves historical jobs as non-current records,
+freezes available inputs for legacy queued/running tasks, maps the retired
+manifest failure category to `repository_analysis_failed`, and backfills terminal
+result state before enforcing new constraints. Future schema changes use ordinary
+forward migrations.
 
 `next_lode_id()` and its state sequence are created before business tables in
 the initial migration. Tests exercise concurrent connections, independent
@@ -857,7 +874,7 @@ Retries insert a new `(authorized_read_id, attempt)` row.
 rewrite historical audit identity. Users and Workspaces referenced by audit are
 disabled rather than physically deleted.
 
-Until the first release, model changes are folded into `0001_initial.py`. Verify a fresh schema:
+Verify a fresh schema upgraded through the migration head:
 
 ```bash
 LODE_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lode_migration_test \
@@ -954,11 +971,13 @@ ordinary users and grants each Workspace `viewer` or `operator` access. There
 are no Workspace administrators. The Repositories tab selects a searchable
 healthy Git account and then a searchable repository within the two combobox
 popovers; changing the account clears the repository immediately. It starts and polls durable
-repository analysis, shows the exact analyzed commit for every binding, and
-presents identified build units and components only after a successful run,
-not raw resource-graph payloads or the internal binding revision. The repository
-table includes the actual account used by every binding. There is no separate
-Workspace Git-account authorization step or entitlement selector.
+repository analysis, shows the exact analyzed branch and commit for every binding,
+warning diagnostics, and current/expired status. It presents identified build units
+and components only after a successful run, not raw resource-graph payloads or the
+internal binding revision. The repository table includes the actual account used by
+every binding plus edit, soft-unbind, and restore actions; unbind confirmation makes
+clear that history is retained. There is no separate Workspace Git-account
+authorization step or entitlement selector.
 Connector forms use provider-specific fields and require verification before
 introspection; secrets are password inputs and are never rendered after
 submission. PostgreSQL/MySQL creation automatically chains connection

@@ -193,7 +193,7 @@ class InvestigationControlSnapshotStore:
         ]
         branch_results = await asyncio.gather(
             *(
-                self._resolve_branch(repository, credentials[binding.id])
+                self._resolve_branch(binding, repository, credentials[binding.id])
                 for binding, repository in branch_rows
             )
         )
@@ -222,6 +222,8 @@ class InvestigationControlSnapshotStore:
                 "priority": binding.priority,
                 "repo_url": repository.repo_url,
                 "default_branch": repository.default_branch,
+                "branch_mode": binding.branch_mode,
+                "selected_branch": _effective_branch(binding, repository),
                 "frozen_candidate_sha": candidate_sha,
                 "frozen_revision_role": revision_role,
                 "frozen_resolution_status": resolution_status,
@@ -230,6 +232,8 @@ class InvestigationControlSnapshotStore:
                         "repository_id": repository.id,
                         "repo_url": repository.repo_url,
                         "default_branch": repository.default_branch,
+                        "branch_mode": binding.branch_mode,
+                        "selected_branch": _effective_branch(binding, repository),
                         "adapter_id": repository.adapter_id,
                         "endpoint_identity_hash": repository.endpoint_identity_hash,
                         "external_repository_id": repository.external_repository_id,
@@ -286,18 +290,18 @@ class InvestigationControlSnapshotStore:
 
     async def _resolve_branch(
         self,
+        binding: WorkspaceRepositoryBinding,
         repository: GitRepository,
         credential: tuple[int, int, str, GitCredentialMaterial],
     ) -> str | None:
         try:
             return await self.revision_resolver.resolve_branch(
                 repo_url=repository.repo_url,
-                branch=repository.default_branch,
+                branch=_effective_branch(binding, repository),
                 credential=credential[3],
             )
         except (OSError, RuntimeError, ValueError):
             return None
-
     async def _freeze_models(self, investigation_id: int, workspace_id: int) -> None:
         workspace = await self.session.get(Workspace, workspace_id)
         if workspace is None or workspace.model_policy_revision_id is None:
@@ -456,3 +460,7 @@ def _eligible_bindings(value: Any) -> dict[int, int]:
             raise ValueError("eligible binding revision is invalid")
         bindings[binding_id] = revision
     return bindings
+
+
+def _effective_branch(binding: WorkspaceRepositoryBinding, repository: GitRepository) -> str:
+    return binding.branch_name if binding.branch_mode == "branch" else repository.default_branch

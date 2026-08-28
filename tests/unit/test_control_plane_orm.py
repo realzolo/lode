@@ -99,6 +99,7 @@ def test_repository_build_unit_and_component_identities_are_separate() -> None:
     credential_revision = Base.metadata.tables["git_account_credential_revisions"]
     access = Base.metadata.tables["git_account_repository_access"]
     binding = Base.metadata.tables["workspace_repository_bindings"]
+    issues = Base.metadata.tables["repository_analysis_issues"]
     build_unit = Base.metadata.tables["build_units"]
     component = Base.metadata.tables["components"]
 
@@ -109,9 +110,25 @@ def test_repository_build_unit_and_component_identities_are_separate() -> None:
         credential_revision.c.keys()
     )
     assert {"account_connection_id", "repository_id", "state"}.issubset(access.c.keys())
-    assert {"account_connection_id", "repository_id", "workspace_id", "role"}.issubset(
+    assert {
+        "account_connection_id",
+        "repository_id",
+        "workspace_id",
+        "role",
+        "branch_mode",
+        "branch_name",
+    }.issubset(
         binding.c.keys()
     )
+    assert {
+        "repository_analysis_job_id",
+        "repository_binding_id",
+        "ordinal",
+        "severity",
+        "code",
+        "path",
+        "detail",
+    }.issubset(issues.c.keys())
     assert "repository" + "_entitlement_id" not in binding.c
     assert {"repository_binding_id", "source_root", "build_system"}.issubset(build_unit.c.keys())
     assert "repository_id" not in component.c

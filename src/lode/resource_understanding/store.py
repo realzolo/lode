@@ -67,6 +67,8 @@ class ResourceGraphStore:
         workspace_id: int,
         scans: Sequence[BoundRepositoryScan],
         annotations: Iterable[SemanticAnnotationDraft] = (),
+        runtime_binding_ids: set[int] | None = None,
+        allow_inactive_binding_ids: set[int] | None = None,
         prompt_revision: str = "resource-understanding.1",
     ) -> PublishedResourceGraph:
         started = monotonic()
@@ -81,9 +83,21 @@ class ResourceGraphStore:
         if workspace is None:
             raise ValueError("workspace does not exist")
 
-        bindings = await self._validate_bindings(workspace_id, scans)
+        bindings = await self._validate_bindings(
+            workspace_id,
+            scans,
+            allow_inactive_binding_ids=allow_inactive_binding_ids,
+        )
+        if runtime_binding_ids is None:
+            runtime_binding_ids = {
+                binding_id
+                for binding_id, binding in bindings.items()
+                if binding.role == "runtime_source"
+            }
+        if not runtime_binding_ids.issubset({item.repository_binding_id for item in scans}):
+            raise ValueError("runtime scan bindings are not part of the publication")
         runtime_scans = [
-            item.scan for item in scans if bindings[item.repository_binding_id].role == "runtime_source"
+            item.scan for item in scans if item.repository_binding_id in runtime_binding_ids
         ]
         annotation_list = tuple(annotations)
         drafts = list(self.validator.validate_many(runtime_scans, annotation_list))
@@ -203,15 +217,19 @@ class ResourceGraphStore:
         self,
         workspace_id: int,
         scans: Sequence[BoundRepositoryScan],
+        *,
+        allow_inactive_binding_ids: set[int] | None = None,
     ) -> dict[int, WorkspaceRepositoryBinding]:
         ids = [item.repository_binding_id for item in scans]
         if len(ids) != len(set(ids)):
             raise ValueError("repository bindings must be unique per publication")
+        allowed = allow_inactive_binding_ids or set()
         rows = (await self.session.execute(
             select(WorkspaceRepositoryBinding).where(
                 WorkspaceRepositoryBinding.id.in_(ids),
                 WorkspaceRepositoryBinding.workspace_id == workspace_id,
-                WorkspaceRepositoryBinding.state == "active",
+                (WorkspaceRepositoryBinding.state == "active")
+                | WorkspaceRepositoryBinding.id.in_(allowed),
             )
         )).scalars().all()
         by_id = {row.id: row for row in rows}

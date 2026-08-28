@@ -185,6 +185,44 @@ async def test_repository_binding_uses_account_repository_access_directly() -> N
         assert created.json()["repository_id"] == repository_id
         assert created.json()["account_name"] == f"account-{suffix}"
         assert created.json()["external_account_login"] == f"login-{suffix}"
+        assert created.json()["branch_mode"] == "default"
+        assert created.json()["branch_name"] is None
+        assert created.json()["effective_branch"] == "main"
+
+        edited = await client.patch(
+            f"/workspaces/{workspace_id}/repositories/{created.json()['id']}",
+            headers=headers,
+            json={
+                "expected_revision": created.json()["revision"],
+                "role": "shared_library",
+                "priority": 5,
+                "description": "Shared checkout utilities",
+            },
+        )
+        assert edited.status_code == 200
+        assert edited.json()["role"] == "shared_library"
+        assert edited.json()["revision"] == created.json()["revision"] + 1
+
+        stale = await client.patch(
+            f"/workspaces/{workspace_id}/repositories/{created.json()['id']}",
+            headers=headers,
+            json={"expected_revision": created.json()["revision"], "priority": 7},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["error"]["code"] == "repository_binding_revision_conflict"
+
+        disabled = await client.delete(
+            f"/workspaces/{workspace_id}/repositories/{created.json()['id']}?expected_revision={edited.json()['revision']}",
+            headers=headers,
+        )
+        assert disabled.status_code == 204
+        restored = await client.patch(
+            f"/workspaces/{workspace_id}/repositories/{created.json()['id']}",
+            headers=headers,
+            json={"expected_revision": edited.json()["revision"] + 1, "state": "active"},
+        )
+        assert restored.status_code == 200
+        assert restored.json()["state"] == "active"
 
         duplicate = await client.post(
             f"/workspaces/{workspace_id}/repositories", headers=headers, json=payload
@@ -204,6 +242,12 @@ async def test_repository_binding_uses_account_repository_access_directly() -> N
         )
         assert lost.status_code == 409
         assert lost.json()["error"]["code"] == "repository_access_lost"
+        branch_catalogue = await client.get(
+            f"/git-accounts/{account_id}/repositories/{repository_id}/branches",
+            headers=headers,
+        )
+        assert branch_catalogue.status_code == 409
+        assert branch_catalogue.json()["error"]["code"] == "repository_access_lost"
 
 
 @pytest.mark.asyncio

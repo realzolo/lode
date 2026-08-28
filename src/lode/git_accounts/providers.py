@@ -9,13 +9,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from lode.evidence_connectors.transport import BoundedHTTPTransport
 from lode.evidence_connectors.types import ProviderExecutionError
 from lode.infrastructure.provider_http import validate_provider_endpoint
 
 _MAX_PAGES = 20
+_BRANCH_PAGE_SIZE = 100
 _REQUEST_TIMEOUT_MS = 15_000
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
@@ -54,6 +55,11 @@ class GitProviderRepository:
     visibility: str
     archived: bool
     pushed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class GitProviderBranch:
+    name: str
 
 
 _ADAPTERS = MappingProxyType(
@@ -122,6 +128,69 @@ async def list_repositories(*, adapter_id: str, api_url: str, token: str) -> tup
     raise GitProviderError("catalog_limit_exceeded", "Git account repository catalogue is too large")
 
 
+async def list_branches(
+    *,
+    adapter_id: str,
+    api_url: str,
+    token: str,
+    external_repository_id: str,
+    full_name: str,
+    page: int,
+    query: str | None = None,
+) -> tuple[tuple[GitProviderBranch, ...], str | None]:
+    require_adapter(adapter_id)
+    if not 1 <= page <= _MAX_PAGES:
+        raise GitProviderError("catalog_limit_exceeded", "Git branch catalogue is too large")
+    if adapter_id == "gitlab":
+        path = f"/projects/{quote(external_repository_id, safe='')}/repository/branches"
+        params = {"per_page": str(_BRANCH_PAGE_SIZE), "page": str(page)}
+        if query:
+            params["search"] = query
+    else:
+        path = f"/repos/{_repository_path(full_name)}/branches"
+        params = {"per_page": str(_BRANCH_PAGE_SIZE), "page": str(page)}
+    payload = _json_value(
+        await _request(adapter_id, api_url, "GET", path, token=token, query=params)
+    )
+    if not isinstance(payload, list):
+        raise GitProviderError("invalid_response", "Git branch list is invalid")
+    branches = tuple(_branch(value) for value in payload if isinstance(value, dict))
+    if len(branches) != len(payload):
+        raise GitProviderError("invalid_response", "Git branch list item is invalid")
+    if query and adapter_id != "gitlab":
+        needle = query.casefold()
+        branches = tuple(branch for branch in branches if needle in branch.name.casefold())
+    return branches, str(page + 1) if len(payload) == _BRANCH_PAGE_SIZE else None
+
+
+async def verify_branch(
+    *,
+    adapter_id: str,
+    api_url: str,
+    token: str,
+    external_repository_id: str,
+    full_name: str,
+    branch_name: str,
+) -> bool:
+    require_adapter(adapter_id)
+    if not branch_name or branch_name != branch_name.strip() or len(branch_name) > 255:
+        return False
+    if adapter_id == "gitlab":
+        path = (
+            f"/projects/{quote(external_repository_id, safe='')}/repository/branches/"
+            f"{quote(branch_name, safe='')}"
+        )
+    else:
+        path = f"/repos/{_repository_path(full_name)}/branches/{quote(branch_name, safe='')}"
+    try:
+        payload = _json_object(await _request(adapter_id, api_url, "GET", path, token=token))
+    except GitProviderError as exc:
+        if exc.code == "not_found":
+            return False
+        raise
+    return _branch(payload).name == branch_name
+
+
 async def _request(
     adapter_id: str,
     api_url: str,
@@ -151,6 +220,8 @@ async def _request(
         raise GitProviderError("rate_limited", "Git provider rate limit was reached")
     if response.status_code >= 500:
         raise GitProviderError("provider_unavailable", "Git provider is unavailable")
+    if response.status_code == 404:
+        raise GitProviderError("not_found", "Git provider resource was not found")
     if not 200 <= response.status_code < 300:
         raise GitProviderError("invalid_response", "Git provider rejected the request")
     return response.body
@@ -176,6 +247,20 @@ def _json_object(payload: bytes) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise GitProviderError("invalid_response", "Git provider response is invalid")
     return value
+
+
+def _repository_path(full_name: str) -> str:
+    parts = full_name.split("/")
+    if len(parts) != 2 or any(not part or part != part.strip() for part in parts):
+        raise GitProviderError("invalid_response", "Git repository name is invalid")
+    return "/".join(quote(part, safe="") for part in parts)
+
+
+def _branch(payload: Mapping[str, Any]) -> GitProviderBranch:
+    name = payload.get("name")
+    if not isinstance(name, str) or not name or name != name.strip() or len(name) > 255:
+        raise GitProviderError("invalid_response", "Git branch response is invalid")
+    return GitProviderBranch(name)
 
 
 def _profile(adapter_id: str, payload: Mapping[str, Any]) -> GitProviderProfile:
