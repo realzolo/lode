@@ -80,6 +80,54 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
         )
         assert workspace.status_code == 201
         workspace_id = workspace.json()["id"]
+        assert workspace.json()["description"] == ""
+        assert workspace.json()["architecture_context_revision_id"] is not None
+
+        context = await client.get(
+            f"/workspaces/{workspace_id}/architecture-context", headers=admin_headers
+        )
+        assert context.status_code == 200
+        assert context.json()["entries"] == []
+        updated_context = await client.put(
+            f"/workspaces/{workspace_id}/architecture-context",
+            headers=admin_headers,
+            json={
+                "entries": [
+                    {
+                        "kind": "system_purpose",
+                        "title": "Payments",
+                        "content": "Owns payment incident investigation.",
+                    }
+                ]
+            },
+        )
+        assert updated_context.status_code == 200
+        assert updated_context.json()["revision"] == 2
+
+        async def topic_exists(_topic: str) -> bool:
+            return True
+
+        monkeypatch.setattr(control_plane, "_broker_has_topic", topic_exists)
+        readiness = await client.get(
+            f"/workspaces/{workspace_id}/readiness", headers=admin_headers
+        )
+        assert readiness.status_code == 200
+        assert readiness.json()["can_start"] is False
+        assert {item["code"]: item["outcome"] for item in readiness.json()["checks"]} == {
+            "kafka_topic": "passed",
+            "model_policy": "blocked",
+            "repositories": "warning",
+            "evidence_connectors": "warning",
+            "architecture_context": "passed",
+        }
+        blocked_start = await client.post(
+            f"/workspaces/{workspace_id}/ingestion/start",
+            headers=admin_headers,
+            json={"start_position": "latest"},
+        )
+        assert blocked_start.status_code == 409
+        assert blocked_start.json()["error"]["code"] == "workspace_not_ready"
+        assert blocked_start.json()["error"]["details"]["blockers"][0]["code"] == "model_policy"
 
         admin_workspaces = await client.get("/workbench/workspaces", headers=admin_headers)
         assert admin_workspaces.status_code == 200

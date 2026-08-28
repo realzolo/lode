@@ -22,7 +22,7 @@ from lode.git_accounts import (
 )
 
 
-FIXTURE_ADAPTER_ID = "local-fixture"
+FIXTURE_ADAPTER_ID = "github"
 FIXTURE_ENDPOINT_HASH = "d" * 64
 
 

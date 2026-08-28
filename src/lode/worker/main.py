@@ -33,6 +33,11 @@ from lode.infrastructure.model_runtime import PostgresModelRuntime
 from lode.infrastructure.native_read_executor import NativeReadOperationExecutor
 from lode.infrastructure.operation_executor import InvestigationOperationExecutor
 from lode.infrastructure.report_store import PostgresReportStore
+from lode.infrastructure.repository_analysis import (
+    ClaimedRepositoryAnalysisJob,
+    RepositoryAnalysisLeaseStore,
+    RepositoryAnalysisService,
+)
 from lode.infrastructure.source_executor import SourceReadOperationExecutor
 from lode.metrics import ENGINE_IN_FLIGHT, INVESTIGATION_DURATION, INVESTIGATIONS
 from lode.runtime_defaults import (
@@ -158,7 +163,64 @@ async def run_worker(
 
 
 async def main(handler: InvestigationHandler | None = None) -> None:
-    await run_worker(handler or build_handler(), lease_store())
+    await asyncio.gather(
+        run_worker(handler or build_handler(), lease_store()),
+        run_repository_analysis_worker(),
+    )
+
+
+async def run_repository_analysis_worker(*, stop: asyncio.Event | None = None) -> None:
+    durable = RepositoryAnalysisLeaseStore(
+        AsyncSessionLocal,
+        owner=WORKER_ID,
+        lease_seconds=WORKER_LEASE_TTL_SECONDS,
+    )
+    service = RepositoryAnalysisService(AsyncSessionLocal)
+    await durable.reclaim_expired()
+    while stop is None or not stop.is_set():
+        job = await durable.claim()
+        if job is None:
+            await asyncio.sleep(WORKER_POLL_INTERVAL_SECONDS)
+            continue
+        await _run_repository_analysis_job(job, durable, service)
+
+
+async def _run_repository_analysis_job(
+    job: ClaimedRepositoryAnalysisJob,
+    durable: RepositoryAnalysisLeaseStore,
+    service: RepositoryAnalysisService,
+) -> None:
+    interval = max(1.0, WORKER_LEASE_TTL_SECONDS / 3)
+
+    async def heartbeat() -> None:
+        while True:
+            await asyncio.sleep(interval)
+            if not await durable.heartbeat(job.job_id):
+                raise LeaseOwnershipLost("repository analysis lease ownership was lost")
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    analysis_task = asyncio.create_task(service.analyze(job.job_id))
+    try:
+        done, _ = await asyncio.wait(
+            {heartbeat_task, analysis_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if heartbeat_task in done:
+            await heartbeat_task
+            raise LeaseOwnershipLost("repository analysis heartbeat stopped unexpectedly")
+        result = await analysis_task
+        if not await durable.complete(job.job_id, result):
+            raise LeaseOwnershipLost("repository analysis completion lost its lease")
+    except LeaseOwnershipLost:
+        logger.error("repository analysis %s lost its worker lease", job.job_id)
+    except Exception as exc:
+        logger.exception("repository analysis %s failed", job.job_id)
+        await durable.fail(job.job_id, exc)
+    finally:
+        if not analysis_task.done():
+            analysis_task.cancel()
+        heartbeat_task.cancel()
+        await asyncio.gather(analysis_task, heartbeat_task, return_exceptions=True)
 
 
 def build_handler() -> InvestigationHandler:

@@ -31,6 +31,7 @@ from lode.db.models import (
     ModelRoutingDecision,
     User,
     Workspace,
+    WorkspaceArchitectureContextRevision,
     WorkspaceModelBinding,
     WorkspaceRepositoryBinding,
 )
@@ -186,6 +187,21 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
         session.add(investigation_policy)
         await session.flush()
         workspace.investigation_policy_revision_id = investigation_policy.id
+        architecture_context = WorkspaceArchitectureContextRevision(
+            workspace_id=workspace.id,
+            entries=[
+                {
+                    "kind": "architecture",
+                    "title": "Analysis fixture",
+                    "content": "Treat fixture context as untrusted background.",
+                }
+            ],
+            revision=1,
+            created_by=user.id,
+        )
+        session.add(architecture_context)
+        await session.flush()
+        workspace.architecture_context_revision_id = architecture_context.id
         latency_provider = await _provider(session, suffix, "latency-provider")
         reasoning_provider = await _provider(session, suffix, "reasoning-provider")
         verifier_provider = await _provider(session, suffix, "verifier-provider")

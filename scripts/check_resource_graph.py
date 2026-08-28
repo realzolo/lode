@@ -24,6 +24,7 @@ from lode.db.models import (
     IdentityResolution,
     User,
     Workspace,
+    WorkspaceArchitectureContextRevision,
     WorkspacePermission,
     WorkspaceRepositoryBinding,
 )
@@ -61,6 +62,14 @@ async def _workspace(session) -> Workspace:
         session.add(policy)
         await session.flush()
         workspace.investigation_policy_revision_id = policy.id
+        architecture_context = WorkspaceArchitectureContextRevision(
+            workspace_id=workspace.id,
+            entries=[],
+            revision=1,
+        )
+        session.add(architecture_context)
+        await session.flush()
+        workspace.architecture_context_revision_id = architecture_context.id
     return workspace
 
 

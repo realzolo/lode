@@ -35,6 +35,7 @@ from lode.db.models import (
     ContextBundleRevision,
     ContextSummaryArtifact,
     Investigation,
+    InvestigationArchitectureContextSnapshot,
     InvestigationModelBindingSnapshot,
     ProviderAccountModel,
     ModelRoutingDecision,
@@ -169,6 +170,22 @@ class PostgresModelRuntime:
             investigation = await session.get(Investigation, investigation_id)
             if investigation is None:
                 raise RuntimeError("investigation is unavailable")
+            architecture_context = await session.get(
+                InvestigationArchitectureContextSnapshot,
+                investigation_id,
+            )
+            if architecture_context is None:
+                raise RuntimeError("investigation architecture context is unavailable")
+            workspace_context = {
+                "trust": "untrusted_background",
+                "revision": architecture_context.revision,
+                "entries": architecture_context.entries_masked,
+            }
+            effective_state_packet = dict(state_packet)
+            existing_workspace_context = effective_state_packet.get("workspace_context")
+            if existing_workspace_context not in (None, workspace_context):
+                raise ValueError("workspace context is owned by the frozen investigation snapshot")
+            effective_state_packet["workspace_context"] = workspace_context
             output_language = require_ai_output_language(investigation.output_language)
             effective_system_prompt = (
                 f"{system_prompt}\n\n{ai_output_language_instruction(output_language)}"
@@ -181,7 +198,7 @@ class PostgresModelRuntime:
                     continue
                 candidate_tokenizer = self.tokenizers.require(candidate.tokenizer_id)
                 user_payload = {
-                    "state_packet": _plain(state_packet),
+                    "state_packet": _plain(effective_state_packet),
                     "evidence": [
                         {"artifact_id": item.artifact_id, "content": _plain(item.content)}
                         for item in {value.artifact_id: value for value in evidence}.values()
@@ -227,7 +244,7 @@ class PostgresModelRuntime:
                     compacted = await self._compact_context(
                         investigation_id=investigation_id,
                         task=requested_task,
-                        state_packet=state_packet,
+                        state_packet=effective_state_packet,
                         evidence=evidence,
                         system_prompt=system_prompt,
                         response_schema=response_schema,
@@ -299,7 +316,7 @@ class PostgresModelRuntime:
             )
             bundle = self.context.build(
                 role=task.role,
-                state_packet=state_packet,
+                state_packet=effective_state_packet,
                 evidence=exact_evidence,
                 tokenizer=tokenizer,
                 allowed_input_tokens=route.allowed_input_tokens,

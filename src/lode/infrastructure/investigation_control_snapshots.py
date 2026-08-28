@@ -20,6 +20,7 @@ from lode.db.models import (
     GitAccountRepositoryAccess,
     GitRepository,
     InvestigationDescriptorSnapshot,
+    InvestigationArchitectureContextSnapshot,
     InvestigationModelBindingSnapshot,
     InvestigationModelPolicySnapshot,
     InvestigationRepositorySnapshot,
@@ -27,6 +28,7 @@ from lode.db.models import (
     ModelPolicyRevision,
     RepositoryDescriptor,
     Workspace,
+    WorkspaceArchitectureContextRevision,
     WorkspaceGitAccountGrant,
     WorkspaceGitRepositoryEntitlement,
     WorkspaceModelBinding,
@@ -39,6 +41,7 @@ from lode.infrastructure.git_source import (
     GitRevisionResolver,
 )
 from lode.model_catalog import require_model
+from lode.masking import mask_structure
 
 
 class InvestigationControlSnapshotStore:
@@ -58,8 +61,37 @@ class InvestigationControlSnapshotStore:
         workspace_id: int,
         incident_source_revision: str | None,
     ) -> None:
+        await self._freeze_architecture_context(investigation_id, workspace_id)
         await self._freeze_repositories(investigation_id, workspace_id, incident_source_revision)
         await self._freeze_models(investigation_id, workspace_id)
+
+    async def _freeze_architecture_context(
+        self,
+        investigation_id: int,
+        workspace_id: int,
+    ) -> None:
+        workspace = await self.session.get(Workspace, workspace_id)
+        if workspace is None or workspace.architecture_context_revision_id is None:
+            raise ValueError("Workspace architecture context is unavailable")
+        context = await self.session.get(
+            WorkspaceArchitectureContextRevision,
+            workspace.architecture_context_revision_id,
+        )
+        if context is None or context.workspace_id != workspace_id:
+            raise ValueError("Workspace architecture context ownership is invalid")
+        entries_masked, _ = mask_structure(context.entries)
+        payload = {
+            "architecture_context_revision_id": context.id,
+            "revision": context.revision,
+            "entries_masked": entries_masked,
+        }
+        self.session.add(
+            InvestigationArchitectureContextSnapshot(
+                investigation_id=investigation_id,
+                context_hash=canonical_hash(payload),
+                **payload,
+            )
+        )
 
     async def _freeze_repositories(
         self,

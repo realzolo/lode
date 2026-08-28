@@ -37,11 +37,12 @@ deployment-canary observations to pass the statistical and non-regression gate.
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
-- The current ORM registry and the only migration register exactly the 72 tables in
+- The current ORM registry and the only migration register exactly the 75 tables in
   `contracts/v1/database/tables.json`. Provider accounts, account models,
   static Git adapters/accounts/catalogue, Workspace Git grants and repository
   entitlements, Workspace bindings, build units, components, resource graph
-  revisions, connectors, immutable investigation snapshots, the evidence graph,
+  revisions, durable repository-analysis jobs, structured Workspace architecture
+  context revisions, connectors, immutable investigation snapshots, the evidence graph,
   native-read audit chain, source assessments, findings, and reports are
   separate final objects. Deprecated global workload identity, single-model,
   per-repository Git credentials, and product-specific integration tables and
@@ -93,6 +94,12 @@ deployment-canary observations to pass the statistical and non-regression gate.
   and transactional ResourceGraph publisher. It supports Node/pnpm, Python,
   Go, Cargo, Maven, Gradle, Docker, Kubernetes, Helm/compose metadata, nested
   workspaces, and multi-repository Components without running repository code.
+- `src/lode/infrastructure/repository_analysis.py` owns the durable, leased
+  repository-analysis workflow. An operator explicitly starts analysis for the
+  current active bindings; the worker resolves every default branch to a full
+  SHA, reads disposable exact-revision checkouts, publishes the ResourceGraph,
+  and records source revisions, scan counts, stable failure codes, and the graph
+  revision. A crash may reclaim the lease and safely reuse an identical graph.
 - Repository discovery rejects symlinks, path escape, oversized/deep
   structures, duplicate YAML keys, YAML aliases/object constructors, and XML
   DTD/entities. `PyYAML` is a direct runtime dependency solely for safe YAML
@@ -400,7 +407,7 @@ trace values, prompts, endpoints, or other unbounded data.
   authorization, manual intake, human-readable investigation detail, explicit
   technical detail, audit pagination, and SSE.
 - `src/lode/consumer`: strict Kafka `incident.alert.v1` validation and shared intake dispatch.
-- `src/lode/worker`: durable job claiming, investigation-scoped leases, retry, and bounded cross-investigation concurrency.
+- `src/lode/worker`: independent durable investigation and repository-analysis job claiming, leases, retry/recovery, and bounded cross-investigation concurrency.
 - `src/lode/application/intake.py`: strict Kafka/manual validation and canonical normalization.
 - `src/lode/infrastructure/intake_store.py`: transactional idempotency, masking, encrypted sealed values, immutable input, and job creation.
 - `src/lode/resource_understanding/scanner.py`: bounded structured manifest scanner over frozen checkouts.
@@ -476,18 +483,21 @@ single-model or global-default fallback.
 
 ## Workspace Activation
 
-The Workspace activation API is implemented in the control-plane phase. Every
-transition into active Kafka ingestion must fail closed unless all three
-conditions hold:
+The Workspace Overview is the single operational surface for readiness,
+start/pause/resume, and desired-versus-observed listener state. `GET
+/workspaces/{workspace_id}/readiness` returns typed `passed`, `warning`, and
+`blocked` checks plus consumer identity, assigned partitions, heartbeat, and
+error state. Every transition into active Kafka ingestion must fail closed
+unless all three blocking conditions hold:
 
 1. the Workspace has its required globally unique ingestion topic;
 2. its active model policy can route every required role to an active,
    protocol-healthy account model;
 3. the broker can reach the configured topic.
 
-Initial start and resume call the same backend readiness gate. Repository,
-build-unit, component, ResourceGraph, and evidence-connector coverage remain
-visible capabilities and evidence gaps; they do not block alert ingestion.
+Initial start and resume call the same backend readiness gate. Current
+repository analysis, healthy evidence connectors, and non-empty architecture
+context are explicit warnings; they do not block alert ingestion.
 Missing requirements return HTTP 409 using the canonical business-error
 envelope:
 
@@ -496,12 +506,16 @@ envelope:
   "error": {
     "code": "workspace_not_ready",
     "message": "Complete all required Workspace settings before starting ingestion.",
-    "details": {"missing": ["topic", "model_roles", "broker_reachability"]}
+    "details": {
+      "blockers": [
+        {"code": "model_policy", "details": {"missing_roles": ["planner"]}}
+      ]
+    }
   }
 }
 ```
 
-The Web start dialog displays the actual requirements and capability gaps. An
+The Web displays the actual checks inline and keeps the start action visible. An
 account model must pass its provider protocol probe before becoming routing
 eligible; editing provider, protocol, Base URL, API Key, or model selection
 clears incompatible discovery state and resets health to `untested`. The
@@ -629,6 +643,14 @@ Invalid and unassigned payloads are durably masked. DLQ replay is atomic and
 always uses the current validator; failed validation does not mark a record as
 replayed.
 
+`ingestion_version` is an internal activation generation, not a user-facing
+release version. On the first activation generation, the chosen `earliest` or
+`latest` position is resolved and frozen per Kafka partition. Rebalances never
+rewind behind that target; later resume generations continue from committed
+offsets. The consumer continuously writes observed generation, consumer ID,
+partition assignment, heartbeat, and error state to
+`workspace_ingestion_runtime`.
+
 Manual `POST /investigations` accepts `workspace_id`, timezone-aware
 `occurred_at`, `severity`, `event`, optional opaque `trace_id`, optional
 lowercase `source_revision`, structured `error`, and at most ten bounded typed
@@ -699,7 +721,10 @@ HKDF domain separation. The master key and configured command-runner key must
 each contain at least 32 bytes and differ; startup rejects missing, short, or
 reused values. Only token hashes are persisted.
 
-Workspace architecture context is configured beside its model policy. At
+Workspace `description` is a short operator-facing summary. AI background is
+configured separately as bounded, typed architecture-context entries for system
+purpose, architecture constraints, critical flows, dependencies, and operational
+conventions. At
 investigation creation, the current ordered context entries are masked and
 frozen as an immutable snapshot. Every model phase receives that snapshot as
 explicitly untrusted background: it may clarify boundaries and architecture,
@@ -786,7 +811,7 @@ reconnects with the last observed cursor and preserves the last canonical view.
 
 The project has not released its database baseline.
 `alembic/versions/0001_initial.py` is the only revision and creates exactly the
-72 final business tables. There is one current schema and no parallel version,
+75 final business tables. There is one current schema and no parallel version,
 compatibility view, dual write, backfill, or old-schema adapter; unreleased
 development databases are recreated from the unique initial migration. After
 the first release, schema changes use ordinary forward migrations.
@@ -890,16 +915,22 @@ Anthropic Claude Fable 5, Opus 5, Sonnet 5, and Haiku 4.5, with source URL,
 review date, context/output limits, capabilities, protocols, and immutable
 profile hash. A disappeared discovered model is marked `missing` and disabled;
 a manual selection remains usable only after a successful probe.
-Workspace creation atomically requires name and the globally unique Kafka topic.
+Workspace creation atomically requires name and the globally unique Kafka topic,
+creates the balanced investigation policy, and creates architecture-context
+revision 1. The optional Workspace description is editable operator metadata.
 `/[locale]/admin/git` manages reusable GitHub, GitLab, and Gitee token accounts
 and repository-catalogue refreshes. It does not manage Git services, OAuth, or
 GitHub App credentials.
 `admin/workspaces/[id]` provides Overview, Model policy, Repositories,
-Connectors, and Members tabs. The sole system administrator creates ordinary
+Connectors, and Members tabs. Each tab loads through an independent failure
+boundary, so a broken integration cannot hide readiness or other healthy
+configuration areas. The sole system administrator creates ordinary
 users and grants each Workspace `viewer` or `operator` access; it also grants a
 Git account to a Workspace and selects its repository access. There are no
-Workspace administrators. The Repositories tab presents Workspace-derived
-build units and components, not raw resource-graph payloads. Repository binding
+Workspace administrators. The Repositories tab starts and polls durable
+repository analysis, shows the exact analyzed commit for every binding, and
+presents identified build units and components only after a successful run,
+not raw resource-graph payloads or the internal binding revision. Repository binding
 is searchable; repository access is a searchable multi-selector that preserves
 selection while filtering and can select or clear the current result set.
 Connector forms use provider-specific fields and require verification before
@@ -908,7 +939,10 @@ submission. PostgreSQL/MySQL creation automatically chains connection
 verification and safe-table discovery and surfaces readiness, exclusions,
 failure reason, and retry. Loki uses the recursive condition-tree editor. The
 system administrator manages bindings, immutable model-policy revisions,
-read-only repositories, connector instances, and ingestion transitions.
+read-only repositories, connector instances, structured architecture context,
+and ingestion transitions. Investigation depth is presented as a server-owned
+evidence/model/time/cost budget profile; its immutable revision remains
+supporting audit information rather than the primary user concept.
 
 The authenticated shell follows `apps/web/DESIGN.md`: 256px fixed desktop
 sidebar, 64px tablet rail, mobile navigation drawer, 56px context bar, neutral

@@ -9,7 +9,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol, TypeVar
 from urllib.parse import urlsplit
 
 from lode.config import settings
@@ -24,6 +24,9 @@ from lode.runtime_defaults import (
 
 class GitSourceUnavailable(RuntimeError):
     pass
+
+
+CheckoutResult = TypeVar("CheckoutResult")
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +152,28 @@ class GitSourceReader:
 
     def __init__(self, *, timeout_seconds: float | None = None) -> None:
         self.timeout_seconds = timeout_seconds or SOURCE_GIT_TIMEOUT_SECONDS
+
+    async def read_checkout(
+        self,
+        *,
+        repo_url: str,
+        revision: str,
+        credential: GitCredentialMaterial | None,
+        reader: Callable[[Path], CheckoutResult],
+    ) -> CheckoutResult:
+        """Run one bounded, non-executing reader over a disposable exact-SHA checkout."""
+
+        validate_git_remote(repo_url)
+        if not _is_sha(revision):
+            raise ValueError("source revision must be a complete lowercase SHA")
+        base = Path(settings.evidence_git_cache_dir).resolve()
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="checkout-", dir=base) as temporary:
+            root = Path(temporary).resolve()
+            if not root.is_relative_to(base):
+                raise RuntimeError("temporary Git workspace escaped its configured root")
+            await self._checkout(root, repo_url, revision, credential)
+            return reader(root)
 
     async def collect(
         self,

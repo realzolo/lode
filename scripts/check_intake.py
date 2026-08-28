@@ -25,6 +25,7 @@ from lode.db.models import (
     SealedEvidenceValue,
     User,
     Workspace,
+    WorkspaceArchitectureContextRevision,
     WorkspacePermission,
 )
 from lode.db.session import AsyncSessionLocal
@@ -70,6 +71,15 @@ async def main() -> None:
         session.add(investigation_policy)
         await session.flush()
         workspace.investigation_policy_revision_id = investigation_policy.id
+        architecture_context = WorkspaceArchitectureContextRevision(
+            workspace_id=workspace.id,
+            entries=[],
+            revision=1,
+            created_by=user.id,
+        )
+        session.add(architecture_context)
+        await session.flush()
+        workspace.architecture_context_revision_id = architecture_context.id
         session.add(
             WorkspacePermission(
                 workspace_id=workspace.id,

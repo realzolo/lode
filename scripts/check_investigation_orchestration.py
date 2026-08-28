@@ -31,6 +31,7 @@ from lode.db.models import (
     ResourceObservation,
     User,
     Workspace,
+    WorkspaceArchitectureContextRevision,
 )
 from lode.db.session import AsyncSessionLocal, engine
 from lode.domain.investigation import (
@@ -156,6 +157,15 @@ async def _fixture() -> tuple[int, int, int]:
         session.add(investigation_policy)
         await session.flush()
         workspace.investigation_policy_revision_id = investigation_policy.id
+        architecture_context = WorkspaceArchitectureContextRevision(
+            workspace_id=workspace.id,
+            entries=[],
+            revision=1,
+            created_by=user.id,
+        )
+        session.add(architecture_context)
+        await session.flush()
+        workspace.architecture_context_revision_id = architecture_context.id
         connector = EvidenceConnector(
             workspace_id=workspace.id,
             name="check-postgresql",

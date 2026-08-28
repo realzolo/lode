@@ -41,13 +41,18 @@ from lode.api.control_schemas import (
     ProviderAccountOut,
     ProviderAccountPatch,
     RepositoryBind,
+    RepositoryAnalysisJobOut,
     RepositoryBindingOut,
     RepositoryBindingPatch,
     WorkspaceCreate,
+    WorkspacePatch,
+    WorkspaceArchitectureContextOut,
+    WorkspaceArchitectureContextPut,
     WorkspaceGitAccountGrantCreate,
     WorkspaceGitAccountGrantOut,
     WorkspaceRepositoryCandidateOut,
     WorkspaceOut,
+    WorkspaceReadinessOut,
 )
 from lode.api.schemas import WorkspaceMemberOut, WorkspaceMemberPutIn
 from lode.api.types import EntityId
@@ -81,6 +86,9 @@ from lode.db.models import (
     WorkspaceModelBinding,
     WorkspacePermission,
     WorkspaceRepositoryBinding,
+    WorkspaceIngestionRuntime,
+    WorkspaceArchitectureContextRevision,
+    RepositoryAnalysisJob,
 )
 from lode.db.session import AsyncSessionLocal
 from lode.engine.llm import ModelConfig, ResponseSchema, complete_with_usage
@@ -856,6 +864,7 @@ async def create_workspace(
     user = await _active_user(session, user_id)
     row = Workspace(
         name=payload.name,
+        description=payload.description,
         ingestion_topic=payload.ingestion_topic,
         created_by=user.id,
     )
@@ -876,7 +885,16 @@ async def create_workspace(
     )
     session.add(policy)
     await session.flush()
+    architecture_context = WorkspaceArchitectureContextRevision(
+        workspace_id=row.id,
+        entries=[],
+        revision=1,
+        created_by=user.id,
+    )
+    session.add(architecture_context)
+    await session.flush()
     row.investigation_policy_revision_id = policy.id
+    row.architecture_context_revision_id = architecture_context.id
     session.add(_audit(user, "workspace.create", "workspace", row.id, row.id))
     session.add(
         _audit(user, "investigation_policy.publish", "investigation_policy_revision", policy.id, row.id)
@@ -884,6 +902,22 @@ async def create_workspace(
     await session.commit()
     await session.refresh(row)
     return WorkspaceOut.model_validate(row)
+
+
+@router.patch("/workspaces/{workspace_id}", response_model=WorkspaceOut)
+async def patch_workspace(
+    workspace_id: EntityId,
+    payload: WorkspacePatch,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    user, workspace = await _workspace_access(session, user_id, workspace_id, "admin")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(workspace, key, value)
+    session.add(_audit(user, "workspace.update", "workspace", workspace.id, workspace.id))
+    await session.commit()
+    await session.refresh(workspace)
+    return WorkspaceOut.model_validate(workspace)
 
 
 @router.get("/workspaces", response_model=list[WorkspaceOut])
@@ -1034,13 +1068,37 @@ async def _broker_has_topic(topic: str) -> bool:
         await client.close()
 
 
-async def _workspace_readiness(session: AsyncSession, workspace: Workspace) -> list[str]:
-    missing: list[str] = []
-    if not workspace.ingestion_topic.strip():
-        missing.append("topic")
-    policy = await session.get(ModelPolicyRevision, workspace.model_policy_revision_id)
+async def _workspace_readiness(session: AsyncSession, workspace: Workspace) -> WorkspaceReadinessOut:
+    checks: list[dict] = []
+    topic_details: dict = {"topic": workspace.ingestion_topic}
+    topic_ready = bool(workspace.ingestion_topic.strip())
+    reachable = False
+    if topic_ready:
+        try:
+            reachable = await asyncio.wait_for(
+                _broker_has_topic(workspace.ingestion_topic),
+                timeout=KAFKA_TOPIC_VALIDATION_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            reachable = False
+    topic_details["reachable"] = reachable
+    checks.append(
+        {
+            "code": "kafka_topic",
+            "outcome": "passed" if topic_ready and reachable else "blocked",
+            "details": topic_details,
+        }
+    )
+
+    policy = (
+        await session.get(ModelPolicyRevision, workspace.model_policy_revision_id)
+        if workspace.model_policy_revision_id is not None
+        else None
+    )
+    model_details: dict = {"missing_roles": sorted(_REQUIRED_MODEL_ROLES)}
+    model_ready = False
     if policy is None:
-        missing.append("model_policy")
+        model_details["reason"] = "not_published"
     else:
         expected_revisions = {
             int(item["binding_id"]): int(item["revision"]) for item in policy.eligible_bindings
@@ -1073,18 +1131,121 @@ async def _workspace_readiness(session: AsyncSession, workspace: Workspace) -> l
             and provider.verification_status == "healthy"
             for role in binding.allowed_roles
         }
-        if not _REQUIRED_MODEL_ROLES.issubset(roles):
-            missing.append("model_roles")
-    try:
-        reachable = await asyncio.wait_for(
-            _broker_has_topic(workspace.ingestion_topic),
-            timeout=KAFKA_TOPIC_VALIDATION_TIMEOUT_SECONDS,
+        missing_roles = sorted(_REQUIRED_MODEL_ROLES - roles)
+        model_details = {
+            "policy_revision": policy.revision,
+            "eligible_binding_count": len(bindings),
+            "missing_roles": missing_roles,
+        }
+        model_ready = not missing_roles
+    checks.append(
+        {
+            "code": "model_policy",
+            "outcome": "passed" if model_ready else "blocked",
+            "details": model_details,
+        }
+    )
+
+    active_repositories = tuple(
+        (
+            await session.execute(
+                select(WorkspaceRepositoryBinding)
+                .where(
+                    WorkspaceRepositoryBinding.workspace_id == workspace.id,
+                    WorkspaceRepositoryBinding.state == "active",
+                )
+                .order_by(WorkspaceRepositoryBinding.id)
+            )
+        ).scalars()
+    )
+    repository_count = len(active_repositories)
+    latest_analysis = (
+        await session.execute(
+            select(RepositoryAnalysisJob)
+            .where(
+                RepositoryAnalysisJob.workspace_id == workspace.id,
+                RepositoryAnalysisJob.state == "succeeded",
+            )
+            .order_by(RepositoryAnalysisJob.finished_at.desc(), RepositoryAnalysisJob.id.desc())
+            .limit(1)
         )
-    except Exception:
-        reachable = False
-    if not reachable:
-        missing.append("broker_reachability")
-    return missing
+    ).scalar_one_or_none()
+    active_binding_ids = [row.id for row in active_repositories]
+    analysis_current = bool(
+        latest_analysis is not None
+        and sorted(latest_analysis.requested_binding_ids) == active_binding_ids
+        and latest_analysis.finished_at is not None
+        and all(row.updated_at <= latest_analysis.finished_at for row in active_repositories)
+    )
+    checks.append(
+        {
+            "code": "repositories",
+            "outcome": "passed" if analysis_current else "warning",
+            "details": {
+                "active_count": repository_count,
+                "analysis_current": analysis_current,
+                "analysis_job_id": None if latest_analysis is None else latest_analysis.id,
+            },
+        }
+    )
+    connector_count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(EvidenceConnector)
+            .where(
+                EvidenceConnector.workspace_id == workspace.id,
+                EvidenceConnector.state == "active",
+                EvidenceConnector.verification_status == "healthy",
+            )
+        )
+        or 0
+    )
+    checks.append(
+        {
+            "code": "evidence_connectors",
+            "outcome": "passed" if connector_count else "warning",
+            "details": {"healthy_count": connector_count},
+        }
+    )
+    architecture_context = (
+        await session.get(
+            WorkspaceArchitectureContextRevision,
+            workspace.architecture_context_revision_id,
+        )
+        if workspace.architecture_context_revision_id is not None
+        else None
+    )
+    context_count = (
+        len(architecture_context.entries)
+        if architecture_context is not None and architecture_context.workspace_id == workspace.id
+        else 0
+    )
+    checks.append(
+        {
+            "code": "architecture_context",
+            "outcome": "passed" if context_count else "warning",
+            "details": {
+                "entry_count": context_count,
+                "revision": None if architecture_context is None else architecture_context.revision,
+            },
+        }
+    )
+    runtime = await session.get(WorkspaceIngestionRuntime, workspace.id)
+    runtime_payload = {
+        "observed_state": "idle" if runtime is None else runtime.observed_state,
+        "observed_version": 0 if runtime is None else runtime.observed_version,
+        "consumer_id": None if runtime is None else runtime.consumer_id,
+        "assigned_partitions": 0 if runtime is None else runtime.assigned_partitions,
+        "backlog": None if runtime is None else runtime.backlog,
+        "last_heartbeat_at": None if runtime is None else runtime.last_heartbeat_at,
+        "last_error": None if runtime is None else runtime.last_error,
+    }
+    return WorkspaceReadinessOut(
+        workspace_id=workspace.id,
+        can_start=all(item["outcome"] != "blocked" for item in checks),
+        checks=tuple(checks),
+        runtime=runtime_payload,
+    )
 
 
 async def _set_ingestion(
@@ -1095,13 +1256,17 @@ async def _set_ingestion(
     start_position: str | None = None,
 ):
     if target == "active":
-        missing = await _workspace_readiness(session, workspace)
-        if missing:
+        readiness = await _workspace_readiness(session, workspace)
+        if not readiness.can_start:
             raise _error(
                 409,
                 "workspace_not_ready",
                 "Complete all required Workspace settings before starting ingestion.",
-                missing=missing,
+                blockers=[
+                    {"code": item.code, "details": item.details}
+                    for item in readiness.checks
+                    if item.outcome == "blocked"
+                ],
             )
         workspace.ingestion_version += 1
         workspace.ingestion_start_position = start_position or workspace.ingestion_start_position
@@ -1215,6 +1380,75 @@ async def put_investigation_policy(
     await session.commit()
     await session.refresh(row)
     return _investigation_policy_out(row)
+
+
+@router.get(
+    "/workspaces/{workspace_id}/architecture-context",
+    response_model=WorkspaceArchitectureContextOut,
+)
+async def get_workspace_architecture_context(
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    _, workspace = await _workspace_access(session, user_id, workspace_id, "read")
+    row = await session.get(
+        WorkspaceArchitectureContextRevision,
+        workspace.architecture_context_revision_id,
+    )
+    if row is None or row.workspace_id != workspace_id:
+        raise _error(
+            409,
+            "architecture_context_missing",
+            "Workspace architecture context is unavailable.",
+        )
+    return WorkspaceArchitectureContextOut.model_validate(row, from_attributes=True)
+
+
+@router.put(
+    "/workspaces/{workspace_id}/architecture-context",
+    response_model=WorkspaceArchitectureContextOut,
+)
+async def put_workspace_architecture_context(
+    workspace_id: EntityId,
+    payload: WorkspaceArchitectureContextPut,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
+    workspace = await session.scalar(
+        select(Workspace).where(Workspace.id == workspace_id).with_for_update()
+    )
+    assert workspace is not None
+    revision = int(
+        await session.scalar(
+            select(func.coalesce(func.max(WorkspaceArchitectureContextRevision.revision), 0)).where(
+                WorkspaceArchitectureContextRevision.workspace_id == workspace_id
+            )
+        )
+        or 0
+    ) + 1
+    row = WorkspaceArchitectureContextRevision(
+        workspace_id=workspace_id,
+        entries=[item.model_dump() for item in payload.entries],
+        revision=revision,
+        created_by=user.id,
+    )
+    session.add(row)
+    await session.flush()
+    workspace.architecture_context_revision_id = row.id
+    session.add(
+        _audit(
+            user,
+            "workspace.architecture_context.publish",
+            "workspace_architecture_context_revision",
+            row.id,
+            workspace_id,
+        )
+    )
+    await session.commit()
+    await session.refresh(row)
+    return WorkspaceArchitectureContextOut.model_validate(row, from_attributes=True)
 
 
 @router.get("/workspaces/{workspace_id}/model-bindings", response_model=list[ModelBindingOut])
@@ -1460,61 +1694,17 @@ async def model_routing_audit(
     ]
 
 
-@router.get("/workspaces/{workspace_id}/capabilities")
-async def workspace_capabilities(
+@router.get(
+    "/workspaces/{workspace_id}/readiness",
+    response_model=WorkspaceReadinessOut,
+)
+async def workspace_readiness(
     workspace_id: EntityId,
     user_id: EntityId = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):
     _, workspace = await _workspace_access(session, user_id, workspace_id, "read")
-    model_count = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(WorkspaceModelBinding)
-            .where(
-                WorkspaceModelBinding.workspace_id == workspace_id,
-                WorkspaceModelBinding.state == "active",
-            )
-        )
-        or 0
-    )
-    repository_count = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(WorkspaceRepositoryBinding)
-            .where(
-                WorkspaceRepositoryBinding.workspace_id == workspace_id,
-                WorkspaceRepositoryBinding.state == "active",
-            )
-        )
-        or 0
-    )
-    connector_count = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(EvidenceConnector)
-            .where(
-                EvidenceConnector.workspace_id == workspace_id,
-                EvidenceConnector.state == "active",
-                EvidenceConnector.verification_status == "healthy",
-            )
-        )
-        or 0
-    )
-    gaps = []
-    if workspace.model_policy_revision_id is None or model_count == 0:
-        gaps.append("model_policy")
-    if repository_count == 0:
-        gaps.append("repositories")
-    if connector_count == 0:
-        gaps.append("evidence_connectors")
-    return {
-        "workspace_id": workspace_id,
-        "models": model_count,
-        "repositories": repository_count,
-        "healthy_connectors": connector_count,
-        "gaps": gaps,
-    }
+    return await _workspace_readiness(session, workspace)
 
 
 def _repository_out(
@@ -2254,6 +2444,96 @@ async def disable_repository_binding(
     )
     await session.commit()
     return Response(status_code=204)
+
+
+@router.get(
+    "/workspaces/{workspace_id}/repository-analysis",
+    response_model=RepositoryAnalysisJobOut | None,
+)
+async def get_repository_analysis(
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await _workspace_access(session, user_id, workspace_id, "read")
+    return (
+        await session.execute(
+            select(RepositoryAnalysisJob)
+            .where(RepositoryAnalysisJob.workspace_id == workspace_id)
+            .order_by(RepositoryAnalysisJob.created_at.desc(), RepositoryAnalysisJob.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+@router.post(
+    "/workspaces/{workspace_id}/repository-analysis",
+    response_model=RepositoryAnalysisJobOut,
+    status_code=202,
+)
+async def start_repository_analysis(
+    workspace_id: EntityId,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    user, _ = await _workspace_access(session, user_id, workspace_id, "admin")
+    active = (
+        await session.execute(
+            select(RepositoryAnalysisJob)
+            .where(
+                RepositoryAnalysisJob.workspace_id == workspace_id,
+                RepositoryAnalysisJob.state.in_(("queued", "running")),
+            )
+            .order_by(RepositoryAnalysisJob.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if active is not None:
+        raise _error(
+            409,
+            "repository_analysis_in_progress",
+            "A repository analysis is already in progress.",
+            job_id=active.id,
+        )
+    binding_ids = list(
+        (
+            await session.execute(
+                select(WorkspaceRepositoryBinding.id)
+                .where(
+                    WorkspaceRepositoryBinding.workspace_id == workspace_id,
+                    WorkspaceRepositoryBinding.state == "active",
+                )
+                .order_by(WorkspaceRepositoryBinding.id)
+            )
+        ).scalars()
+    )
+    if not binding_ids:
+        raise _error(
+            409,
+            "repository_analysis_requires_repository",
+            "Bind at least one active repository before starting analysis.",
+        )
+    row = RepositoryAnalysisJob(
+        workspace_id=workspace_id,
+        requested_binding_ids=binding_ids,
+        requested_by=user.id,
+    )
+    session.add(row)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise _error(
+            409,
+            "repository_analysis_in_progress",
+            "A repository analysis is already in progress.",
+        ) from exc
+    session.add(
+        _audit(user, "repository_analysis.start", "repository_analysis_job", row.id, workspace_id)
+    )
+    await session.commit()
+    await session.refresh(row)
+    return row
 
 
 _CONNECTOR_SECRET_FIELDS = {

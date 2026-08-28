@@ -14,6 +14,7 @@
     "evidence_links",
     "evidence_read_attempts",
     "git_account_credential_revisions",
+    "investigation_architecture_context_snapshots",
     "investigation_build_unit_snapshots",
     "investigation_component_snapshots",
     "investigation_connector_snapshots",
@@ -36,7 +37,8 @@
     "resource_observations",
     "sealed_evidence_values",
     "source_assessments",
-    "source_revisions"
+    "source_revisions",
+    "workspace_architecture_context_revisions"
   ],
   "archive_readonly_tables": [
     "ai_invocations",
@@ -80,6 +82,7 @@
     "investigations",
     "platform_settings",
     "provider_account_models",
+    "repository_analysis_jobs",
     "users",
     "workspace_git_account_grants",
     "workspace_git_repository_entitlements",

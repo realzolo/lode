@@ -22,6 +22,9 @@ import type {
   WorkspaceGitAccountGrant,
   WorkspaceRepositoryCandidate,
   Workspace,
+  WorkspaceArchitectureContext,
+  WorkspaceReadiness,
+  RepositoryAnalysisJob,
 } from '@/lib/types';
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
@@ -29,14 +32,19 @@ const TOKEN_KEY = 'lode_token';
 export const SESSION_EXPIRED_EVENT = 'lode:session-expired';
 
 export class ApiError extends Error {
-  constructor(public readonly code: string, public readonly status: number) {
-    super(code);
+  constructor(
+    public readonly code: string,
+    public readonly status: number,
+    public readonly serverMessage: string | null = null,
+    public readonly details: Record<string, unknown> | null = null,
+  ) {
+    super(serverMessage || code);
     this.name = 'ApiError';
   }
 }
 
-export function apiErrorMessage(_cause: unknown, fallback: string): string {
-  return fallback;
+export function apiErrorMessage(cause: unknown, fallback: string): string {
+  return cause instanceof ApiError && cause.serverMessage ? cause.serverMessage : fallback;
 }
 
 export function getToken(): string | null {
@@ -89,9 +97,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null) as {
-      error?: { code?: string };
+      error?: { code?: string; message?: string; details?: Record<string, unknown> };
     } | null;
-    throw new ApiError(body?.error?.code || 'request_failed', response.status);
+    throw new ApiError(
+      body?.error?.code || 'request_failed',
+      response.status,
+      body?.error?.message || null,
+      body?.error?.details || null,
+    );
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -136,8 +149,11 @@ export function putWorkspaceMember(workspaceId: number | string, userId: number,
 export function removeWorkspaceMember(workspaceId: number | string, userId: number) {
   return send<void>(`/workspaces/${workspaceId}/members/${userId}`, 'DELETE');
 }
-export function createWorkspace(input: { name: string; ingestion_topic: string }) {
+export function createWorkspace(input: { name: string; description?: string; ingestion_topic: string }) {
   return send<Workspace>('/workspaces', 'POST', input);
+}
+export function updateWorkspace(id: number | string, input: { name?: string; description?: string }) {
+  return send<Workspace>(`/workspaces/${id}`, 'PATCH', input);
 }
 export function startIngestion(id: number, startPosition: 'earliest' | 'latest') {
   return send<Workspace>(`/workspaces/${id}/ingestion/start`, 'POST', { start_position: startPosition });
@@ -148,8 +164,14 @@ export function pauseIngestion(id: number) {
 export function resumeIngestion(id: number) {
   return send<Workspace>(`/workspaces/${id}/ingestion/resume`, 'POST');
 }
-export function fetchCapabilities(id: number | string) {
-  return get<{ models: number; repositories: number; healthy_connectors: number; gaps: string[] }>(`/workspaces/${id}/capabilities`);
+export function fetchWorkspaceReadiness(id: number | string) {
+  return get<WorkspaceReadiness>(`/workspaces/${id}/readiness`);
+}
+export function fetchWorkspaceArchitectureContext(id: number | string) {
+  return get<WorkspaceArchitectureContext>(`/workspaces/${id}/architecture-context`);
+}
+export function updateWorkspaceArchitectureContext(id: number | string, entries: WorkspaceArchitectureContext['entries']) {
+  return send<WorkspaceArchitectureContext>(`/workspaces/${id}/architecture-context`, 'PUT', { entries });
 }
 export function fetchPlatformSettings() { return get<PlatformSettings>('/platform-settings'); }
 export function updatePlatformSettings(input: { ai_output_language: 'en' | 'zh'; expected_revision: number }) {
@@ -222,6 +244,12 @@ export function fetchBuildUnits(workspaceId: number | string) {
 }
 export function fetchComponents(workspaceId: number | string) {
   return get<{ items: Component[] }>(`/workspaces/${workspaceId}/components`);
+}
+export function fetchRepositoryAnalysis(workspaceId: number | string) {
+  return get<RepositoryAnalysisJob | null>(`/workspaces/${workspaceId}/repository-analysis`);
+}
+export function startRepositoryAnalysis(workspaceId: number | string) {
+  return send<RepositoryAnalysisJob>(`/workspaces/${workspaceId}/repository-analysis`, 'POST');
 }
 export function bindRepository(workspaceId: number | string, input: { repository_entitlement_id: number; role: string; priority?: number; description?: string }) {
   return send<RepositoryBinding>(`/workspaces/${workspaceId}/repositories`, 'POST', input);

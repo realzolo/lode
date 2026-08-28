@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from lode.consumer.main import process_record
+from lode.consumer.main import _partition_resume_target, process_record
 from lode.infrastructure.intake_store import IntakeResult
 
 
@@ -59,3 +59,27 @@ async def test_transient_handler_failure_leaves_offset_uncommitted() -> None:
         )
 
     assert committer.calls == []
+
+
+@pytest.mark.parametrize(
+    ("initialized", "committed", "version", "expected"),
+    [
+        (100, None, 1, 100),
+        (100, 80, 1, 100),
+        (100, 140, 1, 140),
+        (None, 140, 2, 140),
+        (None, 140, 1, None),
+        (None, None, 2, None),
+    ],
+)
+def test_partition_position_never_rewinds_a_frozen_activation_target(
+    initialized: int | None,
+    committed: int | None,
+    version: int,
+    expected: int | None,
+) -> None:
+    assert _partition_resume_target(
+        initialized_target=initialized,
+        committed=committed,
+        ingestion_version=version,
+    ) == expected

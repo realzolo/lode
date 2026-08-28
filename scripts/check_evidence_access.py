@@ -38,6 +38,7 @@ from lode.db.models import (
     NativeReadCandidate,
     User,
     Workspace,
+    WorkspaceArchitectureContextRevision,
     WorkspaceModelBinding,
 )
 from lode.db.session import AsyncSessionLocal, engine
@@ -183,6 +184,15 @@ async def _create_fixture(session):
     session.add(investigation_policy)
     await session.flush()
     workspace.investigation_policy_revision_id = investigation_policy.id
+    architecture_context = WorkspaceArchitectureContextRevision(
+        workspace_id=workspace.id,
+        entries=[],
+        revision=1,
+        created_by=user.id,
+    )
+    session.add(architecture_context)
+    await session.flush()
+    workspace.architecture_context_revision_id = architecture_context.id
     request = ManualIncidentRequest.model_validate(
         {
             "workspace_id": workspace.id,

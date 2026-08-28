@@ -17,6 +17,7 @@ from lode.db.models import (
     InvestigationPolicyRevision,
     User,
     Workspace,
+    WorkspaceArchitectureContextRevision,
     WorkspaceModelBinding,
     WorkspaceRepositoryBinding,
 )
@@ -67,6 +68,21 @@ async def main() -> None:
         session.add(investigation_policy)
         await session.flush()
         workspace.investigation_policy_revision_id = investigation_policy.id
+        architecture_context = WorkspaceArchitectureContextRevision(
+            workspace_id=workspace.id,
+            entries=[
+                {
+                    "kind": "system_purpose",
+                    "title": "Checkout",
+                    "content": "Owns checkout incident investigation and supporting evidence.",
+                }
+            ],
+            revision=1,
+            created_by=admin.id,
+        )
+        session.add(architecture_context)
+        await session.flush()
+        workspace.architecture_context_revision_id = architecture_context.id
 
         repository = GitRepository(
             adapter_id=FIXTURE_ADAPTER_ID,

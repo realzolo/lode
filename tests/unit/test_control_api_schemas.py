@@ -15,6 +15,8 @@ from lode.api.control_schemas import (
     PlatformSettingsUpdate,
     ProviderAccountPatch,
     InvestigationPolicyPut,
+    WorkspaceArchitectureContextPut,
+    WorkspaceCreate,
 )
 
 
@@ -129,3 +131,27 @@ def test_investigation_profile_and_ai_output_language_are_closed_sets() -> None:
         InvestigationPolicyPut(profile="custom")
     with pytest.raises(ValidationError):
         PlatformSettingsUpdate(ai_output_language="ja", expected_revision=1)
+
+
+def test_workspace_description_and_architecture_context_are_bounded_structured_inputs() -> None:
+    assert WorkspaceCreate(
+        name="Checkout",
+        description="Owns checkout incident investigation.",
+        ingestion_topic="incident.checkout.v1",
+    ).description.startswith("Owns checkout")
+    context = WorkspaceArchitectureContextPut.model_validate(
+        {
+            "entries": [
+                {
+                    "kind": "critical_flow",
+                    "title": "Checkout",
+                    "content": "Gateway calls the order worker before payment authorization.",
+                }
+            ]
+        }
+    )
+    assert context.entries[0].kind == "critical_flow"
+    with pytest.raises(ValidationError):
+        WorkspaceArchitectureContextPut.model_validate(
+            {"entries": [{"kind": "freeform", "title": "x", "content": "y"}]}
+        )

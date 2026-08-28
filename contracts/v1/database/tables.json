@@ -4,6 +4,7 @@
   "control_plane": [
     "platform_settings",
     "workspaces",
+    "workspace_architecture_context_revisions",
     "workspace_ingestion_runtime",
     "workspace_ingestion_offsets",
     "git_accounts",
@@ -24,6 +25,7 @@
     "identity_resolutions",
     "resource_graph_revisions",
     "resource_graph_revision_members",
+    "repository_analysis_jobs",
     "evidence_connectors",
     "evidence_access_scopes",
     "ai_provider_accounts",
@@ -46,6 +48,7 @@
   "investigation": [
     "investigations",
     "investigation_inputs",
+    "investigation_architecture_context_snapshots",
     "investigation_repository_snapshots",
     "investigation_build_unit_snapshots",
     "investigation_component_snapshots",

@@ -21,6 +21,7 @@ from lode.db.models import (
     InvestigationPolicyRevision,
     User,
     Workspace,
+    WorkspaceArchitectureContextRevision,
     WorkspacePermission,
 )
 from lode.db.session import AsyncSessionLocal
@@ -55,6 +56,15 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         session.add(policy)
         await session.flush()
         workspace.investigation_policy_revision_id = policy.id
+        architecture_context = WorkspaceArchitectureContextRevision(
+            workspace_id=workspace.id,
+            entries=[],
+            revision=1,
+            created_by=user.id,
+        )
+        session.add(architecture_context)
+        await session.flush()
+        workspace.architecture_context_revision_id = architecture_context.id
         session.add(
             WorkspacePermission(
                 user_id=user.id,

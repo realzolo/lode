@@ -6,16 +6,95 @@
     "workspace": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "ingestion_topic", "model_policy_revision_id", "investigation_policy_revision_id", "ingestion_state", "ingestion_version", "ingestion_start_position"],
+      "required": ["id", "name", "description", "ingestion_topic", "model_policy_revision_id", "investigation_policy_revision_id", "architecture_context_revision_id", "ingestion_state", "ingestion_version", "ingestion_start_position"],
       "properties": {
         "id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
         "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "maxLength": 1000},
         "ingestion_topic": {"type": "string", "minLength": 1},
         "model_policy_revision_id": {"type": ["integer", "null"], "minimum": 1, "maximum": 4503599627370495},
         "investigation_policy_revision_id": {"type": ["integer", "null"], "minimum": 1, "maximum": 4503599627370495},
+        "architecture_context_revision_id": {"type": ["integer", "null"], "minimum": 1, "maximum": 4503599627370495},
         "ingestion_state": {"type": "string", "enum": ["draft", "active", "paused"]},
         "ingestion_version": {"type": "integer", "minimum": 0},
         "ingestion_start_position": {"type": ["string", "null"], "enum": ["earliest", "latest", null]}
+      }
+    },
+    "workspaceArchitectureContextRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "workspace_id", "entries", "revision"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
+        "workspace_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
+        "entries": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "title", "content"],
+            "properties": {
+              "kind": {"type": "string", "enum": ["system_purpose", "architecture", "critical_flow", "dependency", "operational_convention"]},
+              "title": {"type": "string", "minLength": 1, "maxLength": 120},
+              "content": {"type": "string", "minLength": 1, "maxLength": 4000}
+            }
+          }
+        },
+        "revision": {"type": "integer", "minimum": 1}
+      }
+    },
+    "workspaceReadiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspace_id", "can_start", "checks", "runtime"],
+      "properties": {
+        "workspace_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
+        "can_start": {"type": "boolean"},
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "outcome", "details"],
+            "properties": {
+              "code": {"type": "string", "enum": ["kafka_topic", "model_policy", "repositories", "evidence_connectors", "architecture_context"]},
+              "outcome": {"type": "string", "enum": ["passed", "blocked", "warning"]},
+              "details": {"type": "object"}
+            }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observed_state", "observed_version", "consumer_id", "assigned_partitions", "backlog", "last_heartbeat_at", "last_error"],
+          "properties": {
+            "observed_state": {"type": "string", "enum": ["idle", "starting", "listening", "paused", "error"]},
+            "observed_version": {"type": "integer", "minimum": 0},
+            "consumer_id": {"type": ["string", "null"]},
+            "assigned_partitions": {"type": "integer", "minimum": 0},
+            "backlog": {"type": ["integer", "null"], "minimum": 0},
+            "last_heartbeat_at": {"type": ["string", "null"], "format": "date-time"},
+            "last_error": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "repositoryAnalysisJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "workspace_id", "requested_binding_ids", "state", "attempt", "source_revisions", "graph_revision_id", "scanned_file_count", "issue_count", "failure_code"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
+        "workspace_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
+        "requested_binding_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 1, "maximum": 4503599627370495}},
+        "state": {"type": "string", "enum": ["queued", "running", "succeeded", "failed"]},
+        "attempt": {"type": "integer", "minimum": 0},
+        "source_revisions": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{40}$"}},
+        "graph_revision_id": {"type": ["integer", "null"], "minimum": 1, "maximum": 4503599627370495},
+        "scanned_file_count": {"type": "integer", "minimum": 0},
+        "issue_count": {"type": "integer", "minimum": 0},
+        "failure_code": {"type": ["string", "null"]}
       }
     },
     "platformSettings": {

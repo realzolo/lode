@@ -256,9 +256,11 @@ def upgrade() -> None:
         "workspaces",
         sa.Column("id", sa.BigInteger(), server_default=sa.text("next_lode_id()"), nullable=False),
         sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("description", sa.Text(), server_default="", nullable=False),
         sa.Column("ingestion_topic", sa.Text(), nullable=False),
         sa.Column("model_policy_revision_id", sa.BigInteger(), nullable=True),
         sa.Column("investigation_policy_revision_id", sa.BigInteger(), nullable=True),
+        sa.Column("architecture_context_revision_id", sa.BigInteger(), nullable=True),
         sa.Column("ingestion_state", sa.Text(), server_default="draft", nullable=False),
         sa.Column("ingestion_version", sa.Integer(), server_default="0", nullable=False),
         sa.Column("ingestion_start_position", sa.Text(), nullable=True),
@@ -281,6 +283,10 @@ def upgrade() -> None:
             "btrim(ingestion_topic) <> ''", name=op.f("ck_workspaces_topic_nonblank")
         ),
         sa.CheckConstraint("btrim(name) <> ''", name=op.f("ck_workspaces_name_nonblank")),
+        sa.CheckConstraint(
+            "char_length(description) <= 1000",
+            name=op.f("ck_workspaces_description_length"),
+        ),
         sa.CheckConstraint(
             "ingestion_start_position IS NULL OR ingestion_start_position IN ('earliest', 'latest')",
             name=op.f("ck_workspaces_ingestion_start_position"),
@@ -309,6 +315,13 @@ def upgrade() -> None:
             ["investigation_policy_revision_id"],
             ["investigation_policy_revisions.id"],
             name="fk_workspace_investigation_policy",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        sa.ForeignKeyConstraint(
+            ["architecture_context_revision_id"],
+            ["workspace_architecture_context_revisions.id"],
+            name="fk_workspace_architecture_context",
             ondelete="SET NULL",
             use_alter=True,
         ),
@@ -565,6 +578,46 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_investigation_policy_revisions")),
         sa.UniqueConstraint(
             "workspace_id", "revision", name="uq_investigation_policy_revision"
+        ),
+    )
+    op.create_table(
+        "workspace_architecture_context_revisions",
+        sa.Column("id", sa.BigInteger(), server_default=sa.text("next_lode_id()"), nullable=False),
+        sa.Column("workspace_id", sa.BigInteger(), nullable=False),
+        sa.Column("entries", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("revision", sa.Integer(), nullable=False),
+        sa.Column("created_by", sa.BigInteger(), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(entries) = 'array'",
+            name=op.f("ck_workspace_architecture_context_revisions_entries_array"),
+        ),
+        sa.CheckConstraint(
+            "revision > 0",
+            name=op.f("ck_workspace_architecture_context_revisions_revision_positive"),
+        ),
+        sa.ForeignKeyConstraint(
+            ["created_by"],
+            ["users.id"],
+            name=op.f("fk_workspace_architecture_context_revisions_created_by_users"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["workspace_id"],
+            ["workspaces.id"],
+            name=op.f("fk_workspace_architecture_context_revisions_workspace_id_workspaces"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_workspace_architecture_context_revisions")),
+        sa.UniqueConstraint(
+            "workspace_id",
+            "revision",
+            name="uq_workspace_architecture_context_revision",
         ),
     )
     op.create_table(
@@ -886,6 +939,114 @@ def upgrade() -> None:
         sa.UniqueConstraint("workspace_id", "revision", name="uq_resource_graph_revision"),
     )
     op.create_table(
+        "repository_analysis_jobs",
+        sa.Column("id", sa.BigInteger(), server_default=sa.text("next_lode_id()"), nullable=False),
+        sa.Column("workspace_id", sa.BigInteger(), nullable=False),
+        sa.Column("requested_binding_ids", postgresql.ARRAY(sa.BigInteger()), nullable=False),
+        sa.Column("state", sa.Text(), server_default="queued", nullable=False),
+        sa.Column("attempt", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("lease_owner", sa.Text(), nullable=True),
+        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "source_revisions",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column("graph_revision_id", sa.BigInteger(), nullable=True),
+        sa.Column("scanned_file_count", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("issue_count", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("failure_code", sa.Text(), nullable=True),
+        sa.Column("requested_by", sa.BigInteger(), nullable=True),
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "cardinality(requested_binding_ids) > 0",
+            name=op.f("ck_repository_analysis_jobs_bindings_nonempty"),
+        ),
+        sa.CheckConstraint(
+            "state IN ('queued', 'running', 'succeeded', 'failed')",
+            name=op.f("ck_repository_analysis_jobs_state"),
+        ),
+        sa.CheckConstraint(
+            "attempt >= 0", name=op.f("ck_repository_analysis_jobs_attempt_nonnegative")
+        ),
+        sa.CheckConstraint(
+            "scanned_file_count >= 0",
+            name=op.f("ck_repository_analysis_jobs_scanned_files_nonnegative"),
+        ),
+        sa.CheckConstraint(
+            "issue_count >= 0",
+            name=op.f("ck_repository_analysis_jobs_issue_count_nonnegative"),
+        ),
+        sa.CheckConstraint(
+            "failure_code IS NULL OR failure_code IN ("
+            "'repository_access_unavailable', 'repository_checkout_failed', "
+            "'repository_manifest_invalid', 'repository_analysis_failed')",
+            name=op.f("ck_repository_analysis_jobs_failure_code"),
+        ),
+        sa.CheckConstraint(
+            "(state = 'queued' AND lease_owner IS NULL AND lease_expires_at IS NULL "
+            "AND finished_at IS NULL AND failure_code IS NULL) OR "
+            "(state = 'running' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL "
+            "AND started_at IS NOT NULL AND finished_at IS NULL AND failure_code IS NULL) OR "
+            "(state = 'succeeded' AND lease_owner IS NULL AND lease_expires_at IS NULL "
+            "AND graph_revision_id IS NOT NULL AND finished_at IS NOT NULL "
+            "AND failure_code IS NULL) OR "
+            "(state = 'failed' AND lease_owner IS NULL AND lease_expires_at IS NULL "
+            "AND finished_at IS NOT NULL AND failure_code IS NOT NULL)",
+            name=op.f("ck_repository_analysis_jobs_state_shape"),
+        ),
+        sa.CheckConstraint(
+            "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
+            name=op.f("ck_repository_analysis_jobs_run_range"),
+        ),
+        sa.ForeignKeyConstraint(
+            ["graph_revision_id"],
+            ["resource_graph_revisions.id"],
+            name=op.f("fk_repository_analysis_jobs_graph_revision_id_resource_graph_revisions"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["requested_by"],
+            ["users.id"],
+            name=op.f("fk_repository_analysis_jobs_requested_by_users"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["workspace_id"],
+            ["workspaces.id"],
+            name=op.f("fk_repository_analysis_jobs_workspace_id_workspaces"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_repository_analysis_jobs")),
+    )
+    op.create_index(
+        "ix_repository_analysis_jobs_claim",
+        "repository_analysis_jobs",
+        ["state", "lease_expires_at", "created_at"],
+        unique=False,
+    )
+    op.create_index(
+        "uq_repository_analysis_job_active",
+        "repository_analysis_jobs",
+        ["workspace_id"],
+        unique=True,
+        postgresql_where=sa.text("state IN ('queued', 'running')"),
+    )
+    op.create_table(
         "semantic_annotations",
         sa.Column("id", sa.BigInteger(), server_default=sa.text("next_lode_id()"), nullable=False),
         sa.Column("workspace_id", sa.BigInteger(), nullable=False),
@@ -965,6 +1126,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "workspace_ingestion_runtime",
+        "repository_analysis_jobs",
         sa.Column("workspace_id", sa.BigInteger(), nullable=False),
         sa.Column("observed_state", sa.Text(), server_default="idle", nullable=False),
         sa.Column("observed_version", sa.Integer(), server_default="0", nullable=False),
@@ -2249,6 +2411,52 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint(
             "investigation_id", name=op.f("pk_investigation_model_policy_snapshots")
+        ),
+    )
+    op.create_table(
+        "investigation_architecture_context_snapshots",
+        sa.Column("investigation_id", sa.BigInteger(), nullable=False),
+        sa.Column("architecture_context_revision_id", sa.BigInteger(), nullable=False),
+        sa.Column("revision", sa.Integer(), nullable=False),
+        sa.Column("entries_masked", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("context_hash", sa.Text(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "context_hash ~ '^[0-9a-f]{64}$'",
+            name=op.f("ck_investigation_architecture_context_snapshots_hash"),
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(entries_masked) = 'array'",
+            name=op.f("ck_investigation_architecture_context_snapshots_entries"),
+        ),
+        sa.CheckConstraint(
+            "revision > 0",
+            name=op.f("ck_investigation_architecture_context_snapshots_revision"),
+        ),
+        sa.ForeignKeyConstraint(
+            ["architecture_context_revision_id"],
+            ["workspace_architecture_context_revisions.id"],
+            name=op.f(
+                "fk_investigation_architecture_context_snapshots_architecture_context_revision_id_workspace_architecture_context_revisions"
+            ),
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["investigation_id"],
+            ["investigations.id"],
+            name=op.f(
+                "fk_investigation_architecture_context_snapshots_investigation_id_investigations"
+            ),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint(
+            "investigation_id",
+            name=op.f("pk_investigation_architecture_context_snapshots"),
         ),
     )
     op.create_table(
@@ -3869,6 +4077,14 @@ def upgrade() -> None:
         ["id"],
         ondelete="SET NULL",
     )
+    op.create_foreign_key(
+        "fk_workspace_architecture_context",
+        "workspaces",
+        "workspace_architecture_context_revisions",
+        ["architecture_context_revision_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
 
     op.create_table(
         "platform_settings",
@@ -3935,6 +4151,7 @@ def upgrade() -> None:
         "workspace_git_account_grants",
         "workspace_git_repository_entitlements",
         "workspace_repository_bindings",
+        "repository_analysis_jobs",
         "build_units",
         "components",
         "evidence_connectors",
@@ -3989,6 +4206,7 @@ def upgrade() -> None:
         "audit_events",
         "context_policy_revisions",
         "investigation_policy_revisions",
+        "workspace_architecture_context_revisions",
         "model_policy_revisions",
         "git_account_credential_revisions",
         "repository_descriptors",
@@ -4005,6 +4223,7 @@ def upgrade() -> None:
         "investigation_resource_graph_snapshots",
         "investigation_descriptor_snapshots",
         "investigation_model_policy_snapshots",
+        "investigation_architecture_context_snapshots",
         "investigation_model_binding_snapshots",
         "investigation_operation_events",
         "context_bundle_revisions",
@@ -4351,6 +4570,7 @@ def downgrade() -> None:
     op.drop_table("investigation_resource_graph_snapshots")
     op.drop_table("investigation_repository_snapshots")
     op.drop_table("investigation_model_policy_snapshots")
+    op.drop_table("investigation_architecture_context_snapshots")
     op.drop_table("investigation_model_binding_snapshots")
     op.drop_index("ix_investigation_jobs_claim", table_name="investigation_jobs")
     op.drop_table("investigation_jobs")
@@ -4367,6 +4587,12 @@ def downgrade() -> None:
     op.drop_index("ix_investigations_incident", table_name="investigations")
     op.drop_table("investigations")
     op.drop_table("investigation_policy_revisions")
+    op.drop_constraint(
+        "fk_workspace_architecture_context",
+        "workspaces",
+        type_="foreignkey",
+    )
+    op.drop_table("workspace_architecture_context_revisions")
     op.drop_table("build_units")
     op.drop_index(
         "uq_workspace_repository_binding_active",
@@ -4379,6 +4605,9 @@ def downgrade() -> None:
     op.drop_index("ix_resource_observations_workspace_kind", table_name="resource_observations")
     op.drop_table("resource_observations")
     op.drop_table("resource_graph_revision_members")
+    op.drop_index("uq_repository_analysis_job_active", table_name="repository_analysis_jobs")
+    op.drop_index("ix_repository_analysis_jobs_claim", table_name="repository_analysis_jobs")
+    op.drop_table("repository_analysis_jobs")
     op.drop_table("model_policy_revisions")
     op.drop_index(
         "uq_incident_active_signature",

@@ -28,6 +28,7 @@ class Workspace(TimestampMixin, Base):
 
     id: Mapped[int] = snowflake_pk()
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     ingestion_topic: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     model_policy_revision_id: Mapped[int | None] = mapped_column(
         BigInteger,
@@ -47,6 +48,15 @@ class Workspace(TimestampMixin, Base):
             name="fk_workspace_investigation_policy",
         ),
     )
+    architecture_context_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "workspace_architecture_context_revisions.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_workspace_architecture_context",
+        ),
+    )
     ingestion_state: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     ingestion_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     ingestion_start_position: Mapped[str | None] = mapped_column(Text)
@@ -58,6 +68,7 @@ class Workspace(TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint("btrim(name) <> ''", name="name_nonblank"),
+        CheckConstraint("char_length(description) <= 1000", name="description_length"),
         CheckConstraint("btrim(ingestion_topic) <> ''", name="topic_nonblank"),
         CheckConstraint("ingestion_state IN ('draft', 'active', 'paused')", name="ingestion_state"),
         CheckConstraint("ingestion_version >= 0", name="ingestion_version_nonnegative"),
@@ -122,6 +133,28 @@ class InvestigationPolicyRevision(CreatedAtMixin, Base):
         CheckConstraint("window_before_seconds >= 0", name="window_before_nonnegative"),
         CheckConstraint("window_after_seconds >= 0", name="window_after_nonnegative"),
         CheckConstraint("revision > 0", name="revision_positive"),
+    )
+
+
+class WorkspaceArchitectureContextRevision(CreatedAtMixin, Base):
+    """Immutable, structured Workspace background supplied to models as untrusted context."""
+
+    __tablename__ = "workspace_architecture_context_revisions"
+
+    id: Mapped[int] = snowflake_pk()
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    entries: Mapped[list] = mapped_column(JSONB, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "revision", name="uq_workspace_architecture_context_revision"),
+        CheckConstraint("revision > 0", name="revision_positive"),
+        CheckConstraint("jsonb_typeof(entries) = 'array'", name="entries_array"),
     )
 
 

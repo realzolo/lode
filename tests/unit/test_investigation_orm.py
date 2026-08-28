@@ -20,6 +20,7 @@ def _check_sql(table_name: str) -> str:
 def test_snapshot_tables_use_relational_rows_and_revision_hashes() -> None:
     snapshot_tables = {
         "investigation_repository_snapshots",
+        "investigation_architecture_context_snapshots",
         "investigation_build_unit_snapshots",
         "investigation_component_snapshots",
         "investigation_connector_snapshots",
@@ -32,7 +33,30 @@ def test_snapshot_tables_use_relational_rows_and_revision_hashes() -> None:
     for table_name in snapshot_tables:
         columns = set(Base.metadata.tables[table_name].c.keys())
         assert "investigation_id" in columns
-        assert "snapshot_hash" in columns
+        assert "snapshot_hash" in columns or "context_hash" in columns
+
+
+def test_workspace_context_and_repository_analysis_are_first_class_revisioned_state() -> None:
+    workspace = Base.metadata.tables["workspaces"]
+    context = Base.metadata.tables["workspace_architecture_context_revisions"]
+    analysis = Base.metadata.tables["repository_analysis_jobs"]
+
+    assert {"description", "architecture_context_revision_id"}.issubset(workspace.c.keys())
+    assert {"workspace_id", "entries", "revision"}.issubset(context.c.keys())
+    assert {
+        "requested_binding_ids",
+        "state",
+        "lease_owner",
+        "source_revisions",
+        "graph_revision_id",
+    }.issubset(analysis.c.keys())
+    assert next(
+        index for index in analysis.indexes if index.name == "uq_repository_analysis_job_active"
+    ).unique
+    analysis_sql = _check_sql("repository_analysis_jobs")
+    assert "state = 'running' AND lease_owner IS NOT NULL" in analysis_sql
+    assert "state = 'succeeded'" in analysis_sql
+    assert "repository_access_unavailable" in analysis_sql
 
 
 def test_only_one_running_wave_is_allowed_per_investigation() -> None:

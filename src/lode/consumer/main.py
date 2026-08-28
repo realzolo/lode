@@ -6,10 +6,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
+import platform
 import time
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener, TopicPartition
 from aiokafka.structs import OffsetAndMetadata
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -17,7 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from lode.application.intake import KafkaIncidentAlert, mask_failure_payload, normalize_kafka
 from lode.config import kafka_security_kwargs, settings
-from lode.db.models import DeadLetter, IngestionEvent, Workspace
+from lode.db.models import (
+    DeadLetter,
+    IngestionEvent,
+    Workspace,
+    WorkspaceIngestionOffset,
+    WorkspaceIngestionRuntime,
+)
 from lode.db.session import AsyncSessionLocal
 from lode.infrastructure.intake_store import IntakeResult, PostgresIntakeStore
 from lode.metrics import ACTIVE_WORKSPACES, CONSUMER_HEARTBEAT
@@ -30,6 +39,7 @@ from lode.runtime_defaults import (
 )
 
 logger = logging.getLogger("lode.consumer")
+CONSUMER_ID = f"{platform.node()}:{os.getpid()}"
 
 
 class FailurePublisher(Protocol):
@@ -241,6 +251,213 @@ async def _active_topics(session_factory: async_sessionmaker[AsyncSession]) -> l
         )
 
 
+async def _set_runtime_state(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    topics: list[str],
+    assigned: set[TopicPartition],
+    consumer_id: str,
+) -> None:
+    now = datetime.now(UTC)
+    counts: dict[str, int] = {}
+    for partition in assigned:
+        counts[partition.topic] = counts.get(partition.topic, 0) + 1
+    async with session_factory() as session:
+        workspaces = tuple(
+            (
+                await session.execute(
+                    select(Workspace).where(Workspace.ingestion_topic.in_(topics))
+                )
+            ).scalars()
+        ) if topics else ()
+        for workspace in workspaces:
+            runtime = await session.get(WorkspaceIngestionRuntime, workspace.id)
+            if runtime is None:
+                runtime = WorkspaceIngestionRuntime(workspace_id=workspace.id)
+                session.add(runtime)
+            partitions = counts.get(workspace.ingestion_topic, 0)
+            runtime.observed_state = "listening" if partitions else "starting"
+            runtime.observed_version = workspace.ingestion_version
+            runtime.consumer_id = consumer_id
+            runtime.assigned_partitions = partitions
+            runtime.last_heartbeat_at = now
+            runtime.last_error = None
+        await session.commit()
+
+
+async def _set_paused_runtime_states(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        workspaces = tuple(
+            (
+                await session.execute(
+                    select(Workspace).where(Workspace.ingestion_state != "active")
+                )
+            ).scalars()
+        )
+        for workspace in workspaces:
+            runtime = await session.get(WorkspaceIngestionRuntime, workspace.id)
+            if runtime is None:
+                runtime = WorkspaceIngestionRuntime(workspace_id=workspace.id)
+                session.add(runtime)
+            runtime.observed_state = "paused" if workspace.ingestion_state == "paused" else "idle"
+            runtime.observed_version = workspace.ingestion_version
+            runtime.consumer_id = None
+            runtime.assigned_partitions = 0
+            runtime.last_error = None
+        await session.commit()
+
+
+async def _reset_offset(
+    consumer: AIOKafkaConsumer,
+    partition: TopicPartition,
+    position: str,
+) -> int:
+    if position == "earliest":
+        return int((await consumer.beginning_offsets([partition]))[partition])
+    return int((await consumer.end_offsets([partition]))[partition])
+
+
+def _partition_resume_target(
+    *,
+    initialized_target: int | None,
+    committed: int | None,
+    ingestion_version: int,
+) -> int | None:
+    if initialized_target is not None:
+        return initialized_target if committed is None else max(initialized_target, committed)
+    if ingestion_version > 1 and committed is not None:
+        return committed
+    return None
+
+
+async def initialize_partition_positions(
+    consumer: AIOKafkaConsumer,
+    session_factory: async_sessionmaker[AsyncSession],
+    partitions: set[TopicPartition],
+    *,
+    consumer_id: str = CONSUMER_ID,
+) -> None:
+    """Apply each Workspace's frozen activation position exactly once per generation."""
+
+    if not partitions:
+        return
+    topics = sorted({item.topic for item in partitions})
+    async with session_factory() as session:
+        workspaces = {
+            row.ingestion_topic: row
+            for row in (
+                await session.execute(
+                    select(Workspace).where(
+                        Workspace.ingestion_topic.in_(topics),
+                        Workspace.ingestion_state == "active",
+                    )
+                )
+            ).scalars()
+        }
+        counts: dict[int, int] = {}
+        for partition in sorted(partitions, key=lambda item: (item.topic, item.partition)):
+            workspace = workspaces.get(partition.topic)
+            if workspace is None or workspace.ingestion_start_position is None:
+                continue
+            key = (
+                workspace.id,
+                workspace.ingestion_version,
+                partition.topic,
+                partition.partition,
+            )
+            initialized = await session.get(WorkspaceIngestionOffset, key)
+            committed = await consumer.committed(partition)
+            target = _partition_resume_target(
+                initialized_target=None if initialized is None else initialized.target_offset,
+                committed=None if committed is None else int(committed),
+                ingestion_version=workspace.ingestion_version,
+            )
+            if target is None:
+                target = await _reset_offset(
+                    consumer, partition, workspace.ingestion_start_position
+                )
+            if initialized is None:
+                session.add(
+                    WorkspaceIngestionOffset(
+                        workspace_id=workspace.id,
+                        ingestion_version=workspace.ingestion_version,
+                        topic=partition.topic,
+                        partition=partition.partition,
+                        start_position=workspace.ingestion_start_position,
+                        target_offset=target,
+                        initialized_at=datetime.now(UTC),
+                    )
+                )
+            consumer.seek(partition, target)
+            counts[workspace.id] = counts.get(workspace.id, 0) + 1
+        now = datetime.now(UTC)
+        for workspace in workspaces.values():
+            runtime = await session.get(WorkspaceIngestionRuntime, workspace.id)
+            if runtime is None:
+                runtime = WorkspaceIngestionRuntime(workspace_id=workspace.id)
+                session.add(runtime)
+            runtime.observed_state = "listening" if counts.get(workspace.id) else "starting"
+            runtime.observed_version = workspace.ingestion_version
+            runtime.consumer_id = consumer_id
+            runtime.assigned_partitions = counts.get(workspace.id, 0)
+            runtime.last_heartbeat_at = now
+            runtime.last_error = None
+        await session.commit()
+
+
+class WorkspaceRebalanceListener(ConsumerRebalanceListener):
+    def __init__(
+        self,
+        consumer: AIOKafkaConsumer,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self.consumer = consumer
+        self.session_factory = session_factory
+
+    async def on_partitions_revoked(self, revoked: set[TopicPartition]) -> None:
+        topics = sorted({item.topic for item in revoked})
+        await _set_runtime_state(
+            self.session_factory,
+            topics=topics,
+            assigned=set(),
+            consumer_id=CONSUMER_ID,
+        )
+
+    async def on_partitions_assigned(self, assigned: set[TopicPartition]) -> None:
+        try:
+            await initialize_partition_positions(
+                self.consumer,
+                self.session_factory,
+                assigned,
+            )
+        except Exception as exc:
+            logger.exception("failed to initialize Workspace Kafka positions")
+            topics = sorted({item.topic for item in assigned})
+            async with self.session_factory() as session:
+                rows = tuple(
+                    (
+                        await session.execute(
+                            select(Workspace).where(Workspace.ingestion_topic.in_(topics))
+                        )
+                    ).scalars()
+                )
+                for workspace in rows:
+                    runtime = await session.get(WorkspaceIngestionRuntime, workspace.id)
+                    if runtime is None:
+                        runtime = WorkspaceIngestionRuntime(workspace_id=workspace.id)
+                        session.add(runtime)
+                    runtime.observed_state = "error"
+                    runtime.observed_version = workspace.ingestion_version
+                    runtime.consumer_id = CONSUMER_ID
+                    runtime.assigned_partitions = 0
+                    runtime.last_heartbeat_at = datetime.now(UTC)
+                    runtime.last_error = type(exc).__name__
+                await session.commit()
+            raise
+
+
 async def process_record(
     record: ConsumerRecord,
     *,
@@ -283,6 +500,7 @@ async def main() -> None:
     await consumer.start()
     await producer.start()
     handler = KafkaIntakeHandler(publisher=producer)
+    listener = WorkspaceRebalanceListener(consumer, AsyncSessionLocal)
     subscribed: list[str] = []
     try:
         while True:
@@ -290,12 +508,23 @@ async def main() -> None:
             ACTIVE_WORKSPACES.set(len(topics))
             CONSUMER_HEARTBEAT.set(time.time())
             if topics != subscribed:
-                consumer.subscribe(topics=topics)
+                if topics:
+                    consumer.subscribe(topics=topics, listener=listener)
+                else:
+                    consumer.unsubscribe()
                 subscribed = topics
+                await _set_paused_runtime_states(AsyncSessionLocal)
                 logger.info("subscribed to %d active Workspace topics", len(topics))
             if not topics:
                 await asyncio.sleep(KAFKA_SUBSCRIPTION_REFRESH_SECONDS)
                 continue
+
+            await _set_runtime_state(
+                AsyncSessionLocal,
+                topics=topics,
+                assigned=set(consumer.assignment()),
+                consumer_id=CONSUMER_ID,
+            )
 
             batches = await consumer.getmany(
                 timeout_ms=1000,

@@ -27,6 +27,7 @@ from lode.db.models.investigation import (
     ContextBundleRevision,
     ContextSummaryArtifact,
     Investigation,
+    InvestigationArchitectureContextSnapshot,
     InvestigationBuildUnitSnapshot,
     InvestigationComponentSnapshot,
     InvestigationConnectorSnapshot,
@@ -61,6 +62,7 @@ from lode.db.models.resources import (
     GitRepository,
     IdentityResolution,
     RepositoryDescriptor,
+    RepositoryAnalysisJob,
     ResourceGraphRevision,
     ResourceGraphRevisionMember,
     ResourceObservation,
@@ -85,6 +87,7 @@ from lode.db.models.workspace import (
     WorkspaceIngestionOffset,
     WorkspaceIngestionRuntime,
     WorkspacePermission,
+    WorkspaceArchitectureContextRevision,
 )
 
 __all__ = [
@@ -119,6 +122,7 @@ __all__ = [
     "IngestionEvent",
     "InvestigationJob",
     "Investigation",
+    "InvestigationArchitectureContextSnapshot",
     "InvestigationBuildUnitSnapshot",
     "InvestigationCodeFinding",
     "InvestigationComponentSnapshot",
@@ -144,6 +148,7 @@ __all__ = [
     "ObservedEvent",
     "ObservedRelation",
     "RepositoryDescriptor",
+    "RepositoryAnalysisJob",
     "ResourceGraphRevision",
     "ResourceGraphRevisionMember",
     "ResourceObservation",
@@ -153,6 +158,7 @@ __all__ = [
     "SourceRevision",
     "User",
     "Workspace",
+    "WorkspaceArchitectureContextRevision",
     "WorkspaceIngestionOffset",
     "WorkspaceIngestionRuntime",
     "WorkspaceModelBinding",

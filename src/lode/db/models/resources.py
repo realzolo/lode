@@ -529,3 +529,68 @@ class ResourceGraphRevisionMember(Base):
             name="member_kind",
         ),
     )
+
+
+class RepositoryAnalysisJob(TimestampMixin, Base):
+    __tablename__ = "repository_analysis_jobs"
+
+    id: Mapped[int] = snowflake_pk()
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    requested_binding_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    lease_owner: Mapped[str | None] = mapped_column(Text)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_revisions: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    graph_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("resource_graph_revisions.id", ondelete="SET NULL")
+    )
+    scanned_file_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    issue_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    failure_code: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("cardinality(requested_binding_ids) > 0", name="bindings_nonempty"),
+        CheckConstraint("state IN ('queued', 'running', 'succeeded', 'failed')", name="state"),
+        CheckConstraint("attempt >= 0", name="attempt_nonnegative"),
+        CheckConstraint("scanned_file_count >= 0", name="scanned_files_nonnegative"),
+        CheckConstraint("issue_count >= 0", name="issue_count_nonnegative"),
+        CheckConstraint(
+            "failure_code IS NULL OR failure_code IN ("
+            "'repository_access_unavailable', 'repository_checkout_failed', "
+            "'repository_manifest_invalid', 'repository_analysis_failed')",
+            name="failure_code",
+        ),
+        CheckConstraint(
+            "(state = 'queued' AND lease_owner IS NULL AND lease_expires_at IS NULL "
+            "AND finished_at IS NULL AND failure_code IS NULL) OR "
+            "(state = 'running' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL "
+            "AND started_at IS NOT NULL AND finished_at IS NULL AND failure_code IS NULL) OR "
+            "(state = 'succeeded' AND lease_owner IS NULL AND lease_expires_at IS NULL "
+            "AND graph_revision_id IS NOT NULL AND finished_at IS NOT NULL "
+            "AND failure_code IS NULL) OR "
+            "(state = 'failed' AND lease_owner IS NULL AND lease_expires_at IS NULL "
+            "AND finished_at IS NOT NULL AND failure_code IS NOT NULL)",
+            name="state_shape",
+        ),
+        CheckConstraint(
+            "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
+            name="run_range",
+        ),
+        Index(
+            "uq_repository_analysis_job_active",
+            "workspace_id",
+            unique=True,
+            postgresql_where=text("state IN ('queued', 'running')"),
+        ),
+        Index("ix_repository_analysis_jobs_claim", "state", "lease_expires_at", "created_at"),
+    )

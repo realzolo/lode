@@ -11,9 +11,11 @@ export interface CurrentUser {
 export interface Workspace {
   id: number;
   name: string;
+  description: string;
   ingestion_topic: string;
   model_policy_revision_id: number | null;
   investigation_policy_revision_id: number | null;
+  architecture_context_revision_id: number | null;
   ingestion_state: 'draft' | 'active' | 'paused';
   ingestion_version: number;
   ingestion_start_position: 'earliest' | 'latest' | null;
@@ -21,6 +23,35 @@ export interface Workspace {
   ingestion_paused_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface WorkspaceReadiness {
+  workspace_id: number;
+  can_start: boolean;
+  checks: Array<{
+    code: 'kafka_topic' | 'model_policy' | 'repositories' | 'evidence_connectors' | 'architecture_context';
+    outcome: 'passed' | 'blocked' | 'warning';
+    details: Record<string, unknown>;
+  }>;
+  runtime: {
+    observed_state: 'idle' | 'starting' | 'listening' | 'paused' | 'error';
+    observed_version: number;
+    consumer_id: string | null;
+    assigned_partitions: number;
+    backlog: number | null;
+    last_heartbeat_at: string | null;
+    last_error: string | null;
+  };
+}
+
+export type ArchitectureContextKind = 'system_purpose' | 'architecture' | 'critical_flow' | 'dependency' | 'operational_convention';
+
+export interface WorkspaceArchitectureContext {
+  id: number;
+  workspace_id: number;
+  entries: Array<{ kind: ArchitectureContextKind; title: string; content: string }>;
+  revision: number;
+  created_at: string;
 }
 
 export interface WorkspaceMember {
@@ -133,6 +164,23 @@ export interface RepositoryBinding {
   revision: number;
 }
 
+export interface RepositoryAnalysisJob {
+  id: number;
+  workspace_id: number;
+  requested_binding_ids: number[];
+  state: 'queued' | 'running' | 'succeeded' | 'failed';
+  attempt: number;
+  source_revisions: Record<string, string>;
+  graph_revision_id: number | null;
+  scanned_file_count: number;
+  issue_count: number;
+  failure_code: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface GitAccount {
   id: number;
   adapter_id: 'github' | 'gitlab' | 'gitee';
@@ -205,6 +253,8 @@ export interface BuildUnit {
   stable_key: string;
   source_root: string;
   build_system: string;
+  manifest_paths: string[];
+  entrypoints: string[];
   identity_status: 'verified' | 'provisional' | 'ambiguous';
   state: 'active' | 'disabled';
   revision: number;

@@ -116,6 +116,28 @@ class InvestigationInput(CreatedAtMixin, Base):
     )
 
 
+class InvestigationArchitectureContextSnapshot(CreatedAtMixin, Base):
+    __tablename__ = "investigation_architecture_context_snapshots"
+
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), primary_key=True
+    )
+    architecture_context_revision_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("workspace_architecture_context_revisions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    entries_masked: Mapped[list] = mapped_column(JSONB, nullable=False)
+    context_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="revision"),
+        CheckConstraint("jsonb_typeof(entries_masked) = 'array'", name="entries"),
+        CheckConstraint("context_hash ~ '^[0-9a-f]{64}$'", name="hash"),
+    )
+
+
 class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
     __tablename__ = "investigation_repository_snapshots"
 

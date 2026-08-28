@@ -156,6 +156,7 @@ class ProviderAccountOut(_ORMOutput):
 
 class WorkspaceCreate(_StrictInput):
     name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1_000)
     ingestion_topic: str = Field(min_length=1, max_length=500)
 
     @field_validator("name", "ingestion_topic")
@@ -167,12 +168,29 @@ class WorkspaceCreate(_StrictInput):
         return value
 
 
+class WorkspacePatch(_StrictPatch):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1_000)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be blank")
+        return value
+
+
 class WorkspaceOut(_ORMOutput):
     id: EntityId
     name: str
+    description: str
     ingestion_topic: str
     model_policy_revision_id: EntityId | None
     investigation_policy_revision_id: EntityId | None
+    architecture_context_revision_id: EntityId | None
     ingestion_state: str
     ingestion_version: int
     ingestion_start_position: str | None
@@ -180,6 +198,76 @@ class WorkspaceOut(_ORMOutput):
     ingestion_paused_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class WorkspaceReadinessCheckOut(_StrictInput):
+    code: Literal[
+        "kafka_topic",
+        "model_policy",
+        "repositories",
+        "evidence_connectors",
+        "architecture_context",
+    ]
+    outcome: Literal["passed", "blocked", "warning"]
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkspaceIngestionRuntimeOut(_StrictInput):
+    observed_state: Literal["idle", "starting", "listening", "paused", "error"]
+    observed_version: int = Field(ge=0)
+    consumer_id: str | None
+    assigned_partitions: int = Field(ge=0)
+    backlog: int | None
+    last_heartbeat_at: datetime | None
+    last_error: str | None
+
+
+class WorkspaceReadinessOut(_StrictInput):
+    workspace_id: EntityId
+    can_start: bool
+    checks: tuple[WorkspaceReadinessCheckOut, ...]
+    runtime: WorkspaceIngestionRuntimeOut
+
+
+ArchitectureContextKind = Literal[
+    "system_purpose",
+    "architecture",
+    "critical_flow",
+    "dependency",
+    "operational_convention",
+]
+
+
+class WorkspaceArchitectureContextEntry(_StrictInput):
+    kind: ArchitectureContextKind
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=4_000)
+
+    @field_validator("title", "content")
+    @classmethod
+    def strip_content(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("architecture context text must not be blank")
+        return value
+
+
+class WorkspaceArchitectureContextPut(_StrictInput):
+    entries: tuple[WorkspaceArchitectureContextEntry, ...] = Field(max_length=20)
+
+    @model_validator(mode="after")
+    def bounded_total_content(self):
+        if sum(len(item.title) + len(item.content) for item in self.entries) > 20_000:
+            raise ValueError("architecture context exceeds the total text limit")
+        return self
+
+
+class WorkspaceArchitectureContextOut(_StrictInput):
+    id: EntityId
+    workspace_id: EntityId
+    entries: tuple[WorkspaceArchitectureContextEntry, ...]
+    revision: int = Field(gt=0)
+    created_at: datetime
 
 
 class IngestionStart(_StrictInput):
@@ -425,6 +513,28 @@ class RepositoryBindingOut(_StrictInput):
     description: str
     state: str
     revision: int
+
+
+class RepositoryAnalysisJobOut(_ORMOutput):
+    id: EntityId
+    workspace_id: EntityId
+    requested_binding_ids: list[EntityId]
+    state: Literal["queued", "running", "succeeded", "failed"]
+    attempt: int
+    source_revisions: dict[str, str]
+    graph_revision_id: EntityId | None
+    scanned_file_count: int
+    issue_count: int
+    failure_code: Literal[
+        "repository_access_unavailable",
+        "repository_checkout_failed",
+        "repository_manifest_invalid",
+        "repository_analysis_failed",
+    ] | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class LokiConditionInput(_StrictInput):
