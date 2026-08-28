@@ -61,9 +61,9 @@ and threat-model change, not a configuration edit.
 Loki scope is authored as an `ALL`/`ANY` condition tree and normalized by the
 server into deterministic DNF before it is frozen. Depth is at most three,
 normalized branches at most eight, conditions at most 32, and set values at
-most 20. Every branch contains a positive `equals`; `any_of` and `not_any_of`
-regular expressions are produced only by escaping literal values in server
-code. The model parser continues to reject regex. Each branch receives a share
+most 20. Every branch contains a positive exact matcher: `equals` or `any_of`.
+The `any_of` and `not_any_of` regular expressions are produced only by escaping
+literal values in server code. The model parser continues to reject regex. Each branch receives a share
 of the total timeout and the same global row/byte/window budget. Results merge
 by timestamp, labels, and value with stable ordering. One failed or partial
 branch fails the read, so no partial result is archived.

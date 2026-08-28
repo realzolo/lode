@@ -80,10 +80,10 @@ def normalize_loki_filter(value: Mapping[str, Any]) -> tuple[tuple[dict[str, Any
 
     branches = normalize_branches(walk(value, 1))
     if not branches or any(
-        not any(condition["operator"] == "equals" for condition in branch)
+        not any(condition["operator"] in {"equals", "any_of"} for condition in branch)
         for branch in branches
     ):
-        raise ValueError("Every Loki scope branch requires a positive equals condition")
+        raise ValueError("Every Loki scope branch requires a positive exact matcher")
     return tuple(tuple(condition for condition in branch) for branch in branches)
 
 

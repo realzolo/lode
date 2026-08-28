@@ -36,12 +36,18 @@ def test_loki_filter_normalizes_nested_groups_to_stable_dnf() -> None:
     assert any('namespace="billing"' in selector for selector in selectors)
 
 
+def test_loki_filter_accepts_any_of_as_a_positive_exact_matcher() -> None:
+    branches = normalize_loki_filter(group("all", condition("app", "any_of", "payments", "orders")))
+
+    assert branches == (({"label": "app", "operator": "any_of", "values": ["orders", "payments"]},),)
+
+
 @pytest.mark.parametrize(
     "value,reason",
     [
         (
             group("all", condition("cluster", "not_equals", "dev")),
-            "positive equals",
+            "positive exact matcher",
         ),
         (
             group(
