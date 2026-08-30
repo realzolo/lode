@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import ipaddress
 import json
+import math
 import ssl
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -76,6 +80,8 @@ class SQLConnectorMechanics:
     language = "sql"
     dialect: str
     read_capabilities = ("bounded_select", "schema_introspection", "cost_explain")
+    allow_non_temporal_tables = False
+    allow_unordered_tables = False
 
     def __init__(self, backend: SQLBackend, secrets: Mapping[str, str]) -> None:
         self.backend = backend
@@ -129,18 +135,21 @@ class SQLConnectorMechanics:
             if not isinstance(columns, Mapping) or not columns:
                 raise ProviderExecutionError("invalid_response", "SQL table catalog is invalid")
             time_column = self._time_column(columns)
-            if time_column is None:
+            if time_column is None and not self.allow_non_temporal_tables:
                 excluded[table] = "no_time_column"
                 continue
             stable_order = self._stable_order(descriptor, columns)
-            if stable_order is None:
+            if stable_order is None and not self.allow_unordered_tables:
                 excluded[table] = "no_stable_key"
                 continue
-            catalog[table] = {
+            entry = {
                 "columns": dict(columns),
                 "time_column": time_column,
-                "stable_order": list(stable_order),
+                "stable_order": list(stable_order or ()),
             }
+            if isinstance(descriptor.get("engine"), str):
+                entry["engine"] = descriptor["engine"]
+            catalog[table] = entry
         return NativeSchemaCatalog(
             provider=self.kind,
             version=self.version or "unverified",
@@ -311,18 +320,33 @@ class SQLConnectorMechanics:
 
     @staticmethod
     def _normalize_value(value: Any) -> Any:
-        if value is None or isinstance(value, (str, int, float, bool)):
+        if value is None or isinstance(value, (str, int, bool)):
+            return value
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                return str(value)
             return value
         if isinstance(value, (datetime, date, time)):
             return value.isoformat()
         if isinstance(value, Decimal):
             return str(value)
+        if isinstance(value, (uuid.UUID, ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            return str(value)
+        if isinstance(value, bytes):
+            return "base64:" + base64.b64encode(value).decode("ascii")
         if isinstance(value, (list, tuple)):
             return [SQLConnectorMechanics._normalize_value(item) for item in value]
         if isinstance(value, Mapping):
-            if any(not isinstance(key, str) for key in value):
-                raise ProviderExecutionError("invalid_response", "SQL object key is invalid")
-            return {
-                key: SQLConnectorMechanics._normalize_value(item) for key, item in value.items()
-            }
+            if all(isinstance(key, str) for key in value):
+                return {
+                    key: SQLConnectorMechanics._normalize_value(item)
+                    for key, item in value.items()
+                }
+            return [
+                {
+                    "key": SQLConnectorMechanics._normalize_value(key),
+                    "value": SQLConnectorMechanics._normalize_value(item),
+                }
+                for key, item in value.items()
+            ]
         raise ProviderExecutionError("invalid_response", "SQL value type is unsupported")

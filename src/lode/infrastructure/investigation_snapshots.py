@@ -83,7 +83,7 @@ class ConnectorSnapshotStore:
             ).scalar_one_or_none()
             if scope is None:
                 continue
-            if connector.kind in {"postgresql", "mysql"} and not scope.scope_config.get(
+            if connector.kind in {"postgresql", "mysql", "clickhouse"} and not scope.scope_config.get(
                 "allowed_tables"
             ):
                 continue

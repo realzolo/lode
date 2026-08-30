@@ -67,14 +67,6 @@ class KafkaIntegrationConfig(_Config):
         return value
 
 
-class ClickHouseIntegrationConfig(_Config):
-    host: str = Field(min_length=1, max_length=253)
-    port: int = Field(default=8443, ge=1, le=65535)
-    database: str = Field(min_length=1, max_length=200)
-    username: str = Field(min_length=1, max_length=200)
-    tls: Literal[True] = True
-
-
 class LokiIntegrationConfig(_Config):
     base_url: str = Field(min_length=1, max_length=1000)
     limit: int = Field(default=1000, ge=1, le=5000)
@@ -126,19 +118,6 @@ _KINDS = MappingProxyType(
                 {"key": "username", "input": "text", "required": True},
                 {"key": "topics", "input": "string-list", "required": True},
                 {"key": "consumer_groups", "input": "string-list", "required": False},
-                {"key": "password", "input": "password", "required": True, "secret": True},
-            ),
-        ),
-        "clickhouse": IntegrationKindDefinition(
-            key="clickhouse", version=1, label="ClickHouse",
-            capabilities=frozenset({"test", "snapshot"}),
-            config_model=ClickHouseIntegrationConfig, secret_fields=("password",),
-            required_secret_fields=("password",),
-            form=(
-                {"key": "host", "input": "text", "required": True},
-                {"key": "port", "input": "number", "required": True},
-                {"key": "database", "input": "text", "required": True},
-                {"key": "username", "input": "text", "required": True},
                 {"key": "password", "input": "password", "required": True, "secret": True},
             ),
         ),

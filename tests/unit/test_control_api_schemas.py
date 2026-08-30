@@ -153,6 +153,19 @@ def test_connector_creation_uses_strict_kind_specific_contracts() -> None:
     assert pooler.database_username == "postgres.project-ref"
     assert pooler.tls_mode == "require"
 
+    clickhouse = adapter.validate_python(
+        {
+            "name": "analytics-events",
+            "kind": "clickhouse",
+            "host": "clickhouse.example.test",
+            "database": "analytics",
+            "database_username": "lode_reader",
+            "database_password": "secret",
+            "tls_mode": "disabled",
+        }
+    )
+    assert clickhouse.tls_mode == "disabled"
+
     with pytest.raises(ValidationError):
         adapter.validate_python(
             {
@@ -224,6 +237,15 @@ def test_connector_creation_uses_strict_kind_specific_contracts() -> None:
             "database_username": "lode_reader",
             "database_password": "secret",
             "tls_mode": "require",
+        },
+        {
+            "name": "clickhouse",
+            "kind": "clickhouse",
+            "host": "clickhouse.example.test",
+            "database": "analytics",
+            "database_username": "lode_reader",
+            "database_password": "secret",
+            "tls_mode": "verify_full",
         },
         {
             "name": "events",
@@ -299,6 +321,20 @@ def test_database_creation_rejects_ca_when_server_identity_is_not_verified() -> 
                 "tls_mode": "require",
                 "ca_certificate_pem": system_ca_pem(),
                 "allowed_schemas": ["public"],
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        TypeAdapter(ConnectorCreate).validate_python(
+            {
+                "name": "clickhouse",
+                "kind": "clickhouse",
+                "host": "clickhouse.example.test",
+                "database": "analytics",
+                "database_username": "lode_reader",
+                "database_password": "secret",
+                "tls_mode": "disabled",
+                "ca_certificate_pem": system_ca_pem(),
             }
         )
 

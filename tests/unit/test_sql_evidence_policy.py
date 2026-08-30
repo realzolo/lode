@@ -237,3 +237,32 @@ def test_sql_policy_uses_snapshot_mysql_dialect() -> None:
     evaluated = policy.evaluate(parsed, raw, context(dialect="mysql"))
     assert evaluated.effective_action["adapter_kind"] == "mysql_sql"
     assert "`public`.`orders`" in evaluated.effective_action["query"]
+
+
+def test_clickhouse_sql_policy_supports_non_temporal_tables_with_server_ordering() -> None:
+    policy = SQLPolicy()
+    access = context(dialect="clickhouse")
+    for descriptor in access.schema_catalog["tables"].values():
+        descriptor["time_column"] = None
+        descriptor["stable_order"] = []
+    raw = candidate("SELECT id, status FROM public.orders WHERE status = 'failed'")
+
+    evaluated = policy.evaluate(policy.parse(raw), raw, access)
+
+    assert evaluated.effective_action["adapter_kind"] == "clickhouse_sql"
+    assert "created_at >=" not in evaluated.effective_action["query"]
+    assert "ORDER BY ALL LIMIT 50" in evaluated.effective_action["query"]
+    assert evaluated.constraint_diff["mandatory_scope"]["time_columns"] == {}
+
+
+def test_clickhouse_sql_policy_injects_time_for_temporal_tables_and_blocks_table_functions() -> None:
+    policy = SQLPolicy()
+    access = context(dialect="clickhouse")
+    raw = candidate("SELECT toDateTime(created_at) FROM public.orders WHERE status = 'failed'")
+
+    evaluated = policy.evaluate(policy.parse(raw), raw, access)
+
+    assert "created_at >= '2026-08-26T09:15:00+00:00'" in evaluated.effective_action["query"]
+    with pytest.raises(AccessRejection) as error:
+        policy.parse(candidate("SELECT id FROM url('https://example.test/a') WHERE id = 1"))
+    assert error.value.code in {"unsupported_node", "scope_violation"}

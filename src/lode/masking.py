@@ -17,7 +17,7 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("bearer_token", re.compile(r"(?i)bearer\s+[A-Za-z0-9\-._~+/]+={0,2}")),
     (
         "connection_string",
-        re.compile(r"(?i)(?:postgres|postgresql|mysql|mongodb|redis|amqp)://[^\s'\"]+"),
+        re.compile(r"(?i)(?:postgres|postgresql|mysql|clickhouse|mongodb|redis|amqp)://[^\s'\"]+"),
     ),
     (
         "credential_assignment",

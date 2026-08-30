@@ -25,8 +25,15 @@ from lode.evidence_access.types import (
 
 _PARSER_VERSION = "sqlglot-30.17.0"
 _POLICY_VERSION = "sql-safe-subset.1"
-_DIALECTS = {"postgres", "mysql"}
-_SYSTEM_SCHEMAS = {"information_schema", "pg_catalog", "mysql", "performance_schema", "sys"}
+_DIALECTS = {"postgres", "mysql", "clickhouse"}
+_SYSTEM_SCHEMAS = {
+    "information_schema",
+    "pg_catalog",
+    "mysql",
+    "performance_schema",
+    "sys",
+    "system",
+}
 _ALLOWED_FUNCTIONS = {
     "AVG",
     "COALESCE",
@@ -38,6 +45,29 @@ _ALLOWED_FUNCTIONS = {
     "MIN",
     "SUM",
     "UPPER",
+}
+_CLICKHOUSE_ALLOWED_FUNCTIONS = _ALLOWED_FUNCTIONS | {
+    "ASSUMENOTNULL",
+    "COUNT_IF",
+    "DATE_TRUNC",
+    "DATETRUNC",
+    "ENDSWITH",
+    "FORMATDATETIME",
+    "IFNULL",
+    "NULLIF",
+    "POSITION",
+    "STARTSWITH",
+    "SUM_IF",
+    "TO_DATE",
+    "TO_DATETIME",
+    "TODATE",
+    "TODATETIME",
+    "TOSTARTOFDAY",
+    "TOSTARTOFHOUR",
+    "TOSTARTOFMINUTE",
+    "TIMESTAMP_TRUNC",
+    "UNIQ",
+    "UNIQEXACT",
 }
 _ALLOWED_NODE_NAMES = {
     "Add",
@@ -88,7 +118,7 @@ class _TableRef:
     key: str
     alias: str
     columns: frozenset[str]
-    time_column: str
+    time_column: str | None
     stable_order: tuple[str, ...]
     select: exp.Select
 
@@ -111,7 +141,7 @@ class SQLPolicy:
             "allowed_tables": scope_config.get("allowed_tables", []),
             "allowed_statement_modes": ["SELECT", "EXPLAIN SELECT"],
             "allowed_ast_nodes": sorted(_ALLOWED_NODE_NAMES),
-            "allowed_functions": sorted(_ALLOWED_FUNCTIONS),
+            "allowed_functions": sorted(self._allowed_functions(scope_config.get("dialect"))),
             "max_inner_joins": scope_config.get("max_joins", 2),
             "forbidden_constructs": [
                 "UNION|INTERSECT|EXCEPT",
@@ -143,7 +173,7 @@ class SQLPolicy:
         for dialect in sorted(_DIALECTS):
             try:
                 tree, mode = self._parse_candidate(candidate.payload.query, dialect)
-                self._validate_syntax_tree(tree)
+                self._validate_syntax_tree(tree, dialect)
                 self._value_slots(tree, set(candidate.value_bindings))
                 parsed[dialect] = tree
                 modes.add(mode)
@@ -211,24 +241,31 @@ class SQLPolicy:
             for column, value in sorted(self._required_predicates(context, table).items()):
                 clause = exp.column(column, table=table.alias).eq(exp.convert(value))
                 predicate = clause if predicate is None else exp.and_(predicate, clause)
-            time_column = exp.column(table.time_column, table=table.alias)
-            time_clause = exp.and_(
-                exp.GTE(
-                    this=time_column,
-                    expression=exp.Literal.string(budget.window_start.astimezone(UTC).isoformat()),
-                ),
-                exp.LT(
-                    this=time_column.copy(),
-                    expression=exp.Literal.string(budget.window_end.astimezone(UTC).isoformat()),
-                ),
-            )
-            predicate = time_clause if predicate is None else exp.and_(predicate, time_clause)
+            if table.time_column is not None:
+                time_column = exp.column(table.time_column, table=table.alias)
+                time_clause = exp.and_(
+                    exp.GTE(
+                        this=time_column,
+                        expression=exp.Literal.string(
+                            budget.window_start.astimezone(UTC).isoformat()
+                        ),
+                    ),
+                    exp.LT(
+                        this=time_column.copy(),
+                        expression=exp.Literal.string(
+                            budget.window_end.astimezone(UTC).isoformat()
+                        ),
+                    ),
+                )
+                predicate = time_clause if predicate is None else exp.and_(predicate, time_clause)
             table.select.where(predicate, append=True, copy=False)
 
         supplied_limit = self._literal_limit(effective)
         effective_limit = min(supplied_limit or budget.result_limit, budget.result_limit)
         effective = effective.limit(effective_limit, copy=False)
-        if effective.args.get("order") is None:
+        if effective.args.get("order") is None and dialect == "clickhouse":
+            effective = effective.order_by(exp.column("ALL"), copy=False)
+        elif effective.args.get("order") is None:
             primary = tables[0]
             order_alias = self._outer_cte_alias(effective) or primary.alias
             if order_alias != primary.alias:
@@ -258,7 +295,11 @@ class SQLPolicy:
         }
         diff["mandatory_scope"] = {
             "tables": [table.key for table in tables],
-            "time_columns": {table.key: table.time_column for table in tables},
+            "time_columns": {
+                table.key: table.time_column
+                for table in tables
+                if table.time_column is not None
+            },
             "required_predicates": {
                 table.key: sorted(self._required_predicates(context, table)) for table in tables
             },
@@ -298,7 +339,7 @@ class SQLPolicy:
             literal.set("this", values[sentinel])
         query = tree.sql(dialect=dialect, pretty=False, comments=False)
         reparsed = self._parse_one(query, dialect)
-        self._validate_syntax_tree(reparsed)
+        self._validate_syntax_tree(reparsed, dialect)
         bound = {**effective, "query": query}
         shape = self._effective_structural_hash(bound)
         if shape != evaluation.effective_structural_hash:
@@ -346,7 +387,7 @@ class SQLPolicy:
             raise AccessRejection("unsupported_node", "SQL EXPLAIN options are disabled")
         return self._parse_one(inner, dialect), "explain"
 
-    def _validate_syntax_tree(self, tree: exp.Select) -> None:
+    def _validate_syntax_tree(self, tree: exp.Select, dialect: str) -> None:
         nodes = list(tree.walk())
         if len(nodes) > 2_000:
             raise AccessRejection("budget_violation", "SQL AST node budget exceeded")
@@ -369,11 +410,12 @@ class SQLPolicy:
         for node in nodes:
             node_name = type(node).__name__
             if node_name not in _ALLOWED_NODE_NAMES and isinstance(node, exp.Func):
-                if node.sql_name().upper() not in _ALLOWED_FUNCTIONS:
+                function_name = self._function_name(node)
+                if function_name not in self._allowed_functions(dialect):
                     raise AccessRejection(
                         "unsupported_node",
                         "SQL function is not allowlisted",
-                        {"function": node.sql_name().upper()},
+                        {"function": function_name},
                     )
                 continue
             if node_name not in _ALLOWED_NODE_NAMES:
@@ -395,7 +437,10 @@ class SQLPolicy:
     def _validate_with_catalog(
         self, tree: exp.Select, context: AccessContext
     ) -> tuple[_TableRef, ...]:
-        self._validate_syntax_tree(tree)
+        dialect = context.scope_config.get("dialect")
+        if not isinstance(dialect, str) or dialect not in _DIALECTS:
+            raise AccessRejection("scope_violation", "SQL snapshot dialect is invalid")
+        self._validate_syntax_tree(tree, dialect)
         catalog_tables = context.schema_catalog.get("tables")
         allowed_tables = context.scope_config.get("allowed_tables")
         if not isinstance(catalog_tables, dict) or not isinstance(allowed_tables, list):
@@ -429,13 +474,21 @@ class SQLPolicy:
             columns = descriptor.get("columns")
             time_column = descriptor.get("time_column")
             stable_order = descriptor.get("stable_order")
+            clickhouse_table = dialect == "clickhouse"
             if (
                 not isinstance(columns, dict)
                 or not columns
-                or not isinstance(time_column, str)
-                or time_column not in columns
+                or (
+                    not clickhouse_table
+                    and (not isinstance(time_column, str) or time_column not in columns)
+                )
+                or (
+                    clickhouse_table
+                    and time_column is not None
+                    and (not isinstance(time_column, str) or time_column not in columns)
+                )
                 or not isinstance(stable_order, list)
-                or not stable_order
+                or (not clickhouse_table and not stable_order)
                 or any(not isinstance(item, str) or item not in columns for item in stable_order)
             ):
                 raise AccessRejection("scope_violation", "SQL table catalog entry is invalid")
@@ -454,6 +507,14 @@ class SQLPolicy:
             source[alias] = table.columns
             tables.append(table)
         for column in tree.find_all(exp.Column):
+            if (
+                dialect == "clickhouse"
+                and column.name.upper() == "ALL"
+                and not column.table
+                and isinstance(column.parent, exp.Ordered)
+                and isinstance(column.parent.parent, exp.Order)
+            ):
+                continue
             select_sources = sources.get(id(self._containing_select(column)), {})
             all_columns = (
                 frozenset().union(*select_sources.values()) if select_sources else frozenset()
@@ -467,6 +528,18 @@ class SQLPolicy:
                         "scope_violation", "SQL qualified column is outside scope"
                     )
         return tuple(tables)
+
+    @staticmethod
+    def _allowed_functions(dialect: object) -> frozenset[str]:
+        if dialect == "clickhouse":
+            return frozenset(_CLICKHOUSE_ALLOWED_FUNCTIONS)
+        return frozenset(_ALLOWED_FUNCTIONS)
+
+    @staticmethod
+    def _function_name(node: exp.Func) -> str:
+        if isinstance(node, exp.Anonymous):
+            return node.name.upper()
+        return node.sql_name().upper()
 
     @staticmethod
     def _containing_select(node: exp.Expression) -> exp.Select:

@@ -104,6 +104,28 @@ class _StubEvidenceConnector:
                 },
                 "excluded_tables": {},
             }
+        elif self.kind == "clickhouse":
+            resources = {
+                "dialect": "clickhouse",
+                "tables": {
+                    "analytics.events": {
+                        "columns": {
+                            "id": {"type": "UInt64", "nullable": False},
+                            "occurred_at": {"type": "DateTime", "nullable": False},
+                        },
+                        "time_column": "occurred_at",
+                        "stable_order": [],
+                        "engine": "MergeTree",
+                    },
+                    "analytics.snapshot_view": {
+                        "columns": {"state": {"type": "String", "nullable": False}},
+                        "time_column": None,
+                        "stable_order": [],
+                        "engine": "View",
+                    },
+                },
+                "excluded_tables": {},
+            }
         else:
             resources = dict(scope)
         return NativeSchemaCatalog(self.kind, "test/1", resources)
@@ -173,6 +195,69 @@ async def test_connector_creation_verifies_discovers_and_persists_atomically(mon
         connector = await session.get(EvidenceConnector, connector_id)
         assert connector is not None
         assert connector.config["ca_certificate_pem"] == _system_ca_pem()
+
+
+@pytest.mark.asyncio
+async def test_clickhouse_connector_creation_persists_broad_catalog(monkeypatch) -> None:
+    suffix = uuid.uuid4().hex
+    headers = await _admin_headers()
+    adapters: list[_StubEvidenceConnector] = []
+
+    def create_adapter(kind, config, secrets, runtime=None):
+        del runtime
+        assert kind == "clickhouse"
+        assert config["port"] == 8123
+        assert config["tls_mode"] == "disabled"
+        assert secrets == {"password": "clickhouse-private-value"}
+        adapter = _StubEvidenceConnector(kind)
+        adapters.append(adapter)
+        return adapter
+
+    monkeypatch.setattr(control_plane, "create_evidence_connector", create_adapter)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace = await client.post(
+            "/workspaces",
+            headers=headers,
+            json={"name": f"clickhouse-{suffix}", "ingestion_topic": f"clickhouse-{suffix}"},
+        )
+        assert workspace.status_code == 201
+        response = await client.post(
+            f"/workspaces/{workspace.json()['id']}/evidence-connectors",
+            headers=headers,
+            json={
+                "name": f"events-{suffix}",
+                "kind": "clickhouse",
+                "host": "clickhouse.example.test",
+                "database": "analytics",
+                "database_username": "lode_reader",
+                "database_password": "clickhouse-private-value",
+                "tls_mode": "disabled",
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["configured_secret_fields"] == ["password"]
+    assert "clickhouse-private-value" not in response.text
+    assert adapters[0].scope == {
+        "dialect": "clickhouse",
+        "allowed_tables": [],
+        "table_policies": {},
+    }
+    async with AsyncSessionLocal() as session:
+        connector = await session.scalar(
+            select(EvidenceConnector).where(EvidenceConnector.name == f"events-{suffix}")
+        )
+        assert connector is not None
+        scope = await session.scalar(
+            select(EvidenceAccessScope).where(EvidenceAccessScope.connector_id == connector.id)
+        )
+        assert scope is not None
+        assert scope.scope_config["dialect"] == "clickhouse"
+        assert scope.scope_config["allowed_tables"] == [
+            "analytics.events",
+            "analytics.snapshot_view",
+        ]
+        assert scope.scope_config["table_policies"]["analytics.snapshot_view"]["time_column"] is None
 
 
 @pytest.mark.asyncio

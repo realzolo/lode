@@ -2546,6 +2546,7 @@ _CONNECTOR_SECRET_FIELDS = {
     "opensearch": ["api_key", "bearer_token", "username", "password"],
     "postgresql": ["password"],
     "mysql": ["password"],
+    "clickhouse": ["password"],
     "https": ["api_key", "bearer_token", "username", "password"],
 }
 
@@ -2706,16 +2707,26 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
             },
             budget,
         )
-    if payload.kind in {"postgresql", "mysql"}:
+    if payload.kind in {"postgresql", "mysql", "clickhouse"}:
         allowed_schemas = (
             {"allowed_schemas": list(payload.allowed_schemas)}
             if payload.kind == "postgresql"
             else {}
         )
+        default_port = {
+            "postgresql": 5432,
+            "mysql": 3306,
+            "clickhouse": 8123 if payload.tls_mode == "disabled" else 8443,
+        }[payload.kind]
+        dialect = {
+            "postgresql": "postgres",
+            "mysql": "mysql",
+            "clickhouse": "clickhouse",
+        }[payload.kind]
         return (
             {
                 "host": payload.host,
-                "port": payload.port or (5432 if payload.kind == "postgresql" else 3306),
+                "port": payload.port or default_port,
                 "database": payload.database,
                 "username": payload.database_username,
                 "tls_mode": payload.tls_mode,
@@ -2727,7 +2738,7 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
             },
             {"password": payload.database_password or ""},
             {
-                "dialect": "postgres" if payload.kind == "postgresql" else "mysql",
+                "dialect": dialect,
                 **allowed_schemas,
                 "allowed_tables": [],
                 "table_policies": {},
@@ -2739,7 +2750,7 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
 
 def _connector_introspection_budget(kind: str, now: datetime) -> IntrospectionBudget:
     return IntrospectionBudget(
-        timeout_ms=10_000 if kind in {"postgresql", "mysql"} else 5_000,
+        timeout_ms=10_000 if kind in {"postgresql", "mysql", "clickhouse"} else 5_000,
         max_resources=500,
         window_start=now - timedelta(minutes=30),
         window_end=now,
@@ -2759,6 +2770,7 @@ _CONNECTOR_PROVIDER_DETAIL_FIELDS = frozenset(
         "status_code",
         "failed_checks",
         "sqlstate",
+        "clickhouse_code",
     }
 )
 
@@ -2781,21 +2793,36 @@ def _connector_operation_error(
 
 
 def _scope_config_from_catalog(kind: str, current_scope: dict, resources: dict) -> dict:
-    if kind not in {"postgresql", "mysql"}:
+    if kind not in {"postgresql", "mysql", "clickhouse"}:
         return current_scope
     tables = resources.get("tables")
     if not isinstance(tables, dict):
         raise ValueError("SQL discovery returned an invalid catalog")
+    clickhouse = kind == "clickhouse"
     if any(
         not isinstance(table, str)
         or not isinstance(descriptor, dict)
-        or not isinstance(descriptor.get("time_column"), str)
         or not isinstance(descriptor.get("stable_order"), list)
-        or not descriptor["stable_order"]
+        or (
+            not clickhouse
+            and (
+                not isinstance(descriptor.get("time_column"), str)
+                or not descriptor["stable_order"]
+            )
+        )
+        or (
+            clickhouse
+            and descriptor.get("time_column") is not None
+            and not isinstance(descriptor.get("time_column"), str)
+        )
         for table, descriptor in tables.items()
     ):
         raise ValueError("SQL discovery returned an invalid catalog")
-    expected_dialect = "postgres" if kind == "postgresql" else "mysql"
+    expected_dialect = {
+        "postgresql": "postgres",
+        "mysql": "mysql",
+        "clickhouse": "clickhouse",
+    }[kind]
     if (
         current_scope.get("dialect") != expected_dialect
         or resources.get("dialect") != expected_dialect
@@ -2865,7 +2892,7 @@ async def create_connector(
         raise _connector_operation_error(
             "introspection", exc, "Connector scope discovery failed."
         ) from exc
-    if payload.kind in {"postgresql", "mysql"} and not final_scope_config["allowed_tables"]:
+    if payload.kind in {"postgresql", "mysql", "clickhouse"} and not final_scope_config["allowed_tables"]:
         raise _error(
             422,
             "connector_scope_empty",
@@ -3030,7 +3057,8 @@ async def introspect_connector(
         "resources": catalog.resources,
         "scope_revision": new_scope.revision,
         "readiness": "ready"
-        if row.kind not in {"postgresql", "mysql"} or bool(scope_config["allowed_tables"])
+        if row.kind not in {"postgresql", "mysql", "clickhouse"}
+        or bool(scope_config["allowed_tables"])
         else "empty",
     }
 

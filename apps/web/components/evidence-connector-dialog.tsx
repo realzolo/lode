@@ -13,7 +13,7 @@ import type { ConnectorCreateInput, LokiFilterInput } from '@/lib/types';
 
 type ConnectorKind = ConnectorCreateInput['kind'];
 type Authentication = 'none' | 'bearer_token' | 'api_key' | 'basic';
-type DatabaseTlsMode = 'verify_full' | 'require';
+type DatabaseTlsMode = 'verify_full' | 'require' | 'disabled';
 type LokiOperator = 'equals' | 'not_equals' | 'any_of' | 'not_any_of';
 type LokiCondition = {
   kind: 'condition';
@@ -27,7 +27,7 @@ type FieldErrors = Record<string, string>;
 
 const ENDPOINT_KINDS = new Set<ConnectorKind>(['loki', 'elasticsearch', 'opensearch', 'https']);
 const SEARCH_KINDS = new Set<ConnectorKind>(['elasticsearch', 'opensearch']);
-const DATABASE_KINDS = new Set<ConnectorKind>(['postgresql', 'mysql']);
+const DATABASE_KINDS = new Set<ConnectorKind>(['postgresql', 'mysql', 'clickhouse']);
 const MULTI_VALUE_OPERATORS = new Set<LokiOperator>(['any_of', 'not_any_of']);
 const EXACT_INDEX = /^[a-z0-9][a-z0-9_.-]{0,254}$/;
 const POSTGRES_SCHEMA = /^[A-Za-z_][A-Za-z0-9_$-]{0,62}$/;
@@ -317,12 +317,25 @@ export function EvidenceConnectorDialog({
         database: database.trim(),
         database_username: databaseUsername.trim(),
         database_password: databasePassword,
-        tls_mode: databaseTlsMode,
+        tls_mode: databaseTlsMode as 'verify_full' | 'require',
         ...(caCertificatePem.trim() ? { ca_certificate_pem: caCertificatePem.trim() } : {}),
         allowed_schemas: normalizeValues([...allowedSchemas, allowedSchemasDraft]),
       };
     }
     if (kind === 'mysql') {
+      return {
+        ...common,
+        kind,
+        host: host.trim(),
+        ...(port ? { port: Number(port) } : {}),
+        database: database.trim(),
+        database_username: databaseUsername.trim(),
+        database_password: databasePassword,
+        tls_mode: databaseTlsMode as 'verify_full' | 'require',
+        ...(caCertificatePem.trim() ? { ca_certificate_pem: caCertificatePem.trim() } : {}),
+      };
+    }
+    if (kind === 'clickhouse') {
       return {
         ...common,
         kind,
@@ -457,7 +470,13 @@ export function EvidenceConnectorDialog({
                       <ConnectorField name="port" label={t('databasePort')} error={errors.port}>
                         <Input
                           inputMode="numeric"
-                          placeholder={kind === 'postgresql' ? t('postgresPortPlaceholder') : t('mysqlPortPlaceholder')}
+                          placeholder={kind === 'postgresql'
+                            ? t('postgresPortPlaceholder')
+                            : kind === 'mysql'
+                              ? t('mysqlPortPlaceholder')
+                              : databaseTlsMode === 'disabled'
+                                ? t('clickhouseHttpPortPlaceholder')
+                                : t('clickhousePortPlaceholder')}
                           value={port}
                           aria-invalid={Boolean(errors.port)}
                           onChange={(event) => { setPort(event.target.value); clearFieldError('port'); }}
@@ -477,6 +496,7 @@ export function EvidenceConnectorDialog({
                       <Select value={databaseTlsMode} onChange={(event) => changeDatabaseTlsMode(event.target.value)}>
                         <option value="verify_full">{t('databaseTlsVerifyFull')}</option>
                         <option value="require">{t('databaseTlsRequire')}</option>
+                        {kind === 'clickhouse' ? <option value="disabled">{t('databaseTlsDisabled')}</option> : null}
                       </Select>
                     </ConnectorField>
                     {databaseTlsMode === 'verify_full' ? (
@@ -535,6 +555,7 @@ export function EvidenceConnectorDialog({
                   </>
                 ) : null}
                 {kind === 'mysql' ? <p className="text-sm text-muted-foreground">{t('databaseAutoDiscoveryDescription')}</p> : null}
+                {kind === 'clickhouse' ? <p className="text-sm text-muted-foreground">{t('clickhouseAutoDiscoveryDescription')}</p> : null}
                 {kind === 'https' ? (
                   <>
                     <ConnectorField name="verificationPath" label={t('verificationPath')} error={errors.verificationPath}>

@@ -193,68 +193,6 @@ class KafkaConnector:
         )
 
 
-def _verify_clickhouse_grants(grants: list[str]) -> None:
-    allowed = {"system.replicas", "system.replication_queue", "system.errors", "system.metrics"}
-    for line in grants:
-        normalized = " ".join(line.strip().replace("`", "").split())
-        prefix = "GRANT SELECT ON "
-        if not normalized.startswith(prefix) or " WITH GRANT OPTION" in normalized:
-            raise ReadOnlyVerificationError("ClickHouse grant is outside the read-only allowlist")
-        scope = normalized[len(prefix):].split(" TO ", 1)[0]
-        if scope not in allowed:
-            raise ReadOnlyVerificationError(f"ClickHouse grant '{scope}' is outside the read-only allowlist")
-
-
-class ClickHouseConnector:
-    _GRANTS = "SHOW GRANTS FOR CURRENT_USER"
-    _REPLICAS = "SELECT database, table, is_readonly, queue_size, inserts_in_queue, merges_in_queue FROM system.replicas WHERE database = %(database)s LIMIT 100"
-    _QUEUE = "SELECT database, table, type, count() AS pending FROM system.replication_queue WHERE database = %(database)s GROUP BY database, table, type ORDER BY pending DESC LIMIT 100"
-    _ERRORS = "SELECT name, value FROM system.errors WHERE value > 0 ORDER BY value DESC LIMIT 50"
-    _METRICS = "SELECT metric, value FROM system.metrics WHERE metric IN ('Query', 'TCPConnection') LIMIT 20"
-
-    async def _query(
-        self, config: dict[str, Any], secrets: dict[str, str], template: str
-    ) -> list[dict[str, Any]]:
-        try:
-            import clickhouse_connect
-        except ImportError as exc:  # pragma: no cover
-            raise IntegrationError("clickhouse-connect is required for ClickHouse integrations") from exc
-
-        def run() -> list[dict[str, Any]]:
-            client = clickhouse_connect.get_client(
-                host=config["host"], port=config["port"], username=config["username"],
-                password=secrets["password"], database=config["database"], secure=True,
-                settings={"readonly": 2, "max_execution_time": 8, "max_result_rows": 200},
-            )
-            try:
-                result = client.query(template, parameters={"database": config["database"]})
-                return [dict(zip(result.column_names, row, strict=True)) for row in result.result_rows]
-            finally:
-                client.close()
-
-        try:
-            return await asyncio.to_thread(run)
-        except Exception as exc:
-            raise IntegrationError(f"ClickHouse fixed status query failed: {exc}") from exc
-
-    async def verify_readonly(self, config: dict[str, Any], secrets: dict[str, str]) -> None:
-        config = _normalized_config("clickhouse", config)
-        grants = await self._query(config, secrets, self._GRANTS)
-        _verify_clickhouse_grants([str(value) for row in grants for value in row.values()])
-
-    async def collect_snapshot(self, config: dict[str, Any], secrets: dict[str, str]) -> Snapshot:
-        config = _normalized_config("clickhouse", config)
-        replicas = await self._query(config, secrets, self._REPLICAS)
-        queue = await self._query(config, secrets, self._QUEUE)
-        errors = await self._query(config, secrets, self._ERRORS)
-        metrics = await self._query(config, secrets, self._METRICS)
-        return Snapshot(
-            "clickhouse://system",
-            "ClickHouse scoped replicas, replication queue, system errors, and metrics inspected",
-            _redacted_payload({"replicas": replicas, "replication_queue": queue, "errors": errors, "metrics": metrics}),
-        )
-
-
 class HttpConnector:
     def __init__(self, kind: str, readiness_path: str):
         self.kind = kind
@@ -299,7 +237,7 @@ class HttpConnector:
 _CONNECTORS = MappingProxyType(
     {
         "database": DatabaseConnector(), "kafka": KafkaConnector(),
-        "clickhouse": ClickHouseConnector(), "loki": HttpConnector("loki", "/ready"),
+        "loki": HttpConnector("loki", "/ready"),
         "prometheus": HttpConnector("prometheus", "/-/ready"),
     }
 )

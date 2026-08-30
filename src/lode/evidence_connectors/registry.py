@@ -11,6 +11,7 @@ from lode.evidence_access.logql import LogQLPolicy
 from lode.evidence_access.opensearch import OpenSearchQueryPolicy
 from lode.evidence_access.registry import NativePolicyRegistry
 from lode.evidence_access.sql import SQLPolicy
+from lode.evidence_connectors.clickhouse import ClickHouseConnector
 from lode.evidence_connectors.elasticsearch import ElasticsearchConnector
 from lode.evidence_connectors.https import HTTPSConnector
 from lode.evidence_connectors.loki import LokiConnector
@@ -37,6 +38,9 @@ _CONNECTORS: dict[str, ConnectorFactory] = {
         config, secrets, runtime
     ),
     "mysql": lambda config, secrets, runtime=None: MySQLConnector(config, secrets, runtime),
+    "clickhouse": lambda config, secrets, runtime=None: ClickHouseConnector(
+        config, secrets, runtime
+    ),
     "https": lambda config, secrets, runtime=None: HTTPSConnector(config, secrets, runtime),
 }
 
@@ -71,6 +75,7 @@ def native_connector_capabilities() -> Mapping[str, Mapping[str, Any]]:
         "opensearch": OpenSearchConnector,
         "postgresql": PostgreSQLConnector,
         "mysql": MySQLConnector,
+        "clickhouse": ClickHouseConnector,
         "https": HTTPSConnector,
     }
     return {

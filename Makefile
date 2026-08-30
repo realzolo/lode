@@ -79,7 +79,7 @@ log-connectors-check:
 
 # Run the complete native parser/connector/isolated-runner security contract suite.
 native-connectors-check:
-	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py tests/unit/test_sql_evidence_policy.py tests/unit/test_sql_evidence_connectors.py tests/unit/test_https_evidence.py tests/unit/test_command_evidence_policy.py tests/unit/test_command_runner.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py tests/unit/test_sql_evidence_policy.py tests/unit/test_sql_evidence_connectors.py tests/unit/test_clickhouse_evidence_connector.py tests/unit/test_https_evidence.py tests/unit/test_command_evidence_policy.py tests/unit/test_command_runner.py
 
 # Exercise connector snapshots, durable waves, Evidence Graph, and lease recovery.
 investigation-check:

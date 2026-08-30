@@ -460,6 +460,7 @@ def test_provider_json_and_registry_are_strict_and_product_neutral() -> None:
     }
     assert set(native_connector_capabilities()) == {
         "elasticsearch",
+        "clickhouse",
         "https",
         "loki",
         "mysql",

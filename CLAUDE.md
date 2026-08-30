@@ -174,8 +174,8 @@ deployment-canary observations to pass the statistical and non-regression gate.
   `max_total_output_bytes`, `max_native_reads`, `max_window_seconds`,
   `max_parallel_operations`, and `estimated_cost`; control-plane names are not
   translated at runtime. SQL scope ownership is equally explicit: PostgreSQL
-  owns only the `postgres` dialect, MySQL owns only `mysql`, and non-SQL
-  Connectors cannot advertise the SQL language.
+  owns only the `postgres` dialect, MySQL owns only `mysql`, ClickHouse owns
+  only `clickhouse`, and non-SQL Connectors cannot advertise the SQL language.
 - ValueRef plaintext is resolved only after policy allow, replaces one parser-
   approved value node, and must preserve the parsed structure. Candidate and
   decision JSON retain sentinels; the exact bound action exists only encrypted
@@ -196,8 +196,8 @@ deployment-canary observations to pass the statistical and non-regression gate.
   partial evidence from surviving a failed archive.
 - `src/lode/evidence_connectors` is the native provider execution plane. Its
   provider-neutral registry activates independent Loki, Elasticsearch,
-  OpenSearch, PostgreSQL, MySQL, generic safe-read HTTPS, and isolated command
-  runner adapters plus all six native-language policies. The investigation core receives only
+  OpenSearch, PostgreSQL, MySQL, ClickHouse, generic safe-read HTTPS, and
+  isolated command runner adapters plus all six native-language policies. The investigation core receives only
   candidates, authorization outcomes, and normalized evidence; it does not
   import or branch on provider products.
 - LogQL is completely parsed by the fixed Apache-2.0 Grafana Lezer grammar in
@@ -231,7 +231,8 @@ deployment-canary observations to pass the statistical and non-regression gate.
   Script, runtime mapping, wildcard/regex/query-string, async/PIT/scroll,
   template, plugin, write, management, unknown, and partial-response paths are
   disabled.
-- SQL is parsed with the exact `sqlglot==30.17.0` PostgreSQL/MySQL AST parser.
+- SQL is parsed with the exact `sqlglot==30.17.0` PostgreSQL/MySQL/ClickHouse
+  AST parser.
   It permits a bounded SELECT, one non-recursive read-only CTE, or an
   explain-only request; rejects unknown AST/function nodes, multiple statements,
   system schemas, unsafe joins, locking and write semantics; validates the exact
@@ -261,6 +262,19 @@ deployment-canary observations to pass the statistical and non-regression gate.
   planning, or read operation. PostgreSQL maps known authentication, database,
   TLS, capacity, permission, timeout, and read-only-attestation failures to
   code-authored actionable messages; raw driver errors remain private.
+  ClickHouse uses only its HTTP/HTTPS interface: `verify_full` is the default,
+  `require` encrypts without hostname verification, and explicit `disabled`
+  uses plaintext HTTP. The adapter sets `readonly=2`, disables retries, applies
+  wall-clock and server resource limits, and does not reject an account merely
+  for having additional privileges. It discovers every non-system object in the
+  configured database for which `CHECK GRANT SELECT ON database.object`
+  succeeds, including views and external or distributed engines, and fails
+  discovery rather than truncating when more than 200 readable objects exist.
+  Direct table functions and system databases remain unavailable. A temporal
+  column is optional for ClickHouse: the standard evidence window is injected
+  where one exists, and otherwise the safe SQL subset injects `ORDER BY ALL` and
+  its normal `LIMIT`; PostgreSQL and MySQL retain their temporal/stable-key
+  requirements.
 - Generic HTTP(S) accepts only cataloged GET/HEAD endpoints with canonical HTTP
   or HTTPS origins, exact schemes/ports and typed path/query schemas. It has no
   request-body, redirect, proxy, credential-header, arbitrary content-type, or
@@ -489,6 +503,12 @@ strict synthesis/verifier publication, the default worker composition root, and
 the `analysis-check` workflow. Phase 9 added no dependency; it replaced the API
 and Web surfaces with the final Workspace/model/repository/connector/investigation
 contracts and added the `api-check` and `web-check` workflows.
+The ClickHouse connector revision upgrades the existing direct driver dependency
+to `clickhouse-connect[async]>=1.7.2` and locks its `aiohttp` async HTTP stack.
+It adds one SQL-scope trigger migration, the typed ClickHouse control-plane and
+Web connector form, and the `clickhouse` native evidence adapter. It replaces
+the former fixed system-status integration path; ClickHouse is now only a
+bounded evidence SQL connector.
 The investigation single-page execution Workbench uses the direct Web dependency
 `@xyflow/react` (declared as `^12.11.3`) for read-only pan, zoom, fit-view, and
 keyboard-accessible graph navigation. Its three viewer endpoints provide the
@@ -570,6 +590,8 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/evidence_connectors/opensearch.py`: OpenSearch 2/3 verification and bounded search adapter.
 - `src/lode/evidence_connectors/postgresql.py`: transaction/role/grant-attested PostgreSQL read adapter.
 - `src/lode/evidence_connectors/mysql.py`: topology/grant-attested MySQL read adapter.
+- `src/lode/evidence_connectors/clickhouse.py`: bounded HTTP/HTTPS ClickHouse
+  adapter with object-level SELECT discovery and server-enforced read-only limits.
 - `src/lode/evidence_connectors/https.py`: generic cataloged GET/HEAD adapter.
 - `src/lode/evidence_connectors/command.py`: signed worker client for the isolated runner.
 - `src/lode/command_runner`: replay-protected protocol, fixed executor, and minimal FastAPI process.
@@ -892,7 +914,8 @@ may have multiple instances without a schema migration.
 
 Native evidence capabilities are selected through the provider-neutral Connector
 registry, never by an investigation-core product branch. The configurable kinds
-are `loki`, `elasticsearch`, `opensearch`, `postgresql`, `mysql`, and `https`;
+are `loki`, `elasticsearch`, `opensearch`, `postgresql`, `mysql`, `clickhouse`,
+and `https`;
 each kind declares one native
 language and its own verification, introspection, parser/policy versions, read
 capabilities, adapter, fixture corpus, and failure semantics. A
@@ -901,10 +924,11 @@ must register a complete independent security profile and contract tests.
 The isolated command runner remains an internal execution component and is not
 exposed as a user-configurable evidence connector.
 
-Database connectors support PostgreSQL and MySQL through structured host,
-optional defaulted port, database, username, mandatory verified TLS,
-encrypted password, automatically discovered safe-table scope, AST-validated
-model candidates, and server-injected predicates and budgets. New PostgreSQL
+Database connectors support PostgreSQL, MySQL, and ClickHouse through structured
+host, optional defaulted port, database, username, encrypted password,
+automatically discovered safe-table scope, AST-validated model candidates, and
+server-injected predicates and budgets. PostgreSQL and MySQL require verified
+TLS. New PostgreSQL
 Connectors require an explicit exact Schema allowlist stored only in the access
 scope; MySQL uses its configured database as the Schema boundary. PostgreSQL
 scope revisions without `allowed_schemas` are invalid; there is no historical
@@ -917,7 +941,14 @@ trust store in `verify_full` mode. It is parsed before remote I/O, frozen with
 the Connector config, omitted from control-plane responses, and never permits a
 private key or hostname mismatch. The explicit `require` mode keeps encryption
 mandatory but makes its lack of server-identity verification visible; switching
-to it clears and rejects CA input.
+to it clears and rejects CA input. ClickHouse additionally exposes explicit
+plaintext HTTP for self-hosted deployments, defaulting to port 8123 in that
+mode and 8443 otherwise. Its scope is exactly the configured non-system
+database: server discovery retains all object-level-readable tables and views,
+including objects without a temporal column or unique key, while the SQL policy
+adds a time window only when one is available and otherwise supplies `ORDER BY
+ALL`. More than 200 discovered readable objects is a clear configuration error,
+not a partial scope.
 Database and account names are bounded driver parameters rather than SQL
 identifiers, so provider-valid punctuation such as Supabase Pooler's dotted
 PostgreSQL usernames is accepted; surrounding whitespace and control characters
@@ -1109,6 +1140,9 @@ role is mapped and there is no dual read, alias, or rollback. It installs
 one-time non-alert branch-HEAD snapshot freezing and one-way source-authority
 contradiction triggers. Executed migration files remain immutable. There is one
 current schema and no compatibility view or dual write.
+`0011_clickhouse_sql_scope.py` extends the existing SQL dialect-ownership trigger
+so ClickHouse Connector scopes must advertise only the `clickhouse` dialect. Its
+downgrade refuses to remove that enforcement while a ClickHouse SQL scope exists.
 This architecture/workflow change introduces no new dependency; operators must
 rebind repositories under the new analysis-mode/alert-source contract after
 upgrade. Future schema changes use ordinary forward migrations.
@@ -1190,8 +1224,9 @@ Node 24 and copies only its runtime plus the Node executable into the Python
 image. The Python image also installs the `git` runtime required by the exact-
 revision Git source reader.
 
-`make native-connectors-check` additionally runs the PostgreSQL/MySQL AST and
-read-only transaction/grant-attestation suites, generic HTTPS canonicalization/SSRF and
+`make native-connectors-check` additionally runs the PostgreSQL/MySQL/ClickHouse AST and
+read-only transaction/grant-attestation suites, ClickHouse object-grant/catalog-cap
+coverage, generic HTTPS canonicalization/SSRF and
 endpoint-schema corpus, command argv/path corpus, signed runner protocol,
 replay and Connector lifecycle checks, exact-file bubblewrap mapping, high-risk
 secret hashing, and Compose privilege/network/key-ownership assertions.

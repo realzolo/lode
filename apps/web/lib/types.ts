@@ -319,6 +319,10 @@ type DatabaseConnectorCreate = ConnectorCreateBase & {
   tls_mode: 'verify_full' | 'require';
   ca_certificate_pem?: string;
 };
+type ClickHouseConnectorCreate = Omit<DatabaseConnectorCreate, 'tls_mode'> & {
+  kind: 'clickhouse';
+  tls_mode: 'verify_full' | 'require' | 'disabled';
+};
 
 export type ConnectorCreateInput =
   | (ConnectorCreateBase & {
@@ -339,6 +343,7 @@ export type ConnectorCreateInput =
     allowed_schemas: string[];
   })
   | (DatabaseConnectorCreate & { kind: 'mysql' })
+  | ClickHouseConnectorCreate
   | (ConnectorCreateBase & AuthenticatedConnectorCreate & {
     kind: 'https';
     endpoint: string;

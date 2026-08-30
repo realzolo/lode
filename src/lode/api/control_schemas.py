@@ -729,6 +729,36 @@ class MySQLConnectorCreate(_ConnectorCreateBase):
         return self
 
 
+class ClickHouseConnectorCreate(_ConnectorCreateBase):
+    kind: Literal["clickhouse"]
+    host: str = Field(min_length=1, max_length=253)
+    port: int | None = Field(default=None, ge=1, le=65_535)
+    database: str = Field(min_length=1, max_length=255)
+    database_username: str = Field(min_length=1, max_length=255)
+    database_password: str = Field(min_length=1, max_length=8_000)
+    tls_mode: Literal["verify_full", "require", "disabled"]
+    ca_certificate_pem: str | None = Field(default=None, min_length=1, max_length=64_000)
+
+    @field_validator("database", "database_username")
+    @classmethod
+    def valid_connection_name(cls, value: str) -> str:
+        return _validate_database_connection_name(value)
+
+    @field_validator("ca_certificate_pem")
+    @classmethod
+    def valid_ca_certificate(cls, value: str | None) -> str | None:
+        return _validate_database_ca_certificate(value)
+
+    @model_validator(mode="after")
+    def valid_tls_configuration(self):
+        if self.tls_mode == "disabled":
+            if self.ca_certificate_pem is not None:
+                raise ValueError("database CA certificate requires TLS verification")
+            return self
+        _validate_database_tls_configuration(self.tls_mode, self.ca_certificate_pem)
+        return self
+
+
 class HTTPSConnectorCreate(_ConnectorCreateBase):
     kind: Literal["https"]
     endpoint: str = Field(min_length=1, max_length=1_000)
@@ -751,6 +781,7 @@ ConnectorCreate: TypeAlias = Annotated[
     | SearchConnectorCreate
     | PostgreSQLConnectorCreate
     | MySQLConnectorCreate
+    | ClickHouseConnectorCreate
     | HTTPSConnectorCreate,
     Field(discriminator="kind"),
 ]
