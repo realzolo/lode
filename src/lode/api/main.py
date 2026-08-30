@@ -30,8 +30,11 @@ from lode.api.rate_limit import HardeningMiddleware, RateLimiter
 from lode.api.routes.auth import router as auth_router
 from lode.api.routes.control_plane import router as control_plane_router
 from lode.api.routes.health import router as health_router
+from lode.api.routes.incidents import router as incidents_router
 from lode.api.routes.investigations import (
     router as investigations_router,
+)
+from lode.api.routes.investigations import (
     workbench_router,
 )
 from lode.api.routes.resources import router as resources_router
@@ -171,6 +174,7 @@ _workbench_routes = [Depends(require_workbench_user)]
 app.include_router(control_plane_router, dependencies=_admin_routes)
 app.include_router(users_router, dependencies=_admin_routes)
 app.include_router(investigations_router, dependencies=_workbench_routes)
+app.include_router(incidents_router, dependencies=_workbench_routes)
 # Workspace discovery applies its own admin/all-workspaces vs ordinary-user/
 # granted-workspaces filtering. The shared Workbench dependency permits the
 # unrestricted system administrator as well as ordinary Workbench users.

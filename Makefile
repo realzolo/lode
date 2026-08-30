@@ -94,7 +94,7 @@ analysis-check:
 
 # Verify the frozen API surface, control-plane permissions, secret redaction, and SSE lifecycle.
 api-check:
-	$(ISOLATED_DB) $(UV) run pytest -q tests/contract/test_api_surface.py tests/unit/test_control_api_schemas.py tests/unit/test_control_plane_readiness.py tests/unit/test_provider_introspection.py tests/unit/test_investigation_execution_graph.py tests/test_control_plane_api.py tests/test_investigation_api.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/contract/test_api_surface.py tests/unit/test_control_api_schemas.py tests/unit/test_control_plane_readiness.py tests/unit/test_provider_introspection.py tests/unit/test_investigation_execution_graph.py tests/test_control_plane_api.py tests/test_incident_api.py tests/test_investigation_api.py
 
 # Type-check and produce the deployable Workbench build.
 web-check:

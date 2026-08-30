@@ -8,55 +8,94 @@ from lode.db import models  # noqa: F401
 from lode.db.base import Base
 
 
-def test_kafka_position_and_producer_identity_have_separate_unique_keys() -> None:
+def test_kafka_position_and_source_event_identity_have_separate_unique_keys() -> None:
     ingestion = Base.metadata.tables["ingestion_events"]
-    alerts = Base.metadata.tables["alerts"]
+    occurrences = Base.metadata.tables["incident_occurrences"]
 
     ingestion_unique = {
         tuple(column.name for column in constraint.columns)
         for constraint in ingestion.constraints
         if isinstance(constraint, UniqueConstraint)
     }
-    alert_unique = {
-        tuple(column.name for column in constraint.columns)
-        for constraint in alerts.constraints
-        if isinstance(constraint, UniqueConstraint)
-    }
     assert ("topic", "partition", "offset") in ingestion_unique
-    assert ("workspace_id", "alert_id") in alert_unique
+    source_index = next(
+        index
+        for index in occurrences.indexes
+        if index.name == "uq_incident_occurrence_source_event"
+    )
+    assert source_index.unique
+    assert source_index.dialect_options["postgresql"]["where"] is not None
 
 
-def test_alert_stores_final_contract_without_removed_scope_fields() -> None:
-    columns = set(Base.metadata.tables["alerts"].c.keys())
+def test_occurrence_stores_the_final_incident_contract_without_plaintext_trace() -> None:
+    columns = set(Base.metadata.tables["incident_occurrences"].c.keys())
 
     assert {
         "workspace_id",
-        "alert_id",
+        "incident_id",
+        "source_event_id",
+        "dedup_key",
+        "event_kind",
         "occurred_at",
         "severity",
         "event",
+        "component",
+        "environment",
         "trace_id_ciphertext",
         "trace_id_hash",
         "source_revision",
         "error",
         "raw_payload_masked",
     }.issubset(columns)
-    removed = {"service" + "_name", "environment", "request" + "_id", "git" + "_commit"}
-    assert removed.isdisjoint(columns)
-
-
-def test_trace_value_is_not_stored_in_plaintext() -> None:
-    columns = set(Base.metadata.tables["alerts"].c.keys())
     assert "trace_id" not in columns
-    assert {"trace_id_ciphertext", "trace_id_hash"}.issubset(columns)
 
 
-def test_incident_active_signature_is_partial_unique() -> None:
+def test_active_incident_dedup_key_is_partial_unique() -> None:
     incident = Base.metadata.tables["incidents"]
-    index = next(index for index in incident.indexes if index.name == "uq_incident_active_signature")
+    index = next(
+        index for index in incident.indexes if index.name == "uq_incident_active_dedup_key"
+    )
 
     assert index.unique
     assert index.dialect_options["postgresql"]["where"] is not None
+
+
+def test_incident_model_has_operational_lifecycle_and_append_only_history() -> None:
+    incident = Base.metadata.tables["incidents"]
+    occurrence = Base.metadata.tables["incident_occurrences"]
+    event = Base.metadata.tables["incident_events"]
+
+    assert {
+        "state",
+        "state_changed_at",
+        "state_version",
+        "recurrence_of_id",
+        "assigned_to",
+    }.issubset(incident.c.keys())
+    assert {"incident_id", "event_type", "actor_id", "payload"}.issubset(event.c.keys())
+    occurrence_sql = " ".join(
+        str(constraint.sqltext)
+        for constraint in occurrence.constraints
+        if isinstance(constraint, CheckConstraint)
+    )
+    incident_sql = " ".join(
+        str(constraint.sqltext)
+        for constraint in incident.constraints
+        if isinstance(constraint, CheckConstraint)
+    )
+    assert "firing" in occurrence_sql and "recovered" in occurrence_sql
+    assert "acknowledged" in incident_sql and "closed" in incident_sql
+
+
+def test_investigation_is_an_incident_owned_run() -> None:
+    investigation = Base.metadata.tables["investigations"]
+    columns = set(investigation.c.keys())
+
+    assert {"incident_id", "trigger_occurrence_id", "trigger_reason", "retry_of_id"}.issubset(
+        columns
+    )
+    assert "alert_id" not in columns
+    assert "archived_at" not in columns
 
 
 def test_job_schema_supports_skip_locked_lease_recovery() -> None:
@@ -72,22 +111,3 @@ def test_job_schema_supports_skip_locked_lease_recovery() -> None:
         "attempt_count",
     }.issubset(columns)
     assert any(index.name == "ix_investigation_jobs_claim" for index in job.indexes)
-
-
-def test_intake_enums_and_hashes_are_database_constrained() -> None:
-    alerts = Base.metadata.tables["alerts"]
-    incidents = Base.metadata.tables["incidents"]
-    alert_sql = " ".join(
-        str(constraint.sqltext)
-        for constraint in alerts.constraints
-        if isinstance(constraint, CheckConstraint)
-    )
-    incident_sql = " ".join(
-        str(constraint.sqltext)
-        for constraint in incidents.constraints
-        if isinstance(constraint, CheckConstraint)
-    )
-
-    assert "CRITICAL" in alert_sql and "WARNING" in alert_sql
-    assert "40" in alert_sql
-    assert "signature_hash" in incident_sql

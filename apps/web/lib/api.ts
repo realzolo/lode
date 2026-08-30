@@ -7,9 +7,10 @@ import type {
   InvestigationExecutionArtifactPage,
   InvestigationExecutionGraph,
   InvestigationExecutionNodeDetail,
-  InvestigationListPage,
   InvestigationOverview,
-  InvestigationSummary,
+  InvestigationReportView,
+  IncidentListPage,
+  IncidentOverview,
   ModelBinding,
   ModelBindingCreateInput,
   ProviderAccountModel,
@@ -273,19 +274,40 @@ export function testConnector(workspaceId: number | string, connectorId: number)
 export function introspectConnector(workspaceId: number | string, connectorId: number) {
   return send<Record<string, unknown>>(`/workspaces/${workspaceId}/evidence-connectors/${connectorId}/introspect`, 'POST');
 }
-export function fetchInvestigations(input: { workspaceId?: number; status?: string; q?: string; afterId?: number } = {}) {
+export function fetchIncidents(input: { workspaceId?: number; state?: string; q?: string; afterId?: number } = {}) {
   const query = new URLSearchParams();
   if (input.workspaceId) query.set('workspace_id', String(input.workspaceId));
-  if (input.status && input.status !== 'all') query.set('status', input.status);
+  if (input.state && input.state !== 'all') query.set('state', input.state);
   if (input.q?.trim()) query.set('q', input.q.trim());
   if (input.afterId) query.set('after_id', String(input.afterId));
   const suffix = query.size ? `?${query.toString()}` : '';
-  return get<InvestigationListPage>(`/investigations${suffix}`);
+  return get<IncidentListPage>(`/incidents${suffix}`);
 }
-export function createInvestigation(input: Record<string, unknown>) {
-  return send<{ id: number; workspace_id: number; status: string; job_id: number }>('/investigations', 'POST', input);
+export function createIncident(input: Record<string, unknown>) {
+  return send<{ incident_id: number; investigation_id: number | null; job_id: number | null }>('/incidents', 'POST', input);
+}
+export function fetchIncident(id: number | string) { return get<IncidentOverview>(`/incidents/${encodeURIComponent(id)}`); }
+export function fetchIncidentAssignees(id: number | string) { return get<import('./types').WorkspaceMember[]>(`/incidents/${encodeURIComponent(id)}/assignees`); }
+export function transitionIncident(id: number | string, action: 'acknowledge' | 'mitigate' | 'resolve' | 'close' | 'reopen', input: { expected_state_version: number; reason: string }) {
+  return send<IncidentOverview>(`/incidents/${encodeURIComponent(id)}/${action}`, 'POST', input);
+}
+export function assignIncident(id: number | string, input: { owner_id: number | null; expected_state_version: number; reason: string }) {
+  return send<IncidentOverview>(`/incidents/${encodeURIComponent(id)}/assign`, 'POST', input);
+}
+export function startIncidentInvestigation(id: number | string) {
+  return send<import('./types').InvestigationRun>(`/incidents/${encodeURIComponent(id)}/investigations`, 'POST');
+}
+export function retryIncidentInvestigation(incidentId: number | string, investigationId: number | string) {
+  return send<import('./types').InvestigationRun>(`/incidents/${encodeURIComponent(incidentId)}/investigations/${encodeURIComponent(investigationId)}/retry`, 'POST');
+}
+export function createIncidentAction(incidentId: number | string, input: Record<string, unknown>) {
+  return send<import('./types').IncidentAction>(`/incidents/${encodeURIComponent(incidentId)}/actions`, 'POST', input);
+}
+export function updateIncidentAction(incidentId: number | string, actionId: number | string, input: Record<string, unknown>) {
+  return send<import('./types').IncidentAction>(`/incidents/${encodeURIComponent(incidentId)}/actions/${encodeURIComponent(actionId)}`, 'PATCH', input);
 }
 export function fetchInvestigation(id: number | string) { return get<InvestigationOverview>(`/investigations/${encodeURIComponent(id)}`); }
+export function fetchInvestigationReport(id: number | string) { return get<InvestigationReportView>(`/investigations/${encodeURIComponent(id)}/report`); }
 export function fetchInvestigationExecutionGraph(id: number | string) {
   return get<InvestigationExecutionGraph>(`/investigations/${encodeURIComponent(id)}/execution-graph`);
 }
@@ -301,13 +323,6 @@ export function fetchInvestigationExecutionArtifact(
   const query = new URLSearchParams({ after_index: String(afterIndex), limit: '100' });
   return get<InvestigationExecutionArtifactPage>(`/investigations/${encodeURIComponent(id)}/execution-graph/nodes/${encodeURIComponent(nodeId)}/artifacts/${encodeURIComponent(artifactId)}?${query.toString()}`);
 }
-export function retryInvestigation(id: number | string) {
-  return send<{ id: number }>(`/investigations/${encodeURIComponent(id)}/retry`, 'POST');
-}
-export function archiveInvestigation(id: number | string) {
-  return send(`/investigations/${encodeURIComponent(id)}/archive`, 'POST');
-}
-
 export function openInvestigationStream(
   id: number | string,
   after: number,

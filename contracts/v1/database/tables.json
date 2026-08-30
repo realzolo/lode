@@ -1,6 +1,6 @@
 {
   "schema_version": "lode-database-tables.v1",
-  "migration_head": "0010_evidence_authority",
+  "migration_head": "0012_incident_platform_rebuild",
   "control_plane": [
     "platform_settings",
     "workspaces",
@@ -38,9 +38,11 @@
   ],
   "intake": [
     "ingestion_events",
-    "alerts",
     "dead_letters",
     "incidents",
+    "incident_occurrences",
+    "incident_events",
+    "incident_actions",
     "investigation_jobs"
   ],
   "investigation": [
@@ -78,9 +80,11 @@
     "source_assessments",
     "investigation_code_findings",
     "ai_invocations",
-    "investigation_reports"
+    "investigation_reports",
+    "investigation_reviews"
   ],
   "forbidden_tables": [
+    "alerts",
     "services",
     "application_service_bindings",
     "investigation_service_snapshots"

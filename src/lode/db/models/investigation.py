@@ -31,16 +31,17 @@ class Investigation(TimestampMixin, Base):
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    alert_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("alerts.id", ondelete="SET NULL")
+    incident_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("incidents.id", ondelete="RESTRICT"), nullable=False
     )
-    incident_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("incidents.id", ondelete="SET NULL")
+    trigger_occurrence_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("incident_occurrences.id", ondelete="SET NULL")
     )
     retry_of_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="SET NULL")
     )
     trigger_signature_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_reason: Mapped[str] = mapped_column(Text, nullable=False, server_default="initial")
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     result_state: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     output_language: Mapped[str] = mapped_column(Text, nullable=False, server_default="en")
@@ -56,13 +57,14 @@ class Investigation(TimestampMixin, Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    archived_by: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
-    )
 
     __table_args__ = (
         CheckConstraint("trigger_signature_hash ~ '^[0-9a-f]{64}$'", name="trigger_hash_sha256"),
+        CheckConstraint(
+            "trigger_reason IN ('initial', 'severity_escalation', 'evidence_change', "
+            "'operator_request', 'retry')",
+            name="trigger_reason",
+        ),
         CheckConstraint(
             "status IN ('queued', 'running', 'reporting', 'completed', 'failed')",
             name="status",
@@ -80,6 +82,7 @@ class Investigation(TimestampMixin, Base):
         ),
         Index("ix_investigations_workspace_created", "workspace_id", "created_at"),
         Index("ix_investigations_incident", "incident_id"),
+        Index("ix_investigations_trigger_occurrence", "trigger_occurrence_id"),
         Index("ix_investigations_retry_of", "retry_of_id"),
     )
 

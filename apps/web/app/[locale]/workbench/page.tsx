@@ -9,38 +9,33 @@ import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { ListSkeleton } from '@/components/ui/list-skeleton';
-import { apiErrorMessage, createInvestigation, fetchInvestigations, fetchWorkspaces } from '@/lib/api';
+import { apiErrorMessage, createIncident, fetchIncidents, fetchWorkspaces } from '@/lib/api';
 import { Link, useRouter } from '@/lib/navigation';
-import type { InvestigationSummary, Workspace } from '@/lib/types';
+import type { IncidentState, IncidentSummary, Workspace } from '@/lib/types';
 
-function statusLabel(status: InvestigationSummary['status'], t: ReturnType<typeof useTranslations>) {
-  return t({ queued: 'statusQueued', running: 'statusRunning', reporting: 'statusReporting', completed: 'statusCompleted', failed: 'statusFailed' }[status]);
+function stateLabel(state: IncidentState, t: ReturnType<typeof useTranslations>) {
+  return t({
+    open: 'stateOpen',
+    acknowledged: 'stateAcknowledged',
+    mitigated: 'stateMitigated',
+    resolved: 'stateResolved',
+    closed: 'stateClosed',
+  }[state]);
 }
 
-function resultStateLabel(resultState: InvestigationSummary['result_state'], t: ReturnType<typeof useTranslations>) {
-  const key = {
-    pending: 'resultPending',
-    confirmed: 'resultConfirmed',
-    hypothesis: 'resultHypothesis',
-    insufficient: 'resultInsufficient',
-    unavailable: 'resultUnavailable',
-  }[resultState];
-  return key ? t(key) : resultState;
-}
-
-function severityLabel(severity: 'CRITICAL' | 'WARNING', t: ReturnType<typeof useTranslations>) {
+function severityLabel(severity: IncidentSummary['severity'], t: ReturnType<typeof useTranslations>) {
   return t(severity === 'CRITICAL' ? 'severityCritical' : 'severityWarning');
 }
 
-export default function InvestigationsPage() {
+export default function IncidentsPage() {
   const t = useTranslations('workbench');
   const tc = useTranslations('common');
   const locale = useLocale();
   const router = useRouter();
-  const [rows, setRows] = useState<InvestigationSummary[]>([]);
+  const [rows, setRows] = useState<IncidentSummary[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [query, setQuery] = useState('');
-  const [status, setStatus] = useState('all');
+  const [state, setState] = useState('all');
   const [nextAfterId, setNextAfterId] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
@@ -51,7 +46,7 @@ export default function InvestigationsPage() {
     if (!append) setRefreshing(true);
     try {
       const [page, scopes] = await Promise.all([
-        fetchInvestigations({ status, q: query, afterId }),
+        fetchIncidents({ state, q: query, afterId }),
         append ? Promise.resolve(null) : fetchWorkspaces(),
       ]);
       setRows((current) => append ? [...current, ...page.items] : page.items);
@@ -61,9 +56,10 @@ export default function InvestigationsPage() {
     } catch (cause) {
       setError(apiErrorMessage(cause, tc('requestFailed')));
     } finally {
-      setLoading(false); setRefreshing(false);
+      setLoading(false);
+      setRefreshing(false);
     }
-  }, [query, status]);
+  }, [query, state, tc]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -87,40 +83,39 @@ export default function InvestigationsPage() {
         <Search className="absolute left-3 top-2.5 text-muted-foreground" size={16} />
         <Input className="pl-9" placeholder={t('search')} value={query} onChange={(event) => setQuery(event.target.value)} />
       </label>
-      <Select className="w-40" value={status} onChange={(event) => setStatus(event.target.value)}>
+      <Select className="w-44" value={state} onChange={(event) => setState(event.target.value)} aria-label={t('state')}>
         <option value="all">{t('allStates')}</option>
-        <option value="queued">{t('statusQueued')}</option>
-        <option value="running">{t('statusRunning')}</option>
-        <option value="reporting">{t('statusReporting')}</option>
-        <option value="completed">{t('statusCompleted')}</option>
-        <option value="failed">{t('statusFailed')}</option>
+        {(['open', 'acknowledged', 'mitigated', 'resolved', 'closed'] as IncidentState[]).map((value) => <option key={value} value={value}>{stateLabel(value, t)}</option>)}
       </Select>
-      {(query || status !== 'all') && <Button size="icon" variant="ghost" aria-label={tc('clearFilters')} title={tc('clearFilters')} onClick={() => { setQuery(''); setStatus('all'); }}><X size={16} /></Button>}
+      {(query || state !== 'all') && <Button size="icon" variant="ghost" aria-label={tc('clearFilters')} title={tc('clearFilters')} onClick={() => { setQuery(''); setState('all'); }}><X size={16} /></Button>}
     </div>
     {error && <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
     {loading ? <ListSkeleton rows={6} columns={6} /> : <div className="operational-table">
-      <div className="table-wrap"><table className="table"><thead><tr><th>{t('investigation')}</th><th>{t('workspace')}</th><th>{t('status')}</th><th>{t('result')}</th><th>{t('created')}</th><th /></tr></thead>
+      <div className="table-wrap"><table className="table"><thead><tr><th>{t('incident')}</th><th>{t('workspace')}</th><th>{t('state')}</th><th>{t('occurrences')}</th><th>{t('latestOccurrence')}</th><th /></tr></thead>
         <tbody>{rows.map((row) => <tr key={row.id}>
-          <td><p className="font-medium">{row.headline || row.event || t('analysisInProgress')}</p><p className="mono mt-1 text-xs text-muted-foreground">{row.id}</p></td>
+          <td><p className="font-medium">{row.event}</p><p className="mono mt-1 text-xs text-muted-foreground">{row.component} · {row.environment} · {row.dedup_key}</p></td>
           <td>{names.get(row.workspace_id) || row.workspace_id}</td>
-          <td><span className={`table-status table-status-${row.status === 'completed' ? 'success' : row.status === 'failed' ? 'danger' : row.status === 'running' || row.status === 'reporting' ? 'warning' : 'neutral'}`}><i />{statusLabel(row.status, t)}</span></td>
-          <td>{resultStateLabel(row.result_state, t)}</td>
-          <td className="text-xs text-muted-foreground">{new Date(row.created_at).toLocaleString(dateLocale)}</td>
-          <td><Button size="icon" variant="ghost" asChild><Link href={`/workbench/investigation/${row.id}`} aria-label={tc('open')} title={tc('open')}><ArrowUpRight size={16} /></Link></Button></td>
+          <td><span className={`table-status table-status-${row.state === 'closed' ? 'neutral' : row.state === 'resolved' ? 'success' : row.state === 'mitigated' ? 'warning' : 'danger'}`}><i />{stateLabel(row.state, t)}</span><p className="mt-1 text-xs text-muted-foreground">{severityLabel(row.severity, t)}</p></td>
+          <td>{row.occurrence_count}</td>
+          <td className="text-xs text-muted-foreground">{new Date(row.last_occurred_at).toLocaleString(dateLocale)}</td>
+          <td><Button size="icon" variant="ghost" asChild><Link href={`/workbench/incident/${row.id}`} aria-label={tc('open')} title={tc('open')}><ArrowUpRight size={16} /></Link></Button></td>
         </tr>)}</tbody>
       </table></div>
       {rows.length === 0 && <p className="p-8 text-center text-muted-foreground">{t('noMatching')}</p>}
     </div>}
     {nextAfterId !== null && <div className="flex justify-center"><Button variant="outline" onClick={() => void load(true, nextAfterId)}>{t('loadMore')}</Button></div>}
-    <CreateDialog open={open} onOpenChange={setOpen} workspaces={workspaces} onCreated={(id) => router.push(`/workbench/investigation/${id}`)} />
+    <CreateIncidentDialog open={open} onOpenChange={setOpen} workspaces={workspaces} onCreated={(id) => router.push(`/workbench/incident/${id}`)} />
   </main>;
 }
 
-function CreateDialog({ open, onOpenChange, workspaces, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaces: Workspace[]; onCreated: (id: number) => void }) {
+function CreateIncidentDialog({ open, onOpenChange, workspaces, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; workspaces: Workspace[]; onCreated: (id: number) => void }) {
   const t = useTranslations('workbench');
   const tc = useTranslations('common');
   const [workspaceId, setWorkspaceId] = useState('');
+  const [dedupKey, setDedupKey] = useState('manual.error');
   const [event, setEvent] = useState('manual.error');
+  const [component, setComponent] = useState('manual');
+  const [environment, setEnvironment] = useState('production');
   const [severity, setSeverity] = useState<'CRITICAL' | 'WARNING'>('WARNING');
   const [type, setType] = useState('RuntimeError');
   const [message, setMessage] = useState('');
@@ -128,27 +123,37 @@ function CreateDialog({ open, onOpenChange, workspaces, onCreated }: { open: boo
   const [trace, setTrace] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+
   async function create() {
     setCreating(true);
     try {
-      const result = await createInvestigation({ workspace_id: Number(workspaceId), occurred_at: new Date().toISOString(), severity, event, trace_id: trace || null, source_revision: null, error: { type, message, stack, cause: null }, attachments: [] });
+      const result = await createIncident({
+        workspace_id: Number(workspaceId), dedup_key: dedupKey, event_kind: 'firing', occurred_at: new Date().toISOString(), severity, event, component, environment,
+        trace_id: trace || null, source_revision: null, error: { type, message, stack, cause: null }, attachments: [],
+      });
       onOpenChange(false);
-      onCreated(result.id);
+      onCreated(result.incident_id);
     } catch (cause) {
       setError(apiErrorMessage(cause, tc('requestFailed')));
-    } finally { setCreating(false); }
+    } finally {
+      setCreating(false);
+    }
   }
+
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent variant="drawer"><DialogHeader><DialogTitle>{t('newTitle')}</DialogTitle></DialogHeader>
     <div className="grid gap-3 sm:grid-cols-2">
       <Select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}><option value="">{t('workspacePlaceholder')}</option>{workspaces.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</Select>
       <Select value={severity} onChange={(event) => setSeverity(event.target.value as 'CRITICAL' | 'WARNING')}><option value="WARNING">{severityLabel('WARNING', t)}</option><option value="CRITICAL">{severityLabel('CRITICAL', t)}</option></Select>
+      <Input placeholder={t('dedupKey')} value={dedupKey} onChange={(event) => setDedupKey(event.target.value)} />
       <Input placeholder={t('event')} value={event} onChange={(event) => setEvent(event.target.value)} />
+      <Input placeholder={t('component')} value={component} onChange={(event) => setComponent(event.target.value)} />
+      <Input placeholder={t('environment')} value={environment} onChange={(event) => setEnvironment(event.target.value)} />
       <Input placeholder={t('errorType')} value={type} onChange={(event) => setType(event.target.value)} />
-      <Input className="sm:col-span-2" placeholder={t('traceId')} value={trace} onChange={(event) => setTrace(event.target.value)} />
+      <Input placeholder={t('traceId')} value={trace} onChange={(event) => setTrace(event.target.value)} />
       <Textarea className="sm:col-span-2" placeholder={t('errorMessage')} value={message} onChange={(event) => setMessage(event.target.value)} />
       <Textarea className="mono min-h-32 sm:col-span-2" placeholder={t('stackTrace')} value={stack} onChange={(event) => setStack(event.target.value)} />
     </div>
     {error && <p className="text-sm text-destructive">{error}</p>}
-    <DialogFooter><Button variant="outline" disabled={creating} onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" loading={creating} loadingText={tc('loading')} disabled={!workspaceId || !event || !type} onClick={() => void create()}>{tc('start')}</Button></DialogFooter>
+    <DialogFooter><Button variant="outline" disabled={creating} onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" loading={creating} loadingText={tc('loading')} disabled={!workspaceId || !dedupKey || !event || !component || !environment || !type} onClick={() => void create()}>{tc('start')}</Button></DialogFooter>
   </DialogContent></Dialog>;
 }

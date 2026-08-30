@@ -31,13 +31,23 @@ def test_incident_alert_fixture_is_the_only_final_wire_contract() -> None:
     properties = schema["properties"]
 
     assert schema["additionalProperties"] is False
-    assert properties["schema_version"] == {"const": "incident.alert.v1"}
-    assert properties["trace_id"] == {"type": "string"}
+    assert properties["schema_version"] == {"const": "incident.alert.v2"}
+    assert properties["trace_id"] == {"type": ["string", "null"]}
     assert properties["source_revision"]["pattern"] == "^[0-9a-f]{40}$"
-    assert set(schema["required"]) == set(properties)
+    assert set(schema["required"]) == {
+        "schema_version",
+        "source_event_id",
+        "dedup_key",
+        "event_kind",
+        "occurred_at",
+        "severity",
+        "event",
+        "component",
+        "environment",
+    }
+    assert {"trace_id", "source_revision", "error"}.isdisjoint(schema["required"])
     removed = {
         "service" + "_name",
-        "environment",
         "request" + "_id",
         "git" + "_commit",
     }
@@ -157,12 +167,13 @@ def test_api_and_database_manifests_exclude_removed_resources() -> None:
 def test_database_invariant_contract_covers_only_frozen_tables() -> None:
     inventory, triggers = expected_schema()
 
-    assert len(inventory) == 73
-    assert sum(len(names) for names in triggers.values()) == 92
+    assert len(inventory) == 76
+    assert sum(len(names) for names in triggers.values()) == 71
     assert "trg_evidence_access_scopes_budget_canonical" in triggers["evidence_access_scopes"]
     assert "trg_evidence_access_scopes_sql_dialect" in triggers["evidence_access_scopes"]
     assert "trg_evidence_read_attempts_immutable" in triggers["evidence_read_attempts"]
     assert "trg_investigation_reports_semantics" in triggers["investigation_reports"]
+    assert "trg_incident_occurrences_immutable" in triggers["incident_occurrences"]
 
 
 def test_all_contract_files_are_utf8_json_objects() -> None:

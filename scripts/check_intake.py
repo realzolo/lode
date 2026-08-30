@@ -16,11 +16,11 @@ from lode.config import settings
 from lode.consumer.main import KafkaIntakeHandler
 from lode.crypto import decrypt_value
 from lode.db.models import (
-    Alert,
     DeadLetter,
     EvidenceArtifact,
     EvidenceCollection,
     Incident,
+    IncidentOccurrence,
     IngestionEvent,
     Investigation,
     SealedEvidenceValue,
@@ -34,15 +34,20 @@ from lode.development.isolated_database import require_isolated_database
 from lode.security import create_token
 
 
-def _payload(*, alert_id: str, trace_id: str, event: str = "payment.order_create.failed") -> dict:
+def _payload(
+    *, source_event_id: str, trace_id: str, event: str = "payment.order_create.failed"
+) -> dict:
     return {
-        "schema_version": "incident.alert.v1",
-        "alert_id": alert_id,
+        "schema_version": "incident.alert.v2",
+        "source_event_id": source_event_id,
+        "dedup_key": event,
+        "event_kind": "firing",
         "occurred_at": "2026-08-26T09:30:00.000Z",
         "severity": "CRITICAL",
         "event": event,
+        "component": "payment-api",
+        "environment": "production",
         "trace_id": trace_id,
-        "source_revision": "a" * 40,
         "error": {
             "type": "GatewayError",
             "message": "Payment creation failed",
@@ -96,7 +101,7 @@ async def main() -> None:
         workspace_id = workspace.id
 
     handler = KafkaIntakeHandler()
-    first_payload = _payload(alert_id="alert-1", trace_id=trace_id)
+    first_payload = _payload(source_event_id="alert-1", trace_id=trace_id)
     first_raw = json.dumps(first_payload, ensure_ascii=False).encode("utf-8")
     first = await handler.handle(
         topic="incident.intake.behavior.v1", partition=0, offset=0, raw=first_raw
@@ -111,9 +116,9 @@ async def main() -> None:
         topic="incident.intake.behavior.v1",
         partition=0,
         offset=2,
-        raw=json.dumps(_payload(alert_id="alert-2", trace_id=trace_id), ensure_ascii=False).encode(
-            "utf-8"
-        ),
+        raw=json.dumps(
+            _payload(source_event_id="alert-2", trace_id=trace_id), ensure_ascii=False
+        ).encode("utf-8"),
     )
 
     invalid = dict(first_payload)
@@ -124,6 +129,19 @@ async def main() -> None:
         offset=3,
         raw=json.dumps(invalid, ensure_ascii=False).encode("utf-8"),
     )
+    recovery_payload = _payload(
+        source_event_id="recovery-without-incident",
+        trace_id="",
+        event="payment.unknown.recovered",
+    )
+    recovery_payload["event_kind"] = "recovered"
+    recovery_payload.pop("error")
+    recovery_without_active = await handler.handle(
+        topic="incident.intake.behavior.v1",
+        partition=0,
+        offset=4,
+        raw=json.dumps(recovery_payload, ensure_ascii=False).encode("utf-8"),
+    )
     unassigned = await handler.handle(
         topic="incident.unassigned.v1",
         partition=0,
@@ -133,7 +151,7 @@ async def main() -> None:
 
     same_offset_raw = json.dumps(
         _payload(
-            alert_id="alert-concurrent-offset",
+            source_event_id="alert-concurrent-offset",
             trace_id="concurrent-offset",
             event="payment.concurrent_offset.failed",
         )
@@ -148,7 +166,7 @@ async def main() -> None:
     )
     producer_race_raw = json.dumps(
         _payload(
-            alert_id="alert-concurrent-producer",
+            source_event_id="alert-concurrent-producer",
             trace_id="concurrent-producer",
             event="payment.concurrent_producer.failed",
         )
@@ -164,7 +182,7 @@ async def main() -> None:
     if sorted(result.outcome for result in same_offset_results) != ["accepted", "duplicate"]:
         raise RuntimeError("same-offset race did not produce one accepted record")
     if sorted(result.outcome for result in producer_race_results) != ["accepted", "duplicate"]:
-        raise RuntimeError("producer-id race did not produce one accepted alert")
+        raise RuntimeError("source-event race did not produce one accepted occurrence")
 
     try:
         await handler.replay(
@@ -181,7 +199,7 @@ async def main() -> None:
             raise RuntimeError("rejected replay changed the dead-letter state")
 
     replay_payload = _payload(
-        alert_id="alert-replayed",
+        source_event_id="alert-replayed",
         trace_id="",
         event="payment.replay.failed",
     )
@@ -194,9 +212,12 @@ async def main() -> None:
 
     manual_payload = {
         "workspace_id": workspace_id,
+        "dedup_key": "manual.runtime.failure",
         "occurred_at": "2026-08-26T10:00:00Z",
         "severity": "WARNING",
         "event": "manual.runtime.failure",
+        "component": "manual",
+        "environment": "production",
         "error": {
             "type": "RuntimeError",
             "message": "manual input",
@@ -209,19 +230,19 @@ async def main() -> None:
         transport=httpx.ASGITransport(app=app), base_url="http://intake.test"
     ) as client:
         invalid_manual = await client.post(
-            "/investigations",
+            "/incidents",
             headers=headers,
             json={**manual_payload, "service" + "_name": "removed"},
         )
         if invalid_manual.status_code != 422:
             raise RuntimeError("manual endpoint accepted a removed scope field")
-        manual_response = await client.post("/investigations", headers=headers, json=manual_payload)
+        manual_response = await client.post("/incidents", headers=headers, json=manual_payload)
         if manual_response.status_code != 201:
             raise RuntimeError(
                 f"manual endpoint failed: {manual_response.status_code} {manual_response.text}"
             )
-        if manual_response.json()["status"] != "queued":
-            raise RuntimeError("manual endpoint did not create a queued investigation")
+        if manual_response.json()["investigation_id"] is None:
+            raise RuntimeError("manual endpoint did not create an investigation run")
 
     outcomes = [
         first.outcome,
@@ -229,6 +250,7 @@ async def main() -> None:
         producer_duplicate.outcome,
         incident_duplicate.outcome,
         dead_letter.outcome,
+        recovery_without_active.outcome,
         unassigned.outcome,
         "accepted",
     ]
@@ -236,7 +258,8 @@ async def main() -> None:
         "accepted",
         "duplicate",
         "duplicate",
-        "duplicate",
+        "correlated",
+        "dead_letter",
         "dead_letter",
         "unassigned",
         "accepted",
@@ -245,8 +268,10 @@ async def main() -> None:
         raise RuntimeError(f"unexpected intake outcomes: {outcomes}")
 
     async with AsyncSessionLocal() as session:
-        alert = (
-            await session.execute(select(Alert).where(Alert.alert_id == "alert-1"))
+        occurrence = (
+            await session.execute(
+                select(IncidentOccurrence).where(IncidentOccurrence.source_event_id == "alert-1")
+            )
         ).scalar_one()
         sealed = (
             await session.execute(
@@ -276,18 +301,18 @@ async def main() -> None:
             EvidenceCollection, incident_input_artifact.collection_id
         )
         counts = {
-            "alerts": await session.scalar(select(func.count(Alert.id))),
+            "occurrences": await session.scalar(select(func.count(IncidentOccurrence.id))),
             "dead_letters": await session.scalar(select(func.count(DeadLetter.id))),
             "ingestion_events": await session.scalar(select(func.count(IngestionEvent.id))),
             "investigations": await session.scalar(select(func.count(Investigation.id))),
         }
 
-    if decrypt_value(alert.trace_id_ciphertext) != trace_id:
-        raise RuntimeError("Alert trace ciphertext did not preserve the original value")
+    if decrypt_value(occurrence.trace_id_ciphertext) != trace_id:
+        raise RuntimeError("Occurrence trace ciphertext did not preserve the original value")
     if decrypt_value(sealed.value_ciphertext) != trace_id:
         raise RuntimeError("ValueRef vault did not preserve the original value")
-    if alert.raw_payload_masked["trace_id"] != "<VALUE_REF:incident.trace_id>":
-        raise RuntimeError("masked alert payload exposed its trace value")
+    if occurrence.raw_payload_masked["trace_id"] != "<VALUE_REF:incident.trace_id>":
+        raise RuntimeError("masked occurrence payload exposed its trace value")
     if incident.occurrence_count != 2:
         raise RuntimeError("active incident deduplication did not count the second alert")
     if incident_input_collection is None:
@@ -315,9 +340,9 @@ async def main() -> None:
     ):
         raise RuntimeError("durable failure payload exposed an opaque trace")
     if counts != {
-        "alerts": 5,
-        "dead_letters": 2,
-        "ingestion_events": 8,
+        "occurrences": 6,
+        "dead_letters": 3,
+        "ingestion_events": 9,
         "investigations": 5,
     }:
         raise RuntimeError(f"unexpected persisted counts: {counts}")

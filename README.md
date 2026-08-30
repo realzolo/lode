@@ -1,9 +1,9 @@
 # Lode
 
 Lode turns production incident alerts into evidence-backed incident causes and
-exact code diagnoses. It accepts the strict `incident.alert.v1` Kafka contract
-or authorized manual input, executes bounded read-only investigations, archives
-the complete evidence trail, and refuses to present a related source file as a
+exact code diagnoses. It accepts the strict `incident.alert.v2` Kafka contract
+or authorized manual input, executes bounded read-only investigations, retains
+the complete immutable evidence trail, and refuses to present a related source file as a
 confirmed defect without repository-scoped source authority. Independently
 verified runtime evidence may confirm an external service, configuration,
 network, or data cause without a code finding.
@@ -14,7 +14,7 @@ dual writes, or historical payload converters.
 
 ## Investigation Model
 
-Each investigation freezes its Workspace control state at intake: repository
+Each immutable investigation run freezes its Workspace control state at intake: repository
 bindings, resource graph, Connector scopes and health, model bindings and
 policy, its code-owned execution ceiling and time window, output language, and
 immutable normalized input. The worker then runs
@@ -119,19 +119,24 @@ never returned. Evidence-read authorization and Runner signing use distinct keys
 
 ## Kafka Contract
 
-Kafka input uses `incident.alert.v1`. Unknown fields are rejected. The topic,
-not the payload, selects the Workspace. `trace_id` is an opaque optional string
-and is preserved exactly in encrypted storage; source revision is a required
-full lowercase Git SHA authoritative only for the Workspace alert-source
-repository.
+Kafka input uses `incident.alert.v2`. Unknown fields are rejected. The topic,
+not the payload, selects the Workspace. Every event provides a producer
+`source_event_id`, a correlation `dedup_key`, `event_kind`, component, and
+environment. `trace_id` is an opaque optional string and is preserved exactly in
+encrypted storage; `source_revision` is optional and, when provided, is the
+authoritative full lowercase Git SHA for the Workspace alert-source repository.
 
 ```json
 {
-  "schema_version": "incident.alert.v1",
-  "alert_id": "alert-01",
+  "schema_version": "incident.alert.v2",
+  "source_event_id": "alert-01",
+  "dedup_key": "payment.order-create.failure",
+  "event_kind": "firing",
   "occurred_at": "2026-08-27T10:38:59.522Z",
   "severity": "CRITICAL",
   "event": "payment.order_create.failed",
+  "component": "payment-api",
+  "environment": "production",
   "trace_id": "opaque producer value",
   "source_revision": "6c36658895cb220b66f89f17718a001f3f9f02e4",
   "error": {
@@ -153,12 +158,15 @@ The final FastAPI surface includes:
 - global provider accounts and model deployments;
 - Workspace lifecycle, model bindings/policy, repositories, ResourceGraph
   views, Connector instances, verification, and introspection;
-- manual investigation creation, searchable/paginated list, human-readable
-  canonical detail, explicit technical detail, paginated masked audit, SSE,
-  retry, and archive;
+- manual incident creation, searchable/paginated incident list, canonical
+  incident detail with server-driven lifecycle capabilities, immutable report
+  reads/reviews, execution detail, nested run retry, follow-up actions, and SSE;
 - authentication, users, invitations, health, and metrics.
 
-`GET /investigations/{id}` is the canonical client state. SSE replays persisted
+`GET /incidents/{id}` is the canonical client state. It includes immutable
+occurrences, investigation runs, the incident timeline, follow-up actions, and
+server-computed allowed actions. `GET /investigations/{id}/report` is the full
+immutable report view. SSE replays persisted
 operation events by sequence, accepts `Last-Event-ID`, emits
 `investigation.finished` for terminal state, and is used only to trigger a
 canonical reload.
@@ -166,10 +174,10 @@ canonical reload.
 The Next.js Web app provides global model and AI-output-language settings,
 Workspace topic/readiness settings, searchable direct account/repository
 binding, and a searchable/filterable member list with row-level actions,
-manual intake, a searchable investigation list, and a responsive investigation
-detail that leads with the incident summary, cause, diagnosis, evidence, and
-next action. Technical snapshots remain available only in an explicit technical
-view. Wide tables and tab lists scroll locally instead of widening the page.
+manual intake, a searchable incident list, and a responsive incident detail
+that leads with incident state, occurrences, cause, diagnosis, evidence, and
+next action. Investigation execution snapshots remain scoped to their immutable
+run. Wide tables and tab lists scroll locally instead of widening the page.
 
 ## Local Development
 

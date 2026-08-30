@@ -22,11 +22,15 @@ _REMOVED_COMMIT_FIELD = "git" + "_commit"
 
 def _payload(trace_id: str = "opaque") -> dict:
     return {
-        "schema_version": "incident.alert.v1",
-        "alert_id": "alert-1",
+        "schema_version": "incident.alert.v2",
+        "source_event_id": "alert-1",
+        "dedup_key": "payment.order-create",
+        "event_kind": "firing",
         "occurred_at": "2026-08-26T09:30:00.000Z",
         "severity": "CRITICAL",
         "event": "payment.order_create.failed",
+        "component": "payment-api",
+        "environment": "production",
         "trace_id": trace_id,
         "source_revision": "a" * 40,
         "error": {
@@ -65,7 +69,6 @@ def test_kafka_trace_is_preserved_exactly_and_hidden_from_masked_payload(trace_i
     ("field", "value"),
     [
         (_REMOVED_SERVICE_FIELD, "api"),
-        ("environment", "prod"),
         (_REMOVED_REQUEST_FIELD, "request-1"),
         (_REMOVED_COMMIT_FIELD, "a" * 40),
         ("correlation", {}),
@@ -85,15 +88,18 @@ def test_nested_error_unknown_field_is_rejected() -> None:
         KafkaIncidentAlert.model_validate(payload)
 
 
-@pytest.mark.parametrize("revision", [None, "a" * 39, "A" * 40, "main"])
-def test_kafka_source_revision_is_required_full_lowercase_sha(revision: str | None) -> None:
+@pytest.mark.parametrize("revision", ["a" * 39, "A" * 40, "main"])
+def test_kafka_source_revision_is_optional_but_must_be_a_full_lowercase_sha(revision: str) -> None:
     payload = _payload()
-    if revision is None:
-        del payload["source_revision"]
-    else:
-        payload["source_revision"] = revision
+    payload["source_revision"] = revision
     with pytest.raises(ValidationError):
         KafkaIncidentAlert.model_validate(payload)
+
+
+def test_kafka_source_revision_can_be_omitted() -> None:
+    payload = _payload()
+    del payload["source_revision"]
+    assert KafkaIncidentAlert.model_validate(payload).source_revision is None
 
 
 def test_kafka_timestamp_requires_timezone() -> None:
@@ -109,9 +115,12 @@ def test_manual_and_kafka_use_the_same_normalized_error_shape() -> None:
         ManualIncidentRequest.model_validate(
             {
                 "workspace_id": 7,
+                "dedup_key": "payment.order-create",
                 "occurred_at": "2026-08-26T09:30:00+00:00",
                 "severity": "CRITICAL",
                 "event": "payment.order_create.failed",
+                "component": "payment-api",
+                "environment": "production",
                 "trace_id": "trace",
                 "source_revision": "a" * 40,
                 "error": _payload()["error"],
@@ -122,14 +131,17 @@ def test_manual_and_kafka_use_the_same_normalized_error_shape() -> None:
     assert kafka.error_masked == manual.error_masked
     assert kafka.occurred_at == manual.occurred_at
     assert kafka.occurred_at.tzinfo == UTC
-    assert manual.alert_id is None
+    assert manual.source_event_id is None
 
 
 def test_manual_request_rejects_removed_scope_fields() -> None:
     payload = {
         "workspace_id": 1,
+        "dedup_key": "manual.failure",
         "occurred_at": "2026-08-26T09:30:00Z",
         "event": "manual.failure",
+        "component": "manual",
+        "environment": "production",
         "error": _payload()["error"],
         _REMOVED_SERVICE_FIELD: "api",
     }

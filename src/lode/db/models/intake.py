@@ -34,9 +34,9 @@ class IngestionEvent(CreatedAtMixin, Base):
     partition: Mapped[int] = mapped_column(Integer, nullable=False)
     offset: Mapped[int] = mapped_column(BigInteger, nullable=False)
     payload_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    alert_id: Mapped[str | None] = mapped_column(Text)
+    source_event_id: Mapped[str | None] = mapped_column(Text)
     outcome: Mapped[str] = mapped_column(Text, nullable=False)
-    alert_row_id: Mapped[int | None] = mapped_column(BigInteger)
+    occurrence_id: Mapped[int | None] = mapped_column(BigInteger)
     dead_letter_id: Mapped[int | None] = mapped_column(BigInteger)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -48,40 +48,64 @@ class IngestionEvent(CreatedAtMixin, Base):
         CheckConstraint('"offset" >= 0', name="offset_nonnegative"),
         CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
         CheckConstraint(
-            "outcome IN ('accepted', 'duplicate', 'dead_letter', 'unassigned')",
+            "outcome IN ('accepted', 'correlated', 'duplicate', 'dead_letter', 'unassigned')",
             name="outcome",
         ),
         Index("ix_ingestion_events_workspace_received", "workspace_id", "received_at"),
     )
 
 
-class Alert(CreatedAtMixin, Base):
-    __tablename__ = "alerts"
+class IncidentOccurrence(CreatedAtMixin, Base):
+    """One immutable alert, recovery, or manually reported occurrence."""
+
+    __tablename__ = "incident_occurrences"
 
     id: Mapped[int] = snowflake_pk()
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    alert_id: Mapped[str] = mapped_column(Text, nullable=False)
+    incident_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    source_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_event_id: Mapped[str | None] = mapped_column(Text)
+    event_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    dedup_key: Mapped[str] = mapped_column(Text, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     severity: Mapped[str] = mapped_column(Text, nullable=False)
     event: Mapped[str] = mapped_column(Text, nullable=False)
-    trace_id_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
-    trace_id_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    source_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    component: Mapped[str] = mapped_column(Text, nullable=False)
+    environment: Mapped[str] = mapped_column(Text, nullable=False)
+    trace_id_ciphertext: Mapped[str | None] = mapped_column(Text)
+    trace_id_hash: Mapped[str | None] = mapped_column(Text)
+    source_revision: Mapped[str | None] = mapped_column(Text)
     error: Mapped[dict] = mapped_column(JSONB, nullable=False)
     raw_payload_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    received_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("now()")
-    )
 
     __table_args__ = (
-        UniqueConstraint("workspace_id", "alert_id", name="uq_alert_workspace_id"),
+        CheckConstraint("source_type IN ('kafka', 'manual')", name="source_type"),
+        CheckConstraint("event_kind IN ('firing', 'recovered')", name="event_kind"),
         CheckConstraint("severity IN ('CRITICAL', 'WARNING')", name="severity"),
-        CheckConstraint("source_revision ~ '^[0-9a-f]{40}$'", name="source_revision_sha"),
-        CheckConstraint("trace_id_hash ~ '^[0-9a-f]{64}$'", name="trace_id_hash_sha256"),
-        Index("ix_alerts_workspace_occurred", "workspace_id", "occurred_at"),
-        Index("ix_alerts_event", "event"),
+        CheckConstraint("length(dedup_key) > 0", name="dedup_key_nonempty"),
+        CheckConstraint(
+            "source_event_id IS NOT NULL OR source_type = 'manual'", name="source_event_id_required"
+        ),
+        CheckConstraint(
+            "source_revision IS NULL OR source_revision ~ '^[0-9a-f]{40}$'",
+            name="source_revision_sha",
+        ),
+        CheckConstraint(
+            "trace_id_hash IS NULL OR trace_id_hash ~ '^[0-9a-f]{64}$'",
+            name="trace_id_hash_sha256",
+        ),
+        Index(
+            "uq_incident_occurrence_source_event",
+            "workspace_id",
+            "source_event_id",
+            unique=True,
+            postgresql_where=text("source_event_id IS NOT NULL"),
+        ),
+        Index("ix_incident_occurrences_incident_occurred", "incident_id", "occurred_at"),
     )
 
 
@@ -127,30 +151,133 @@ class Incident(TimestampMixin, Base):
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    signature_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    dedup_key: Mapped[str] = mapped_column(Text, nullable=False)
     event: Mapped[str] = mapped_column(Text, nullable=False)
-    trace_id_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
+    component: Mapped[str] = mapped_column(Text, nullable=False)
+    environment: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="open")
     first_occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
-    latest_alert_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("alerts.id", ondelete="RESTRICT"), nullable=False
+    recurrence_of_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("incidents.id", ondelete="SET NULL")
+    )
+    assigned_to: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    state_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+
+    __table_args__ = (
+        CheckConstraint("length(dedup_key) > 0", name="dedup_key_nonempty"),
+        CheckConstraint("severity IN ('CRITICAL', 'WARNING')", name="severity"),
+        CheckConstraint(
+            "state IN ('open', 'acknowledged', 'mitigated', 'resolved', 'closed')", name="state"
+        ),
+        CheckConstraint("occurrence_count > 0", name="occurrence_count_positive"),
+        CheckConstraint("last_occurred_at >= first_occurred_at", name="occurrence_range"),
+        CheckConstraint("state_version > 0", name="state_version_positive"),
+        Index(
+            "uq_incident_active_dedup_key",
+            "workspace_id",
+            "dedup_key",
+            unique=True,
+            postgresql_where=text("state IN ('open', 'acknowledged', 'mitigated')"),
+        ),
+        Index("ix_incidents_workspace_state_updated", "workspace_id", "state", "updated_at"),
+    )
+
+
+class IncidentEvent(CreatedAtMixin, Base):
+    """Append-only operational history for an incident."""
+
+    __tablename__ = "incident_events"
+
+    id: Mapped[int] = snowflake_pk()
+    incident_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('opened', 'occurrence_added', 'state_changed', 'assigned', "
+            "'investigation_started', 'review_recorded', 'action_created', 'action_updated')",
+            name="event_type",
+        ),
+        Index("ix_incident_events_incident_created", "incident_id", "created_at"),
+    )
+
+
+class IncidentAction(TimestampMixin, Base):
+    """A human-owned mitigation, remediation, verification, or prevention action."""
+
+    __tablename__ = "incident_actions"
+
+    id: Mapped[int] = snowflake_pk()
+    incident_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    investigation_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="SET NULL")
+    )
+    action_type: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="proposed")
+    priority: Mapped[str] = mapped_column(Text, nullable=False, server_default="P2")
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    validation: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_refs: Mapped[list[int]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    owner_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL")
     )
 
     __table_args__ = (
-        CheckConstraint("signature_hash ~ '^[0-9a-f]{64}$'", name="signature_hash_sha256"),
-        CheckConstraint("trace_id_hash ~ '^[0-9a-f]{64}$'", name="trace_id_hash_sha256"),
-        CheckConstraint("state IN ('active', 'closed')", name="state"),
-        CheckConstraint("occurrence_count > 0", name="occurrence_count_positive"),
-        CheckConstraint("last_occurred_at >= first_occurred_at", name="occurrence_range"),
-        Index(
-            "uq_incident_active_signature",
-            "workspace_id",
-            "signature_hash",
-            unique=True,
-            postgresql_where=text("state = 'active'"),
+        CheckConstraint(
+            "action_type IN ('mitigate', 'remediate', 'validate', 'prevent')", name="action_type"
         ),
+        CheckConstraint(
+            "status IN ('proposed', 'accepted', 'in_progress', 'verified', 'rejected', 'cancelled')",
+            name="status",
+        ),
+        CheckConstraint("priority IN ('P0', 'P1', 'P2', 'P3')", name="priority"),
+        CheckConstraint("length(title) > 0", name="title_nonempty"),
+        Index("ix_incident_actions_incident_status", "incident_id", "status", "updated_at"),
+    )
+
+
+class InvestigationReview(CreatedAtMixin, Base):
+    """An immutable human assessment of a report or one of its findings."""
+
+    __tablename__ = "investigation_reviews"
+
+    id: Mapped[int] = snowflake_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    code_finding_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("investigation_code_findings.id", ondelete="CASCADE")
+    )
+    verdict: Mapped[str] = mapped_column(Text, nullable=False)
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    reviewer_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("verdict IN ('accepted', 'rejected', 'needs_evidence')", name="verdict"),
+        CheckConstraint("length(comment) > 0", name="comment_nonempty"),
+        Index("ix_investigation_reviews_investigation_created", "investigation_id", "created_at"),
     )
 
 

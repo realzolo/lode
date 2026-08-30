@@ -30,7 +30,6 @@ def expected_schema() -> tuple[set[str], dict[str, set[str]]]:
     expected_triggers: dict[str, set[str]] = defaultdict(set)
     categories = {
         "immutable_tables": "immutable",
-        "archive_readonly_tables": "archive_readonly",
         "updated_at_tables": "updated_at",
     }
     for field, suffix in categories.items():

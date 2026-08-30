@@ -1091,34 +1091,6 @@ async def delete_workspace_member(
     )
 
 
-@router.post("/admin/investigations/{investigation_id}/archive")
-async def archive_investigation_as_admin(
-    investigation_id: EntityId,
-    admin_id: EntityId = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, str]:
-    row = await session.get(Investigation, investigation_id)
-    if row is None:
-        raise _error(404, "investigation_not_found", "Investigation not found.")
-    if row.status not in {"completed", "failed", "cancelled"}:
-        raise _error(
-            409, "investigation_not_terminal", "Only a terminal investigation can archive."
-        )
-    if row.archived_at is not None:
-        raise _error(409, "investigation_already_archived", "Investigation is already archived.")
-    row.archived_at = datetime.now(UTC)
-    row.archived_by = admin_id
-    await session.commit()
-    await audit_action(
-        action="investigation.archive",
-        actor_id=admin_id,
-        target_type="investigation",
-        target_id=str(investigation_id),
-        workspace_id=row.workspace_id,
-    )
-    return {"status": "ok"}
-
-
 async def _broker_has_topic(topic: str) -> bool:
     client = AIOKafkaAdminClient(
         bootstrap_servers=settings.kafka_bootstrap_servers,
@@ -2806,8 +2778,7 @@ def _scope_config_from_catalog(kind: str, current_scope: dict, resources: dict) 
         or (
             not clickhouse
             and (
-                not isinstance(descriptor.get("time_column"), str)
-                or not descriptor["stable_order"]
+                not isinstance(descriptor.get("time_column"), str) or not descriptor["stable_order"]
             )
         )
         or (
@@ -2892,7 +2863,10 @@ async def create_connector(
         raise _connector_operation_error(
             "introspection", exc, "Connector scope discovery failed."
         ) from exc
-    if payload.kind in {"postgresql", "mysql", "clickhouse"} and not final_scope_config["allowed_tables"]:
+    if (
+        payload.kind in {"postgresql", "mysql", "clickhouse"}
+        and not final_scope_config["allowed_tables"]
+    ):
         raise _error(
             422,
             "connector_scope_empty",

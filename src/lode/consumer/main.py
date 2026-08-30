@@ -1,4 +1,4 @@
-"""Strict Kafka `incident.alert.v1` transport adapter."""
+"""Strict Kafka `incident.alert.v2` transport adapter."""
 
 from __future__ import annotations
 
@@ -29,7 +29,11 @@ from lode.db.models import (
     WorkspaceIngestionRuntime,
 )
 from lode.db.session import AsyncSessionLocal
-from lode.infrastructure.intake_store import IntakeResult, PostgresIntakeStore
+from lode.infrastructure.intake_store import (
+    IncidentCorrelationError,
+    IntakeResult,
+    PostgresIntakeStore,
+)
 from lode.metrics import ACTIVE_WORKSPACES, CONSUMER_HEARTBEAT
 from lode.runtime_defaults import (
     KAFKA_BATCH_MAX_RECORDS,
@@ -44,9 +48,7 @@ CONSUMER_ID = f"{platform.node()}:{os.getpid()}"
 
 
 class FailurePublisher(Protocol):
-    async def send_and_wait(
-        self, topic: str, value: bytes, key: bytes | None = None
-    ) -> Any: ...
+    async def send_and_wait(self, topic: str, value: bytes, key: bytes | None = None) -> Any: ...
 
 
 class ConsumerRecord(Protocol):
@@ -84,9 +86,7 @@ class KafkaIntakeHandler:
         self._session_factory = session_factory
         self._publisher = publisher
 
-    async def handle(
-        self, *, topic: str, partition: int, offset: int, raw: bytes
-    ) -> IntakeResult:
+    async def handle(self, *, topic: str, partition: int, offset: int, raw: bytes) -> IntakeResult:
         payload_hash = hashlib.sha256(raw).hexdigest()
         async with self._session_factory() as session:
             store = PostgresIntakeStore(session)
@@ -113,6 +113,7 @@ class KafkaIntakeHandler:
                 )
                 await self._publish_failure(result, topic, partition, offset, decoded)
                 return result
+            workspace_id = workspace.id
 
             try:
                 decoded = json.loads(raw)
@@ -129,7 +130,7 @@ class KafkaIntakeHandler:
                     outcome="dead_letter",
                     reason_code="invalid_json",
                     reason_detail={"message": str(exc)},
-                    workspace_id=workspace.id,
+                    workspace_id=workspace_id,
                 )
                 await self._publish_failure(result, topic, partition, offset, failure_payload)
                 return result
@@ -146,19 +147,35 @@ class KafkaIntakeHandler:
                     outcome="dead_letter",
                     reason_code="schema_validation_failed",
                     reason_detail=_validation_detail(exc),
-                    workspace_id=workspace.id,
+                    workspace_id=workspace_id,
                 )
                 await self._publish_failure(result, topic, partition, offset, decoded)
                 return result
 
-            return await store.persist_kafka(
-                workspace_id=workspace.id,
-                topic=topic,
-                partition=partition,
-                offset=offset,
-                payload_hash=payload_hash,
-                incident=normalize_kafka(message),
-            )
+            try:
+                return await store.persist_kafka(
+                    workspace_id=workspace_id,
+                    topic=topic,
+                    partition=partition,
+                    offset=offset,
+                    payload_hash=payload_hash,
+                    incident=normalize_kafka(message),
+                )
+            except IncidentCorrelationError as exc:
+                await session.rollback()
+                result = await store.record_failure(
+                    topic=topic,
+                    partition=partition,
+                    offset=offset,
+                    payload_hash=payload_hash,
+                    payload=decoded,
+                    outcome="dead_letter",
+                    reason_code="incident_correlation_failed",
+                    reason_detail={"message": str(exc)},
+                    workspace_id=workspace_id,
+                )
+                await self._publish_failure(result, topic, partition, offset, decoded)
+                return result
 
     async def replay(self, *, dead_letter_id: int, raw: bytes) -> IntakeResult:
         """Replay one durable DLQ row only through the current validator."""
@@ -223,9 +240,7 @@ class KafkaIntakeHandler:
             "payload_masked": masked,
         }
         target = (
-            KAFKA_DEAD_LETTER_TOPIC
-            if result.outcome == "dead_letter"
-            else KAFKA_UNASSIGNED_TOPIC
+            KAFKA_DEAD_LETTER_TOPIC if result.outcome == "dead_letter" else KAFKA_UNASSIGNED_TOPIC
         )
         try:
             await self._publisher.send_and_wait(
@@ -264,13 +279,17 @@ async def _set_runtime_state(
     for partition in assigned:
         counts[partition.topic] = counts.get(partition.topic, 0) + 1
     async with session_factory() as session:
-        workspaces = tuple(
-            (
-                await session.execute(
-                    select(Workspace).where(Workspace.ingestion_topic.in_(topics))
-                )
-            ).scalars()
-        ) if topics else ()
+        workspaces = (
+            tuple(
+                (
+                    await session.execute(
+                        select(Workspace).where(Workspace.ingestion_topic.in_(topics))
+                    )
+                ).scalars()
+            )
+            if topics
+            else ()
+        )
         for workspace in workspaces:
             runtime = await session.get(WorkspaceIngestionRuntime, workspace.id)
             if runtime is None:
@@ -481,11 +500,7 @@ async def process_record(
         raw=record.value,
     )
     await committer.commit(
-        {
-            TopicPartition(record.topic, record.partition): OffsetAndMetadata(
-                record.offset + 1, ""
-            )
-        }
+        {TopicPartition(record.topic, record.partition): OffsetAndMetadata(record.offset + 1, "")}
     )
     return result
 

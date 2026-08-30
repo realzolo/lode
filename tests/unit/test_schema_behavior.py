@@ -11,4 +11,4 @@ def test_database_behavior_check_is_rollback_safe_and_covers_critical_triggers()
     assert "updated_at trigger did not advance" in _BEHAVIOR_SQL
     assert "secret-free config trigger accepted" in _BEHAVIOR_SQL
     assert "immutable trigger accepted" in _BEHAVIOR_SQL
-    assert "archive trigger accepted" in _BEHAVIOR_SQL
+    assert "incident occurrence trigger accepted" in _BEHAVIOR_SQL

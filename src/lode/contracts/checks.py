@@ -92,7 +92,7 @@ def validate_contracts() -> dict[str, Any]:
         raise FixtureError("database table inventory contains a removed table")
 
     invariants = _load_json(CONTRACT_ROOT / "database" / "invariants.json")
-    for field in ("immutable_tables", "archive_readonly_tables", "updated_at_tables"):
+    for field in ("immutable_tables", "updated_at_tables"):
         names = invariants.get(field)
         if not isinstance(names, list) or names != sorted(names) or len(names) != len(set(names)):
             raise FixtureError(f"database invariant {field} must be sorted and unique")

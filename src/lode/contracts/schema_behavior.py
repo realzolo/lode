@@ -14,7 +14,8 @@ DECLARE
     workspace_row workspaces%ROWTYPE;
     connector_id bigint;
     scope_id bigint;
-    investigation_id bigint;
+    incident_id bigint;
+    occurrence_id bigint;
     rejected boolean;
 BEGIN
     INSERT INTO workspaces (name, ingestion_topic)
@@ -143,33 +144,35 @@ BEGIN
         RAISE EXCEPTION 'immutable trigger accepted an update';
     END IF;
 
-    INSERT INTO investigations (
-        workspace_id, trigger_signature_hash, status, result_state,
-        window_started_at, window_finished_at, execution_budget, engine_version,
-        finished_at, archived_at
+    INSERT INTO incidents (
+        workspace_id, dedup_key, event, component, environment, severity,
+        first_occurred_at, last_occurred_at, state_changed_at
     ) VALUES (
-        workspace_row.id, repeat('a', 64),
-        'completed', 'insufficient', now() - interval '1 minute', now(),
-        '{"max_decision_waves"\:16}'::jsonb, 'schema-behavior', now(), now()
-    ) RETURNING id INTO investigation_id;
+        workspace_row.id, 'schema.behavior', 'schema.behavior.failure', 'schema',
+        'test', 'WARNING', now() - interval '1 minute', now(), now()
+    ) RETURNING id INTO incident_id;
+
+    INSERT INTO incident_occurrences (
+        workspace_id, incident_id, source_type, source_event_id, event_kind,
+        dedup_key, occurred_at, severity, event, component, environment,
+        error, raw_payload_masked
+    ) VALUES (
+        workspace_row.id, incident_id, 'kafka', 'schema-behavior-source-1', 'firing',
+        'schema.behavior', now(), 'WARNING', 'schema.behavior.failure', 'schema',
+        'test', '{}'::jsonb, '{}'::jsonb
+    ) RETURNING id INTO occurrence_id;
 
     rejected := false;
     BEGIN
-        INSERT INTO investigation_inputs (
-            investigation_id, source_type, event, severity, occurred_at,
-            error, raw_payload_masked
-        ) VALUES (
-            investigation_id, 'manual', 'archive-check', 'WARNING', now(),
-            '{}'::jsonb, '{}'::jsonb
-        );
+        UPDATE incident_occurrences SET event = 'mutated' WHERE id = occurrence_id;
     EXCEPTION WHEN raise_exception THEN
-        IF position('archived investigation is read-only' IN SQLERRM) = 0 THEN
+        IF position('immutable row cannot be changed' IN SQLERRM) = 0 THEN
             RAISE;
         END IF;
         rejected := true;
     END;
     IF NOT rejected THEN
-        RAISE EXCEPTION 'archive trigger accepted a child insert';
+        RAISE EXCEPTION 'incident occurrence trigger accepted an update';
     END IF;
 END
 $checks$;
@@ -224,7 +227,7 @@ async def check_schema_behavior(database_url: str) -> dict[str, Any]:
 
     return {
         "checks": [
-            "archive_readonly",
+            "incident_occurrence_immutable",
             "concurrent_unique_topic",
             "immutable_rows",
             "secret_free_config",

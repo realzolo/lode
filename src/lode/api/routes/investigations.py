@@ -10,8 +10,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from sqlalchemy import Text, cast, func, or_, select
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.api.deps import assert_workspace_permission, permitted_workspace_ids, require_user
@@ -25,54 +25,25 @@ from lode.api.investigation_execution_graph import (
     build_node_detail,
 )
 from lode.api.types import EntityId
-from lode.application.intake import ManualIncidentRequest, NormalizedIncident, normalize_manual
-from lode.crypto import decrypt_value
 from lode.db.models import (
-    AuditEvent,
     EvidenceArtifact,
+    IncidentEvent,
     Investigation,
     InvestigationCodeFinding,
     InvestigationInput,
     InvestigationOperation,
     InvestigationOperationEvent,
     InvestigationReport,
-    SealedEvidenceValue,
+    InvestigationReview,
     User,
     Workspace,
 )
 from lode.db.session import AsyncSessionLocal
-from lode.infrastructure.intake_store import PostgresIntakeStore
 from lode.metrics import SSE_CONNECTIONS, SSE_REPLAY_LAG
 
 router = APIRouter(prefix="/investigations", tags=["investigations"])
 workbench_router = APIRouter(prefix="/workbench", tags=["workbench"])
 _TERMINAL_STATUSES = {"completed", "failed"}
-
-
-class ManualInvestigationCreated(BaseModel):
-    id: EntityId
-    workspace_id: EntityId
-    status: str
-    job_id: EntityId
-
-
-class InvestigationListItem(BaseModel):
-    id: EntityId
-    workspace_id: EntityId
-    status: str
-    result_state: str
-    output_language: str
-    event: str | None = None
-    severity: str | None = None
-    headline: str | None = None
-    archived_at: datetime | None
-    created_at: datetime
-    updated_at: datetime
-
-
-class InvestigationListPage(BaseModel):
-    items: list[InvestigationListItem]
-    next_after_id: EntityId | None
 
 
 class InvestigationReportConclusion(BaseModel):
@@ -99,11 +70,12 @@ class InvestigationReportSummary(BaseModel):
 
 class InvestigationOverview(BaseModel):
     id: EntityId
+    incident_id: EntityId
     workspace_id: EntityId
     status: str
     result_state: str
+    trigger_reason: str
     output_language: str
-    archived_at: datetime | None
     event: str | None
     severity: str | None
     occurred_at: datetime | None
@@ -114,6 +86,63 @@ class InvestigationOverview(BaseModel):
     report: InvestigationReportSummary | None
     operation_count: int
     evidence_count: int
+
+
+class InvestigationCodeFindingView(BaseModel):
+    id: EntityId
+    status: str
+    source_artifact_id: EntityId | None
+    repository_id: EntityId | None
+    revision: str | None
+    revision_origin: str | None
+    path: str | None
+    symbol: str | None
+    start_line: int | None
+    end_line: int | None
+    issue_type: str | None
+    faulty_behavior: str
+    why_wrong: str
+    expected_behavior: str
+    trigger_condition: str
+    propagation: list[str]
+    incident_evidence_refs: list[EntityId]
+    supporting_evidence_refs: list[EntityId]
+    counter_evidence_refs: list[EntityId]
+    missing_validation: list[str]
+    test_scenario: str
+
+
+class InvestigationReportView(BaseModel):
+    schema_version: str
+    result_state: str
+    headline: str
+    summary: str
+    incident_cause: dict
+    code_diagnosis: dict
+    participants: list[dict]
+    timeline_summary: list[dict]
+    source_assessments: list[dict]
+    configuration_assessments: list[dict]
+    confirmed_facts: list[dict]
+    counter_evidence: list[dict]
+    evidence_gaps: list[str]
+    next_step: str
+    code_findings: list[InvestigationCodeFindingView]
+
+
+class InvestigationReviewRequest(BaseModel):
+    code_finding_id: EntityId | None = None
+    verdict: str = Field(pattern="^(accepted|rejected|needs_evidence)$")
+    comment: str = Field(min_length=1, max_length=20_000)
+
+
+class InvestigationReviewOut(BaseModel):
+    id: EntityId
+    code_finding_id: EntityId | None
+    verdict: str
+    comment: str
+    reviewer_id: EntityId
+    created_at: datetime
 
 
 async def get_session() -> AsyncSession:
@@ -275,116 +304,6 @@ def _positive_ids(value: Any) -> list[int]:
     )
 
 
-@router.post("", response_model=ManualInvestigationCreated, status_code=201)
-async def create_manual_investigation(
-    payload: ManualIncidentRequest,
-    user_id: EntityId = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-) -> ManualInvestigationCreated:
-    user = await _require_workspace(
-        session,
-        user_id=user_id,
-        workspace_id=payload.workspace_id,
-        permission="operator",
-    )
-    result = await PostgresIntakeStore(session).persist_manual(
-        workspace_id=payload.workspace_id,
-        incident=normalize_manual(payload),
-        created_by=user.id,
-    )
-    session.add(
-        AuditEvent(
-            actor_id=user.id,
-            actor_username=user.username,
-            action="investigation.create.manual",
-            target_type="investigation",
-            target_id=str(result.investigation_id),
-            workspace_id=payload.workspace_id,
-            result="ok",
-            detail={"source_type": "manual"},
-        )
-    )
-    await session.commit()
-    return ManualInvestigationCreated(
-        id=result.investigation_id or 0,
-        workspace_id=payload.workspace_id,
-        status="queued",
-        job_id=result.job_id or 0,
-    )
-
-
-@router.get("", response_model=InvestigationListPage)
-async def list_investigations(
-    workspace_id: EntityId | None = Query(default=None, gt=0),
-    status: str | None = Query(default=None),
-    result_state: str | None = Query(default=None),
-    q: str | None = Query(default=None, min_length=1, max_length=200),
-    include_archived: bool = Query(default=False),
-    after_id: EntityId | None = Query(default=None, gt=0),
-    limit: int = Query(default=50, ge=1, le=200),
-    user_id: EntityId = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    user = await _active_user(session, user_id)
-    allowed = await permitted_workspace_ids(session, user.id, user.is_system_admin)
-    statement = select(Investigation)
-    if after_id is not None:
-        statement = statement.where(Investigation.id > after_id)
-    if allowed is not None:
-        if not allowed:
-            return InvestigationListPage(items=[], next_after_id=None)
-        statement = statement.where(Investigation.workspace_id.in_(allowed))
-    if workspace_id is not None:
-        if allowed is not None and workspace_id not in allowed:
-            raise _error(403, "workspace_read_forbidden", "Workspace read permission required.")
-        statement = statement.where(Investigation.workspace_id == workspace_id)
-    if status is not None:
-        statement = statement.where(Investigation.status == status)
-    if result_state is not None:
-        statement = statement.where(Investigation.result_state == result_state)
-    if not include_archived:
-        statement = statement.where(Investigation.archived_at.is_(None))
-    statement = statement.outerjoin(
-        InvestigationInput, InvestigationInput.investigation_id == Investigation.id
-    ).outerjoin(InvestigationReport, InvestigationReport.investigation_id == Investigation.id)
-    if q is not None:
-        pattern = f"%{q.strip()}%"
-        statement = statement.where(
-            or_(
-                cast(Investigation.id, Text).ilike(pattern),
-                InvestigationInput.event.ilike(pattern),
-                InvestigationReport.headline.ilike(pattern),
-            )
-        )
-    values = (
-        await session.execute(
-            statement.with_only_columns(Investigation, InvestigationInput, InvestigationReport)
-            .order_by(Investigation.id)
-            .limit(limit + 1)
-        )
-    ).all()
-    page = values[:limit]
-    return InvestigationListPage(
-        items=[
-            InvestigationListItem(
-                id=investigation.id,
-                workspace_id=investigation.workspace_id,
-                status=investigation.status,
-                result_state=investigation.result_state,
-                output_language=investigation.output_language,
-                event=input_row.event if input_row is not None else None,
-                severity=input_row.severity if input_row is not None else None,
-                headline=report.headline if report is not None else None,
-                archived_at=investigation.archived_at,
-                created_at=investigation.created_at,
-                updated_at=investigation.updated_at,
-            )
-            for investigation, input_row, report in page
-        ],
-        next_after_id=page[-1][0].id if len(values) > limit and page else None,
-    )
-
-
 @router.get("/{investigation_id}", response_model=InvestigationOverview)
 async def get_investigation(
     investigation_id: EntityId,
@@ -421,11 +340,12 @@ async def get_investigation(
     error = input_row.error if input_row is not None else {}
     return InvestigationOverview(
         id=investigation.id,
+        incident_id=investigation.incident_id,
         workspace_id=investigation.workspace_id,
         status=investigation.status,
         result_state=investigation.result_state,
+        trigger_reason=investigation.trigger_reason,
         output_language=investigation.output_language,
-        archived_at=investigation.archived_at,
         event=input_row.event if input_row is not None else None,
         severity=input_row.severity if input_row is not None else None,
         occurred_at=input_row.occurred_at if input_row is not None else None,
@@ -450,6 +370,126 @@ async def get_investigation(
             )
             or 0
         ),
+    )
+
+
+def _finding_view(row: InvestigationCodeFinding) -> InvestigationCodeFindingView:
+    return InvestigationCodeFindingView(
+        id=row.id,
+        status=row.status,
+        source_artifact_id=row.source_artifact_id,
+        repository_id=row.repository_id,
+        revision=row.revision,
+        revision_origin=row.revision_origin,
+        path=row.path,
+        symbol=row.symbol,
+        start_line=row.start_line,
+        end_line=row.end_line,
+        issue_type=row.issue_type,
+        faulty_behavior=_clean_report_text(row.faulty_behavior),
+        why_wrong=_clean_report_text(row.why_wrong),
+        expected_behavior=_clean_report_text(row.expected_behavior),
+        trigger_condition=_clean_report_text(row.trigger_condition),
+        propagation=[_clean_report_text(value) for value in row.propagation],
+        incident_evidence_refs=_positive_ids(row.incident_evidence_refs),
+        supporting_evidence_refs=_positive_ids(row.supporting_evidence_refs),
+        counter_evidence_refs=_positive_ids(row.counter_evidence_refs),
+        missing_validation=[_clean_report_text(value) for value in row.missing_validation],
+        test_scenario=_clean_report_text(row.test_scenario),
+    )
+
+
+@router.get("/{investigation_id}/report", response_model=InvestigationReportView)
+async def get_investigation_report(
+    investigation_id: EntityId,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> InvestigationReportView:
+    _, investigation = await _investigation_access(
+        session,
+        user_id=user_id,
+        investigation_id=investigation_id,
+        permission="viewer",
+    )
+    report = await session.get(InvestigationReport, investigation.id)
+    if report is None:
+        raise _error(404, "investigation_report_not_found", "Investigation report is not available.")
+    findings = tuple(
+        (
+            await session.execute(
+                select(InvestigationCodeFinding)
+                .where(InvestigationCodeFinding.investigation_id == investigation.id)
+                .order_by(InvestigationCodeFinding.id)
+            )
+        ).scalars()
+    )
+    return InvestigationReportView(
+        schema_version=report.schema_version,
+        result_state=report.result_state,
+        headline=_clean_report_text(report.headline),
+        summary=_clean_report_text(report.summary),
+        incident_cause=report.incident_cause,
+        code_diagnosis=report.code_diagnosis,
+        participants=report.participants,
+        timeline_summary=report.timeline_summary,
+        source_assessments=report.source_assessments,
+        configuration_assessments=report.configuration_assessments,
+        confirmed_facts=report.confirmed_facts,
+        counter_evidence=report.counter_evidence,
+        evidence_gaps=[_clean_report_text(value) for value in report.evidence_gaps],
+        next_step=_clean_report_text(report.next_step),
+        code_findings=[_finding_view(row) for row in findings],
+    )
+
+
+@router.post("/{investigation_id}/reviews", response_model=InvestigationReviewOut, status_code=201)
+async def create_investigation_review(
+    investigation_id: EntityId,
+    payload: InvestigationReviewRequest,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> InvestigationReviewOut:
+    user, investigation = await _investigation_access(
+        session,
+        user_id=user_id,
+        investigation_id=investigation_id,
+        permission="operator",
+    )
+    if payload.code_finding_id is not None:
+        finding = await session.get(InvestigationCodeFinding, payload.code_finding_id)
+        if finding is None or finding.investigation_id != investigation.id:
+            raise _error(422, "review_finding_mismatch", "Code finding does not belong to investigation.")
+    review = InvestigationReview(
+        investigation_id=investigation.id,
+        code_finding_id=payload.code_finding_id,
+        verdict=payload.verdict,
+        comment=payload.comment,
+        reviewer_id=user.id,
+    )
+    session.add(review)
+    await session.flush()
+    session.add(
+        IncidentEvent(
+            incident_id=investigation.incident_id,
+            event_type="review_recorded",
+            actor_id=user.id,
+            payload={
+                "review_id": review.id,
+                "investigation_id": investigation.id,
+                "code_finding_id": review.code_finding_id,
+                "verdict": review.verdict,
+            },
+        )
+    )
+    await session.commit()
+    await session.refresh(review)
+    return InvestigationReviewOut(
+        id=review.id,
+        code_finding_id=review.code_finding_id,
+        verdict=review.verdict,
+        comment=review.comment,
+        reviewer_id=review.reviewer_id,
+        created_at=review.created_at,
     )
 
 
@@ -626,75 +666,4 @@ async def stream_investigation(
         events(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-@router.post(
-    "/{investigation_id}/retry", response_model=ManualInvestigationCreated, status_code=201
-)
-async def retry_investigation(
-    investigation_id: EntityId,
-    user_id: EntityId = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    user, investigation = await _investigation_access(
-        session, user_id=user_id, investigation_id=investigation_id, permission="operator"
-    )
-    if investigation.status not in _TERMINAL_STATUSES:
-        raise _error(409, "investigation_not_terminal", "Only a terminal investigation can retry.")
-    if investigation.archived_at is not None:
-        raise _error(409, "investigation_archived", "An archived investigation cannot retry.")
-    input_row = await session.get(InvestigationInput, investigation.id)
-    if input_row is None:
-        raise _error(
-            409, "investigation_input_missing", "Immutable investigation input is missing."
-        )
-    trace_id = None
-    if input_row.trace_value_ref is not None:
-        sealed = await session.scalar(
-            select(SealedEvidenceValue).where(
-                SealedEvidenceValue.investigation_id == investigation.id,
-                SealedEvidenceValue.value_ref == input_row.trace_value_ref,
-            )
-        )
-        if sealed is None:
-            raise _error(409, "investigation_trace_missing", "Immutable trace input is missing.")
-        trace_id = decrypt_value(sealed.value_ciphertext)
-    incident = NormalizedIncident(
-        source_type=input_row.source_type,
-        alert_id=None,
-        occurred_at=input_row.occurred_at,
-        severity=input_row.severity,
-        event=input_row.event,
-        trace_id=trace_id,
-        source_revision=input_row.source_revision,
-        error_masked=input_row.error,
-        raw_payload_masked=input_row.raw_payload_masked,
-        attachments_masked=tuple(input_row.attachments_masked),
-        masking_categories=(),
-    )
-    result = await PostgresIntakeStore(session).persist_manual(
-        workspace_id=investigation.workspace_id,
-        incident=incident,
-        created_by=user.id,
-        retry_of_id=investigation.id,
-    )
-    session.add(
-        AuditEvent(
-            actor_id=user.id,
-            actor_username=user.username,
-            action="investigation.retry",
-            target_type="investigation",
-            target_id=str(result.investigation_id),
-            workspace_id=investigation.workspace_id,
-            result="ok",
-            detail={"retry_of": investigation.id},
-        )
-    )
-    await session.commit()
-    return ManualInvestigationCreated(
-        id=result.investigation_id or 0,
-        workspace_id=investigation.workspace_id,
-        status="queued",
-        job_id=result.job_id or 0,
     )

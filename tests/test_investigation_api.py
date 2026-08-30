@@ -7,11 +7,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
 
 from lode.api.main import app
 from lode.config import settings
 from lode.db.models import (
+    Incident,
     Investigation,
     InvestigationDecision,
     InvestigationOperation,
@@ -27,7 +27,7 @@ from lode.security import create_token, hash_password
 
 
 @pytest.mark.asyncio
-async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
+async def test_event_stream_replays_cursor_for_an_incident_owned_run() -> None:
     suffix = uuid.uuid4().hex
     now = datetime.now(UTC)
     async with AsyncSessionLocal() as session:
@@ -67,8 +67,23 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
                 permission="operator",
             )
         )
+        incident = Incident(
+            workspace_id=workspace.id,
+            dedup_key="stream.failure",
+            event="stream.failure",
+            component="stream",
+            environment="test",
+            severity="WARNING",
+            state="open",
+            first_occurred_at=now,
+            last_occurred_at=now,
+            state_changed_at=now,
+        )
+        session.add(incident)
+        await session.flush()
         investigation = Investigation(
             workspace_id=workspace.id,
+            incident_id=incident.id,
             trigger_signature_hash="a" * 64,
             status="running",
             result_state="pending",
@@ -210,20 +225,3 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
             },
         )
         assert outside_response.status_code == 403
-
-    async with AsyncSessionLocal() as session:
-        admin = await session.scalar(select(User).where(User.is_system_admin))
-        assert admin is not None
-        admin.must_change_password = False
-        await session.commit()
-        admin_id = admin.id
-    admin_headers = {"Authorization": "Bearer " + create_token(admin_id, settings.jwt_signing_key, 3600)}
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        archived = await client.post(f"/admin/investigations/{investigation_id}/archive", headers=admin_headers)
-        assert archived.status_code == 200
-
-    async with AsyncSessionLocal() as session:
-        persisted = await session.get(Investigation, investigation_id)
-        assert persisted is not None
-        assert persisted.archived_by == admin_id
-        assert persisted.archived_at is not None

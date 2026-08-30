@@ -17,14 +17,15 @@ from lode.application.investigation_limits import (
     INVESTIGATION_HARD_LIMITS,
     investigation_execution_budget,
 )
-from lode.crypto import encrypt_value
+from lode.crypto import decrypt_value, encrypt_value
 from lode.db.models import (
-    Alert,
     DeadLetter,
     EvidenceArtifact,
     EvidenceCollection,
     GitRepository,
     Incident,
+    IncidentEvent,
+    IncidentOccurrence,
     IngestionEvent,
     Investigation,
     InvestigationInput,
@@ -42,14 +43,19 @@ from lode.infrastructure.investigation_control_snapshots import (
 )
 from lode.infrastructure.investigation_snapshots import ConnectorSnapshotStore
 
-IntakeOutcome = Literal["accepted", "duplicate", "dead_letter", "unassigned"]
+IntakeOutcome = Literal["accepted", "correlated", "duplicate", "dead_letter", "unassigned"]
+
+
+class IncidentCorrelationError(ValueError):
+    """A valid intake event cannot be attached to an operational incident."""
 
 
 @dataclass(frozen=True, slots=True)
 class IntakeResult:
     outcome: IntakeOutcome
     workspace_id: int | None = None
-    alert_id: int | None = None
+    occurrence_id: int | None = None
+    incident_id: int | None = None
     investigation_id: int | None = None
     job_id: int | None = None
     dead_letter_id: int | None = None
@@ -59,8 +65,15 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _signature(workspace_id: int, event: str, trace_id: str | None) -> str:
-    return canonical_hash({"event": event, "trace_id": trace_id, "workspace_id": workspace_id})
+def _trigger_signature(workspace_id: int, incident: NormalizedIncident) -> str:
+    return canonical_hash(
+        {
+            "workspace_id": workspace_id,
+            "dedup_key": incident.dedup_key,
+            "event_kind": incident.event_kind,
+            "occurred_at": incident.occurred_at.isoformat(),
+        }
+    )
 
 
 def _incident_evidence_content(
@@ -68,8 +81,12 @@ def _incident_evidence_content(
 ) -> dict[str, Any]:
     return {
         "source_type": incident.source_type,
-        "alert_id": incident.alert_id,
+        "source_event_id": incident.source_event_id,
+        "dedup_key": incident.dedup_key,
+        "event_kind": incident.event_kind,
         "event": incident.event,
+        "component": incident.component,
+        "environment": incident.environment,
         "severity": incident.severity,
         "occurred_at": incident.occurred_at.isoformat(),
         "trace_value_ref": trace_value_ref,
@@ -150,7 +167,7 @@ class PostgresIntakeStore:
         return IntakeResult(
             outcome="duplicate",
             workspace_id=row.workspace_id,
-            alert_id=row.alert_row_id,
+            occurrence_id=row.occurrence_id,
             dead_letter_id=row.dead_letter_id,
         )
 
@@ -240,12 +257,8 @@ class PostgresIntakeStore:
         replay_event_id: int | None = None,
         replay_dead_letter_id: int | None = None,
     ) -> IntakeResult:
-        if (
-            incident.alert_id is None
-            or incident.trace_id is None
-            or incident.source_revision is None
-        ):
-            raise ValueError("Kafka normalization requires alert, trace, and source revision")
+        if incident.source_event_id is None:
+            raise ValueError("Kafka normalization requires source_event_id")
 
         if replay_event_id is None:
             event_id = (
@@ -257,7 +270,7 @@ class PostgresIntakeStore:
                         partition=partition,
                         offset=offset,
                         payload_hash=payload_hash,
-                        alert_id=incident.alert_id,
+                        source_event_id=incident.source_event_id,
                         outcome="accepted",
                     )
                     .on_conflict_do_nothing(constraint="uq_ingestion_event_position")
@@ -280,7 +293,7 @@ class PostgresIntakeStore:
                 .values(
                     workspace_id=workspace_id,
                     payload_hash=payload_hash,
-                    alert_id=incident.alert_id,
+                    source_event_id=incident.source_event_id,
                     outcome="accepted",
                 )
             )
@@ -291,106 +304,51 @@ class PostgresIntakeStore:
                     .values(replayed=True, replayed_at=datetime.now(UTC))
                 )
 
-        trace_hash = _sha256(incident.trace_id)
-        trace_ciphertext = encrypt_value(incident.trace_id)
-        alert_row_id = (
-            await self.session.execute(
-                pg_insert(Alert)
-                .values(
-                    workspace_id=workspace_id,
-                    alert_id=incident.alert_id,
-                    occurred_at=incident.occurred_at,
-                    severity=incident.severity,
-                    event=incident.event,
-                    trace_id_ciphertext=trace_ciphertext,
-                    trace_id_hash=trace_hash,
-                    source_revision=incident.source_revision,
-                    error=incident.error_masked,
-                    raw_payload_masked=incident.raw_payload_masked,
-                )
-                .on_conflict_do_nothing(constraint="uq_alert_workspace_id")
-                .returning(Alert.id)
-            )
-        ).scalar_one_or_none()
-        if alert_row_id is None:
-            alert_row_id = (
-                await self.session.execute(
-                    select(Alert.id).where(
-                        Alert.workspace_id == workspace_id,
-                        Alert.alert_id == incident.alert_id,
-                    )
-                )
-            ).scalar_one()
-            await self.session.execute(
-                update(IngestionEvent)
-                .where(IngestionEvent.id == event_id)
-                .values(outcome="duplicate", alert_row_id=alert_row_id)
-            )
-            await self.session.commit()
-            return IntakeResult(
-                outcome="duplicate", workspace_id=workspace_id, alert_id=alert_row_id
-            )
-
-        signature_hash = _signature(workspace_id, incident.event, incident.trace_id)
-        incident_id = (
-            await self.session.execute(
-                pg_insert(Incident)
-                .values(
-                    workspace_id=workspace_id,
-                    signature_hash=signature_hash,
-                    event=incident.event,
-                    trace_id_hash=trace_hash,
-                    first_occurred_at=incident.occurred_at,
-                    last_occurred_at=incident.occurred_at,
-                    latest_alert_id=alert_row_id,
-                )
-                .on_conflict_do_nothing(
-                    index_elements=["workspace_id", "signature_hash"],
-                    index_where=text("state = 'active'"),
-                )
-                .returning(Incident.id)
-            )
-        ).scalar_one_or_none()
-        if incident_id is None:
-            existing_incident = (
-                await self.session.execute(
-                    select(Incident)
-                    .where(
-                        Incident.workspace_id == workspace_id,
-                        Incident.signature_hash == signature_hash,
-                        Incident.state == "active",
-                    )
-                    .with_for_update()
-                )
-            ).scalar_one()
-            existing_incident.last_occurred_at = max(
-                existing_incident.last_occurred_at, incident.occurred_at
-            )
-            existing_incident.latest_alert_id = alert_row_id
-            existing_incident.occurrence_count += 1
-            await self.session.execute(
-                update(IngestionEvent)
-                .where(IngestionEvent.id == event_id)
-                .values(outcome="duplicate", alert_row_id=alert_row_id)
-            )
-            await self.session.commit()
-            return IntakeResult(
-                outcome="duplicate", workspace_id=workspace_id, alert_id=alert_row_id
-            )
-
-        result = await self._create_investigation(
+        trace_ciphertext = (
+            encrypt_value(incident.trace_id) if incident.trace_id is not None else None
+        )
+        trace_hash = _sha256(incident.trace_id) if incident.trace_id is not None else None
+        incident_row, occurrence, created, duplicate = await self._record_occurrence(
             workspace_id=workspace_id,
             incident=incident,
-            alert_row_id=alert_row_id,
-            incident_id=incident_id,
             trace_ciphertext=trace_ciphertext,
             trace_hash=trace_hash,
-            created_by=None,
         )
+        if duplicate:
+            await self.session.execute(
+                update(IngestionEvent)
+                .where(IngestionEvent.id == event_id)
+                .values(outcome="duplicate", occurrence_id=occurrence.id)
+            )
+            await self.session.commit()
+            return IntakeResult(
+                outcome="duplicate",
+                workspace_id=workspace_id,
+                incident_id=occurrence.incident_id,
+                occurrence_id=occurrence.id,
+            )
         await self.session.execute(
             update(IngestionEvent)
             .where(IngestionEvent.id == event_id)
-            .values(alert_row_id=alert_row_id)
+            .values(outcome="accepted" if created else "correlated", occurrence_id=occurrence.id)
+        )
+        if incident.event_kind == "recovered" or not created:
+            await self.session.commit()
+            return IntakeResult(
+                outcome="accepted" if created else "correlated",
+                workspace_id=workspace_id,
+                incident_id=incident_row.id,
+                occurrence_id=occurrence.id,
+            )
+        result = await self._create_investigation(
+            workspace_id=workspace_id,
+            incident=incident,
+            occurrence_id=occurrence.id,
+            incident_id=incident_row.id,
+            trace_ciphertext=trace_ciphertext,
+            trace_hash=trace_hash,
+            created_by=None,
+            trigger_reason="initial",
         )
         await self.session.commit()
         return result
@@ -407,30 +365,374 @@ class PostgresIntakeStore:
             encrypt_value(incident.trace_id) if incident.trace_id is not None else None
         )
         trace_hash = _sha256(incident.trace_id) if incident.trace_id is not None else None
+        if retry_of_id is not None:
+            parent = await self.session.get(Investigation, retry_of_id)
+            if parent is None or parent.workspace_id != workspace_id:
+                raise ValueError("Retry investigation ownership is invalid")
+            result = await self._create_investigation(
+                workspace_id=workspace_id,
+                incident=incident,
+                occurrence_id=parent.trigger_occurrence_id,
+                incident_id=parent.incident_id,
+                trace_ciphertext=trace_ciphertext,
+                trace_hash=trace_hash,
+                created_by=created_by,
+                retry_of_id=retry_of_id,
+                trigger_reason="retry",
+            )
+            await self.session.commit()
+            return result
+        incident_row, occurrence, _created, _duplicate = await self._record_occurrence(
+            workspace_id=workspace_id,
+            incident=incident,
+            trace_ciphertext=trace_ciphertext,
+            trace_hash=trace_hash,
+        )
+        if incident.event_kind == "recovered":
+            await self.session.commit()
+            return IntakeResult(
+                outcome="correlated",
+                workspace_id=workspace_id,
+                incident_id=incident_row.id,
+                occurrence_id=occurrence.id,
+            )
         result = await self._create_investigation(
             workspace_id=workspace_id,
             incident=incident,
-            alert_row_id=None,
-            incident_id=None,
+            occurrence_id=occurrence.id,
+            incident_id=incident_row.id,
             trace_ciphertext=trace_ciphertext,
             trace_hash=trace_hash,
             created_by=created_by,
-            retry_of_id=retry_of_id,
+            trigger_reason="operator_request",
         )
         await self.session.commit()
         return result
+
+    async def start_investigation_for_incident(
+        self, *, incident_id: int, created_by: int
+    ) -> IntakeResult:
+        """Start an operator-requested run from the latest immutable occurrence."""
+
+        incident_row = await self.session.get(Incident, incident_id)
+        if incident_row is None:
+            raise ValueError("Incident does not exist")
+        occurrence = (
+            await self.session.execute(
+                select(IncidentOccurrence)
+                .where(
+                    IncidentOccurrence.incident_id == incident_id,
+                    IncidentOccurrence.event_kind == "firing",
+                )
+                .order_by(IncidentOccurrence.occurred_at.desc(), IncidentOccurrence.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if occurrence is None:
+            raise ValueError("Incident has no firing occurrence")
+        trace_id = (
+            decrypt_value(occurrence.trace_id_ciphertext)
+            if occurrence.trace_id_ciphertext is not None
+            else None
+        )
+        normalized = NormalizedIncident(
+            source_type=occurrence.source_type,
+            source_event_id=occurrence.source_event_id,
+            dedup_key=occurrence.dedup_key,
+            event_kind=occurrence.event_kind,
+            occurred_at=occurrence.occurred_at,
+            severity=occurrence.severity,
+            event=occurrence.event,
+            component=occurrence.component,
+            environment=occurrence.environment,
+            trace_id=trace_id,
+            source_revision=occurrence.source_revision,
+            error_masked=occurrence.error,
+            raw_payload_masked=occurrence.raw_payload_masked,
+            attachments_masked=(),
+            masking_categories=(),
+        )
+        return await self._create_investigation(
+            workspace_id=incident_row.workspace_id,
+            incident=normalized,
+            occurrence_id=occurrence.id,
+            incident_id=incident_row.id,
+            trace_ciphertext=occurrence.trace_id_ciphertext,
+            trace_hash=occurrence.trace_id_hash,
+            created_by=created_by,
+            trigger_reason="operator_request",
+        )
+
+    async def retry_investigation(self, *, investigation_id: int, created_by: int) -> IntakeResult:
+        """Create a new immutable run for a terminal run without another occurrence."""
+
+        parent = await self.session.get(Investigation, investigation_id)
+        if parent is None:
+            raise ValueError("Investigation does not exist")
+        if parent.status not in {"completed", "failed"}:
+            raise ValueError("Only a terminal investigation can retry")
+        occurrence_id = parent.trigger_occurrence_id
+        if occurrence_id is None:
+            occurrence = (
+                await self.session.execute(
+                    select(IncidentOccurrence)
+                    .where(
+                        IncidentOccurrence.incident_id == parent.incident_id,
+                        IncidentOccurrence.event_kind == "firing",
+                    )
+                    .order_by(IncidentOccurrence.occurred_at.desc(), IncidentOccurrence.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        else:
+            occurrence = await self.session.get(IncidentOccurrence, occurrence_id)
+        if occurrence is None or occurrence.incident_id != parent.incident_id:
+            raise ValueError("Retry investigation occurrence is unavailable")
+        trace_id = (
+            decrypt_value(occurrence.trace_id_ciphertext)
+            if occurrence.trace_id_ciphertext is not None
+            else None
+        )
+        normalized = NormalizedIncident(
+            source_type=occurrence.source_type,
+            source_event_id=occurrence.source_event_id,
+            dedup_key=occurrence.dedup_key,
+            event_kind=occurrence.event_kind,
+            occurred_at=occurrence.occurred_at,
+            severity=occurrence.severity,
+            event=occurrence.event,
+            component=occurrence.component,
+            environment=occurrence.environment,
+            trace_id=trace_id,
+            source_revision=occurrence.source_revision,
+            error_masked=occurrence.error,
+            raw_payload_masked=occurrence.raw_payload_masked,
+            attachments_masked=(),
+            masking_categories=(),
+        )
+        return await self._create_investigation(
+            workspace_id=parent.workspace_id,
+            incident=normalized,
+            occurrence_id=occurrence.id,
+            incident_id=parent.incident_id,
+            trace_ciphertext=occurrence.trace_id_ciphertext,
+            trace_hash=occurrence.trace_id_hash,
+            created_by=created_by,
+            retry_of_id=parent.id,
+            trigger_reason="retry",
+        )
+
+    async def _record_occurrence(
+        self,
+        *,
+        workspace_id: int,
+        incident: NormalizedIncident,
+        trace_ciphertext: str | None,
+        trace_hash: str | None,
+    ) -> tuple[Incident, IncidentOccurrence, bool, bool]:
+        """Persist one occurrence and atomically attach it to its operational incident."""
+
+        if incident.source_event_id is not None:
+            existing = (
+                await self.session.execute(
+                    select(IncidentOccurrence).where(
+                        IncidentOccurrence.workspace_id == workspace_id,
+                        IncidentOccurrence.source_event_id == incident.source_event_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                linked = await self.session.get(Incident, existing.incident_id)
+                if linked is None:
+                    raise RuntimeError("incident occurrence has no incident")
+                return linked, existing, False, True
+
+        now = datetime.now(UTC)
+        created = False
+        if incident.event_kind == "recovered":
+            incident_row = (
+                await self.session.execute(
+                    select(Incident)
+                    .where(
+                        Incident.workspace_id == workspace_id,
+                        Incident.dedup_key == incident.dedup_key,
+                        Incident.state.in_(("open", "acknowledged", "mitigated")),
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if incident_row is None:
+                raise IncidentCorrelationError("recovery occurrence has no active incident")
+        else:
+            recurrence_of_id = (
+                await self.session.execute(
+                    select(Incident.id)
+                    .where(
+                        Incident.workspace_id == workspace_id,
+                        Incident.dedup_key == incident.dedup_key,
+                        Incident.state.in_(("resolved", "closed")),
+                    )
+                    .order_by(Incident.last_occurred_at.desc(), Incident.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            incident_id = (
+                await self.session.execute(
+                    pg_insert(Incident)
+                    .values(
+                        workspace_id=workspace_id,
+                        dedup_key=incident.dedup_key,
+                        event=incident.event,
+                        component=incident.component,
+                        environment=incident.environment,
+                        severity=incident.severity,
+                        state="open",
+                        first_occurred_at=incident.occurred_at,
+                        last_occurred_at=incident.occurred_at,
+                        occurrence_count=1,
+                        recurrence_of_id=recurrence_of_id,
+                        state_changed_at=now,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=["workspace_id", "dedup_key"],
+                        index_where=text("state IN ('open', 'acknowledged', 'mitigated')"),
+                    )
+                    .returning(Incident.id)
+                )
+            ).scalar_one_or_none()
+            created = incident_id is not None
+            if created:
+                incident_row = await self.session.get(Incident, incident_id)
+                assert incident_row is not None
+                self.session.add(
+                    IncidentEvent(
+                        incident_id=incident_row.id,
+                        event_type="opened",
+                        actor_id=None,
+                        payload={
+                            "dedup_key": incident.dedup_key,
+                            "event": incident.event,
+                            "component": incident.component,
+                            "environment": incident.environment,
+                            "recurrence_of_id": recurrence_of_id,
+                        },
+                    )
+                )
+            else:
+                incident_row = (
+                    await self.session.execute(
+                        select(Incident)
+                        .where(
+                            Incident.workspace_id == workspace_id,
+                            Incident.dedup_key == incident.dedup_key,
+                            Incident.state.in_(("open", "acknowledged", "mitigated")),
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one()
+
+        if incident.source_event_id is not None:
+            existing = (
+                await self.session.execute(
+                    select(IncidentOccurrence).where(
+                        IncidentOccurrence.workspace_id == workspace_id,
+                        IncidentOccurrence.source_event_id == incident.source_event_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return incident_row, existing, False, True
+
+        if not created:
+            incident_row.last_occurred_at = max(incident_row.last_occurred_at, incident.occurred_at)
+            incident_row.occurrence_count += 1
+            if incident.severity == "CRITICAL":
+                incident_row.severity = "CRITICAL"
+            if incident.event_kind == "firing" and incident_row.state == "mitigated":
+                incident_row.state = "open"
+                incident_row.state_changed_at = now
+                incident_row.state_version += 1
+                self.session.add(
+                    IncidentEvent(
+                        incident_id=incident_row.id,
+                        event_type="state_changed",
+                        actor_id=None,
+                        payload={
+                            "command": "new_firing_occurrence",
+                            "from_state": "mitigated",
+                            "to_state": "open",
+                            "state_version": incident_row.state_version,
+                        },
+                    )
+                )
+            elif incident.event_kind == "recovered" and incident_row.state != "mitigated":
+                previous_state = incident_row.state
+                incident_row.state = "mitigated"
+                incident_row.state_changed_at = now
+                incident_row.state_version += 1
+                self.session.add(
+                    IncidentEvent(
+                        incident_id=incident_row.id,
+                        event_type="state_changed",
+                        actor_id=None,
+                        payload={
+                            "command": "recovery_occurrence",
+                            "from_state": previous_state,
+                            "to_state": "mitigated",
+                            "state_version": incident_row.state_version,
+                        },
+                    )
+                )
+
+        occurrence = IncidentOccurrence(
+            workspace_id=workspace_id,
+            incident_id=incident_row.id,
+            source_type=incident.source_type,
+            source_event_id=incident.source_event_id,
+            event_kind=incident.event_kind,
+            dedup_key=incident.dedup_key,
+            occurred_at=incident.occurred_at,
+            severity=incident.severity,
+            event=incident.event,
+            component=incident.component,
+            environment=incident.environment,
+            trace_id_ciphertext=trace_ciphertext,
+            trace_id_hash=trace_hash,
+            source_revision=incident.source_revision,
+            error=incident.error_masked,
+            raw_payload_masked=incident.raw_payload_masked,
+        )
+        self.session.add(occurrence)
+        await self.session.flush()
+        self.session.add(
+            IncidentEvent(
+                incident_id=incident_row.id,
+                event_type="occurrence_added",
+                actor_id=None,
+                payload={
+                    "occurrence_id": occurrence.id,
+                    "event_kind": incident.event_kind,
+                    "source_type": incident.source_type,
+                    "occurred_at": incident.occurred_at.isoformat(),
+                },
+            )
+        )
+        return incident_row, occurrence, created, False
 
     async def _create_investigation(
         self,
         *,
         workspace_id: int,
         incident: NormalizedIncident,
-        alert_row_id: int | None,
-        incident_id: int | None,
+        occurrence_id: int | None,
+        incident_id: int,
         trace_ciphertext: str | None,
         trace_hash: str | None,
         created_by: int | None,
         retry_of_id: int | None = None,
+        trigger_reason: Literal[
+            "initial", "severity_escalation", "evidence_change", "operator_request", "retry"
+        ] = "initial",
     ) -> IntakeResult:
         workspace = await self.session.get(Workspace, workspace_id)
         if workspace is None:
@@ -456,13 +758,13 @@ class PostgresIntakeStore:
             window_started_at = parent.window_started_at
             window_finished_at = parent.window_finished_at
             execution_budget = dict(parent.execution_budget)
-        signature_hash = _signature(workspace_id, incident.event, incident.trace_id)
         investigation = Investigation(
             workspace_id=workspace_id,
-            alert_id=alert_row_id,
             incident_id=incident_id,
+            trigger_occurrence_id=occurrence_id,
             retry_of_id=retry_of_id,
-            trigger_signature_hash=signature_hash,
+            trigger_signature_hash=_trigger_signature(workspace_id, incident),
+            trigger_reason=trigger_reason,
             output_language=output_language,
             window_started_at=window_started_at,
             window_finished_at=window_finished_at,
@@ -592,11 +894,25 @@ class PostgresIntakeStore:
         await ConnectorSnapshotStore.freeze_in_session(self.session, investigation.id)
         job = InvestigationJob(investigation_id=investigation.id)
         self.session.add(job)
+        self.session.add(
+            IncidentEvent(
+                incident_id=incident_id,
+                event_type="investigation_started",
+                actor_id=created_by,
+                payload={
+                    "investigation_id": investigation.id,
+                    "occurrence_id": occurrence_id,
+                    "trigger_reason": trigger_reason,
+                    "retry_of_id": retry_of_id,
+                },
+            )
+        )
         await self.session.flush()
         return IntakeResult(
             outcome="accepted",
             workspace_id=workspace_id,
-            alert_id=alert_row_id,
+            incident_id=incident_id,
+            occurrence_id=occurrence_id,
             investigation_id=investigation.id,
             job_id=job.id,
         )

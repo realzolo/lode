@@ -23,6 +23,9 @@ def test_frozen_business_endpoints_are_present() -> None:
         if method in {"get", "post", "put", "patch", "delete"}
     }
     assert expected <= actual
+    assert ("GET", "/investigations") not in actual
+    assert ("POST", "/investigations") not in actual
+    assert ("POST", "/admin/investigations/{investigation_id}/archive") not in actual
     assert ("GET", "/investigations/{investigation_id}/technical") not in actual
     assert ("GET", "/investigations/{investigation_id}/audit") not in actual
 
