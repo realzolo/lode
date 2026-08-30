@@ -366,36 +366,24 @@ export interface InvestigationListPage {
   next_after_id: number | null;
 }
 
-export interface InvestigationTimelineItem {
-  ordinal: number;
-  kind: string;
-  purpose: string;
-  expected_evidence: string;
+export interface InvestigationReportConclusion {
   status: string;
-  started_at: string | null;
-  finished_at: string | null;
-  failure_code: string | null;
+  summary: string;
+  causal_chain: string[];
+  evidence_refs: number[];
 }
 
-export interface EvidenceSummaryItem {
-  id: number;
-  kind: string;
-  evidence_class: string;
-  data_class: string;
-  source_revision: string | null;
-  source_time_start: string | null;
-  source_time_end: string | null;
+export interface InvestigationReportFact {
+  text: string;
+  evidence_refs: number[];
 }
 
 export interface InvestigationReportSummary {
   headline: string;
   summary: string;
-  cause_status: string;
-  cause: string;
-  causal_chain: string[];
-  diagnosis_status: string;
-  diagnosis: string;
-  confirmed_facts: string[];
+  cause: InvestigationReportConclusion;
+  code_diagnosis: InvestigationReportConclusion;
+  confirmed_facts: InvestigationReportFact[];
   evidence_gaps: string[];
   next_step: string;
 }
@@ -415,8 +403,6 @@ export interface InvestigationOverview {
   created_at: string;
   updated_at: string;
   report: InvestigationReportSummary | null;
-  timeline: InvestigationTimelineItem[];
-  evidence: EvidenceSummaryItem[];
   operation_count: number;
   evidence_count: number;
 }
@@ -453,6 +439,7 @@ export interface InvestigationExecutionNode {
   finished_at: string | null;
   duration_ms: number | null;
   evidence_count: number;
+  evidence_refs: number[];
   record_count: number | null;
   failure_code: string | null;
   detail_available: boolean;
@@ -523,50 +510,4 @@ export interface InvestigationExecutionNodeDetail {
   events: Array<Record<string, unknown>>;
   artifacts: InvestigationExecutionArtifactSummary[];
   result_page: InvestigationExecutionArtifactPage | null;
-}
-
-export type InvestigationAuditKind = 'native_read_candidates' | 'access_decisions' | 'authorized_reads' | 'read_attempts' | 'ai_invocations';
-
-export interface InvestigationAuditItem {
-  id: number;
-  kind: InvestigationAuditKind;
-  status: string;
-  summary: string;
-  created_at: string;
-}
-
-export interface InvestigationAuditPage {
-  items: InvestigationAuditItem[];
-  next_after_id: number | null;
-}
-
-export interface InvestigationDetail {
-  investigation: InvestigationSummary & Record<string, unknown>;
-  input: {
-    source_type: string;
-    event: string;
-    severity: 'CRITICAL' | 'WARNING';
-    occurred_at: string;
-    source_revision: string | null;
-    error: Record<string, unknown>;
-    attachments_masked: Array<Record<string, unknown>>;
-  } | null;
-  snapshot_summary: Record<string, unknown>;
-  context_revisions: Array<Record<string, unknown>>;
-  model_routing: Array<Record<string, unknown>>;
-  steps: Array<Record<string, unknown>>;
-  decisions: Array<Record<string, unknown>>;
-  operations: Array<Record<string, unknown>>;
-  evidence: {
-    collections: Array<Record<string, unknown>>;
-    artifacts: Array<Record<string, unknown>>;
-    assertions: Array<Record<string, unknown>>;
-    entities: Array<Record<string, unknown>>;
-    events: Array<Record<string, unknown>>;
-    relations: Array<Record<string, unknown>>;
-  };
-  source_revisions: Array<Record<string, unknown>>;
-  source_assessments: Array<Record<string, unknown>>;
-  code_findings: Array<Record<string, unknown>>;
-  report: Record<string, unknown> | null;
 }

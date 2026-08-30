@@ -460,12 +460,15 @@ strict synthesis/verifier publication, the default worker composition root, and
 the `analysis-check` workflow. Phase 9 added no dependency; it replaced the API
 and Web surfaces with the final Workspace/model/repository/connector/investigation
 contracts and added the `api-check` and `web-check` workflows.
-The investigation execution-graph view adds the direct Web dependency
+The investigation single-page execution Workbench uses the direct Web dependency
 `@xyflow/react` (declared as `^12.11.3`) for read-only pan, zoom, fit-view, and
-keyboard-accessible graph navigation. It adds three frozen viewer endpoints and
-extends `api-check` with deterministic projection and bounded artifact-page
-tests. It does not change investigation execution or persistence and requires no
-database migration.
+keyboard-accessible graph navigation. Its three viewer endpoints provide the
+canonical graph, structured node detail, and bounded artifact pages. The former
+technical snapshot and audit-list endpoints are removed; evidence and simplified
+execution records belong to their producing nodes. This changes the API surface
+and Workbench information architecture, but adds no dependency beyond React Flow,
+does not change investigation execution or persistence, and requires no database
+migration.
 The current unreleased Git-account/catalogue and typed-connector redesign adds
 no dependency. It replaces local repository and per-repository credential
 control with global provider/account management and Workspace authorizations;
@@ -514,8 +517,8 @@ trace values, prompts, endpoints, or other unbounded data.
 ## Runtime Components
 
 - `src/lode/api`: FastAPI control plane, global AI-output-language settings,
-  authorization, manual intake, human-readable investigation detail, explicit
-  technical detail, audit pagination, and SSE.
+  authorization, manual intake, summary-first investigation detail, structured
+  execution-graph projection and node results, and SSE.
 - `src/lode/consumer`: strict Kafka `incident.alert.v1` validation and shared intake dispatch.
 - `src/lode/worker`: independent durable investigation and repository-analysis job claiming, leases, retry/recovery, and bounded cross-investigation concurrency.
 - `src/lode/application/intake.py`: strict Kafka/manual validation and canonical normalization.
@@ -581,16 +584,17 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/engine/integrations.py`: provider adapters for verification and bounded snapshots.
 - `src/lode/engine/evidence/git.py`: stack parsing, exact revision lookup, symbol range extraction, lexical candidates, and related-symbol expansion.
 - `apps/web`: Next.js global model/output-language and Workspace control plane
-  plus the investigation Workbench for manual intake, summary-first detail,
-  evidence, execution audit, explicit technical detail, retry, archive, and
-  SSE refresh. All user-visible product text is served through `next-intl`.
+  plus the investigation Workbench for manual intake, summary-first single-page
+  diagnosis, compact/full execution flow, structured node detail, retry,
+  archive, and SSE refresh. All user-visible product text is served through
+  `next-intl`.
 
 PostgreSQL is the source of truth. Kafka consumers only validate and enqueue;
 workers execute investigations. FastAPI exposes health, authentication,
 system-administrator user and Workspace-member administration, global
 provider-account/model administration, Workspace policy/repository/connector
 control, and a separate ordinary-user Workbench API for manual intake,
-investigation reads, audit, retry, and SSE. The singleton
+investigation, execution-graph, retry, and SSE reads. The singleton
 `platform_settings` row selects the output language for newly created
 investigations; each investigation freezes that language. Model routing is frozen per
 investigation from its Workspace policy and eligible account models; there is no
@@ -954,12 +958,14 @@ External causes can be represented accurately while code diagnosis separately re
 
 HTTP errors use one envelope: `error.code`, a string or HTTP status code; `error.message`, always a string; and optional structured `error.details`. Do not place structured objects in `error.message`.
 
-`GET /investigations/{id}` returns a summary-first investigation overview:
-input metadata, report narrative, typed timeline, safe evidence index, counts,
-language, and archive state. `GET /investigations/{id}/technical` is the
-explicit masked technical snapshot for source authority, routing/context, full
-operations, and raw report structure. Secret ciphertext, authorization token
-hashes, and connector secret values are never serialized.
+`GET /investigations/{id}` returns the summary-first single-page overview: input
+metadata, counts, language, archive state, and a structured report. Root cause
+and code diagnosis each carry status, human-readable summary, causal chain where
+applicable, and deterministic artifact IDs; confirmed facts carry their own
+artifact IDs. The response has no duplicated timeline, evidence index, raw
+report, technical snapshot, or audit-list shape. Secret ciphertext,
+authorization token hashes, connector secret values, prompts, full model
+context, and hidden reasoning are never serialized.
 
 `GET /investigations/{id}/execution-graph` is the canonical viewer projection
 for the read-only Workbench flow. It returns schema version, persisted event
@@ -971,7 +977,9 @@ placeholder may use `phase:` and always has `detail_available=false`. Each real
 Connector invocation is one operation node; parallel operations share the same
 execution stage and have no edge between them. A running operation takes phase
 priority over the job phase. Without one, persisted job phase selects planning
-or reporting; terminal investigation status remains final.
+or reporting; terminal investigation status remains final. Every node exposes
+an ordered `evidence_refs` list containing only the masked artifact IDs actually
+owned by that node; `evidence_count` is derived from the same set.
 
 `GET /investigations/{id}/execution-graph/nodes/{node_id}` returns the selected
 node's purpose, selection reason, expected evidence, masked proposed/effective
@@ -997,13 +1005,10 @@ input, restores the sealed opaque trace, and records `retry_of`; it never
 mutates or reuses the old run. `POST /admin/investigations/{id}/archive`
 requires the system administrator, is valid only for a terminal run, and
 permanently makes that run read-only. Archived runs remain available to ordinary
-authorized users through detail, event, SSE, and audit reads.
-
-`GET /investigations/{id}/audit` cursor-pages one selected native candidate,
-access decision, authorized-read, attempt, or AI-invocation audit chain without
-returning encrypted actions or token hashes. The technical endpoint exposes
-masked operation purpose, input, progress, result, timing, failure, metrics,
-events, and evidence references when explicitly requested.
+authorized users through overview, execution-graph, node detail, event, and SSE
+reads. `/investigations/{id}/technical` and `/investigations/{id}/audit` do not
+exist; the node-detail projection is the only ordinary viewer path for masked
+queries, results, failures, and simplified execution records.
 
 SSE replays persisted canonical operation event names, including
 `operation.started`, `operation.progress`, and `operation.finished`, by their
@@ -1240,19 +1245,25 @@ permissions do not exist.
 The only investigation UI lives under `workbench`. Its list supports search,
 state filtering, manual intake, and navigation by compact entity ID. Detail leads
 with the incident summary, cause, code diagnosis, confirmed facts, evidence gaps,
-and recommended next step; its default tab is the read-only execution flow, with
-investigation rounds on the horizontal axis and frozen Connector/repository lanes
-on the vertical axis. Desktop and tablet use React Flow pan, zoom, fit-view,
-keyboard focus, and a locate-current-step control. Phones below 768px use the
-same projection as a round-grouped vertical list. Hover or focus shows a summary;
-selecting a persisted node opens the Radix right-side drawer for purpose,
-authorization, effective query, masked provider-specific results, failure, and
-audit details. SQL uses a dynamic-column table, Loki a time-ordered log list,
-search providers a record stream plus metadata, and other shapes a structured
-JSON fallback. Evidence, execution-audit, and technical tabs remain available.
-Raw source/runtime/model snapshots remain available
-only through the explicit technical view. Terminal runs expose retry and archive
-actions according to backend permission and lifecycle rules. The SSE client
+and recommended next step in one continuous page with no page-level tabs. The
+read-only execution graph follows the report and defaults to a compact projection
+containing input, Connector/source operations, live phase, and result. Full mode
+restores decision, synthesis, and verification nodes; compact transitive edges
+preserve reachability without inventing order between parallel operations.
+Investigation rounds form the horizontal axis and frozen Connector/repository
+lanes the vertical axis. Desktop and tablet use React Flow pan, zoom, fit-view,
+keyboard focus, and a locate-current-step control. Stage labels and lane bands
+are structural graph nodes and share the same pan/zoom transform as execution
+nodes and edges. Phones below 768px use the
+same projection as a round-grouped vertical list. Selecting a persisted node or
+report evidence reference opens the Radix right-side drawer and restores the
+previous graph position and focus when closed. SQL uses a dynamic-column table,
+Loki a time-ordered log list, search providers structured conditions and result
+tables, HTTPS typed request/response fields, Command bounded output lines, and
+source reads repository/path/line/code presentation. Unknown values use bounded
+key-value, list, or table presenters and never formatted raw JSON. Terminal runs
+expose retry and archive actions according to backend permission and lifecycle
+rules. The SSE client
 starts at the graph's canonical cursor and invalidates overview and graph state
 without resetting a manual node selection. While a non-terminal investigation
 is visible, a five-second canonical refresh covers planning and reporting
@@ -1260,7 +1271,7 @@ intervals that have no operation event. It never translates a historical
 response shape.
 
 Wide operational tables scroll inside their own container. Long identifiers
-wrap within table cells; tab lists scroll locally at narrow widths. The shell
+wrap within table cells. The shell
 uses a mobile navigation dialog, and browser checks cover 1440px desktop, 768px
 tablet, and 390px phone widths without page-level overflow or occlusion.
 
@@ -1312,7 +1323,7 @@ error preservation, exact stack/source range, candidate rejection, incident
 revision gates, strict model response schemas, independent semantic downgrade,
 external cause separation, cross-investigation concurrency, transient AI retry
 classification, scoped lease recovery, idempotent resume, manual retry lineage,
-archive immutability, operation detail, SSE replay, audit pagination,
+archive immutability, structured operation detail, SSE replay,
 permissions, masking, and fresh schema creation.
 
 Resource-understanding changes must additionally cover single repositories,
@@ -1369,9 +1380,11 @@ and expired-lease recovery in both investigation and reporting phases.
 Execution-graph changes must additionally cover Workspace isolation,
 deterministic node/edge ordering, parallel operations, repeated calls in one
 Connector lane, unused frozen Connectors, phase priority and terminal mapping,
-masked query states, artifact ownership, and the 100-record/256-KiB page limits.
-Workbench verification must preserve node selection across canonical refresh,
-exercise locate-current-step and drawer pagination, honor reduced motion, and
+masked query states, per-node evidence references, report evidence projection,
+artifact ownership, and the 100-record/256-KiB page limits. Workbench verification
+must preserve node selection across canonical refresh, exercise compact/full
+projection, evidence and current-step location, drawer pagination, all typed
+Connector result presenters, absence of visible raw JSON, honor reduced motion, and
 check English/Chinese light/dark layouts at 1440px, 768px, and 390px without
 page-level overflow or overlap.
 

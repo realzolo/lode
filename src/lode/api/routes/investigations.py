@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -19,6 +19,7 @@ from lode.api.investigation_execution_graph import (
     ExecutionArtifactPage,
     InvestigationExecutionGraph,
     InvestigationExecutionNodeDetail,
+    _clean_report_text,
     build_artifact_page,
     build_execution_graph,
     build_node_detail,
@@ -27,36 +28,15 @@ from lode.api.types import EntityId
 from lode.application.intake import ManualIncidentRequest, NormalizedIncident, normalize_manual
 from lode.crypto import decrypt_value
 from lode.db.models import (
-    AIInvocation,
     AuditEvent,
-    AuthorizedEvidenceRead,
-    ContextBundleRevision,
-    EvidenceAccessDecision,
     EvidenceArtifact,
-    EvidenceAssertion,
-    EvidenceCollection,
-    EvidenceReadAttempt,
     Investigation,
     InvestigationCodeFinding,
-    InvestigationConnectorSnapshot,
-    InvestigationDecision,
     InvestigationInput,
-    InvestigationModelBindingSnapshot,
-    InvestigationModelPolicySnapshot,
     InvestigationOperation,
     InvestigationOperationEvent,
     InvestigationReport,
-    InvestigationRepositorySnapshot,
-    InvestigationResourceGraphSnapshot,
-    InvestigationStep,
-    ModelRoutingDecision,
-    NativeReadCandidate,
-    ObservedEntity,
-    ObservedEvent,
-    ObservedRelation,
     SealedEvidenceValue,
-    SourceAssessment,
-    SourceRevision,
     User,
     Workspace,
 )
@@ -95,36 +75,24 @@ class InvestigationListPage(BaseModel):
     next_after_id: EntityId | None
 
 
-class InvestigationTimelineItem(BaseModel):
-    ordinal: int
-    kind: str
-    purpose: str
-    expected_evidence: str
+class InvestigationReportConclusion(BaseModel):
     status: str
-    started_at: datetime | None
-    finished_at: datetime | None
-    failure_code: str | None
+    summary: str
+    causal_chain: list[str]
+    evidence_refs: list[EntityId]
 
 
-class EvidenceSummaryItem(BaseModel):
-    id: EntityId
-    kind: str
-    evidence_class: str
-    data_class: str
-    source_revision: str | None
-    source_time_start: datetime | None
-    source_time_end: datetime | None
+class InvestigationReportFact(BaseModel):
+    text: str
+    evidence_refs: list[EntityId]
 
 
 class InvestigationReportSummary(BaseModel):
     headline: str
     summary: str
-    cause_status: str
-    cause: str
-    causal_chain: list[str]
-    diagnosis_status: str
-    diagnosis: str
-    confirmed_facts: list[str]
+    cause: InvestigationReportConclusion
+    code_diagnosis: InvestigationReportConclusion
+    confirmed_facts: list[InvestigationReportFact]
     evidence_gaps: list[str]
     next_step: str
 
@@ -144,32 +112,8 @@ class InvestigationOverview(BaseModel):
     created_at: datetime
     updated_at: datetime
     report: InvestigationReportSummary | None
-    timeline: list[InvestigationTimelineItem]
-    evidence: list[EvidenceSummaryItem]
     operation_count: int
     evidence_count: int
-
-
-AuditKind = Literal[
-    "native_read_candidates",
-    "access_decisions",
-    "authorized_reads",
-    "read_attempts",
-    "ai_invocations",
-]
-
-
-class InvestigationAuditItem(BaseModel):
-    id: EntityId
-    kind: AuditKind
-    status: str
-    summary: str
-    created_at: datetime
-
-
-class InvestigationAuditPage(BaseModel):
-    items: list[InvestigationAuditItem]
-    next_after_id: EntityId | None
 
 
 async def get_session() -> AsyncSession:
@@ -261,64 +205,73 @@ def _row(row: Any, *, exclude: frozenset[str] = frozenset()) -> dict[str, Any] |
     }
 
 
-async def _rows(
-    session: AsyncSession,
-    model: Any,
-    investigation_id: EntityId,
-    *,
-    order_by: Any | None = None,
-    exclude: frozenset[str] = frozenset(),
-) -> list[dict[str, Any]]:
-    statement = select(model).where(model.investigation_id == investigation_id)
-    if order_by is not None:
-        statement = statement.order_by(order_by)
-    values = (await session.execute(statement)).scalars()
-    return [_row(value, exclude=exclude) or {} for value in values]
-
-
-def _report_summary(report: InvestigationReport | None) -> InvestigationReportSummary | None:
+def _report_summary(
+    report: InvestigationReport | None,
+    code_findings: tuple[InvestigationCodeFinding, ...] = (),
+) -> InvestigationReportSummary | None:
     if report is None:
         return None
     cause = report.incident_cause
     diagnosis = report.code_diagnosis
-    facts = [
-        value["text"]
-        for value in report.confirmed_facts
-        if isinstance(value, dict) and isinstance(value.get("text"), str)
-    ]
+    facts = []
+    for value in report.confirmed_facts:
+        if not isinstance(value, dict) or not isinstance(value.get("text"), str):
+            continue
+        facts.append(
+            InvestigationReportFact(
+                text=_clean_report_text(value["text"]),
+                evidence_refs=_positive_ids(value.get("evidence_refs")),
+            )
+        )
     return InvestigationReportSummary(
-        headline=report.headline,
-        summary=report.summary,
-        cause_status=str(cause.get("status", "not_found")),
-        cause=str(cause.get("mechanism", "")),
-        causal_chain=[str(item) for item in cause.get("causal_chain", [])],
-        diagnosis_status=str(diagnosis.get("status", "not_found")),
-        diagnosis=str(diagnosis.get("summary", "")),
+        headline=_clean_report_text(report.headline),
+        summary=_clean_report_text(report.summary),
+        cause=InvestigationReportConclusion(
+            status=str(cause.get("status", "not_found")),
+            summary=_clean_report_text(str(cause.get("mechanism", ""))),
+            causal_chain=[
+                _clean_report_text(str(item)) for item in cause.get("causal_chain", [])
+            ],
+            evidence_refs=_positive_ids(cause.get("evidence_refs")),
+        ),
+        code_diagnosis=InvestigationReportConclusion(
+            status=str(diagnosis.get("status", "not_found")),
+            summary=_clean_report_text(str(diagnosis.get("summary", ""))),
+            causal_chain=[],
+            evidence_refs=_diagnosis_evidence_refs(report, code_findings),
+        ),
         confirmed_facts=facts,
-        evidence_gaps=[str(item) for item in report.evidence_gaps],
-        next_step=report.next_step,
+        evidence_gaps=[_clean_report_text(str(item)) for item in report.evidence_gaps],
+        next_step=_clean_report_text(report.next_step),
     )
 
 
-def _audit_item(kind: AuditKind, row: Any) -> InvestigationAuditItem:
-    if kind == "native_read_candidates":
-        status, summary = "proposed", row.purpose
-    elif kind == "access_decisions":
-        status = "allowed" if row.outcome == "allow" else "rejected"
-        summary = row.rejection_code or f"Validated by {row.parser_name}"
-    elif kind == "authorized_reads":
-        status, summary = "authorized", "Read authorization issued"
-    elif kind == "read_attempts":
-        status, summary = row.status, row.failure_code or f"Read attempt {row.attempt}"
-    else:
-        status = row.status
-        summary = row.error_code or f"{row.role} model invocation"
-    return InvestigationAuditItem(
-        id=row.id,
-        kind=kind,
-        status=status,
-        summary=summary,
-        created_at=row.created_at,
+def _diagnosis_evidence_refs(
+    report: InvestigationReport,
+    code_findings: tuple[InvestigationCodeFinding, ...],
+) -> list[int]:
+    selected_findings = set(_positive_ids(report.code_diagnosis.get("finding_refs")))
+    values: set[int] = set()
+    for finding in code_findings:
+        if finding.id not in selected_findings:
+            continue
+        values.update(_positive_ids(finding.incident_evidence_refs))
+        values.update(_positive_ids(finding.supporting_evidence_refs))
+        values.update(_positive_ids(finding.counter_evidence_refs))
+        if finding.source_artifact_id is not None:
+            values.add(finding.source_artifact_id)
+    return sorted(values)
+
+
+def _positive_ids(value: Any) -> list[int]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return sorted(
+        {
+            item
+            for item in value
+            if isinstance(item, int) and not isinstance(item, bool) and item > 0
+        }
     )
 
 
@@ -447,25 +400,24 @@ async def get_investigation(
     internal_id = investigation.id
     input_row = await session.get(InvestigationInput, internal_id)
     report = await session.get(InvestigationReport, internal_id)
-    operations = tuple(
-        (
-            await session.execute(
-                select(InvestigationOperation)
-                .where(InvestigationOperation.investigation_id == internal_id)
-                .order_by(InvestigationOperation.ordinal)
+    code_findings: tuple[InvestigationCodeFinding, ...] = ()
+    if report is not None:
+        finding_ids = _positive_ids(report.code_diagnosis.get("finding_refs"))
+        if finding_ids:
+            code_findings = tuple(
+                (
+                    await session.execute(
+                        select(InvestigationCodeFinding)
+                        .where(
+                            InvestigationCodeFinding.investigation_id == internal_id,
+                            InvestigationCodeFinding.id.in_(finding_ids),
+                        )
+                        .order_by(InvestigationCodeFinding.id)
+                    )
+                )
+                .scalars()
+                .all()
             )
-        ).scalars()
-    )
-    artifacts = tuple(
-        (
-            await session.execute(
-                select(EvidenceArtifact)
-                .where(EvidenceArtifact.investigation_id == internal_id)
-                .order_by(EvidenceArtifact.id)
-                .limit(100)
-            )
-        ).scalars()
-    )
     error = input_row.error if input_row is not None else {}
     return InvestigationOverview(
         id=investigation.id,
@@ -481,33 +433,15 @@ async def get_investigation(
         error_message=str(error.get("message")) if error.get("message") is not None else None,
         created_at=investigation.created_at,
         updated_at=investigation.updated_at,
-        report=_report_summary(report),
-        timeline=[
-            InvestigationTimelineItem(
-                ordinal=row.ordinal,
-                kind=row.operation_kind,
-                purpose=row.purpose,
-                expected_evidence=row.expected_evidence,
-                status=row.status,
-                started_at=row.started_at,
-                finished_at=row.finished_at,
-                failure_code=row.failure_code,
+        report=_report_summary(report, code_findings),
+        operation_count=int(
+            await session.scalar(
+                select(func.count()).select_from(InvestigationOperation).where(
+                    InvestigationOperation.investigation_id == internal_id
+                )
             )
-            for row in operations
-        ],
-        evidence=[
-            EvidenceSummaryItem(
-                id=row.id,
-                kind=row.artifact_kind,
-                evidence_class=row.evidence_class,
-                data_class=row.data_class,
-                source_revision=row.source_revision,
-                source_time_start=row.source_time_start,
-                source_time_end=row.source_time_end,
-            )
-            for row in artifacts
-        ],
-        operation_count=len(operations),
+            or 0
+        ),
         evidence_count=int(
             await session.scalar(
                 select(func.count()).select_from(EvidenceArtifact).where(
@@ -591,101 +525,6 @@ async def get_investigation_execution_artifact(
     return page
 
 
-@router.get("/{investigation_id}/technical")
-async def get_investigation_technical(
-    investigation_id: EntityId,
-    user_id: EntityId = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    _, investigation = await _investigation_access(
-        session,
-        user_id=user_id,
-        investigation_id=investigation_id,
-        permission="viewer",
-    )
-    internal_id = investigation.id
-    input_row = await session.get(InvestigationInput, internal_id)
-    graph_snapshot = await session.get(InvestigationResourceGraphSnapshot, internal_id)
-    policy_snapshot = await session.get(InvestigationModelPolicySnapshot, internal_id)
-    report = await session.get(InvestigationReport, internal_id)
-    return {
-        "investigation": _row(investigation),
-        "input": _row(input_row),
-        "snapshot_summary": {
-            "resource_graph": _row(graph_snapshot),
-            "model_policy": _row(policy_snapshot),
-            "repositories": await _rows(
-                session,
-                InvestigationRepositorySnapshot,
-                internal_id,
-                order_by=InvestigationRepositorySnapshot.id,
-                exclude=frozenset({"credential_revision_id", "credential_identity_hash"}),
-            ),
-            "connectors": await _rows(
-                session,
-                InvestigationConnectorSnapshot,
-                internal_id,
-                order_by=InvestigationConnectorSnapshot.id,
-                exclude=frozenset({"secret_ciphertext"}),
-            ),
-            "model_bindings": await _rows(
-                session,
-                InvestigationModelBindingSnapshot,
-                internal_id,
-                order_by=InvestigationModelBindingSnapshot.id,
-            ),
-        },
-        "context_revisions": await _rows(
-            session, ContextBundleRevision, internal_id, order_by=ContextBundleRevision.id
-        ),
-        "model_routing": await _rows(
-            session, ModelRoutingDecision, internal_id, order_by=ModelRoutingDecision.id
-        ),
-        "steps": await _rows(
-            session, InvestigationStep, internal_id, order_by=InvestigationStep.ordinal
-        ),
-        "decisions": await _rows(
-            session, InvestigationDecision, internal_id, order_by=InvestigationDecision.ordinal
-        ),
-        "operations": await _rows(
-            session, InvestigationOperation, internal_id, order_by=InvestigationOperation.ordinal
-        ),
-        "evidence": {
-            "collections": await _rows(
-                session, EvidenceCollection, internal_id, order_by=EvidenceCollection.id
-            ),
-            "artifacts": await _rows(
-                session, EvidenceArtifact, internal_id, order_by=EvidenceArtifact.id
-            ),
-            "assertions": await _rows(
-                session, EvidenceAssertion, internal_id, order_by=EvidenceAssertion.id
-            ),
-            "entities": await _rows(
-                session, ObservedEntity, internal_id, order_by=ObservedEntity.id
-            ),
-            "events": await _rows(
-                session, ObservedEvent, internal_id, order_by=ObservedEvent.occurred_at
-            ),
-            "relations": await _rows(
-                session, ObservedRelation, internal_id, order_by=ObservedRelation.id
-            ),
-        },
-        "source_revisions": await _rows(
-            session, SourceRevision, internal_id, order_by=SourceRevision.id
-        ),
-        "source_assessments": await _rows(
-            session, SourceAssessment, internal_id, order_by=SourceAssessment.id
-        ),
-        "code_findings": await _rows(
-            session,
-            InvestigationCodeFinding,
-            internal_id,
-            order_by=InvestigationCodeFinding.id,
-        ),
-        "report": _row(report),
-    }
-
-
 @router.get("/{investigation_id}/events")
 async def get_investigation_events(
     investigation_id: EntityId,
@@ -709,44 +548,6 @@ async def get_investigation_events(
         )
     ).scalars()
     return [_row(value) for value in values]
-
-
-@router.get("/{investigation_id}/audit", response_model=InvestigationAuditPage)
-async def get_investigation_audit(
-    investigation_id: EntityId,
-    kind: AuditKind = Query(default="access_decisions"),
-    after_id: EntityId | None = Query(default=None, gt=0),
-    limit: int = Query(default=200, ge=1, le=500),
-    user_id: EntityId = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    _, investigation = await _investigation_access(
-        session, user_id=user_id, investigation_id=investigation_id, permission="viewer"
-    )
-
-    models: dict[AuditKind, Any] = {
-        "native_read_candidates": NativeReadCandidate,
-        "access_decisions": EvidenceAccessDecision,
-        "authorized_reads": AuthorizedEvidenceRead,
-        "read_attempts": EvidenceReadAttempt,
-        "ai_invocations": AIInvocation,
-    }
-    model = models[kind]
-    statement = select(model).where(model.investigation_id == investigation.id)
-    if after_id is not None:
-        statement = statement.where(model.id > after_id)
-    values = tuple(
-        (
-            await session.execute(
-                statement.order_by(model.id).limit(limit + 1)
-            )
-        ).scalars()
-    )
-    page = values[:limit]
-    return InvestigationAuditPage(
-        items=[_audit_item(kind, row) for row in page],
-        next_after_id=page[-1].id if len(values) > limit and page else None,
-    )
 
 
 @router.get("/{investigation_id}/stream")

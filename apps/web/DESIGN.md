@@ -117,37 +117,54 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 - Empty, loading, and error states are first-class. First loads use structural table/list skeletons with the same row height as real data; refresh retains the existing data. Errors expose a Retry action when their source can be fetched again. Client UI renders localized safe messages and keeps stable backend codes out of ordinary display. Filtered-empty states preserve filters and offer Clear filters when any filter is active.
 - Workflow state is literal: a missing stage is pending only for an active run. A terminal historical run that predates a stage marks it skipped with an explanation; never show it as still queued.
 
-### Investigation Execution Flow
+### Investigation Single-Page Workbench
 
-- The investigation detail default tab is `Execution flow`. Its desktop/tablet
-  view is a read-only directed lane graph: investigation stages and rounds form
-  the horizontal axis; Lode control, each used Connector snapshot, and each used
-  repository snapshot form stable vertical lanes. Every persisted invocation is
-  an independent node. Parallel operations in one round share a stage and never
-  receive a fabricated edge between them. Repeated calls remain separate nodes
-  in the same lane.
-- Nodes have a stable 244px by 130px footprint and always show provider or step
-  name, node type, purpose, textual status with an icon, duration, and record or
-  artifact count. Blue, green, red, and neutral tones only reinforce status;
-  color is never the sole signal. Running nodes and incoming edges may use
-  restrained motion, which is disabled by `prefers-reduced-motion`.
-- Hover and keyboard focus expose only a compact summary. Activating a persisted
-  node opens the Radix right-side drawer. The drawer orders purpose, selection
-  reason, expected evidence, proposed/effective query and authorization, time and
-  result limits, masked response, failure, and audit chain. A rejected proposal
-  is visibly labelled proposed; it cannot look executed. SQL results use a
-  dynamic-column table, Loki results use a time-ordered log list,
-  Elasticsearch/OpenSearch use record lists plus metadata, HTTPS/Command use
-  structured output, and unknown shapes use formatted JSON.
-- Graph interaction allows selection, keyboard focus, pan, zoom, fit view, and a
-  labelled icon control that locates the current step. Drag, connect, delete, and
-  edit are unavailable. Canonical SSE or five-second refresh updates do not
-  replace the user's selection. Unused frozen Connectors live in one collapsed
-  `Not used` region and show a persisted rejection reason only when one exists.
-- Below 768px the canvas is removed, not squeezed. The same stages and nodes are
-  rendered as a round-grouped vertical list with identical status, selection,
-  and drawer behavior. The page itself never gains horizontal overflow; result
-  tables and long query/log content scroll only within their own surfaces.
+- Investigation detail has no page-level tabs. The continuous reading order is:
+  compact status and incident error, diagnosis and recommended action, execution
+  process, unused Connectors, then contextual node detail in a right-side drawer.
+  Workspace ID, duplicated evidence lists, model costs/tokens, and raw technical
+  snapshots are not ordinary page content. The investigation ID is an icon copy
+  action rather than permanent metadata.
+- The diagnosis area is an unframed two-column layout, not nested cards. Root
+  cause, causal chain, and confirmed facts are primary; code diagnosis, next step,
+  and non-empty evidence gaps are secondary. Before report publication, show the
+  current phase and collected operation/evidence counts. A failed investigation
+  leads with understandable incident and failed-step context.
+- The read-only directed lane graph defaults to `Compact`: event input, each
+  Connector/source operation, live phase, and result. `Full` restores decision,
+  synthesis, and verification nodes. Hidden-node transitive edges may reconnect
+  visible ancestors and descendants, but never fabricate order between parallel
+  operations. Locating a hidden active or evidence-owning node switches to Full
+  before focusing it.
+- Investigation stages and rounds form the horizontal axis; Lode control, each
+  used Connector snapshot, and each used repository snapshot form stable vertical
+  lanes. Stage headers and lane bands are structural React Flow nodes, so labels,
+  bands, edges, and operation nodes always share the same pan/zoom transform.
+  Every persisted invocation is independent. Repeated calls remain
+  separate nodes in one lane. Nodes have stable dimensions and show name, type,
+  purpose, icon plus textual status, duration, record count, and evidence count.
+  Color only reinforces status. Running motion is disabled by
+  `prefers-reduced-motion`.
+- Hover and keyboard focus expose a compact summary. Activating a persisted node
+  or a report `Evidence #ID` opens the same Radix right-side drawer. Closing it
+  restores graph viewport and focus. Canonical SSE and five-second refresh keep
+  the user's selection and silently refresh open detail when `event_cursor`
+  advances. Drag, connect, delete, and edit are unavailable.
+- The drawer uses fixed product presenters by node and Connector type. SQL uses a
+  code block plus dynamic-column table; Loki uses time, level, labels, and message;
+  Elasticsearch/OpenSearch uses structured conditions, sorting/range/aggregation
+  summaries, and record tables; HTTPS uses method, path, parameters, status, and
+  typed fields; Command uses search target, file scope, output lines, and error
+  summary; source reads use repository/revision/path/line/code presentation. A
+  rejected proposal is clearly not executed. Unknown shapes use bounded key-value,
+  list, count, or table presentation. Visible `JSON.stringify` and formatted raw
+  JSON fallbacks are forbidden.
+- Unused frozen Connectors live in one collapsed region after the graph and show
+  only name, type, and a persisted rejection reason when present. Below 768px the
+  canvas becomes a round-grouped vertical list with identical selection and
+  drawer behavior; the drawer is full width. The page itself never gains
+  horizontal overflow. Result tables and long query/log/code content scroll only
+  inside their own surfaces.
 
 ## Status And Feedback
 

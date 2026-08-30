@@ -1,22 +1,45 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Archive, ArrowLeft, CheckCircle2, CircleAlert, ClipboardCheck, RefreshCw, RotateCcw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  Archive,
+  ArrowLeft,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  CircleAlert,
+  ClipboardCheck,
+  Copy,
+  RefreshCw,
+  RotateCcw,
+} from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import { InvestigationExecutionFlow } from '@/components/investigation-execution-flow';
 import { Button } from '@/components/ui/button';
-import { Select } from '@/components/ui/select';
-import { Tabs } from '@/components/ui/tabs';
-import { apiErrorMessage, archiveInvestigation, fetchInvestigation, fetchInvestigationAudit, fetchInvestigationExecutionGraph, fetchInvestigationTechnical, openInvestigationStream, retryInvestigation } from '@/lib/api';
+import {
+  apiErrorMessage,
+  archiveInvestigation,
+  fetchInvestigation,
+  fetchInvestigationExecutionGraph,
+  openInvestigationStream,
+  retryInvestigation,
+} from '@/lib/api';
 import { Link, useRouter } from '@/lib/navigation';
-import type { InvestigationAuditItem, InvestigationAuditKind, InvestigationDetail, InvestigationExecutionGraph, InvestigationOverview } from '@/lib/types';
+import type {
+  InvestigationExecutionGraph,
+  InvestigationOverview,
+  InvestigationReportConclusion,
+  InvestigationReportSummary,
+} from '@/lib/types';
 
-const auditKinds: InvestigationAuditKind[] = ['access_decisions', 'read_attempts', 'ai_invocations', 'native_read_candidates', 'authorized_reads'];
-const evidenceKindKeys = { source_file: 'evidenceKinds.source_file', normalized_log_result: 'evidenceKinds.normalized_log_result', normalized_search_result: 'evidenceKinds.normalized_search_result', normalized_sql_result: 'evidenceKinds.normalized_sql_result', normalized_https_result: 'evidenceKinds.normalized_https_result', normalized_command_result: 'evidenceKinds.normalized_command_result' } as const;
-const evidenceClassKeys = { runtime: 'evidenceClasses.runtime', incident_source: 'evidenceClasses.incident_source', repository_search_candidate: 'evidenceClasses.repository_search_candidate', runtime_identified: 'evidenceClasses.runtime_identified' } as const;
+type FocusRequest = { nodeId: string; nonce: number } | null;
 
 function statusClass(status: string) {
-  return status === 'completed' || status === 'succeeded' || status === 'allowed' || status === 'authorized' ? 'success' : status === 'failed' || status === 'rejected' ? 'danger' : status === 'running' || status === 'reporting' ? 'warning' : 'neutral';
+  if (['completed', 'succeeded', 'allowed', 'authorized'].includes(status)) return 'success';
+  if (['failed', 'rejected', 'interrupted'].includes(status)) return 'danger';
+  if (['running', 'reporting'].includes(status)) return 'warning';
+  return 'neutral';
 }
 
 function statusLabel(status: string, t: ReturnType<typeof useTranslations>) {
@@ -42,6 +65,8 @@ function resultStateLabel(resultState: string, t: ReturnType<typeof useTranslati
     hypothesis: 'resultHypothesis',
     insufficient: 'resultInsufficient',
     unavailable: 'resultUnavailable',
+    no_defect: 'resultNoDefect',
+    not_found: 'resultNotFound',
   };
   return key[resultState] ? t(key[resultState]) : resultState;
 }
@@ -59,15 +84,14 @@ export default function InvestigationPage({ params }: { params: { investigationI
   const router = useRouter();
   const [detail, setDetail] = useState<InvestigationOverview | null>(null);
   const [executionGraph, setExecutionGraph] = useState<InvestigationExecutionGraph | null>(null);
-  const [auditKind, setAuditKind] = useState<InvestigationAuditKind>('access_decisions');
-  const [audit, setAudit] = useState<InvestigationAuditItem[]>([]);
-  const [auditNext, setAuditNext] = useState<number | null>(null);
-  const [technical, setTechnical] = useState<InvestigationDetail | null>(null);
-  const [activeTab, setActiveTab] = useState('flow');
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [focusRequest, setFocusRequest] = useState<FocusRequest>(null);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [streamAfter, setStreamAfter] = useState<number | null>(null);
   const dateLocale = locale === 'zh' ? 'zh-CN' : 'en-US';
+
   const load = useCallback(async () => {
     try {
       const [value, graph] = await Promise.all([
@@ -81,50 +105,56 @@ export default function InvestigationPage({ params }: { params: { investigationI
     } catch (cause) {
       setError(apiErrorMessage(cause, tc('requestFailed')));
     }
-  }, [params.investigationId]);
-  const loadAudit = useCallback(async (append = false, afterId?: number) => {
-    try {
-      const page = await fetchInvestigationAudit(params.investigationId, auditKind, afterId);
-      setAudit((current) => append ? [...current, ...page.items] : page.items);
-      setAuditNext(page.next_after_id);
-    } catch (cause) {
-      setError(apiErrorMessage(cause, tc('requestFailed')));
-    }
-  }, [auditKind, params.investigationId]);
+  }, [params.investigationId, tc]);
+
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    if (activeTab === 'audit') void loadAudit();
-  }, [activeTab, loadAudit]);
-  useEffect(() => {
-    if (activeTab !== 'technical' || technical) return;
-    void fetchInvestigationTechnical(params.investigationId).then(setTechnical).catch((cause) => setError(apiErrorMessage(cause, tc('requestFailed'))));
-  }, [activeTab, params.investigationId, technical]);
   useEffect(() => {
     if (streamAfter === null) return;
     const close = openInvestigationStream(params.investigationId, streamAfter, () => {
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => void load(), 150);
     });
-    return () => { close(); if (timer.current) clearTimeout(timer.current); };
+    return () => {
+      close();
+      if (timer.current) clearTimeout(timer.current);
+    };
   }, [load, params.investigationId, streamAfter]);
   useEffect(() => {
-    if (!detail || detail.status === 'completed' || detail.status === 'failed') return;
+    if (!detail || ['completed', 'failed'].includes(detail.status)) return;
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') void load();
     }, 5_000);
     return () => window.clearInterval(interval);
   }, [detail?.status, load]);
 
-  if (!detail) return <main className="p-8 text-sm text-muted-foreground">{error || tc('loading')}</main>;
+  const evidenceNodeById = useMemo(() => {
+    const values = new Map<number, string>();
+    for (const node of executionGraph?.nodes ?? []) {
+      for (const artifactId of node.evidence_refs) values.set(artifactId, node.id);
+    }
+    return values;
+  }, [executionGraph]);
+
+  const locateNode = useCallback((nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    setFocusRequest((current) => ({ nodeId, nonce: (current?.nonce ?? 0) + 1 }));
+    window.requestAnimationFrame(() => {
+      document.getElementById('investigation-flow')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
+
+  const locateEvidence = useCallback((artifactId: number) => {
+    const nodeId = evidenceNodeById.get(artifactId);
+    if (nodeId) locateNode(nodeId);
+  }, [evidenceNodeById, locateNode]);
+
+  if (!detail) {
+    return <main className="p-8 text-sm text-muted-foreground">{error || tc('loading')}</main>;
+  }
+
   const investigation = detail;
-  const terminal = investigation.status === 'completed' || investigation.status === 'failed';
-  const report = investigation.report;
-  const tabs = [
-    { value: 'flow', label: t('executionFlow'), content: <InvestigationExecutionFlow investigationId={detail.id} graph={executionGraph} /> },
-    { value: 'evidence', label: t('evidence', { count: detail.evidence_count }), content: <Evidence items={detail.evidence} dateLocale={dateLocale} /> },
-    { value: 'audit', label: t('audit'), content: <Audit kind={auditKind} items={audit} nextAfterId={auditNext} onKindChange={setAuditKind} onMore={() => auditNext !== null && void loadAudit(true, auditNext)} dateLocale={dateLocale} /> },
-    { value: 'technical', label: t('technical'), content: <Technical value={technical} /> },
-  ];
+  const terminal = ['completed', 'failed'].includes(investigation.status);
+
   async function retry() {
     try {
       const created = await retryInvestigation(investigation.id);
@@ -133,6 +163,7 @@ export default function InvestigationPage({ params }: { params: { investigationI
       setError(apiErrorMessage(cause, tc('requestFailed')));
     }
   }
+
   async function archive() {
     try {
       await archiveInvestigation(investigation.id);
@@ -141,75 +172,180 @@ export default function InvestigationPage({ params }: { params: { investigationI
       setError(apiErrorMessage(cause, tc('requestFailed')));
     }
   }
-  return <main className="dashboard-page investigation-page space-y-6">
-    <header className="border-b pb-6">
-      <div className="mb-5 flex items-center justify-between">
-        <Button size="sm" variant="ghost" asChild><Link href="/workbench"><ArrowLeft size={15} />{t('investigations')}</Link></Button>
+
+  async function copyInvestigationId() {
+    try {
+      await navigator.clipboard.writeText(String(investigation.id));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      setError(tc('requestFailed'));
+    }
+  }
+
+  return <main className="dashboard-page investigation-page space-y-0">
+    <header className="investigation-hero">
+      <div className="investigation-hero-actions">
+        <Button size="sm" variant="ghost" asChild>
+          <Link href="/workbench"><ArrowLeft size={15} />{t('investigations')}</Link>
+        </Button>
         <div className="flex gap-2">
           {terminal && !detail.archived_at && <Button size="sm" variant="outline" onClick={() => void retry()}><RotateCcw size={15} />{tc('retry')}</Button>}
           {terminal && !detail.archived_at && <Button size="sm" variant="outline" onClick={() => void archive()}><Archive size={15} />{tc('archive')}</Button>}
+          <Button size="icon" variant="outline" aria-label={t('copyInvestigationId')} title={copied ? t('investigationIdCopied') : t('copyInvestigationId')} onClick={() => void copyInvestigationId()}>
+            {copied ? <Check size={16} /> : <Copy size={16} />}
+          </Button>
           <Button size="icon" variant="outline" aria-label={tc('refresh')} title={tc('refresh')} onClick={() => void load()}><RefreshCw size={16} /></Button>
         </div>
       </div>
-      <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="investigation-hero-heading">
         <div>
-          <div className="mb-2 flex items-center gap-2"><span className={`table-status table-status-${statusClass(detail.status)}`}><i />{statusLabel(detail.status, t)}</span><span className="text-xs text-muted-foreground">{resultStateLabel(detail.result_state, t)}</span>{detail.archived_at && <span className="text-xs text-muted-foreground">{t('archived')}</span>}</div>
-          <h1 className="max-w-4xl text-2xl font-semibold">{report?.headline || t('analysisInProgress')}</h1>
-          <p className="mt-2 mono text-xs text-muted-foreground">{detail.id}</p>
+          <div className="investigation-state-line">
+            <span className={`table-status table-status-${statusClass(detail.status)}`}><i />{statusLabel(detail.status, t)}</span>
+            <span>{resultStateLabel(detail.result_state, t)}</span>
+            {detail.archived_at && <span>{t('archived')}</span>}
+          </div>
+          <h1>{detail.report?.headline || detail.event || t('analysisInProgress')}</h1>
         </div>
-        <dl className="grid w-full min-w-0 grid-cols-2 gap-x-5 gap-y-2 text-xs sm:w-auto sm:min-w-56">
-          <dt className="text-muted-foreground">{t('workspace')}</dt><dd className="min-w-0 break-words">{detail.workspace_id}</dd>
-          <dt className="text-muted-foreground">{t('event')}</dt><dd className="min-w-0 break-all">{detail.event || '-'}</dd>
-          <dt className="text-muted-foreground">{t('severity')}</dt><dd className="min-w-0 break-words">{severityLabel(detail.severity, t)}</dd>
-          <dt className="text-muted-foreground">{t('occurred')}</dt><dd className="min-w-0 break-words">{detail.occurred_at ? new Date(detail.occurred_at).toLocaleString(dateLocale) : '-'}</dd>
+        <dl className="investigation-core-meta">
+          <div><dt>{t('severity')}</dt><dd>{severityLabel(detail.severity, t)}</dd></div>
+          <div><dt>{t('event')}</dt><dd>{detail.event || '-'}</dd></div>
+          <div><dt>{t('occurred')}</dt><dd>{detail.occurred_at ? new Date(detail.occurred_at).toLocaleString(dateLocale) : '-'}</dd></div>
         </dl>
       </div>
-      {detail.error_message && <p className="mt-4 text-sm text-muted-foreground">{detail.error_type}: {detail.error_message}</p>}
-      {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
+      {(detail.error_type || detail.error_message) && <div className="investigation-error-context" data-failed={detail.status === 'failed' ? 'true' : 'false'}>
+        <AlertTriangle size={17} aria-hidden="true" />
+        <div><strong>{detail.error_type && !['object', 'error'].includes(detail.error_type.toLowerCase()) ? detail.error_type : t('incidentError')}</strong><p>{detail.error_message || '-'}</p></div>
+      </div>}
+      {error && <p className="investigation-request-error">{error}</p>}
     </header>
-    {report ? <Report report={report} /> : <p className="border-y py-8 text-center text-muted-foreground">{t('noReport')}</p>}
-    <Tabs items={tabs} onValueChange={setActiveTab} />
+
+    {detail.report
+      ? <ReportSummary report={detail.report} evidenceNodeById={evidenceNodeById} onEvidenceSelect={locateEvidence} />
+      : <InvestigationProgress
+          status={detail.status}
+          graph={executionGraph}
+          operationCount={detail.operation_count}
+          evidenceCount={detail.evidence_count}
+          onStepSelect={locateNode}
+        />}
+
+    <InvestigationExecutionFlow
+      investigationId={detail.id}
+      graph={executionGraph}
+      selectedNodeId={selectedNodeId}
+      onSelectedNodeIdChange={setSelectedNodeId}
+      focusRequest={focusRequest}
+    />
   </main>;
 }
 
-function Report({ report }: { report: NonNullable<InvestigationOverview['report']> }) {
+function InvestigationProgress({
+  status,
+  graph,
+  operationCount,
+  evidenceCount,
+  onStepSelect,
+}: {
+  status: string;
+  graph: InvestigationExecutionGraph | null;
+  operationCount: number;
+  evidenceCount: number;
+  onStepSelect: (nodeId: string) => void;
+}) {
   const t = useTranslations('workbench');
-  return <section className="space-y-5 border-b pb-6">
-    <div><p className="eyebrow">{t('summary')}</p><p className="mt-2 max-w-4xl text-base leading-7">{report.summary}</p></div>
-    <div className="grid gap-4 md:grid-cols-2">
-      <Insight title={t('likelyCause')} value={report.cause} icon={<CircleAlert size={17} />} detail={report.causal_chain} />
-      <Insight title={t('codeDiagnosis')} value={report.diagnosis} icon={<ClipboardCheck size={17} />} />
+  const failedNode = [...(graph?.nodes ?? [])].reverse().find((node) => ['failed', 'rejected', 'interrupted'].includes(node.status) && node.detail_available);
+  return <section className="investigation-progress-summary">
+    <RefreshCw size={18} aria-hidden="true" />
+    <div>
+      <p className="eyebrow">{t('flowCurrentPhase')}</p>
+      <h2>{graph ? t(`flowPhase.${graph.phase}`) : t('flowLoading')}</h2>
+      <p className="investigation-progress-counts">{t('investigationProgressCounts', { operations: operationCount, evidence: evidenceCount })}</p>
+      {status === 'failed' && failedNode && <button type="button" className="investigation-failed-step" onClick={() => onStepSelect(failedNode.id)}>
+        <AlertTriangle size={15} aria-hidden="true" />
+        <span><strong>{t('failedStep')}</strong><small>{failedNode.title}{failedNode.failure_code ? ` · ${failedNode.failure_code}` : ''}</small></span>
+        <ChevronRight size={15} aria-hidden="true" />
+      </button>}
     </div>
-    <div className="grid gap-4 md:grid-cols-2">
-      <ListPanel title={t('confirmedFacts')} values={report.confirmed_facts} positive />
-      <ListPanel title={t('evidenceGaps')} values={report.evidence_gaps} />
-    </div>
-    <Insight title={t('recommendedNextStep')} value={report.next_step} icon={<CheckCircle2 size={17} />} />
   </section>;
 }
 
-function Insight({ title, value, icon, detail = [] }: { title: string; value: string; icon: React.ReactNode; detail?: string[] }) {
-  return <section className="border p-4"><h2 className="flex items-center gap-2 text-sm font-semibold">{icon}{title}</h2><p className="mt-3 text-sm leading-6">{value || '-'}</p>{detail.length > 0 && <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm text-muted-foreground">{detail.map((item) => <li key={item}>{item}</li>)}</ol>}</section>;
-}
-
-function ListPanel({ title, values, positive = false }: { title: string; values: string[]; positive?: boolean }) {
-  return <section className="border p-4"><h2 className="text-sm font-semibold">{title}</h2>{values.length ? <ul className="mt-3 space-y-2 text-sm">{values.map((value) => <li key={value} className="flex gap-2"><span className={positive ? 'text-success' : 'text-warning'}>{positive ? '+' : '!'}</span><span className="min-w-0 break-words">{value}</span></li>)}</ul> : <p className="mt-3 text-sm text-muted-foreground">-</p>}</section>;
-}
-
-function Evidence({ items, dateLocale }: { items: InvestigationOverview['evidence']; dateLocale: string }) {
+function ReportSummary({
+  report,
+  evidenceNodeById,
+  onEvidenceSelect,
+}: {
+  report: InvestigationReportSummary;
+  evidenceNodeById: Map<number, string>;
+  onEvidenceSelect: (artifactId: number) => void;
+}) {
   const t = useTranslations('workbench');
-  if (!items.length) return <p className="border-y py-8 text-center text-muted-foreground">{t('noEvidence')}</p>;
-  return <div className="operational-table"><div className="table-wrap"><table className="table"><thead><tr><th>{t('evidenceId')}</th><th>{t('evidenceKind')}</th><th>{t('evidenceClass')}</th><th>{t('sourceRevision')}</th><th>{t('time')}</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td>{item.id}</td><td>{t(evidenceKindKeys[item.kind as keyof typeof evidenceKindKeys])}</td><td>{t(evidenceClassKeys[item.evidence_class as keyof typeof evidenceClassKeys])}</td><td className="mono text-xs">{item.source_revision || '-'}</td><td className="text-xs">{item.source_time_start ? new Date(item.source_time_start).toLocaleString(dateLocale) : '-'}</td></tr>)}</tbody></table></div></div>;
+  return <section className="investigation-report">
+    <header>
+      <p className="eyebrow">{t('summary')}</p>
+      <p>{report.summary}</p>
+    </header>
+    <div className="investigation-report-grid">
+      <div className="investigation-report-primary">
+        <ConclusionHeading icon={<CircleAlert size={17} />} title={t('likelyCause')} conclusion={report.cause} />
+        <p className="investigation-conclusion-text">{report.cause.summary || '-'}</p>
+        <EvidenceReferences refs={report.cause.evidence_refs} evidenceNodeById={evidenceNodeById} onSelect={onEvidenceSelect} />
+        {report.cause.causal_chain.length > 0 && <ol className="investigation-causal-chain">
+          {report.cause.causal_chain.map((item, index) => <li key={`${index}-${item}`}><span>{index + 1}</span><p>{item}</p></li>)}
+        </ol>}
+        {report.confirmed_facts.length > 0 && <section className="investigation-facts">
+          <h3><CheckCircle2 size={16} />{t('confirmedFacts')}</h3>
+          <ul>{report.confirmed_facts.map((fact, index) => <li key={`${index}-${fact.text}`}>
+            <Check size={14} aria-hidden="true" />
+            <div><p>{fact.text}</p><EvidenceReferences refs={fact.evidence_refs} evidenceNodeById={evidenceNodeById} onSelect={onEvidenceSelect} /></div>
+          </li>)}</ul>
+        </section>}
+      </div>
+      <aside className="investigation-report-secondary">
+        <section>
+          <ConclusionHeading icon={<ClipboardCheck size={17} />} title={t('codeDiagnosis')} conclusion={report.code_diagnosis} />
+          <p>{report.code_diagnosis.summary || '-'}</p>
+          <EvidenceReferences refs={report.code_diagnosis.evidence_refs} evidenceNodeById={evidenceNodeById} onSelect={onEvidenceSelect} />
+        </section>
+        <section>
+          <h3><CheckCircle2 size={16} />{t('recommendedNextStep')}</h3>
+          <p>{report.next_step || '-'}</p>
+        </section>
+        {report.evidence_gaps.length > 0 && <section>
+          <h3><AlertTriangle size={16} />{t('evidenceGaps')}</h3>
+          <ul>{report.evidence_gaps.map((item) => <li key={item}>{item}</li>)}</ul>
+        </section>}
+      </aside>
+    </div>
+  </section>;
 }
 
-function Audit({ kind, items, nextAfterId, onKindChange, onMore, dateLocale }: { kind: InvestigationAuditKind; items: InvestigationAuditItem[]; nextAfterId: number | null; onKindChange: (value: InvestigationAuditKind) => void; onMore: () => void; dateLocale: string }) {
+function ConclusionHeading({ icon, title, conclusion }: { icon: React.ReactNode; title: string; conclusion: InvestigationReportConclusion }) {
   const t = useTranslations('workbench');
-  const labels: Record<InvestigationAuditKind, string> = { native_read_candidates: t('auditCandidates'), access_decisions: t('auditDecisions'), authorized_reads: t('auditAuthorized'), read_attempts: t('auditAttempts'), ai_invocations: t('auditModels') };
-  return <section className="space-y-4"><Select className="max-w-56" value={kind} onChange={(event) => onKindChange(event.target.value as InvestigationAuditKind)}>{auditKinds.map((value) => <option value={value} key={value}>{labels[value]}</option>)}</Select><div className="divide-y border-y">{items.map((item) => <article key={item.id} className="flex flex-wrap items-center justify-between gap-3 py-3"><div><p className="text-sm font-medium">{item.summary}</p><p className="mt-1 text-xs text-muted-foreground">#{item.id} · {new Date(item.created_at).toLocaleString(dateLocale)}</p></div><span className={`table-status table-status-${statusClass(item.status)}`}><i />{statusLabel(item.status, t)}</span></article>)}{items.length === 0 && <p className="py-8 text-center text-muted-foreground">{t('noAudit')}</p>}</div>{nextAfterId !== null && <Button variant="outline" onClick={onMore}>{t('loadMore')}</Button>}</section>;
+  return <div className="investigation-conclusion-heading">
+    <h2>{icon}{title}</h2>
+    <span>{resultStateLabel(conclusion.status, t)}</span>
+  </div>;
 }
 
-function Technical({ value }: { value: InvestigationDetail | null }) {
+function EvidenceReferences({
+  refs,
+  evidenceNodeById,
+  onSelect,
+}: {
+  refs: number[];
+  evidenceNodeById: Map<number, string>;
+  onSelect: (artifactId: number) => void;
+}) {
   const t = useTranslations('workbench');
-  if (!value) return <p className="border-y py-8 text-center text-muted-foreground">{t('technicalUnavailable')}</p>;
-  return <pre className="max-h-[620px] overflow-auto border bg-card p-4 text-xs">{JSON.stringify(value, null, 2)}</pre>;
+  if (!refs.length) return null;
+  return <div className="investigation-evidence-refs" aria-label={t('supportingEvidence')}>
+    {refs.map((artifactId) => <button
+      key={artifactId}
+      type="button"
+      disabled={!evidenceNodeById.has(artifactId)}
+      title={evidenceNodeById.has(artifactId) ? t('locateEvidence') : t('evidenceSourceUnavailable')}
+      onClick={() => onSelect(artifactId)}
+    >{t('evidenceReference', { id: artifactId })}</button>)}
+  </div>;
 }

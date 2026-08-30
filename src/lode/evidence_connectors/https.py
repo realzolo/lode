@@ -7,8 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from lode.evidence_access.orchestrator import ExecutionPermit
 from lode.evidence_access.https import HTTPSPolicy
+from lode.evidence_access.orchestrator import ExecutionPermit
 from lode.evidence_access.types import AccessRejection
 from lode.evidence_connectors.common import credential_identity_hash, provider_headers
 from lode.evidence_connectors.safety import sanitize_evidence
@@ -141,7 +141,12 @@ class HTTPSConnector:
         else:
             raise ProviderExecutionError("invalid_response", "HTTP(S) response type is disabled")
         sanitized, categories, injection = sanitize_evidence(
-            {"provider": self.kind, "endpoint_id": action["endpoint_id"], "record": value}
+            {
+                "provider": self.kind,
+                "endpoint_id": action["endpoint_id"],
+                "status_code": response.status_code,
+                "record": value,
+            }
         )
         return {
             **sanitized,

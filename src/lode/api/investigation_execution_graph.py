@@ -9,7 +9,7 @@ from datetime import datetime
 from itertools import pairwise
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +41,10 @@ _NATIVE_ACTION = re.compile(
     r"(?P<language>logql|elasticsearch_query_dsl|opensearch_query_dsl|sql|https|command)$"
 )
 _SOURCE_ACTION = re.compile(r"^source:(?P<snapshot>[1-9][0-9]*):inspect$")
+_REPORT_EVIDENCE_MARKER = re.compile(
+    r"\s*(?:【证据\s*#?[1-9][0-9]*】|\[(?:Evidence|证据)\s*#?[1-9][0-9]*\]|\[[1-9][0-9]*\])",
+    re.IGNORECASE,
+)
 _RESULT_PAGE_BYTES = 256 * 1024
 
 NodeType = Literal[
@@ -85,6 +89,7 @@ class ExecutionGraphNode(BaseModel):
     finished_at: datetime | None = None
     duration_ms: int | None = None
     evidence_count: int = 0
+    evidence_refs: list[EntityId] = Field(default_factory=list)
     record_count: int | None = None
     failure_code: str | None = None
     detail_available: bool = True
@@ -461,7 +466,6 @@ class _GraphBuilder:
                     "selected_operation_count": decision.selected_operation_count,
                     "policy_outcome": decision.policy_outcome,
                 },
-                authorization={"policy_decisions": decision.policy_decisions},
                 execution=_invocation_summary(invocation),
                 events=[],
                 artifacts=[],
@@ -506,12 +510,22 @@ class _GraphBuilder:
         if node.node_type in {"synthesis", "verification"}:
             invocation_id = int(node.id.split(":", 1)[1])
             invocation = self.invocation_by_id[invocation_id]
+            overview: dict[str, Any] = {"role": invocation.role}
+            if invocation.role == "verifier" and isinstance(invocation.output_masked, dict):
+                verdict = invocation.output_masked.get("verdict")
+                reasons = invocation.output_masked.get("reasons")
+                if isinstance(verdict, str):
+                    overview["verdict"] = verdict
+                if isinstance(reasons, list):
+                    overview["reasons"] = [
+                        item for item in reasons if isinstance(item, str)
+                    ][:20]
             return InvestigationExecutionNodeDetail(
                 node_id=node.id,
                 node_type=node.node_type,
                 status=node.status,
                 title=node.title,
-                overview={"role": invocation.role},
+                overview=overview,
                 execution=_invocation_summary(invocation),
                 events=[],
                 artifacts=[],
@@ -524,12 +538,34 @@ class _GraphBuilder:
             title=node.title,
             overview={
                 "result_state": report.result_state if report else self.investigation.result_state,
-                "headline": report.headline if report else None,
-                "summary": report.summary if report else None,
-                "incident_cause": report.incident_cause if report else None,
-                "code_diagnosis": report.code_diagnosis if report else None,
-                "evidence_gaps": report.evidence_gaps if report else [],
-                "next_step": report.next_step if report else None,
+                "headline": _clean_report_text(report.headline) if report else None,
+                "summary": _clean_report_text(report.summary) if report else None,
+                "incident_cause": (
+                    {
+                        "status": report.incident_cause.get("status"),
+                        "mechanism": _clean_report_text(
+                            str(report.incident_cause.get("mechanism", ""))
+                        ),
+                    }
+                    if report
+                    else None
+                ),
+                "code_diagnosis": (
+                    {
+                        "status": report.code_diagnosis.get("status"),
+                        "summary": _clean_report_text(
+                            str(report.code_diagnosis.get("summary", ""))
+                        ),
+                    }
+                    if report
+                    else None
+                ),
+                "evidence_gaps": (
+                    [_clean_report_text(str(item)) for item in report.evidence_gaps]
+                    if report
+                    else []
+                ),
+                "next_step": _clean_report_text(report.next_step) if report else None,
             },
             events=[],
             artifacts=[],
@@ -553,6 +589,7 @@ class _GraphBuilder:
 
     def _input_node(self) -> ExecutionGraphNode:
         input_row = self.rows.input
+        evidence_refs = sorted(self.artifact_ids_for_input())
         return ExecutionGraphNode(
             id=f"input:{self.investigation.id}",
             node_type="input",
@@ -564,7 +601,8 @@ class _GraphBuilder:
             purpose="Immutable incident input",
             started_at=input_row.created_at if input_row is not None else self.investigation.created_at,
             finished_at=input_row.created_at if input_row is not None else None,
-            evidence_count=len(self.artifact_ids_for_input()),
+            evidence_count=len(evidence_refs),
+            evidence_refs=evidence_refs,
         )
 
     def artifact_ids_for_input(self) -> set[int]:
@@ -638,6 +676,7 @@ class _GraphBuilder:
             finished_at=operation.finished_at,
             duration_ms=_duration_ms(operation.started_at, operation.finished_at),
             evidence_count=len(artifacts),
+            evidence_refs=sorted(artifact.id for artifact in artifacts),
             record_count=record_count if artifacts else None,
             failure_code=operation.failure_code,
         )
@@ -716,9 +755,9 @@ class _GraphBuilder:
                     lane_id="control",
                     stage_index=stage,
                     status="succeeded" if self.investigation.status == "completed" else "running",
-                    title=report.headline,
+                    title=_clean_report_text(report.headline),
                     subtitle=report.result_state,
-                    purpose=report.summary,
+                    purpose=_clean_report_text(report.summary),
                     started_at=report.created_at,
                     finished_at=report.published_at,
                 )
@@ -1004,20 +1043,19 @@ def _invocation_summary(invocation: AIInvocation | None) -> dict[str, Any] | Non
     if invocation is None:
         return None
     return {
-        "id": invocation.id,
         "role": invocation.role,
         "status": invocation.status,
         "execution_class": invocation.execution_class,
         "attempt_count": invocation.attempt_count,
-        "input_tokens": invocation.input_tokens,
-        "output_tokens": invocation.output_tokens,
         "latency_ms": invocation.latency_ms,
-        "cost": invocation.cost,
         "termination_reason": invocation.termination_reason,
         "error_code": invocation.error_code,
-        "error_detail": invocation.error_detail,
         "created_at": invocation.created_at,
     }
+
+
+def _clean_report_text(value: str) -> str:
+    return re.sub(r"\s+", " ", _REPORT_EVIDENCE_MARKER.sub("", value)).strip()
 
 
 def _artifact_record_count(artifact: EvidenceArtifact) -> int | None:

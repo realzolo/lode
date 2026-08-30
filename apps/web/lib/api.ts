@@ -4,12 +4,9 @@ import type {
   CurrentUser,
   ConnectorCreateInput,
   EvidenceConnector,
-  InvestigationDetail,
   InvestigationExecutionArtifactPage,
   InvestigationExecutionGraph,
   InvestigationExecutionNodeDetail,
-  InvestigationAuditKind,
-  InvestigationAuditPage,
   InvestigationListPage,
   InvestigationOverview,
   InvestigationSummary,
@@ -303,12 +300,6 @@ export function fetchInvestigationExecutionArtifact(
 ) {
   const query = new URLSearchParams({ after_index: String(afterIndex), limit: '100' });
   return get<InvestigationExecutionArtifactPage>(`/investigations/${encodeURIComponent(id)}/execution-graph/nodes/${encodeURIComponent(nodeId)}/artifacts/${encodeURIComponent(artifactId)}?${query.toString()}`);
-}
-export function fetchInvestigationTechnical(id: number | string) { return get<InvestigationDetail>(`/investigations/${encodeURIComponent(id)}/technical`); }
-export function fetchInvestigationAudit(id: number | string, kind: InvestigationAuditKind, afterId?: number) {
-  const query = new URLSearchParams({ kind });
-  if (afterId !== undefined) query.set('after_id', String(afterId));
-  return get<InvestigationAuditPage>(`/investigations/${encodeURIComponent(id)}/audit?${query.toString()}`);
 }
 export function retryInvestigation(id: number | string) {
   return send<{ id: number }>(`/investigations/${encodeURIComponent(id)}/retry`, 'POST');

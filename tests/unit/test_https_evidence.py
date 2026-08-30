@@ -259,6 +259,7 @@ async def test_https_connector_verifies_catalog_executes_and_masks() -> None:
     assert verified.provider == "https"
     assert catalog.resources["safe_read_endpoints"][0]["id"] == "order-events"
     assert preflight["safe_read"] is True
+    assert result["status_code"] == 200
     assert result["record"]["token"] == "<REDACTED:credential_assignment>"
     assert result["prompt_injection_detected"] is True
     assert transport.calls[-1]["query"]["limit"] == "20"

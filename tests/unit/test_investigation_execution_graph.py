@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from lode.api.investigation_execution_graph import _artifact_page, _GraphBuilder, _ProjectionRows
+from lode.api.routes.investigations import _report_summary
 from lode.db.models import EvidenceArtifact
 
 
@@ -182,6 +183,21 @@ def test_graph_preserves_parallel_operations_and_repeated_connector_calls() -> N
         (SimpleNamespace(id=32, connector_id=302, connector_kind="loki", allowed_languages=["logql"]), "Runtime logs"),
         (SimpleNamespace(id=33, connector_id=303, connector_kind="https", allowed_languages=["https"]), "Status API"),
     )
+    rows.collections = (SimpleNamespace(id=501, operation_id=101),)
+    rows.artifacts = (
+        SimpleNamespace(
+            id=702,
+            collection_id=501,
+            artifact_kind="normalized_sql_result",
+            content_masked={"record_count": 1},
+        ),
+        SimpleNamespace(
+            id=701,
+            collection_id=501,
+            artifact_kind="normalized_sql_result",
+            content_masked={"records": [{"id": 1}, {"id": 2}]},
+        ),
+    )
 
     graph = _GraphBuilder(_investigation("reporting"), rows).build()
     nodes = {node.id: node for node in graph.nodes}
@@ -191,6 +207,107 @@ def test_graph_preserves_parallel_operations_and_repeated_connector_calls() -> N
     assert graph.active_node_ids == ["operation:103"]
     assert nodes["operation:101"].stage_index == nodes["operation:102"].stage_index
     assert nodes["operation:101"].lane_id == nodes["operation:103"].lane_id == "connector:31"
+    assert nodes["operation:101"].evidence_refs == [701, 702]
+    assert nodes["operation:101"].evidence_count == 2
+    assert nodes["operation:101"].record_count == 3
     assert ("operation:101", "operation:102") not in edge_pairs
     assert ("operation:102", "operation:101") not in edge_pairs
     assert {connector.snapshot_id for connector in graph.unused_connectors} == {33}
+
+
+def test_report_summary_projects_deterministic_section_evidence_links() -> None:
+    report = SimpleNamespace(
+        headline="Database timeout confirmed",
+        summary="The primary database exceeded its timeout budget. [Evidence 9]",
+        incident_cause={
+            "status": "confirmed",
+            "mechanism": "Database timeout 【证据 9】",
+            "causal_chain": ["Pool saturation [9]", "Request timeout [Evidence #7]"],
+            "evidence_refs": [9, 7, 9, 0, True],
+        },
+        code_diagnosis={
+            "status": "hypothesis",
+            "summary": "Retry handling may amplify the failure.",
+            "finding_refs": [44],
+        },
+        confirmed_facts=[
+            {"text": "The query exceeded 5 seconds. [Evidence 8]", "evidence_refs": [8, 7]},
+            {"text": "The pool was saturated.", "evidence_refs": [9]},
+        ],
+        evidence_gaps=[],
+        next_step="Inspect pool sizing.",
+    )
+    finding = SimpleNamespace(
+        id=44,
+        source_artifact_id=10,
+        incident_evidence_refs=[9],
+        supporting_evidence_refs=[11, 10],
+        counter_evidence_refs=[12],
+    )
+
+    summary = _report_summary(report, (finding,))
+
+    assert summary is not None
+    assert summary.summary == "The primary database exceeded its timeout budget."
+    assert summary.cause.summary == "Database timeout"
+    assert summary.cause.causal_chain == ["Pool saturation", "Request timeout"]
+    assert summary.cause.evidence_refs == [7, 9]
+    assert [item.model_dump() for item in summary.confirmed_facts] == [
+        {"text": "The query exceeded 5 seconds.", "evidence_refs": [7, 8]},
+        {"text": "The pool was saturated.", "evidence_refs": [9]},
+    ]
+    assert summary.code_diagnosis.evidence_refs == [9, 10, 11, 12]
+
+
+def test_model_node_detail_exposes_only_product_summary() -> None:
+    now = datetime.now(UTC)
+    rows = _ProjectionRows()
+    rows.job = SimpleNamespace(phase="reporting", last_error_code=None)
+    rows.invocations = (
+        SimpleNamespace(
+            id=81,
+            role="verifier",
+            status="succeeded",
+            execution_class="reasoning_optimized",
+            attempt_count=1,
+            latency_ms=230,
+            termination_reason="stop",
+            error_code=None,
+            error_detail={"provider_payload": "hidden"},
+            created_at=now,
+            output_masked={
+                "verdict": "approved",
+                "reasons": ["Runtime and source evidence agree."],
+                "finding_verdicts": [{"finding_index": 0, "verdict": "approved"}],
+            },
+            input_tokens=1_000,
+            output_tokens=200,
+            cost=1.5,
+        ),
+    )
+
+    builder = _GraphBuilder(_investigation("reporting"), rows)
+    node = next(item for item in builder.build().nodes if item.id == "verification:81")
+    detail = builder.detail(node)
+    serialized = detail.model_dump_json()
+
+    assert detail.overview == {
+        "role": "verifier",
+        "verdict": "approved",
+        "reasons": ["Runtime and source evidence agree."],
+    }
+    assert detail.execution == {
+        "role": "verifier",
+        "status": "succeeded",
+        "execution_class": "reasoning_optimized",
+        "attempt_count": 1,
+        "latency_ms": 230,
+        "termination_reason": "stop",
+        "error_code": None,
+        "created_at": now,
+    }
+    assert "input_tokens" not in serialized
+    assert "output_tokens" not in serialized
+    assert "cost" not in serialized
+    assert "provider_payload" not in serialized
+    assert "finding_verdicts" not in serialized

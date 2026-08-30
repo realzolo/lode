@@ -15,13 +15,11 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import {
-  AlertTriangle,
   Bot,
   Check,
   ChevronRight,
   CircleDot,
   Clock3,
-  Code2,
   Database,
   FileCode2,
   FileSearch,
@@ -37,36 +35,34 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { NodeDetailDrawer } from '@/components/investigation-execution-detail';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Select } from '@/components/ui/select';
-import {
-  apiErrorMessage,
-  fetchInvestigationExecutionArtifact,
-  fetchInvestigationExecutionNode,
-} from '@/lib/api';
 import type {
-  InvestigationExecutionArtifactPage,
+  InvestigationExecutionEdge,
   InvestigationExecutionGraph,
   InvestigationExecutionLane,
   InvestigationExecutionNode,
-  InvestigationExecutionNodeDetail,
 } from '@/lib/types';
 
 const NODE_WIDTH = 244;
 const NODE_HEIGHT = 130;
 const STAGE_GAP = 304;
 const LANE_GAP = 164;
+const COMPACT_NODE_TYPES = new Set<InvestigationExecutionNode['node_type']>([
+  'input',
+  'operation',
+  'report',
+  'phase',
+]);
+
+type FocusRequest = { nodeId: string; nonce: number } | null;
+type CanvasFocusRequest = { nodeIds: string[]; nonce: number } | null;
 
 type FlowNodeData = {
   item: InvestigationExecutionNode;
   lane: InvestigationExecutionLane;
+  displayTitle: string;
+  purposeLabel: string;
   statusLabel: string;
   typeLabel: string;
   roundLabel: string | null;
@@ -74,6 +70,9 @@ type FlowNodeData = {
 };
 
 type ExecutionFlowNode = Node<FlowNodeData, 'execution'>;
+type LaneFlowNode = Node<{ label: string; subtitle: string }, 'lane'>;
+type StageFlowNode = Node<{ label: string }, 'stage'>;
+type ExecutionCanvasNode = ExecutionFlowNode | LaneFlowNode | StageFlowNode;
 
 function formatDuration(duration: number | null) {
   if (duration === null) return '-';
@@ -86,6 +85,13 @@ function statusTone(status: string) {
   if (['failed', 'rejected', 'interrupted'].includes(status)) return 'danger';
   if (status === 'running') return 'active';
   return 'neutral';
+}
+
+function edgeStatus(status: string): InvestigationExecutionEdge['status'] {
+  if (status === 'running') return 'active';
+  if (['failed', 'rejected', 'interrupted'].includes(status)) return 'failed';
+  if (['succeeded', 'completed'].includes(status)) return 'complete';
+  return 'default';
 }
 
 function StatusIcon({ status }: { status: string }) {
@@ -113,20 +119,16 @@ function NodeTypeIcon({ item }: { item: InvestigationExecutionNode }) {
 
 function ExecutionNode({ data, selected }: NodeProps<ExecutionFlowNode>) {
   const { item, lane } = data;
-  return <div
-    className="execution-node"
-    data-status={statusTone(item.status)}
-    data-selected={selected ? 'true' : 'false'}
-  >
+  return <div className="execution-node" data-status={statusTone(item.status)} data-selected={selected ? 'true' : 'false'}>
     <Handle type="target" position={Position.Left} isConnectable={false} />
     <div className="execution-node-heading">
       <span className="execution-node-icon"><NodeTypeIcon item={item} /></span>
       <div>
-        <strong>{item.title}</strong>
+        <strong>{data.displayTitle}</strong>
         <span>{data.typeLabel} · {lane.label}</span>
       </div>
     </div>
-    <p>{item.purpose || item.subtitle || data.typeLabel}</p>
+    <p>{data.purposeLabel}</p>
     <div className="execution-node-meta">
       <span data-tone={statusTone(item.status)}><StatusIcon status={item.status} />{data.statusLabel}</span>
       <span><Clock3 size={12} />{formatDuration(item.duration_ms)}</span>
@@ -134,21 +136,29 @@ function ExecutionNode({ data, selected }: NodeProps<ExecutionFlowNode>) {
     </div>
     {data.roundLabel && <span className="execution-node-round">{data.roundLabel}</span>}
     <div className="execution-node-tooltip" role="tooltip">
-      <strong>{item.title}</strong>
-      <span>{item.purpose || item.subtitle || data.typeLabel}</span>
+      <strong>{data.displayTitle}</strong>
+      <span>{data.purposeLabel}</span>
       {item.failure_code && <code>{item.failure_code}</code>}
     </div>
     <Handle type="source" position={Position.Right} isConnectable={false} />
   </div>;
 }
 
-const nodeTypes = { execution: ExecutionNode };
+function LaneNode({ data }: NodeProps<LaneFlowNode>) {
+  return <div className="execution-lane-band">
+    <div className="execution-lane-label"><strong>{data.label}</strong><span>{data.subtitle}</span></div>
+  </div>;
+}
 
-function stageLabel(
-  stage: InvestigationExecutionGraph['stages'][number],
-  t: ReturnType<typeof useTranslations>,
-) {
+function StageNode({ data }: NodeProps<StageFlowNode>) {
+  return <div className="execution-stage-label">{data.label}</div>;
+}
+
+const nodeTypes = { execution: ExecutionNode, lane: LaneNode, stage: StageNode };
+
+function stageLabel(stage: InvestigationExecutionGraph['stages'][number], t: ReturnType<typeof useTranslations>) {
   if (stage.kind === 'input') return t('flowStageInput');
+  if (stage.kind === 'decision' && stage.ordinal === null) return t('flowCurrentPhase');
   if (stage.kind === 'decision') return t('flowStageDecision', { round: stage.ordinal || 1 });
   if (stage.kind === 'execution') return t('flowStageExecution', { round: stage.ordinal || 1 });
   if (stage.kind === 'reporting') return t('flowStageReporting');
@@ -168,6 +178,19 @@ function nodeTypeLabel(type: InvestigationExecutionNode['node_type'], t: ReturnT
   return labels[type];
 }
 
+function displayNodeTitle(node: InvestigationExecutionNode, t: ReturnType<typeof useTranslations>) {
+  if (node.node_type === 'decision') return t('flowDecisionRound', { round: node.round_ordinal || 1 });
+  if (node.node_type === 'synthesis') return t('flowSynthesisTitle');
+  if (node.node_type === 'verification') return t('flowVerificationTitle');
+  if (node.node_type === 'phase') return t(`flowPhase.${node.id.slice('phase:'.length)}`);
+  return node.title;
+}
+
+function displayNodePurpose(node: InvestigationExecutionNode, typeLabel: string, t: ReturnType<typeof useTranslations>) {
+  if (node.node_type === 'input') return t('flowIncidentContext');
+  return node.purpose || node.subtitle || typeLabel;
+}
+
 function statusLabel(status: string, t: ReturnType<typeof useTranslations>) {
   const labels: Record<string, string> = {
     queued: t('statusQueued'),
@@ -182,52 +205,138 @@ function statusLabel(status: string, t: ReturnType<typeof useTranslations>) {
   return labels[status] || status;
 }
 
+export function compactExecutionGraph(graph: InvestigationExecutionGraph): InvestigationExecutionGraph {
+  const visibleNodes = graph.nodes.filter((node) => COMPACT_NODE_TYPES.has(node.node_type));
+  const visibleIds = new Set(visibleNodes.map((node) => node.id));
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const outgoing = new Map<string, InvestigationExecutionEdge[]>();
+  for (const edge of graph.edges) {
+    const values = outgoing.get(edge.source) || [];
+    values.push(edge);
+    outgoing.set(edge.source, values);
+  }
+  for (const values of outgoing.values()) values.sort((left, right) => left.target.localeCompare(right.target));
+
+  const edges: InvestigationExecutionEdge[] = [];
+  for (const source of visibleNodes) {
+    const queue = [...(outgoing.get(source.id) || []).map((edge) => edge.target)];
+    const visited = new Set<string>();
+    const targets = new Set<string>();
+    while (queue.length) {
+      const target = queue.shift();
+      if (!target || visited.has(target)) continue;
+      visited.add(target);
+      if (visibleIds.has(target)) {
+        if (target !== source.id) targets.add(target);
+        continue;
+      }
+      queue.push(...(outgoing.get(target) || []).map((edge) => edge.target));
+    }
+    for (const target of [...targets].sort()) {
+      edges.push({
+        id: `compact:${source.id}->${target}`,
+        source: source.id,
+        target,
+        kind: 'sequence',
+        status: edgeStatus(nodeById.get(target)?.status || ''),
+      });
+    }
+  }
+
+  const usedStageIds = new Set(visibleNodes.map((node) => node.stage_index));
+  const usedLaneIds = new Set(visibleNodes.map((node) => node.lane_id));
+  return {
+    ...graph,
+    active_node_ids: graph.active_node_ids.filter((id) => visibleIds.has(id)),
+    nodes: visibleNodes,
+    edges,
+    stages: graph.stages.filter((stage) => usedStageIds.has(stage.index)),
+    lanes: graph.lanes.filter((lane) => usedLaneIds.has(lane.id)),
+  };
+}
+
 function FlowCanvas({
   graph,
   selectedNodeId,
+  focusRequest,
   onSelect,
 }: {
   graph: InvestigationExecutionGraph;
   selectedNodeId: string | null;
+  focusRequest: CanvasFocusRequest;
   onSelect: (node: InvestigationExecutionNode) => void;
 }) {
   const t = useTranslations('workbench');
-  const { fitView } = useReactFlow<ExecutionFlowNode>();
-  const laneIndex = useMemo(
-    () => new Map(graph.lanes.map((lane, index) => [lane.id, index])),
-    [graph.lanes],
-  );
-  const stageIndex = useMemo(
-    () => new Map(graph.stages.map((stage, index) => [stage.index, index])),
-    [graph.stages],
-  );
+  const { fitView } = useReactFlow<ExecutionCanvasNode>();
+  const laneIndex = useMemo(() => new Map(graph.lanes.map((lane, index) => [lane.id, index])), [graph.lanes]);
+  const stageIndex = useMemo(() => new Map(graph.stages.map((stage, index) => [stage.index, index])), [graph.stages]);
   const lanes = useMemo(() => new Map(graph.lanes.map((lane) => [lane.id, lane])), [graph.lanes]);
-  const nodes = useMemo<ExecutionFlowNode[]>(() => graph.nodes.map((item) => ({
-    id: item.id,
-    type: 'execution',
-    position: {
-      x: (stageIndex.get(item.stage_index) || 0) * STAGE_GAP + 28,
-      y: (laneIndex.get(item.lane_id) || 0) * LANE_GAP + 17,
-    },
-    width: NODE_WIDTH,
-    height: NODE_HEIGHT,
-    selected: item.id === selectedNodeId,
-    selectable: true,
-    draggable: false,
-    deletable: false,
-    focusable: true,
-    ariaLabel: t('flowOpenNode', { name: item.title }),
-    data: {
-      item,
-      lane: lanes.get(item.lane_id) || graph.lanes[0],
-      statusLabel: statusLabel(item.status, t),
-      typeLabel: nodeTypeLabel(item.node_type, t),
-      roundLabel: item.round_ordinal ? t('flowRound', { round: item.round_ordinal }) : null,
-      metricsLabel: item.record_count !== null
-        ? t('flowRecords', { count: item.record_count })
-        : t('flowEvidenceCount', { count: item.evidence_count }),
-    },
-  })), [graph.lanes, graph.nodes, laneIndex, lanes, selectedNodeId, stageIndex, t]);
+  const canvasWidth = Math.max(780, 180 + graph.stages.length * STAGE_GAP + 120);
+  const nodes = useMemo<ExecutionCanvasNode[]>(() => {
+    const laneNodes: LaneFlowNode[] = graph.lanes.map((lane, index) => ({
+      id: `lane:${lane.id}`,
+      type: 'lane',
+      position: { x: 0, y: 42 + index * LANE_GAP },
+      width: canvasWidth,
+      height: LANE_GAP,
+      selectable: false,
+      draggable: false,
+      deletable: false,
+      focusable: false,
+      zIndex: -1,
+      style: { pointerEvents: 'none' },
+      data: {
+        label: lane.label,
+        subtitle: lane.connector_kind || lane.subtitle || t('flowControlLane'),
+      },
+    }));
+    const stageNodes: StageFlowNode[] = graph.stages.map((stage, index) => ({
+      id: `stage:${stage.index}`,
+      type: 'stage',
+      position: { x: 180 + index * STAGE_GAP, y: 0 },
+      width: STAGE_GAP,
+      height: 42,
+      selectable: false,
+      draggable: false,
+      deletable: false,
+      focusable: false,
+      zIndex: -1,
+      style: { pointerEvents: 'none' },
+      data: { label: stageLabel(stage, t) },
+    }));
+    const executionNodes: ExecutionFlowNode[] = graph.nodes.map((item) => {
+      const metrics = [];
+      if (item.record_count !== null) metrics.push(t('flowRecords', { count: item.record_count }));
+      metrics.push(t('flowEvidenceCount', { count: item.evidence_count }));
+      return {
+        id: item.id,
+        type: 'execution',
+        position: {
+          x: 180 + (stageIndex.get(item.stage_index) || 0) * STAGE_GAP + 28,
+          y: 42 + (laneIndex.get(item.lane_id) || 0) * LANE_GAP + 17,
+        },
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT,
+        selected: item.id === selectedNodeId,
+        selectable: true,
+        draggable: false,
+        deletable: false,
+        focusable: true,
+        ariaLabel: t('flowOpenNode', { name: displayNodeTitle(item, t) }),
+        data: {
+          item,
+          lane: lanes.get(item.lane_id) || graph.lanes[0],
+          displayTitle: displayNodeTitle(item, t),
+          purposeLabel: displayNodePurpose(item, nodeTypeLabel(item.node_type, t), t),
+          statusLabel: statusLabel(item.status, t),
+          typeLabel: nodeTypeLabel(item.node_type, t),
+          roundLabel: item.round_ordinal ? t('flowRound', { round: item.round_ordinal }) : null,
+          metricsLabel: metrics.join(' · ') || '-',
+        },
+      };
+    });
+    return [...laneNodes, ...stageNodes, ...executionNodes];
+  }, [canvasWidth, graph.lanes, graph.nodes, graph.stages, laneIndex, lanes, selectedNodeId, stageIndex, t]);
   const edges = useMemo<Edge[]>(() => graph.edges.map((edge) => ({
     ...edge,
     type: 'smoothstep',
@@ -237,39 +346,21 @@ function FlowCanvas({
     markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15 },
     className: `execution-edge execution-edge-${edge.status}`,
   })), [graph.edges]);
-  const locateCurrent = useCallback(() => {
-    const targets = graph.active_node_ids.length
-      ? graph.active_node_ids
-      : graph.nodes.length
-      ? [graph.nodes[graph.nodes.length - 1].id]
-      : [];
-    void fitView({ nodes: targets.map((id) => ({ id })), padding: 0.45, duration: 280, maxZoom: 1 });
-  }, [fitView, graph.active_node_ids, graph.nodes]);
-  const minWidth = Math.max(780, graph.stages.length * STAGE_GAP + 120);
-  const height = Math.min(730, Math.max(390, graph.lanes.length * LANE_GAP + 34));
+
+  useEffect(() => {
+    if (!focusRequest?.nodeIds.length) return;
+    const frame = window.requestAnimationFrame(() => {
+      void fitView({ nodes: focusRequest.nodeIds.map((id) => ({ id })), padding: 0.45, duration: 280, maxZoom: 1 });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [fitView, focusRequest?.nonce, focusRequest?.nodeIds]);
+
+  const height = Math.min(730, Math.max(390, graph.lanes.length * LANE_GAP + 42));
 
   return <div className="execution-flow-desktop">
-    <div className="execution-flow-toolbar">
-      <div className="execution-stage-axis" style={{ minWidth }}>
-        {graph.stages.map((stage) => <span key={stage.index}>{stageLabel(stage, t)}</span>)}
-      </div>
-      <Button
-        size="icon"
-        variant="outline"
-        aria-label={t('flowLocateCurrent')}
-        title={t('flowLocateCurrent')}
-        onClick={locateCurrent}
-      ><LocateFixed size={16} /></Button>
-    </div>
     <div className="execution-flow-grid" style={{ height }}>
-      <aside className="execution-lanes" aria-label={t('flowConnectorLanes')}>
-        {graph.lanes.map((lane) => <div key={lane.id} style={{ height: LANE_GAP }}>
-          <strong>{lane.label}</strong>
-          <span>{lane.connector_kind || lane.subtitle || t('flowControlLane')}</span>
-        </div>)}
-      </aside>
       <div className="execution-flow-canvas">
-        <ReactFlow<ExecutionFlowNode>
+        <ReactFlow<ExecutionCanvasNode>
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
@@ -282,17 +373,18 @@ function FlowCanvas({
           zoomOnPinch
           minZoom={0.45}
           maxZoom={1.6}
-          defaultViewport={{ x: 12, y: 8, zoom: 0.8 }}
+          fitView
+          fitViewOptions={{ padding: 0.12, maxZoom: 0.9 }}
           onInit={(instance) => {
             if (graph.active_node_ids.length) {
-              void instance.fitView({
-                nodes: graph.active_node_ids.map((id) => ({ id })),
-                padding: 0.45,
-                maxZoom: 1,
+              window.requestAnimationFrame(() => {
+                void instance.fitView({ nodes: graph.active_node_ids.map((id) => ({ id })), padding: 0.45, maxZoom: 1 });
               });
             }
           }}
-          onNodeClick={(_, node) => node.data.item.detail_available && onSelect(node.data.item)}
+          onNodeClick={(_, node) => {
+            if (node.type === 'execution' && node.data.item.detail_available) onSelect(node.data.item);
+          }}
         >
           <Background gap={22} size={1} />
           <Controls showInteractive={false} />
@@ -302,15 +394,7 @@ function FlowCanvas({
   </div>;
 }
 
-function MobileFlow({
-  graph,
-  selectedNodeId,
-  onSelect,
-}: {
-  graph: InvestigationExecutionGraph;
-  selectedNodeId: string | null;
-  onSelect: (node: InvestigationExecutionNode) => void;
-}) {
+function MobileFlow({ graph, selectedNodeId, onSelect }: { graph: InvestigationExecutionGraph; selectedNodeId: string | null; onSelect: (node: InvestigationExecutionNode) => void }) {
   const t = useTranslations('workbench');
   const lanes = new Map(graph.lanes.map((lane) => [lane.id, lane]));
   return <div className="execution-flow-mobile">
@@ -319,25 +403,23 @@ function MobileFlow({
       if (!nodes.length) return null;
       return <section key={stage.index}>
         <h3>{stageLabel(stage, t)}</h3>
-        <div>
-          {nodes.map((node) => <button
-            key={node.id}
-            type="button"
-            className="execution-mobile-node"
-            data-status={statusTone(node.status)}
-            aria-pressed={node.id === selectedNodeId}
-            disabled={!node.detail_available}
-            onClick={() => onSelect(node)}
-          >
-            <span className="execution-node-icon"><NodeTypeIcon item={node} /></span>
-            <span>
-              <strong>{node.title}</strong>
-              <small>{lanes.get(node.lane_id)?.label} · {node.purpose || node.subtitle}</small>
-              <em><StatusIcon status={node.status} />{statusLabel(node.status, t)} · {formatDuration(node.duration_ms)}</em>
-            </span>
-            {node.detail_available && <ChevronRight size={16} />}
-          </button>)}
-        </div>
+        <div>{nodes.map((node) => <button
+          key={node.id}
+          type="button"
+          className="execution-mobile-node"
+          data-status={statusTone(node.status)}
+          aria-pressed={node.id === selectedNodeId}
+          disabled={!node.detail_available}
+          onClick={() => onSelect(node)}
+        >
+          <span className="execution-node-icon"><NodeTypeIcon item={node} /></span>
+          <span>
+            <strong>{displayNodeTitle(node, t)}</strong>
+            <small>{lanes.get(node.lane_id)?.label} · {displayNodePurpose(node, nodeTypeLabel(node.node_type, t), t)}</small>
+            <em><StatusIcon status={node.status} />{statusLabel(node.status, t)} · {formatDuration(node.duration_ms)} · {node.record_count !== null ? `${t('flowRecords', { count: node.record_count })} · ` : ''}{t('flowEvidenceCount', { count: node.evidence_count })}</em>
+          </span>
+          {node.detail_available && <ChevronRight size={16} />}
+        </button>)}</div>
       </section>;
     })}
   </div>;
@@ -346,220 +428,94 @@ function MobileFlow({
 export function InvestigationExecutionFlow({
   investigationId,
   graph,
+  selectedNodeId,
+  onSelectedNodeIdChange,
+  focusRequest,
 }: {
   investigationId: number | string;
   graph: InvestigationExecutionGraph | null;
+  selectedNodeId: string | null;
+  onSelectedNodeIdChange: (nodeId: string | null) => void;
+  focusRequest: FocusRequest;
 }) {
   const t = useTranslations('workbench');
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [mode, setMode] = useState<'compact' | 'full'>('compact');
+  const [canvasFocus, setCanvasFocus] = useState<CanvasFocusRequest>(null);
+  const viewGraph = useMemo(() => graph && mode === 'compact' ? compactExecutionGraph(graph) : graph, [graph, mode]);
+  const visibleIds = useMemo(() => new Set(viewGraph?.nodes.map((node) => node.id) || []), [viewGraph]);
+  const selectedNode = graph?.nodes.find((node) => node.id === selectedNodeId) || null;
+
   const select = useCallback((node: InvestigationExecutionNode) => {
-    if (node.detail_available) setSelectedNodeId(node.id);
-  }, []);
-  if (!graph) return <div className="execution-flow-empty"><RefreshCw size={17} />{t('flowLoading')}</div>;
-  if (!graph.nodes.length) return <div className="execution-flow-empty">{t('flowEmpty')}</div>;
-  return <section className="execution-flow-section">
+    if (node.detail_available) onSelectedNodeIdChange(node.id);
+  }, [onSelectedNodeIdChange]);
+
+  useEffect(() => {
+    if (!focusRequest || !graph) return;
+    if (mode === 'compact' && !visibleIds.has(focusRequest.nodeId)) setMode('full');
+    setCanvasFocus({ nodeIds: [focusRequest.nodeId], nonce: focusRequest.nonce });
+  }, [focusRequest, graph, mode, visibleIds]);
+
+  useEffect(() => {
+    if (selectedNodeId && graph && !graph.nodes.some((node) => node.id === selectedNodeId)) {
+      onSelectedNodeIdChange(null);
+    }
+  }, [graph, onSelectedNodeIdChange, selectedNodeId]);
+
+  const locateCurrent = useCallback(() => {
+    if (!graph) return;
+    const targetIds = graph.active_node_ids.length
+      ? graph.active_node_ids
+      : graph.nodes.length
+      ? [graph.nodes[graph.nodes.length - 1].id]
+      : [];
+    if (mode === 'compact' && targetIds.some((id) => !visibleIds.has(id))) setMode('full');
+    setCanvasFocus((current) => ({ nodeIds: targetIds, nonce: (current?.nonce || 0) + 1 }));
+  }, [graph, mode, visibleIds]);
+
+  function changeMode(nextMode: 'compact' | 'full') {
+    setMode(nextMode);
+    if (nextMode === 'compact' && selectedNodeId && !COMPACT_NODE_TYPES.has(selectedNode?.node_type || 'phase')) {
+      onSelectedNodeIdChange(null);
+    }
+  }
+
+  if (!graph || !viewGraph) return <section id="investigation-flow" className="execution-flow-empty"><RefreshCw size={17} />{t('flowLoading')}</section>;
+  if (!graph.nodes.length) return <section id="investigation-flow" className="execution-flow-empty">{t('flowEmpty')}</section>;
+  const rounds = new Set(graph.nodes.map((node) => node.round_ordinal).filter((value) => value !== null)).size;
+  const operationCount = graph.nodes.filter((node) => node.node_type === 'operation').length;
+  const evidenceCount = new Set(graph.nodes.flatMap((node) => node.evidence_refs)).size;
+
+  return <section id="investigation-flow" className="execution-flow-section">
     <header className="execution-flow-summary">
       <div>
-        <p className="eyebrow">{t('flowCurrentPhase')}</p>
+        <p className="eyebrow">{t('investigationProcess')}</p>
         <h2>{t(`flowPhase.${graph.phase}`)}</h2>
+        <p>{t('flowProcessCounts', { rounds, operations: operationCount, evidence: evidenceCount })}</p>
       </div>
-      <div className="execution-status-legend" aria-label={t('flowStatusLegend')}>
-        {['running', 'succeeded', 'failed', 'queued'].map((status) => <span key={status} data-tone={statusTone(status)}><i />{statusLabel(status, t)}</span>)}
+      <div className="execution-flow-summary-actions">
+        <div className="execution-mode-control" role="group" aria-label={t('flowViewMode')}>
+          <button type="button" aria-pressed={mode === 'compact'} onClick={() => changeMode('compact')}>{t('flowCompactMode')}</button>
+          <button type="button" aria-pressed={mode === 'full'} onClick={() => changeMode('full')}>{t('flowFullMode')}</button>
+        </div>
+        <Button size="icon" variant="outline" aria-label={t('flowLocateCurrent')} title={t('flowLocateCurrent')} onClick={locateCurrent}><LocateFixed size={16} /></Button>
       </div>
     </header>
     <ReactFlowProvider>
-      <FlowCanvas graph={graph} selectedNodeId={selectedNodeId} onSelect={select} />
+      <FlowCanvas graph={viewGraph} selectedNodeId={selectedNodeId} focusRequest={canvasFocus} onSelect={select} />
     </ReactFlowProvider>
-    <MobileFlow graph={graph} selectedNodeId={selectedNodeId} onSelect={select} />
+    <MobileFlow graph={viewGraph} selectedNodeId={selectedNodeId} onSelect={select} />
     {graph.unused_connectors.length > 0 && <details className="execution-unused">
       <summary>{t('flowUnusedConnectors', { count: graph.unused_connectors.length })}</summary>
       <div>{graph.unused_connectors.map((connector) => <article key={connector.snapshot_id}>
-        <div><strong>{connector.name}</strong><span>{connector.kind} · {connector.allowed_languages.join(', ')}</span></div>
+        <div><strong>{connector.name}</strong><span>{connector.kind}</span></div>
         <small>{connector.reason_code ? t('flowUnusedReason', { reason: connector.reason_code }) : t('flowUnusedNoRecord')}</small>
       </article>)}</div>
     </details>}
     <NodeDetailDrawer
       investigationId={investigationId}
-      nodeId={selectedNodeId}
-      onOpenChange={(open) => { if (!open) setSelectedNodeId(null); }}
+      node={selectedNode}
+      eventCursor={graph.event_cursor}
+      onOpenChange={(open) => { if (!open) onSelectedNodeIdChange(null); }}
     />
   </section>;
-}
-
-function NodeDetailDrawer({
-  investigationId,
-  nodeId,
-  onOpenChange,
-}: {
-  investigationId: number | string;
-  nodeId: string | null;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const t = useTranslations('workbench');
-  const tc = useTranslations('common');
-  const [detail, setDetail] = useState<InvestigationExecutionNodeDetail | null>(null);
-  const [error, setError] = useState('');
-  const [artifactId, setArtifactId] = useState<number | null>(null);
-  const [page, setPage] = useState<InvestigationExecutionArtifactPage | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-
-  useEffect(() => {
-    if (!nodeId) {
-      setDetail(null);
-      setPage(null);
-      return;
-    }
-    let current = true;
-    setDetail(null);
-    setError('');
-    void fetchInvestigationExecutionNode(investigationId, nodeId)
-      .then((value) => {
-        if (!current) return;
-        setDetail(value);
-        setArtifactId(value.result_page?.artifact_id || value.artifacts[0]?.id || null);
-        setPage(value.result_page);
-      })
-      .catch((cause) => current && setError(apiErrorMessage(cause, tc('requestFailed'))));
-    return () => { current = false; };
-  }, [investigationId, nodeId, tc]);
-
-  const selectArtifact = useCallback(async (nextArtifactId: number) => {
-    if (!nodeId) return;
-    setArtifactId(nextArtifactId);
-    setPage(null);
-    try {
-      setPage(await fetchInvestigationExecutionArtifact(investigationId, nodeId, nextArtifactId));
-    } catch (cause) {
-      setError(apiErrorMessage(cause, tc('requestFailed')));
-    }
-  }, [investigationId, nodeId, tc]);
-
-  const loadMore = useCallback(async () => {
-    if (!nodeId || !artifactId || page?.next_after_index === null || page?.next_after_index === undefined) return;
-    setLoadingMore(true);
-    try {
-      const next = await fetchInvestigationExecutionArtifact(
-        investigationId,
-        nodeId,
-        artifactId,
-        page.next_after_index,
-      );
-      setPage((current) => current ? { ...next, items: [...current.items, ...next.items] } : next);
-    } catch (cause) {
-      setError(apiErrorMessage(cause, tc('requestFailed')));
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [artifactId, investigationId, nodeId, page?.next_after_index, tc]);
-
-  return <Dialog open={nodeId !== null} onOpenChange={onOpenChange}>
-    <DialogContent variant="drawer" className="execution-detail-drawer max-w-3xl overflow-hidden p-0">
-      <DialogHeader className="border-b px-6 py-5">
-        <DialogTitle>{detail?.title || t('flowNodeDetails')}</DialogTitle>
-        <DialogDescription>{detail ? `${nodeTypeLabel(detail.node_type, t)} · ${statusLabel(detail.status, t)}` : t('flowDetailLoading')}</DialogDescription>
-      </DialogHeader>
-      <div className="execution-detail-scroll">
-        {error && <div className="execution-detail-error"><AlertTriangle size={16} />{error}</div>}
-        {!detail && !error && <div className="execution-detail-loading"><RefreshCw size={16} />{t('flowDetailLoading')}</div>}
-        {detail && <>
-          <DetailText title={t('flowPurpose')} value={detail.overview.purpose} />
-          <DetailText title={t('flowSelectionReason')} value={detail.overview.selection_reason} />
-          <DetailText title={t('flowExpectedEvidence')} value={detail.overview.expected_evidence} />
-          {detail.query && <section className="execution-detail-section">
-            <h3>{detail.query.state === 'proposed' ? t('flowProposedQuery') : t('flowActualQuery')}</h3>
-            <dl className="execution-detail-facts">
-              <div><dt>{t('flowQueryLanguage')}</dt><dd>{String(detail.query.language || '-')}</dd></div>
-              <div><dt>{t('flowQueryState')}</dt><dd>{t(`flowQueryStates.${String(detail.query.state)}`)}</dd></div>
-              <div><dt>{t('flowQueryWindow')}</dt><dd><JsonValue value={detail.query.requested_window} /></dd></div>
-              <div><dt>{t('flowQueryLimit')}</dt><dd>{String(detail.query.requested_limit || '-')}</dd></div>
-            </dl>
-            {detail.query.effective_action != null && <div className="execution-query-block"><span>{t('flowAuthorizedQuery')}</span><JsonValue value={detail.query.effective_action} code /></div>}
-            {detail.query.proposed_payload != null && <div className="execution-query-block"><span>{t('flowOriginalQuery')}</span><JsonValue value={detail.query.proposed_payload} code /></div>}
-          </section>}
-          {detail.authorization && <section className="execution-detail-section">
-            <h3>{t('flowAuthorization')}</h3>
-            <JsonValue value={detail.authorization} />
-          </section>}
-          {detail.artifacts.length > 0 && <section className="execution-detail-section">
-            <div className="execution-detail-section-heading">
-              <h3>{t('flowResponse')}</h3>
-              {detail.artifacts.length > 1 && <Select
-                aria-label={t('flowSelectArtifact')}
-                value={artifactId ? String(artifactId) : ''}
-                onChange={(event) => void selectArtifact(Number(event.target.value))}
-              >{detail.artifacts.map((artifact) => <option key={artifact.id} value={artifact.id}>{artifact.kind} · {artifact.record_count ?? '-'}</option>)}</Select>}
-            </div>
-            {page ? <ArtifactResult page={page} /> : <div className="execution-detail-loading">{t('flowResponseLoading')}</div>}
-            {page && page.next_after_index !== null && <Button variant="outline" loading={loadingMore} onClick={() => void loadMore()}>{t('loadMore')}</Button>}
-          </section>}
-          {detail.execution && <section className="execution-detail-section">
-            <h3>{t('flowExecution')}</h3>
-            <JsonValue value={detail.execution} />
-          </section>}
-          {(detail.execution?.failure_code || detail.authorization?.rejection_code) && <section className="execution-detail-section execution-detail-failure">
-            <h3>{t('flowFailure')}</h3>
-            <JsonValue value={{
-              failure_code: detail.execution?.failure_code,
-              failure_detail: detail.execution?.failure_detail,
-              rejection_code: detail.authorization?.rejection_code,
-              rejection_detail: detail.authorization?.rejection_detail,
-            }} />
-          </section>}
-          {(detail.events.length > 0 || detail.authorization) && <section className="execution-detail-section">
-            <h3>{t('flowAuditChain')}</h3>
-            <ol className="execution-audit-chain">
-              {detail.authorization && <li><ShieldCheck size={15} /><div><strong>{t('flowAuthorization')}</strong><JsonValue value={detail.authorization} /></div></li>}
-              {detail.events.map((event, index) => <li key={String(event.sequence || index)}><CircleDot size={15} /><div><strong>{String(event.message || event.event_name)}</strong><small>{String(event.occurred_at || '')}</small><JsonValue value={event.detail} /></div></li>)}
-            </ol>
-          </section>}
-        </>}
-      </div>
-    </DialogContent>
-  </Dialog>;
-}
-
-function DetailText({ title, value }: { title: string; value: unknown }) {
-  if (value === null || value === undefined || value === '') return null;
-  return <section className="execution-detail-section"><h3>{title}</h3><p>{String(value)}</p></section>;
-}
-
-function JsonValue({ value, code = false }: { value: unknown; code?: boolean }) {
-  if (value === null || value === undefined) return <span>-</span>;
-  if (typeof value === 'string') return code ? <pre>{value}</pre> : <p>{value}</p>;
-  return <pre>{JSON.stringify(value, null, 2)}</pre>;
-}
-
-function ArtifactResult({ page }: { page: InvestigationExecutionArtifactPage }) {
-  const t = useTranslations('workbench');
-  const rows = page.items.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
-  if (page.artifact_kind.includes('sql') && rows.length) {
-    const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
-    return <div className="execution-result-table"><table><thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}><CellValue value={row[column]} /></td>)}</tr>)}</tbody></table></div>;
-  }
-  if (page.artifact_kind.includes('log') && rows.length) {
-    const ordered = [...rows].sort((left, right) => String(left.timestamp || left.time || '').localeCompare(String(right.timestamp || right.time || '')));
-    return <ol className="execution-log-list">{ordered.map((row, index) => <li key={index}><time>{formatLogTimestamp(row.timestamp || row.time)}</time><code>{String(row.message || row.line || row.value || JSON.stringify(row))}</code></li>)}</ol>;
-  }
-  if ((page.artifact_kind.includes('search') || page.artifact_kind.includes('opensearch') || page.artifact_kind.includes('elasticsearch')) && rows.length) {
-    return <div className="execution-record-list">{page.metadata && Object.keys(page.metadata).length > 0 && <JsonValue value={page.metadata} />}{rows.map((row, index) => <article key={index}><JsonValue value={row} /></article>)}</div>;
-  }
-  return <div className="execution-json-result"><span>{t('flowStructuredResponse')}</span><JsonValue value={{ metadata: page.metadata, items: page.items }} /></div>;
-}
-
-function CellValue({ value }: { value: unknown }) {
-  if (value === null || value === undefined) return <span className="text-muted-foreground">{String(value)}</span>;
-  if (typeof value === 'object') return <code>{JSON.stringify(value)}</code>;
-  return <>{String(value)}</>;
-}
-
-function formatLogTimestamp(value: unknown) {
-  const raw = String(value || '');
-  if (/^\d{16,}$/.test(raw)) {
-    try {
-      return new Date(Number(BigInt(raw) / 1_000_000n)).toISOString();
-    } catch {
-      return raw;
-    }
-  }
-  return raw;
 }
