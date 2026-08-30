@@ -3,15 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Archive, ArrowLeft, CheckCircle2, CircleAlert, ClipboardCheck, RefreshCw, RotateCcw } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
+import { InvestigationExecutionFlow } from '@/components/investigation-execution-flow';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import { Tabs } from '@/components/ui/tabs';
-import { apiErrorMessage, archiveInvestigation, fetchInvestigation, fetchInvestigationAudit, fetchInvestigationTechnical, openInvestigationStream, retryInvestigation } from '@/lib/api';
+import { apiErrorMessage, archiveInvestigation, fetchInvestigation, fetchInvestigationAudit, fetchInvestigationExecutionGraph, fetchInvestigationTechnical, openInvestigationStream, retryInvestigation } from '@/lib/api';
 import { Link, useRouter } from '@/lib/navigation';
-import type { InvestigationAuditItem, InvestigationAuditKind, InvestigationDetail, InvestigationOverview } from '@/lib/types';
+import type { InvestigationAuditItem, InvestigationAuditKind, InvestigationDetail, InvestigationExecutionGraph, InvestigationOverview } from '@/lib/types';
 
 const auditKinds: InvestigationAuditKind[] = ['access_decisions', 'read_attempts', 'ai_invocations', 'native_read_candidates', 'authorized_reads'];
-const operationKindKeys = { model: 'operationKinds.model', source_read: 'operationKinds.source_read', native_read: 'operationKinds.native_read', snapshot: 'operationKinds.snapshot', validation: 'operationKinds.validation', synthesis: 'operationKinds.synthesis' } as const;
 const evidenceKindKeys = { source_file: 'evidenceKinds.source_file', normalized_log_result: 'evidenceKinds.normalized_log_result', normalized_search_result: 'evidenceKinds.normalized_search_result', normalized_sql_result: 'evidenceKinds.normalized_sql_result', normalized_https_result: 'evidenceKinds.normalized_https_result', normalized_command_result: 'evidenceKinds.normalized_command_result' } as const;
 const evidenceClassKeys = { runtime: 'evidenceClasses.runtime', incident_source: 'evidenceClasses.incident_source', repository_search_candidate: 'evidenceClasses.repository_search_candidate', runtime_identified: 'evidenceClasses.runtime_identified' } as const;
 
@@ -58,18 +58,25 @@ export default function InvestigationPage({ params }: { params: { investigationI
   const locale = useLocale();
   const router = useRouter();
   const [detail, setDetail] = useState<InvestigationOverview | null>(null);
+  const [executionGraph, setExecutionGraph] = useState<InvestigationExecutionGraph | null>(null);
   const [auditKind, setAuditKind] = useState<InvestigationAuditKind>('access_decisions');
   const [audit, setAudit] = useState<InvestigationAuditItem[]>([]);
   const [auditNext, setAuditNext] = useState<number | null>(null);
   const [technical, setTechnical] = useState<InvestigationDetail | null>(null);
-  const [activeTab, setActiveTab] = useState('timeline');
+  const [activeTab, setActiveTab] = useState('flow');
   const [error, setError] = useState('');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [streamAfter, setStreamAfter] = useState<number | null>(null);
   const dateLocale = locale === 'zh' ? 'zh-CN' : 'en-US';
   const load = useCallback(async () => {
     try {
-      const value = await fetchInvestigation(params.investigationId);
+      const [value, graph] = await Promise.all([
+        fetchInvestigation(params.investigationId),
+        fetchInvestigationExecutionGraph(params.investigationId),
+      ]);
       setDetail(value);
+      setExecutionGraph(graph);
+      setStreamAfter((current) => current ?? graph.event_cursor);
       setError('');
     } catch (cause) {
       setError(apiErrorMessage(cause, tc('requestFailed')));
@@ -93,19 +100,27 @@ export default function InvestigationPage({ params }: { params: { investigationI
     void fetchInvestigationTechnical(params.investigationId).then(setTechnical).catch((cause) => setError(apiErrorMessage(cause, tc('requestFailed'))));
   }, [activeTab, params.investigationId, technical]);
   useEffect(() => {
-    const close = openInvestigationStream(params.investigationId, 0, () => {
+    if (streamAfter === null) return;
+    const close = openInvestigationStream(params.investigationId, streamAfter, () => {
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => void load(), 150);
     });
     return () => { close(); if (timer.current) clearTimeout(timer.current); };
-  }, [load, params.investigationId]);
+  }, [load, params.investigationId, streamAfter]);
+  useEffect(() => {
+    if (!detail || detail.status === 'completed' || detail.status === 'failed') return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load();
+    }, 5_000);
+    return () => window.clearInterval(interval);
+  }, [detail?.status, load]);
 
   if (!detail) return <main className="p-8 text-sm text-muted-foreground">{error || tc('loading')}</main>;
   const investigation = detail;
   const terminal = investigation.status === 'completed' || investigation.status === 'failed';
   const report = investigation.report;
   const tabs = [
-    { value: 'timeline', label: t('timeline', { count: detail.operation_count }), content: <Timeline items={detail.timeline} dateLocale={dateLocale} /> },
+    { value: 'flow', label: t('executionFlow'), content: <InvestigationExecutionFlow investigationId={detail.id} graph={executionGraph} /> },
     { value: 'evidence', label: t('evidence', { count: detail.evidence_count }), content: <Evidence items={detail.evidence} dateLocale={dateLocale} /> },
     { value: 'audit', label: t('audit'), content: <Audit kind={auditKind} items={audit} nextAfterId={auditNext} onKindChange={setAuditKind} onMore={() => auditNext !== null && void loadAudit(true, auditNext)} dateLocale={dateLocale} /> },
     { value: 'technical', label: t('technical'), content: <Technical value={technical} /> },
@@ -142,11 +157,11 @@ export default function InvestigationPage({ params }: { params: { investigationI
           <h1 className="max-w-4xl text-2xl font-semibold">{report?.headline || t('analysisInProgress')}</h1>
           <p className="mt-2 mono text-xs text-muted-foreground">{detail.id}</p>
         </div>
-        <dl className="grid min-w-56 grid-cols-2 gap-x-5 gap-y-2 text-xs">
-          <dt className="text-muted-foreground">{t('workspace')}</dt><dd>{detail.workspace_id}</dd>
-          <dt className="text-muted-foreground">{t('event')}</dt><dd>{detail.event || '-'}</dd>
-          <dt className="text-muted-foreground">{t('severity')}</dt><dd>{severityLabel(detail.severity, t)}</dd>
-          <dt className="text-muted-foreground">{t('occurred')}</dt><dd>{detail.occurred_at ? new Date(detail.occurred_at).toLocaleString(dateLocale) : '-'}</dd>
+        <dl className="grid w-full min-w-0 grid-cols-2 gap-x-5 gap-y-2 text-xs sm:w-auto sm:min-w-56">
+          <dt className="text-muted-foreground">{t('workspace')}</dt><dd className="min-w-0 break-words">{detail.workspace_id}</dd>
+          <dt className="text-muted-foreground">{t('event')}</dt><dd className="min-w-0 break-all">{detail.event || '-'}</dd>
+          <dt className="text-muted-foreground">{t('severity')}</dt><dd className="min-w-0 break-words">{severityLabel(detail.severity, t)}</dd>
+          <dt className="text-muted-foreground">{t('occurred')}</dt><dd className="min-w-0 break-words">{detail.occurred_at ? new Date(detail.occurred_at).toLocaleString(dateLocale) : '-'}</dd>
         </dl>
       </div>
       {detail.error_message && <p className="mt-4 text-sm text-muted-foreground">{detail.error_type}: {detail.error_message}</p>}
@@ -178,12 +193,7 @@ function Insight({ title, value, icon, detail = [] }: { title: string; value: st
 }
 
 function ListPanel({ title, values, positive = false }: { title: string; values: string[]; positive?: boolean }) {
-  return <section className="border p-4"><h2 className="text-sm font-semibold">{title}</h2>{values.length ? <ul className="mt-3 space-y-2 text-sm">{values.map((value) => <li key={value} className="flex gap-2"><span className={positive ? 'text-success' : 'text-warning'}>{positive ? '+' : '!'}</span><span>{value}</span></li>)}</ul> : <p className="mt-3 text-sm text-muted-foreground">-</p>}</section>;
-}
-
-function Timeline({ items, dateLocale }: { items: InvestigationOverview['timeline']; dateLocale: string }) {
-  const t = useTranslations('workbench');
-  return <div className="divide-y border-y">{items.map((item) => <article key={item.ordinal} className="grid gap-3 py-4 md:grid-cols-[48px_1fr_180px]"><div className="flex h-8 w-8 items-center justify-center rounded-sm border font-mono text-xs">{item.ordinal}</div><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-medium">{item.purpose}</h3><span className="text-xs text-muted-foreground">{t(operationKindKeys[item.kind as keyof typeof operationKindKeys])}</span></div><p className="mt-1 text-sm text-muted-foreground">{item.expected_evidence}</p>{item.failure_code && <p className="mt-2 text-xs text-destructive">{t('operationFailed')}</p>}</div><div className="text-xs text-muted-foreground md:text-right"><div>{statusLabel(item.status, t)}</div><div className="mt-1">{item.finished_at ? new Date(item.finished_at).toLocaleString(dateLocale) : '-'}</div></div></article>)}{items.length === 0 && <p className="py-8 text-center text-muted-foreground">{t('noTimeline')}</p>}</div>;
+  return <section className="border p-4"><h2 className="text-sm font-semibold">{title}</h2>{values.length ? <ul className="mt-3 space-y-2 text-sm">{values.map((value) => <li key={value} className="flex gap-2"><span className={positive ? 'text-success' : 'text-warning'}>{positive ? '+' : '!'}</span><span className="min-w-0 break-words">{value}</span></li>)}</ul> : <p className="mt-3 text-sm text-muted-foreground">-</p>}</section>;
 }
 
 function Evidence({ items, dateLocale }: { items: InvestigationOverview['evidence']; dateLocale: string }) {

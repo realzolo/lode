@@ -7,6 +7,8 @@ import { GeistMono } from 'geist/font/mono';
 import { locales, Locale } from '@/i18n/request';
 import { Providers } from '@/components/providers';
 import '../globals.css';
+import '@xyflow/react/dist/style.css';
+import '../investigation.css';
 import '../dashboard.css';
 
 export const metadata: Metadata = {

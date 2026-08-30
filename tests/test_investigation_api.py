@@ -38,11 +38,18 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
             status="active",
             must_change_password=False,
         )
+        outsider = User(
+            username=f"outsider-{suffix[:10]}",
+            display_name="Outside Viewer",
+            password_hash=hash_password("correct-horse-battery"),
+            status="active",
+            must_change_password=False,
+        )
         workspace = Workspace(
             name=f"stream-{suffix}",
             ingestion_topic=f"stream-{suffix}",
         )
-        session.add_all([user, workspace])
+        session.add_all([user, outsider, workspace])
         await session.flush()
         architecture_context = WorkspaceArchitectureContextRevision(
             workspace_id=workspace.id,
@@ -142,6 +149,7 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         await session.commit()
         investigation_id = investigation.id
         user_id = user.id
+        outsider_id = outsider.id
 
     token = create_token(user_id, settings.jwt_signing_key, 3600)
     headers = {"Authorization": f"Bearer {token}"}
@@ -149,6 +157,41 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         replay = await client.get(f"/investigations/{investigation_id}/events", headers=headers)
         assert replay.status_code == 200
         assert [item["sequence"] for item in replay.json()] == [1]
+
+        graph_response = await client.get(
+            f"/investigations/{investigation_id}/execution-graph", headers=headers
+        )
+        assert graph_response.status_code == 200
+        graph = graph_response.json()
+        assert graph["schema_version"] == "investigation-execution-graph.v1"
+        assert graph["phase"] == "completed"
+        assert [node["id"] for node in graph["nodes"]] == [
+            f"input:{investigation_id}",
+            f"decision:{decision.id}",
+            f"operation:{operation.id}",
+        ]
+        assert [(edge["source"], edge["target"]) for edge in graph["edges"]] == [
+            (f"input:{investigation_id}", f"decision:{decision.id}"),
+            (f"decision:{decision.id}", f"operation:{operation.id}"),
+        ]
+
+        node_response = await client.get(
+            f"/investigations/{investigation_id}/execution-graph/nodes/operation:{operation.id}",
+            headers=headers,
+        )
+        assert node_response.status_code == 200
+        node_detail = node_response.json()
+        assert node_detail["overview"]["purpose"] == "Collect immutable evidence"
+        assert node_detail["events"][0]["message"] == "Snapshot captured"
+        assert "token_hash" not in node_response.text
+        assert "ciphertext" not in node_response.text
+
+        missing_artifact = await client.get(
+            f"/investigations/{investigation_id}/execution-graph/nodes/operation:{operation.id}"
+            "/artifacts/1",
+            headers=headers,
+        )
+        assert missing_artifact.status_code == 404
 
         stream = await client.get(
             f"/investigations/{investigation_id}/stream",
@@ -158,6 +201,15 @@ async def test_event_stream_replays_cursor_and_archive_is_durable() -> None:
         assert "event: operation.finished" not in stream.text
         assert "event: investigation.finished" in stream.text
         assert '"status":"completed"' in stream.text
+
+        outside_response = await client.get(
+            f"/investigations/{investigation_id}/execution-graph",
+            headers={
+                "Authorization": "Bearer "
+                + create_token(outsider_id, settings.jwt_signing_key, 3600)
+            },
+        )
+        assert outside_response.status_code == 403
 
     async with AsyncSessionLocal() as session:
         admin = await session.scalar(select(User).where(User.is_system_admin))

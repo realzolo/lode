@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -15,6 +15,14 @@ from sqlalchemy import Text, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lode.api.deps import assert_workspace_permission, permitted_workspace_ids, require_user
+from lode.api.investigation_execution_graph import (
+    ExecutionArtifactPage,
+    InvestigationExecutionGraph,
+    InvestigationExecutionNodeDetail,
+    build_artifact_page,
+    build_execution_graph,
+    build_node_detail,
+)
 from lode.api.types import EntityId
 from lode.application.intake import ManualIncidentRequest, NormalizedIncident, normalize_manual
 from lode.crypto import decrypt_value
@@ -49,7 +57,6 @@ from lode.db.models import (
     SealedEvidenceValue,
     SourceAssessment,
     SourceRevision,
-    Workspace,
     User,
     Workspace,
 )
@@ -510,6 +517,78 @@ async def get_investigation(
             or 0
         ),
     )
+
+
+@router.get(
+    "/{investigation_id}/execution-graph",
+    response_model=InvestigationExecutionGraph,
+)
+async def get_investigation_execution_graph(
+    investigation_id: EntityId,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> InvestigationExecutionGraph:
+    _, investigation = await _investigation_access(
+        session,
+        user_id=user_id,
+        investigation_id=investigation_id,
+        permission="viewer",
+    )
+    return await build_execution_graph(session, investigation)
+
+
+@router.get(
+    "/{investigation_id}/execution-graph/nodes/{node_id}",
+    response_model=InvestigationExecutionNodeDetail,
+)
+async def get_investigation_execution_node(
+    investigation_id: EntityId,
+    node_id: str,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> InvestigationExecutionNodeDetail:
+    _, investigation = await _investigation_access(
+        session,
+        user_id=user_id,
+        investigation_id=investigation_id,
+        permission="viewer",
+    )
+    detail = await build_node_detail(session, investigation, node_id)
+    if detail is None:
+        raise _error(404, "execution_node_not_found", "Execution node not found.")
+    return detail
+
+
+@router.get(
+    "/{investigation_id}/execution-graph/nodes/{node_id}/artifacts/{artifact_id}",
+    response_model=ExecutionArtifactPage,
+)
+async def get_investigation_execution_artifact(
+    investigation_id: EntityId,
+    node_id: str,
+    artifact_id: EntityId,
+    after_index: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=100),
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> ExecutionArtifactPage:
+    _, investigation = await _investigation_access(
+        session,
+        user_id=user_id,
+        investigation_id=investigation_id,
+        permission="viewer",
+    )
+    page = await build_artifact_page(
+        session,
+        investigation,
+        node_id,
+        artifact_id,
+        after_index=after_index,
+        limit=limit,
+    )
+    if page is None:
+        raise _error(404, "execution_artifact_not_found", "Execution artifact not found.")
+    return page
 
 
 @router.get("/{investigation_id}/technical")

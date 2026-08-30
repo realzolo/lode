@@ -460,6 +460,12 @@ strict synthesis/verifier publication, the default worker composition root, and
 the `analysis-check` workflow. Phase 9 added no dependency; it replaced the API
 and Web surfaces with the final Workspace/model/repository/connector/investigation
 contracts and added the `api-check` and `web-check` workflows.
+The investigation execution-graph view adds the direct Web dependency
+`@xyflow/react` (declared as `^12.11.3`) for read-only pan, zoom, fit-view, and
+keyboard-accessible graph navigation. It adds three frozen viewer endpoints and
+extends `api-check` with deterministic projection and bounded artifact-page
+tests. It does not change investigation execution or persistence and requires no
+database migration.
 The current unreleased Git-account/catalogue and typed-connector redesign adds
 no dependency. It replaces local repository and per-repository credential
 control with global provider/account management and Workspace authorizations;
@@ -955,6 +961,36 @@ explicit masked technical snapshot for source authority, routing/context, full
 operations, and raw report structure. Secret ciphertext, authorization token
 hashes, and connector secret values are never serialized.
 
+`GET /investigations/{id}/execution-graph` is the canonical viewer projection
+for the read-only Workbench flow. It returns schema version, persisted event
+cursor, derived phase, active node IDs, deterministic stages, Connector and
+repository lanes, nodes, directed edges, and frozen unused Connectors. Stable
+node IDs use `input:`, `decision:`, `operation:`, `synthesis:`, `verification:`,
+and `report:` prefixes. A non-persisted planning, reporting, queued, or failure
+placeholder may use `phase:` and always has `detail_available=false`. Each real
+Connector invocation is one operation node; parallel operations share the same
+execution stage and have no edge between them. A running operation takes phase
+priority over the job phase. Without one, persisted job phase selects planning
+or reporting; terminal investigation status remains final.
+
+`GET /investigations/{id}/execution-graph/nodes/{node_id}` returns the selected
+node's purpose, selection reason, expected evidence, masked proposed/effective
+query, authorization constraints, attempts, metrics, failures, operation events,
+artifact index, and first result page. It never exposes provider prompts, full
+model context, hidden reasoning, sealed values, credentials, ciphertext,
+authorization hashes, or tokens. An allowed query without a persisted attempt
+is `authorized`; only a persisted attempt makes it `executed`. A
+pre-authorization rejection remains `proposed` and cannot be presented as
+executed.
+
+`GET /investigations/{id}/execution-graph/nodes/{node_id}/artifacts/{artifact_id}`
+pages immutable masked artifact records by stable zero-based `after_index`. The
+requested limit is at most 100 and the complete serialized page, including
+metadata, is bounded to 256 KiB. Oversized metadata or one oversized record is
+returned as an explicitly truncated preview. Both node and artifact ownership
+are revalidated inside the investigation before content is returned. All three
+endpoints require Workspace `viewer` permission.
+
 `POST /investigations/{id}/retry` is valid only for a non-archived terminal
 investigation. It creates a new investigation from the immutable normalized
 input, restores the sealed opaque trace, and records `retry_of`; it never
@@ -1204,11 +1240,23 @@ permissions do not exist.
 The only investigation UI lives under `workbench`. Its list supports search,
 state filtering, manual intake, and navigation by compact entity ID. Detail leads
 with the incident summary, cause, code diagnosis, confirmed facts, evidence gaps,
-and recommended next step; it then presents human-readable timeline, evidence,
-and execution-audit views. Raw source/runtime/model snapshots remain available
+and recommended next step; its default tab is the read-only execution flow, with
+investigation rounds on the horizontal axis and frozen Connector/repository lanes
+on the vertical axis. Desktop and tablet use React Flow pan, zoom, fit-view,
+keyboard focus, and a locate-current-step control. Phones below 768px use the
+same projection as a round-grouped vertical list. Hover or focus shows a summary;
+selecting a persisted node opens the Radix right-side drawer for purpose,
+authorization, effective query, masked provider-specific results, failure, and
+audit details. SQL uses a dynamic-column table, Loki a time-ordered log list,
+search providers a record stream plus metadata, and other shapes a structured
+JSON fallback. Evidence, execution-audit, and technical tabs remain available.
+Raw source/runtime/model snapshots remain available
 only through the explicit technical view. Terminal runs expose retry and archive
 actions according to backend permission and lifecycle rules. The SSE client
-reconnects with its last canonical cursor and never translates a historical
+starts at the graph's canonical cursor and invalidates overview and graph state
+without resetting a manual node selection. While a non-terminal investigation
+is visible, a five-second canonical refresh covers planning and reporting
+intervals that have no operation event. It never translates a historical
 response shape.
 
 Wide operational tables scroll inside their own container. Long identifiers
@@ -1317,6 +1365,15 @@ connector health/scope, artifact-before-attempt archival, graph causal rules,
 unknown/ambiguous entities, idempotent graph persistence, skip-locked claims,
 heartbeats, analysis-to-reporting transition, report-before-job completion,
 and expired-lease recovery in both investigation and reporting phases.
+
+Execution-graph changes must additionally cover Workspace isolation,
+deterministic node/edge ordering, parallel operations, repeated calls in one
+Connector lane, unused frozen Connectors, phase priority and terminal mapping,
+masked query states, artifact ownership, and the 100-record/256-KiB page limits.
+Workbench verification must preserve node selection across canonical refresh,
+exercise locate-current-step and drawer pagination, honor reduced motion, and
+check English/Chinese light/dark layouts at 1440px, 768px, and 390px without
+page-level overflow or overlap.
 
 Source/model/report changes must additionally cover exact-SHA resolution with no
 default-branch fallback, ambiguous multi-repository matches, credential/revision

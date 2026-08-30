@@ -5,6 +5,9 @@ import type {
   ConnectorCreateInput,
   EvidenceConnector,
   InvestigationDetail,
+  InvestigationExecutionArtifactPage,
+  InvestigationExecutionGraph,
+  InvestigationExecutionNodeDetail,
   InvestigationAuditKind,
   InvestigationAuditPage,
   InvestigationListPage,
@@ -286,6 +289,21 @@ export function createInvestigation(input: Record<string, unknown>) {
   return send<{ id: number; workspace_id: number; status: string; job_id: number }>('/investigations', 'POST', input);
 }
 export function fetchInvestigation(id: number | string) { return get<InvestigationOverview>(`/investigations/${encodeURIComponent(id)}`); }
+export function fetchInvestigationExecutionGraph(id: number | string) {
+  return get<InvestigationExecutionGraph>(`/investigations/${encodeURIComponent(id)}/execution-graph`);
+}
+export function fetchInvestigationExecutionNode(id: number | string, nodeId: string) {
+  return get<InvestigationExecutionNodeDetail>(`/investigations/${encodeURIComponent(id)}/execution-graph/nodes/${encodeURIComponent(nodeId)}`);
+}
+export function fetchInvestigationExecutionArtifact(
+  id: number | string,
+  nodeId: string,
+  artifactId: number,
+  afterIndex = 0,
+) {
+  const query = new URLSearchParams({ after_index: String(afterIndex), limit: '100' });
+  return get<InvestigationExecutionArtifactPage>(`/investigations/${encodeURIComponent(id)}/execution-graph/nodes/${encodeURIComponent(nodeId)}/artifacts/${encodeURIComponent(artifactId)}?${query.toString()}`);
+}
 export function fetchInvestigationTechnical(id: number | string) { return get<InvestigationDetail>(`/investigations/${encodeURIComponent(id)}/technical`); }
 export function fetchInvestigationAudit(id: number | string, kind: InvestigationAuditKind, afterId?: number) {
   const query = new URLSearchParams({ kind });

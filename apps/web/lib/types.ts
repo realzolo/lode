@@ -421,6 +421,110 @@ export interface InvestigationOverview {
   evidence_count: number;
 }
 
+export type InvestigationExecutionNodeType = 'input' | 'decision' | 'operation' | 'synthesis' | 'verification' | 'report' | 'phase';
+export type InvestigationExecutionPhase = 'queued' | 'planning' | 'executing' | 'reporting' | 'completed' | 'failed';
+
+export interface InvestigationExecutionLane {
+  id: string;
+  kind: 'control' | 'connector' | 'repository';
+  label: string;
+  subtitle: string | null;
+  connector_kind: string | null;
+  snapshot_id: number | null;
+}
+
+export interface InvestigationExecutionStage {
+  index: number;
+  kind: 'input' | 'decision' | 'execution' | 'reporting' | 'result';
+  ordinal: number | null;
+}
+
+export interface InvestigationExecutionNode {
+  id: string;
+  node_type: InvestigationExecutionNodeType;
+  lane_id: string;
+  stage_index: number;
+  round_ordinal: number | null;
+  status: string;
+  title: string;
+  subtitle: string | null;
+  purpose: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  evidence_count: number;
+  record_count: number | null;
+  failure_code: string | null;
+  detail_available: boolean;
+}
+
+export interface InvestigationExecutionEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: 'sequence' | 'dispatch' | 'continue' | 'report';
+  status: 'default' | 'complete' | 'active' | 'failed';
+}
+
+export interface InvestigationUnusedConnector {
+  snapshot_id: number;
+  connector_id: number;
+  name: string;
+  kind: string;
+  allowed_languages: string[];
+  reason_code: string | null;
+}
+
+export interface InvestigationExecutionGraph {
+  schema_version: 'investigation-execution-graph.v1';
+  investigation_id: number;
+  status: string;
+  phase: InvestigationExecutionPhase;
+  event_cursor: number;
+  active_node_ids: string[];
+  lanes: InvestigationExecutionLane[];
+  stages: InvestigationExecutionStage[];
+  nodes: InvestigationExecutionNode[];
+  edges: InvestigationExecutionEdge[];
+  unused_connectors: InvestigationUnusedConnector[];
+}
+
+export interface InvestigationExecutionArtifactSummary {
+  id: number;
+  kind: string;
+  evidence_class: string;
+  data_class: string;
+  record_count: number | null;
+  archived_at: string;
+}
+
+export interface InvestigationExecutionArtifactPage {
+  artifact_id: number;
+  artifact_kind: string;
+  metadata: Record<string, unknown>;
+  items: unknown[];
+  total_items: number;
+  after_index: number;
+  next_after_index: number | null;
+  preview_bytes: number;
+  item_truncated: boolean;
+}
+
+export interface InvestigationExecutionNodeDetail {
+  schema_version: 'investigation-execution-node.v1';
+  node_id: string;
+  node_type: InvestigationExecutionNodeType;
+  status: string;
+  title: string;
+  overview: Record<string, unknown>;
+  query: Record<string, unknown> | null;
+  authorization: Record<string, unknown> | null;
+  execution: Record<string, unknown> | null;
+  events: Array<Record<string, unknown>>;
+  artifacts: InvestigationExecutionArtifactSummary[];
+  result_page: InvestigationExecutionArtifactPage | null;
+}
+
 export type InvestigationAuditKind = 'native_read_candidates' | 'access_decisions' | 'authorized_reads' | 'read_attempts' | 'ai_invocations';
 
 export interface InvestigationAuditItem {
