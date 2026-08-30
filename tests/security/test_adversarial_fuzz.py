@@ -7,15 +7,11 @@ from lode.application.intake import KafkaIncidentAlert, normalize_kafka
 
 def _payload(trace_id: str) -> dict:
     return {
-        "schema_version": "incident.alert.v2",
-        "source_event_id": "fuzz-alert",
-        "dedup_key": "checkout.failure",
-        "event_kind": "firing",
+        "schema_version": "incident.alert.v1",
+        "alert_id": "fuzz-alert",
         "occurred_at": "2026-08-27T12:00:00+08:00",
         "severity": "WARNING",
         "event": "checkout.failed",
-        "component": "checkout",
-        "environment": "production",
         "trace_id": trace_id,
         "source_revision": "a" * 40,
         "error": {

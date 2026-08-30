@@ -8,6 +8,11 @@ import json
 from datetime import UTC, datetime
 
 import httpx
+from current_git_fixture import (
+    FIXTURE_ADAPTER_ID,
+    FIXTURE_ENDPOINT_HASH,
+    ensure_repository_access,
+)
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
@@ -19,6 +24,7 @@ from lode.db.models import (
     DeadLetter,
     EvidenceArtifact,
     EvidenceCollection,
+    GitRepository,
     Incident,
     IncidentOccurrence,
     IngestionEvent,
@@ -28,26 +34,22 @@ from lode.db.models import (
     Workspace,
     WorkspaceArchitectureContextRevision,
     WorkspacePermission,
+    WorkspaceRepositoryBinding,
 )
 from lode.db.session import AsyncSessionLocal
 from lode.development.isolated_database import require_isolated_database
 from lode.security import create_token
 
 
-def _payload(
-    *, source_event_id: str, trace_id: str, event: str = "payment.order_create.failed"
-) -> dict:
+def _payload(*, alert_id: str, trace_id: str, event: str = "payment.order_create.failed") -> dict:
     return {
-        "schema_version": "incident.alert.v2",
-        "source_event_id": source_event_id,
-        "dedup_key": event,
-        "event_kind": "firing",
+        "schema_version": "incident.alert.v1",
+        "alert_id": alert_id,
         "occurred_at": "2026-08-26T09:30:00.000Z",
         "severity": "CRITICAL",
         "event": event,
-        "component": "payment-api",
-        "environment": "production",
         "trace_id": trace_id,
+        "source_revision": "a" * 40,
         "error": {
             "type": "GatewayError",
             "message": "Payment creation failed",
@@ -87,6 +89,30 @@ async def main() -> None:
         session.add(architecture_context)
         await session.flush()
         workspace.architecture_context_revision_id = architecture_context.id
+        repository = GitRepository(
+            adapter_id=FIXTURE_ADAPTER_ID,
+            endpoint_identity_hash=FIXTURE_ENDPOINT_HASH,
+            external_repository_id="intake-check",
+            name="intake-check",
+            full_name="example/intake-check",
+            repo_url="https://example.invalid/intake-check.git",
+            web_url="https://example.invalid/intake-check",
+            repo_type="other",
+            default_branch="main",
+            visibility="private",
+        )
+        session.add(repository)
+        await session.flush()
+        account_connection_id = await ensure_repository_access(session, workspace.id, repository)
+        session.add(
+            WorkspaceRepositoryBinding(
+                workspace_id=workspace.id,
+                repository_id=repository.id,
+                account_connection_id=account_connection_id,
+                analysis_mode="code",
+                is_alert_source=True,
+            )
+        )
         session.add(
             WorkspacePermission(
                 workspace_id=workspace.id,
@@ -101,7 +127,7 @@ async def main() -> None:
         workspace_id = workspace.id
 
     handler = KafkaIntakeHandler()
-    first_payload = _payload(source_event_id="alert-1", trace_id=trace_id)
+    first_payload = _payload(alert_id="alert-1", trace_id=trace_id)
     first_raw = json.dumps(first_payload, ensure_ascii=False).encode("utf-8")
     first = await handler.handle(
         topic="incident.intake.behavior.v1", partition=0, offset=0, raw=first_raw
@@ -116,9 +142,9 @@ async def main() -> None:
         topic="incident.intake.behavior.v1",
         partition=0,
         offset=2,
-        raw=json.dumps(
-            _payload(source_event_id="alert-2", trace_id=trace_id), ensure_ascii=False
-        ).encode("utf-8"),
+        raw=json.dumps(_payload(alert_id="alert-2", trace_id=trace_id), ensure_ascii=False).encode(
+            "utf-8"
+        ),
     )
 
     invalid = dict(first_payload)
@@ -129,18 +155,17 @@ async def main() -> None:
         offset=3,
         raw=json.dumps(invalid, ensure_ascii=False).encode("utf-8"),
     )
-    recovery_payload = _payload(
-        source_event_id="recovery-without-incident",
+    extended_payload = _payload(
+        alert_id="unsupported-recovery-event",
         trace_id="",
         event="payment.unknown.recovered",
     )
-    recovery_payload["event_kind"] = "recovered"
-    recovery_payload.pop("error")
-    recovery_without_active = await handler.handle(
+    extended_payload["event_kind"] = "recovered"
+    unsupported_extension = await handler.handle(
         topic="incident.intake.behavior.v1",
         partition=0,
         offset=4,
-        raw=json.dumps(recovery_payload, ensure_ascii=False).encode("utf-8"),
+        raw=json.dumps(extended_payload, ensure_ascii=False).encode("utf-8"),
     )
     unassigned = await handler.handle(
         topic="incident.unassigned.v1",
@@ -151,7 +176,7 @@ async def main() -> None:
 
     same_offset_raw = json.dumps(
         _payload(
-            source_event_id="alert-concurrent-offset",
+            alert_id="alert-concurrent-offset",
             trace_id="concurrent-offset",
             event="payment.concurrent_offset.failed",
         )
@@ -166,7 +191,7 @@ async def main() -> None:
     )
     producer_race_raw = json.dumps(
         _payload(
-            source_event_id="alert-concurrent-producer",
+            alert_id="alert-concurrent-producer",
             trace_id="concurrent-producer",
             event="payment.concurrent_producer.failed",
         )
@@ -182,7 +207,7 @@ async def main() -> None:
     if sorted(result.outcome for result in same_offset_results) != ["accepted", "duplicate"]:
         raise RuntimeError("same-offset race did not produce one accepted record")
     if sorted(result.outcome for result in producer_race_results) != ["accepted", "duplicate"]:
-        raise RuntimeError("source-event race did not produce one accepted occurrence")
+        raise RuntimeError("alert-ID race did not produce one accepted occurrence")
 
     try:
         await handler.replay(
@@ -199,7 +224,7 @@ async def main() -> None:
             raise RuntimeError("rejected replay changed the dead-letter state")
 
     replay_payload = _payload(
-        source_event_id="alert-replayed",
+        alert_id="alert-replayed",
         trace_id="",
         event="payment.replay.failed",
     )
@@ -250,7 +275,7 @@ async def main() -> None:
         producer_duplicate.outcome,
         incident_duplicate.outcome,
         dead_letter.outcome,
-        recovery_without_active.outcome,
+        unsupported_extension.outcome,
         unassigned.outcome,
         "accepted",
     ]
@@ -313,6 +338,12 @@ async def main() -> None:
         raise RuntimeError("ValueRef vault did not preserve the original value")
     if occurrence.raw_payload_masked["trace_id"] != "<VALUE_REF:incident.trace_id>":
         raise RuntimeError("masked occurrence payload exposed its trace value")
+    if occurrence.component is not None or occurrence.environment is not None:
+        raise RuntimeError("Kafka v1 occurrence invented component or environment context")
+    if {"component", "environment", "dedup_key", "event_kind"}.intersection(
+        occurrence.raw_payload_masked
+    ):
+        raise RuntimeError("Kafka v1 occurrence persisted fields outside the wire contract")
     if incident.occurrence_count != 2:
         raise RuntimeError("active incident deduplication did not count the second alert")
     if incident_input_collection is None:

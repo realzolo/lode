@@ -22,15 +22,11 @@ _REMOVED_COMMIT_FIELD = "git" + "_commit"
 
 def _payload(trace_id: str = "opaque") -> dict:
     return {
-        "schema_version": "incident.alert.v2",
-        "source_event_id": "alert-1",
-        "dedup_key": "payment.order-create",
-        "event_kind": "firing",
+        "schema_version": "incident.alert.v1",
+        "alert_id": "alert-1",
         "occurred_at": "2026-08-26T09:30:00.000Z",
         "severity": "CRITICAL",
         "event": "payment.order_create.failed",
-        "component": "payment-api",
-        "environment": "production",
         "trace_id": trace_id,
         "source_revision": "a" * 40,
         "error": {
@@ -69,6 +65,11 @@ def test_kafka_trace_is_preserved_exactly_and_hidden_from_masked_payload(trace_i
     ("field", "value"),
     [
         (_REMOVED_SERVICE_FIELD, "api"),
+        ("component", "api"),
+        ("environment", "production"),
+        ("source_event_id", "alert-1"),
+        ("dedup_key", "payment.order-create"),
+        ("event_kind", "firing"),
         (_REMOVED_REQUEST_FIELD, "request-1"),
         (_REMOVED_COMMIT_FIELD, "a" * 40),
         ("correlation", {}),
@@ -88,18 +89,42 @@ def test_nested_error_unknown_field_is_rejected() -> None:
         KafkaIncidentAlert.model_validate(payload)
 
 
-@pytest.mark.parametrize("revision", ["a" * 39, "A" * 40, "main"])
-def test_kafka_source_revision_is_optional_but_must_be_a_full_lowercase_sha(revision: str) -> None:
+@pytest.mark.parametrize("revision", [None, "a" * 39, "A" * 40, "main"])
+def test_kafka_source_revision_is_required_full_lowercase_sha(revision: str | None) -> None:
     payload = _payload()
-    payload["source_revision"] = revision
+    if revision is None:
+        del payload["source_revision"]
+    else:
+        payload["source_revision"] = revision
     with pytest.raises(ValidationError):
         KafkaIncidentAlert.model_validate(payload)
 
 
-def test_kafka_source_revision_can_be_omitted() -> None:
+@pytest.mark.parametrize("field", ["alert_id", "trace_id", "error"])
+def test_kafka_v1_required_fields_cannot_be_omitted(field: str) -> None:
     payload = _payload()
-    del payload["source_revision"]
-    assert KafkaIncidentAlert.model_validate(payload).source_revision is None
+    del payload[field]
+    with pytest.raises(ValidationError):
+        KafkaIncidentAlert.model_validate(payload)
+
+
+def test_kafka_v1_maps_to_internal_occurrence_without_invented_context() -> None:
+    normalized = normalize_kafka(KafkaIncidentAlert.model_validate(_payload("trace")))
+
+    assert normalized.source_event_id == "alert-1"
+    assert normalized.event_kind == "firing"
+    assert normalized.component is None
+    assert normalized.environment is None
+    assert (
+        normalized.dedup_key
+        == normalize_kafka(
+            KafkaIncidentAlert.model_validate({**_payload("trace"), "alert_id": "alert-2"})
+        ).dedup_key
+    )
+    assert (
+        normalized.dedup_key
+        != normalize_kafka(KafkaIncidentAlert.model_validate(_payload("other-trace"))).dedup_key
+    )
 
 
 def test_kafka_timestamp_requires_timezone() -> None:

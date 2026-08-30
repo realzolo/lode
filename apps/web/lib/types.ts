@@ -369,8 +369,8 @@ export interface IncidentOccurrence {
   occurred_at: string;
   severity: 'CRITICAL' | 'WARNING';
   event: string;
-  component: string;
-  environment: string;
+  component: string | null;
+  environment: string | null;
   source_revision: string | null;
 }
 
@@ -414,8 +414,8 @@ export interface IncidentSummary {
   workspace_id: number;
   dedup_key: string;
   event: string;
-  component: string;
-  environment: string;
+  component: string | null;
+  environment: string | null;
   severity: 'CRITICAL' | 'WARNING';
   state: IncidentState;
   occurrence_count: number;

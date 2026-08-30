@@ -1,7 +1,7 @@
 # Lode
 
 Lode turns production incident alerts into evidence-backed incident causes and
-exact code diagnoses. It accepts the strict `incident.alert.v2` Kafka contract
+exact code diagnoses. It accepts the strict `incident.alert.v1` Kafka contract
 or authorized manual input, executes bounded read-only investigations, retains
 the complete immutable evidence trail, and refuses to present a related source file as a
 confirmed defect without repository-scoped source authority. Independently
@@ -119,24 +119,23 @@ never returned. Evidence-read authorization and Runner signing use distinct keys
 
 ## Kafka Contract
 
-Kafka input uses `incident.alert.v2`. Unknown fields are rejected. The topic,
-not the payload, selects the Workspace. Every event provides a producer
-`source_event_id`, a correlation `dedup_key`, `event_kind`, component, and
-environment. `trace_id` is an opaque optional string and is preserved exactly in
-encrypted storage; `source_revision` is optional and, when provided, is the
-authoritative full lowercase Git SHA for the Workspace alert-source repository.
+Kafka input uses the unchanged `incident.alert.v1` contract. Unknown fields are
+rejected and the topic, not the payload, selects the Workspace. Only the main
+application produces these alerts, so the message has no component,
+environment, or recovery discriminator. `alert_id` is the producer idempotency
+key. The required opaque `trace_id` is preserved exactly in encrypted storage,
+and the required `source_revision` is the authoritative full lowercase Git SHA
+for the Workspace alert-source repository. Active incidents are correlated by
+Workspace, event, and opaque trace identity inside Lode without extending the
+Kafka message.
 
 ```json
 {
-  "schema_version": "incident.alert.v2",
-  "source_event_id": "alert-01",
-  "dedup_key": "payment.order-create.failure",
-  "event_kind": "firing",
+  "schema_version": "incident.alert.v1",
+  "alert_id": "alert-01",
   "occurred_at": "2026-08-27T10:38:59.522Z",
   "severity": "CRITICAL",
   "event": "payment.order_create.failed",
-  "component": "payment-api",
-  "environment": "production",
   "trace_id": "opaque producer value",
   "source_revision": "6c36658895cb220b66f89f17718a001f3f9f02e4",
   "error": {
@@ -212,6 +211,12 @@ after upgrading. Active or paused ingestion returns to `draft` and must pass
 readiness again before starting. The migration preserves Workspace, Git
 catalogue/account, Connector, and model configuration and introduces no new
 dependency.
+
+Migration `0012_incident_platform_rebuild` discards legacy incident data and
+installs the Incident/Occurrence model. Migration `0013_kafka_v1_boundary`
+keeps `incident.alert.v1` unchanged and permits Kafka occurrences to omit
+internal component/environment projections. Producers require no payload or
+workflow change.
 
 Run processes individually with:
 

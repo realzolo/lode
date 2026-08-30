@@ -169,6 +169,7 @@ export default function IncidentPage({ params }: { params: { incidentId: string 
 
   const transitionActions: TransitionAction[] = ['acknowledge', 'mitigate', 'resolve', 'close', 'reopen'];
   const canChangeState = transitionActions.some((action) => capabilities.get(action)?.allowed);
+  const showOccurrenceContext = incident.occurrences.some((row) => row.component || row.environment);
 
   return <main className="dashboard-page space-y-6">
     <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-5">
@@ -176,7 +177,7 @@ export default function IncidentPage({ params }: { params: { incidentId: string 
         <Button size="sm" variant="ghost" asChild><Link href="/workbench"><ArrowLeft size={15} />{t('title')}</Link></Button>
         <p className="eyebrow">{t('incident')}</p>
         <h1 className="page-title">{incident.event}</h1>
-        <p className="mono text-sm text-muted-foreground">{incident.component} · {incident.environment} · {incident.dedup_key}</p>
+        {(incident.component || incident.environment) && <p className="mono text-sm text-muted-foreground">{[incident.component, incident.environment].filter(Boolean).join(' · ')}</p>}
       </div>
       <div className="flex flex-wrap gap-2">
         {capabilities.get('start_investigation')?.allowed && <Button variant="primary" loading={mutating} onClick={() => void startRun()}><Play size={16} />{t('startInvestigation')}</Button>}
@@ -204,7 +205,7 @@ export default function IncidentPage({ params }: { params: { incidentId: string 
 
     <section className="space-y-3">
       <div className="flex items-center justify-between"><h2 className="text-base font-semibold">{t('occurrences')}</h2></div>
-      {incident.occurrences.length === 0 ? <p className="text-sm text-muted-foreground">{t('noOccurrences')}</p> : <div className="table-wrap"><table className="table"><thead><tr><th>{t('occurred')}</th><th>{t('event')}</th><th>{t('severity')}</th><th>{t('component')}</th><th>{t('environment')}</th></tr></thead><tbody>{incident.occurrences.map((occurrence) => <tr key={occurrence.id}><td>{new Date(occurrence.occurred_at).toLocaleString(dateLocale)}</td><td>{occurrence.event}</td><td>{occurrence.severity === 'CRITICAL' ? t('severityCritical') : t('severityWarning')}</td><td>{occurrence.component}</td><td>{occurrence.environment}</td></tr>)}</tbody></table></div>}
+      {incident.occurrences.length === 0 ? <p className="text-sm text-muted-foreground">{t('noOccurrences')}</p> : <div className="table-wrap"><table className="table"><thead><tr><th>{t('occurred')}</th><th>{t('event')}</th><th>{t('severity')}</th>{showOccurrenceContext && <><th>{t('component')}</th><th>{t('environment')}</th></>}</tr></thead><tbody>{incident.occurrences.map((occurrence) => <tr key={occurrence.id}><td>{new Date(occurrence.occurred_at).toLocaleString(dateLocale)}</td><td>{occurrence.event}</td><td>{occurrence.severity === 'CRITICAL' ? t('severityCritical') : t('severityWarning')}</td>{showOccurrenceContext && <><td>{occurrence.component || '-'}</td><td>{occurrence.environment || '-'}</td></>}</tr>)}</tbody></table></div>}
     </section>
 
     <section className="space-y-3 border-t pt-6">

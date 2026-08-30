@@ -116,13 +116,13 @@ deployment-canary observations to pass the statistical and non-regression gate.
   later successful initialization of the same activation generation. Manual
   `POST /incidents` uses the same service.
 - Intake has three independent idempotency/correlation boundaries:
-  topic/partition/offset, `(Workspace, source_event_id)`, and the active
-  `(Workspace, dedup_key)` incident. Exact source-event retries are duplicates;
-  distinct source events sharing the active correlation key create another
-  immutable occurrence and return `correlated`. Invalid and unassigned records
-  are durably masked before optional Kafka DLQ mirroring; replay always runs the
-  current strict validator. Concurrent offset and source-event races have one
-  accepted result and one duplicate result.
+  topic/partition/offset, `(Workspace, alert_id)`, and the active
+  `(Workspace, event, opaque trace_id)` incident signature. Exact alert retries
+  are duplicates; distinct alert IDs sharing the active signature create
+  another immutable occurrence and return `correlated`. Invalid and unassigned
+  records are durably masked before optional Kafka DLQ mirroring; replay always
+  runs the current strict validator. Concurrent offset and alert-ID races have
+  one accepted result and one duplicate result.
 - `src/lode/resource_understanding` provides the bounded, non-executing
   repository scanner, immutable scan values, deterministic identity validator,
   and transactional ResourceGraph publisher. It supports Node/pnpm, Python,
@@ -309,7 +309,7 @@ deployment-canary observations to pass the statistical and non-regression gate.
   `investigation.py`, `check_schema.py`, and so on). The repository maintains
   one current implementation and never creates `_v1`/`_v2` module variants.
   Version literals remain only where an external wire or persisted schema
-  contract requires them, such as `incident.alert.v2` and migration revision
+  contract requires them, such as `incident.alert.v1` and migration revision
   `0001_initial` and forward migrations.
 - `src/lode/application/capabilities.py`, `decision_policy.py`,
   `evidence_graph.py`, and `investigation.py` implement the credential-free
@@ -572,7 +572,7 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/api`: FastAPI control plane, global AI-output-language settings,
   authorization, incident lifecycle/actions, immutable investigation reports,
   structured execution-graph projection and node results, and SSE.
-- `src/lode/consumer`: strict Kafka `incident.alert.v2` validation and shared intake dispatch.
+- `src/lode/consumer`: strict Kafka `incident.alert.v1` validation and shared intake dispatch.
 - `src/lode/application/incident_lifecycle.py`: server-owned incident states,
   compare-and-swap transitions, and action capability contract.
 - `src/lode/worker`: independent durable investigation and repository-analysis job claiming, leases, retry/recovery, and bounded cross-investigation concurrency.
@@ -847,15 +847,17 @@ output-format failure as insufficient evidence.
 
 ## Input Contract
 
-Kafka accepts only strict `incident.alert.v2` with no compatibility aliases.
-Required fields are `schema_version`, `source_event_id`, `dedup_key`,
-`event_kind` (`firing` or `recovered`), timezone-aware `occurred_at`,
-`severity`, stable `event`, `component`, and `environment`. `trace_id` and a
-full lowercase 40-character `source_revision` are optional; a `firing` event
-must include structured `error` (`type`, `message`, `stack`, recursive
-`cause`). Unknown fields are rejected, including removed service, request,
+Kafka accepts only the unchanged strict `incident.alert.v1` contract with no
+compatibility aliases. Required fields are `schema_version`, `alert_id`,
+timezone-aware `occurred_at`, `severity`, stable `event`, opaque `trace_id`, a
+full lowercase 40-character `source_revision`, and structured `error` (`type`,
+`message`, `stack`, recursive `cause`). Unknown fields are rejected, including
+component, environment, deduplication key, event kind, service, request,
 commit, correlation, and carrier fields. The Kafka topic selects the Workspace;
-no Workspace identifier is accepted from the payload.
+no Workspace identifier is accepted from the payload. Only the main
+application produces Kafka alerts, so every accepted v1 message is internally
+an immutable firing occurrence; Lode never invents component or environment
+values for it.
 
 The original `trace_id`, including empty, whitespace, Unicode, or punctuation,
 is never normalized. It is encrypted in the immutable occurrence and
@@ -865,10 +867,11 @@ represented in ordinary investigation JSON only as
 masked and archived without discarding stack or cause information.
 
 Kafka processing persists before committing its offset. Redelivery is deduped
-by topic/partition/offset and producer retry by `(workspace_id, source_event_id)`.
-Distinct events with the same active `(workspace_id, dedup_key)` are correlated
-to the same incident and retained as separate immutable occurrences. A recovery
-must match an active incident and advances it to `mitigated`; a new firing after
+by topic/partition/offset and producer retry by `(workspace_id, alert_id)`.
+Distinct alert IDs with the same active `(workspace_id, event, opaque trace_id)`
+signature are correlated to the same incident and retained as separate
+immutable occurrences. Kafka has no recovery event; lifecycle mitigation and
+resolution remain explicit incident commands, and a new firing after
 resolution/closure opens a recurrence. Invalid and unassigned payloads are
 durably masked. DLQ replay is atomic and always uses the current validator;
 failed validation does not mark a record as replayed.
@@ -1173,7 +1176,14 @@ occurrence and trigger reason. There is no downgrade, data mapping, dual read,
 or compatibility route. This architecture/workflow change introduces no new
 dependency; operators must re-create discarded incident data and rebind
 repositories under the existing analysis-mode/alert-source contract after
-upgrade. Future schema changes use ordinary forward migrations.
+upgrade.
+`0013_kafka_v1_boundary.py` preserves the deployed `incident.alert.v1` wire
+contract while keeping the Incident/Occurrence model: Kafka `alert_id` maps to
+the internal source identity, every Kafka occurrence is firing, and correlation
+uses event plus opaque trace identity. It makes internal component/environment
+projections nullable so v1 Kafka intake stores no fabricated context. It adds no
+dependency, payload adapter, compatibility route, or producer workflow change.
+Future schema changes use ordinary forward migrations.
 
 `next_lode_id()` and its state sequence are created before business tables in
 the initial migration. Tests exercise concurrent connections, independent
@@ -1451,7 +1461,7 @@ pnpm typecheck
 pnpm build
 ```
 
-For incident/investigation changes, tests must cover strict `incident.alert.v2` parsing,
+For incident/investigation changes, tests must cover strict `incident.alert.v1` parsing,
 opaque trace preservation/sealing, Workspace permissions, all intake idempotency
 boundaries, generated native queries, full query fingerprints, bounded wave
 concurrency and partial failure, independently observed source revisions, full

@@ -29,24 +29,20 @@ class IncidentError(BaseModel):
 class KafkaIncidentAlert(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["incident.alert.v2"]
-    source_event_id: str = Field(min_length=1, max_length=500)
-    dedup_key: str = Field(min_length=1, max_length=500)
-    event_kind: Literal["firing", "recovered"]
+    schema_version: Literal["incident.alert.v1"]
+    alert_id: str = Field(min_length=1, max_length=500)
     occurred_at: datetime
     severity: Literal["CRITICAL", "WARNING"]
     event: str = Field(min_length=1, max_length=500, pattern=EVENT_PATTERN)
-    component: str = Field(min_length=1, max_length=500, pattern=EVENT_PATTERN)
-    environment: str = Field(min_length=1, max_length=100, pattern=EVENT_PATTERN)
-    trace_id: str | None = None
-    source_revision: str | None = Field(default=None, pattern=SOURCE_REVISION_PATTERN)
-    error: IncidentError | None = None
+    trace_id: str
+    source_revision: str = Field(pattern=SOURCE_REVISION_PATTERN)
+    error: IncidentError
 
     @field_validator("occurred_at", mode="before")
     @classmethod
     def timestamp_must_be_a_json_string(cls, value: Any) -> Any:
         if not isinstance(value, str):
-            raise TypeError("occurred_at must be an RFC 3339 string")
+            raise ValueError("occurred_at must be an RFC 3339 string")
         return value
 
     @field_validator("occurred_at")
@@ -67,12 +63,6 @@ class KafkaIncidentAlert(BaseModel):
                 raise ValueError(f"error cause depth exceeds {MAX_CAUSE_DEPTH}")
             current = current.cause
         return value
-
-    @model_validator(mode="after")
-    def firing_events_require_a_failure(self) -> KafkaIncidentAlert:
-        if self.event_kind == "firing" and self.error is None:
-            raise ValueError("firing events require an error payload")
-        return self
 
 
 class ManualAttachment(BaseModel):
@@ -136,8 +126,8 @@ class NormalizedIncident:
     occurred_at: datetime
     severity: Literal["CRITICAL", "WARNING"]
     event: str
-    component: str
-    environment: str
+    component: str | None
+    environment: str | None
     trace_id: str | None
     source_revision: str | None
     error_masked: dict[str, Any]
@@ -149,6 +139,12 @@ class NormalizedIncident:
 def canonical_hash(value: Any) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def kafka_correlation_key(event: str, trace_id: str) -> str:
+    """Derive the original v1 incident signature without extending the wire contract."""
+
+    return canonical_hash({"event": event, "trace_id": trace_id})
 
 
 def mask_failure_payload(value: Any) -> tuple[Any, tuple[str, ...]]:
@@ -169,8 +165,8 @@ def _normalize(
     occurred_at: datetime,
     severity: Literal["CRITICAL", "WARNING"],
     event: str,
-    component: str,
-    environment: str,
+    component: str | None,
+    environment: str | None,
     trace_id: str | None,
     source_revision: str | None,
     error: IncidentError | None,
@@ -214,14 +210,14 @@ def _normalize(
 def normalize_kafka(message: KafkaIncidentAlert) -> NormalizedIncident:
     return _normalize(
         source_type="kafka",
-        source_event_id=message.source_event_id,
-        dedup_key=message.dedup_key,
-        event_kind=message.event_kind,
+        source_event_id=message.alert_id,
+        dedup_key=kafka_correlation_key(message.event, message.trace_id),
+        event_kind="firing",
         occurred_at=message.occurred_at,
         severity=message.severity,
         event=message.event,
-        component=message.component,
-        environment=message.environment,
+        component=None,
+        environment=None,
         trace_id=message.trace_id,
         source_revision=message.source_revision,
         error=message.error,

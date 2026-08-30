@@ -93,7 +93,7 @@ export default function IncidentsPage() {
     {loading ? <ListSkeleton rows={6} columns={6} /> : <div className="operational-table">
       <div className="table-wrap"><table className="table"><thead><tr><th>{t('incident')}</th><th>{t('workspace')}</th><th>{t('state')}</th><th>{t('occurrences')}</th><th>{t('latestOccurrence')}</th><th /></tr></thead>
         <tbody>{rows.map((row) => <tr key={row.id}>
-          <td><p className="font-medium">{row.event}</p><p className="mono mt-1 text-xs text-muted-foreground">{row.component} · {row.environment} · {row.dedup_key}</p></td>
+          <td><p className="font-medium">{row.event}</p>{(row.component || row.environment) && <p className="mono mt-1 text-xs text-muted-foreground">{[row.component, row.environment].filter(Boolean).join(' · ')}</p>}</td>
           <td>{names.get(row.workspace_id) || row.workspace_id}</td>
           <td><span className={`table-status table-status-${row.state === 'closed' ? 'neutral' : row.state === 'resolved' ? 'success' : row.state === 'mitigated' ? 'warning' : 'danger'}`}><i />{stateLabel(row.state, t)}</span><p className="mt-1 text-xs text-muted-foreground">{severityLabel(row.severity, t)}</p></td>
           <td>{row.occurrence_count}</td>

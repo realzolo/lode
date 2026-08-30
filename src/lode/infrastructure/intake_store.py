@@ -257,8 +257,12 @@ class PostgresIntakeStore:
         replay_event_id: int | None = None,
         replay_dead_letter_id: int | None = None,
     ) -> IntakeResult:
-        if incident.source_event_id is None:
-            raise ValueError("Kafka normalization requires source_event_id")
+        if (
+            incident.source_event_id is None
+            or incident.trace_id is None
+            or incident.source_revision is None
+        ):
+            raise ValueError("Kafka v1 normalization requires alert, trace, and source revision")
 
         if replay_event_id is None:
             event_id = (

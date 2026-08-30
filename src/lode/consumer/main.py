@@ -1,4 +1,4 @@
-"""Strict Kafka `incident.alert.v2` transport adapter."""
+"""Strict Kafka `incident.alert.v1` transport adapter."""
 
 from __future__ import annotations
 

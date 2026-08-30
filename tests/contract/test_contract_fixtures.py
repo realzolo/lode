@@ -31,25 +31,28 @@ def test_incident_alert_fixture_is_the_only_final_wire_contract() -> None:
     properties = schema["properties"]
 
     assert schema["additionalProperties"] is False
-    assert properties["schema_version"] == {"const": "incident.alert.v2"}
-    assert properties["trace_id"] == {"type": ["string", "null"]}
+    assert properties["schema_version"] == {"const": "incident.alert.v1"}
+    assert properties["trace_id"] == {"type": "string"}
     assert properties["source_revision"]["pattern"] == "^[0-9a-f]{40}$"
     assert set(schema["required"]) == {
         "schema_version",
-        "source_event_id",
-        "dedup_key",
-        "event_kind",
+        "alert_id",
         "occurred_at",
         "severity",
         "event",
-        "component",
-        "environment",
+        "trace_id",
+        "source_revision",
+        "error",
     }
-    assert {"trace_id", "source_revision", "error"}.isdisjoint(schema["required"])
     removed = {
         "service" + "_name",
         "request" + "_id",
         "git" + "_commit",
+        "source_event_id",
+        "dedup_key",
+        "event_kind",
+        "component",
+        "environment",
     }
     assert removed.isdisjoint(properties)
 

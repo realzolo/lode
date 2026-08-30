@@ -1,25 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lode.local/contracts/v1/kafka/incident-alert.schema.json",
-  "title": "incident.alert.v2",
+  "title": "incident.alert.v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
-    "source_event_id",
-    "dedup_key",
-    "event_kind",
+    "alert_id",
     "occurred_at",
     "severity",
     "event",
-    "component",
-    "environment"
+    "trace_id",
+    "source_revision",
+    "error"
   ],
   "properties": {
-    "schema_version": {"const": "incident.alert.v2"},
-    "source_event_id": {"type": "string", "minLength": 1, "maxLength": 500},
-    "dedup_key": {"type": "string", "minLength": 1, "maxLength": 500},
-    "event_kind": {"type": "string", "enum": ["firing", "recovered"]},
+    "schema_version": {"const": "incident.alert.v1"},
+    "alert_id": {"type": "string", "minLength": 1, "maxLength": 500},
     "occurred_at": {"type": "string", "format": "date-time"},
     "severity": {"type": "string", "enum": ["CRITICAL", "WARNING"]},
     "event": {
@@ -28,33 +25,10 @@
       "maxLength": 500,
       "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
     },
-    "component": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 500,
-      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
-    },
-    "environment": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 100,
-      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
-    },
-    "trace_id": {"type": ["string", "null"]},
-    "source_revision": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
-    "error": {
-      "oneOf": [
-        {"type": "null"},
-        {"$ref": "#/$defs/error"}
-      ]
-    }
+    "trace_id": {"type": "string"},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "error": {"$ref": "#/$defs/error"}
   },
-  "allOf": [
-    {
-      "if": {"properties": {"event_kind": {"const": "firing"}}},
-      "then": {"required": ["error"]}
-    }
-  ],
   "$defs": {
     "error": {
       "type": "object",

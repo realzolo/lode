@@ -45,8 +45,8 @@ class IncidentListItem(BaseModel):
     workspace_id: EntityId
     dedup_key: str
     event: str
-    component: str
-    environment: str
+    component: str | None
+    environment: str | None
     severity: str
     state: str
     occurrence_count: int
@@ -76,8 +76,8 @@ class IncidentOccurrenceOut(BaseModel):
     occurred_at: datetime
     severity: str
     event: str
-    component: str
-    environment: str
+    component: str | None
+    environment: str | None
     source_revision: str | None
 
 

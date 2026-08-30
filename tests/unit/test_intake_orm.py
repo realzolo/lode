@@ -28,7 +28,8 @@ def test_kafka_position_and_source_event_identity_have_separate_unique_keys() ->
 
 
 def test_occurrence_stores_the_final_incident_contract_without_plaintext_trace() -> None:
-    columns = set(Base.metadata.tables["incident_occurrences"].c.keys())
+    table = Base.metadata.tables["incident_occurrences"]
+    columns = set(table.c.keys())
 
     assert {
         "workspace_id",
@@ -48,6 +49,8 @@ def test_occurrence_stores_the_final_incident_contract_without_plaintext_trace()
         "raw_payload_masked",
     }.issubset(columns)
     assert "trace_id" not in columns
+    assert table.c.component.nullable
+    assert table.c.environment.nullable
 
 
 def test_active_incident_dedup_key_is_partial_unique() -> None:
