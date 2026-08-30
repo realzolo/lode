@@ -6,7 +6,13 @@ from lode.application.model_routing import (
     ModelCapabilityUnavailable,
     ModelSelectionPolicyEngine,
 )
-from lode.domain.model_execution import ModelCandidate, ModelTask
+from lode.domain.model_execution import (
+    ContextEvidence,
+    ModelCandidate,
+    ModelTask,
+    highest_model_data_class,
+    model_evidence_is_pinned,
+)
 from lode.domain.types import ExecutionClass, ModelRole
 from lode.infrastructure.model_runtime import TokenizerRegistry
 
@@ -21,6 +27,7 @@ def candidate(
     provider_id: int | None = None,
     max_calls: int = 10,
     used_calls: int = 0,
+    allowed_data_classes: tuple[str, ...] = ("masked",),
 ) -> ModelCandidate:
     return ModelCandidate(
         binding_snapshot_id=snapshot_id,
@@ -32,7 +39,7 @@ def candidate(
         provider_model_id="gpt-5.6-sol",
         execution_classes=(execution_class,),
         allowed_roles=(role,),
-        allowed_data_classes=("masked",),
+        allowed_data_classes=allowed_data_classes,
         tokenizer_id="exact-json-bytes",
         context_window_tokens=20_000,
         max_output_tokens=2_000,
@@ -145,6 +152,67 @@ def test_binding_call_budget_exhaustion_excludes_the_candidate() -> None:
         )
 
     assert exc.value.exclusions[0].code == "model_binding_call_budget_exhausted"
+
+
+def test_data_class_exclusion_records_requested_and_allowed_classes() -> None:
+    with pytest.raises(ModelCapabilityUnavailable) as exc:
+        ModelSelectionPolicyEngine().select(
+            task(),
+            (
+                candidate(
+                    1,
+                    ExecutionClass.LATENCY_OPTIMIZED,
+                    allowed_data_classes=("source_code",),
+                ),
+            ),
+            remaining_calls=2,
+            remaining_cost=10,
+        )
+
+    exclusion = exc.value.exclusions[0]
+    assert exclusion.code == "data_class_not_allowed"
+    assert dict(exclusion.detail) == {
+        "required_execution_class": "latency_optimized",
+        "requested_data_class": "masked",
+        "allowed_data_classes": ("source_code",),
+    }
+
+
+def test_highest_model_data_class_uses_the_closed_runtime_order() -> None:
+    source = ContextEvidence(
+        artifact_id=1,
+        artifact_kind="source_file",
+        content={},
+        token_count=0,
+        relevance=1,
+        data_class="source_code",
+    )
+    masked = ContextEvidence(
+        artifact_id=2,
+        artifact_kind="normalized_log_result",
+        content={},
+        token_count=0,
+        relevance=1,
+        data_class="masked",
+    )
+    restricted = ContextEvidence(
+        artifact_id=3,
+        artifact_kind="restricted_result",
+        content={},
+        token_count=0,
+        relevance=1,
+        data_class="restricted",
+    )
+
+    assert highest_model_data_class(()) == "masked"
+    assert highest_model_data_class((source, masked)) == "source_code"
+    assert highest_model_data_class((source, restricted, masked)) == "restricted"
+
+
+def test_incident_input_is_always_pinned_for_model_context() -> None:
+    assert model_evidence_is_pinned("incident_input", set())
+    assert model_evidence_is_pinned("source_file", {"source_file"})
+    assert not model_evidence_is_pinned("source_file", set())
 
 
 def test_tokenizer_registry_fails_closed_for_unregistered_deployments() -> None:

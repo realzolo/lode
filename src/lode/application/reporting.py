@@ -5,11 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, field_validator, model_validator
+
+from lode.structured_output import StrictResponseModel, parse_json_document
 
 
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class _StrictModel(StrictResponseModel):
+    pass
 
 
 class CausePayload(_StrictModel):
@@ -27,18 +29,18 @@ class CodeDiagnosisPayload(_StrictModel):
 
 class CodeFindingPayload(_StrictModel):
     status: Literal["confirmed", "hypothesis", "no_defect", "not_found"]
-    source_artifact_id: int | None = Field(default=None, gt=0)
-    source_assessment_id: int | None = Field(default=None, gt=0)
-    repository_id: int | None = Field(default=None, gt=0)
-    revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    source_artifact_id: int | None = Field(gt=0)
+    source_assessment_id: int | None = Field(gt=0)
+    repository_id: int | None = Field(gt=0)
+    revision: str | None = Field(pattern=r"^[0-9a-f]{40}$")
     revision_role: (
         Literal["incident_source", "repository_search_candidate", "runtime_identified"] | None
-    ) = None
-    path: str | None = None
-    symbol: str | None = None
-    start_line: int | None = Field(default=None, gt=0)
-    end_line: int | None = Field(default=None, gt=0)
-    issue_type: str | None = None
+    )
+    path: str | None
+    symbol: str | None
+    start_line: int | None = Field(gt=0)
+    end_line: int | None = Field(gt=0)
+    issue_type: str | None
     faulty_behavior: str
     why_wrong: str
     expected_behavior: str
@@ -94,9 +96,9 @@ class TimelineItemPayload(_StrictModel):
 
 class SourceAssessmentPayload(_StrictModel):
     repository_id: int = Field(gt=0)
-    build_unit_id: int | None = Field(default=None, gt=0)
-    component_id: int | None = Field(default=None, gt=0)
-    revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    build_unit_id: int | None = Field(gt=0)
+    component_id: int | None = Field(gt=0)
+    revision: str | None = Field(pattern=r"^[0-9a-f]{40}$")
     revision_role: Literal["incident_source", "repository_search_candidate", "runtime_identified"]
     runtime_match_status: Literal[
         "exact", "unverified", "corroborated", "contradicted", "unresolved"
@@ -107,10 +109,24 @@ class SourceAssessmentPayload(_StrictModel):
 
 class ConfigurationAssessmentPayload(_StrictModel):
     scope: str
-    declared_value: Any
-    runtime_value: Any
+    declared_value_json: str = Field(max_length=256 * 1024)
+    runtime_value_json: str = Field(max_length=256 * 1024)
     effective_status: Literal["unknown", "corroborated", "contradicted"]
     evidence_refs: tuple[int, ...]
+
+    @field_validator("declared_value_json", "runtime_value_json")
+    @classmethod
+    def values_are_bounded_json(cls, value: str) -> str:
+        parse_json_document(value)
+        return value
+
+    @property
+    def declared_value(self) -> Any:
+        return parse_json_document(self.declared_value_json)
+
+    @property
+    def runtime_value(self) -> Any:
+        return parse_json_document(self.runtime_value_json)
 
 
 class EvidenceStatementPayload(_StrictModel):
@@ -162,8 +178,8 @@ class VerificationPayload(_StrictModel):
 
 
 def report_json_schema() -> dict[str, Any]:
-    return InvestigationReportPayload.model_json_schema()
+    return InvestigationReportPayload.response_json_schema()
 
 
 def verification_json_schema() -> dict[str, Any]:
-    return VerificationPayload.model_json_schema()
+    return VerificationPayload.response_json_schema()

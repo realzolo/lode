@@ -30,7 +30,7 @@ class InvestigationState:
     evidence_refs: tuple[int, ...]
     evidence_anchors: tuple[str, ...]
     allowed_value_refs: frozenset[str]
-    completed_fingerprints: frozenset[str]
+    attempted_fingerprints: frozenset[str]
     budget: DecisionBudget
     state_packet: Mapping[str, Any] = field(default_factory=dict)
     max_waves: int = 100
@@ -227,8 +227,7 @@ class InvestigationOrchestrator:
                 candidate,
                 capabilities,
                 budget=state.budget,
-                allowed_value_refs=state.allowed_value_refs,
-                completed_fingerprints=state.completed_fingerprints,
+                attempted_fingerprints=state.attempted_fingerprints,
             )
             if evaluated.outcome == "reject":
                 rejections += 1
@@ -249,19 +248,18 @@ class InvestigationOrchestrator:
                     repaired,
                     capabilities,
                     budget=state.budget,
-                    allowed_value_refs=state.allowed_value_refs,
-                    completed_fingerprints=state.completed_fingerprints,
+                    attempted_fingerprints=state.attempted_fingerprints,
                 )
                 if evaluated.outcome == "reject":
                     rejections += 1
                     await self.repository.record_rejected_decision(investigation_id, evaluated)
                     await self.repository.finish_investigation(
                         investigation_id,
-                        result_state="unavailable",
+                        result_state="insufficient",
                         reason="decision_policy_rejected_after_repair",
                     )
                     return InvestigationRunResult(
-                        "unavailable",
+                        "insufficient",
                         state.wave_count,
                         rejections,
                         "decision_policy_rejected_after_repair",

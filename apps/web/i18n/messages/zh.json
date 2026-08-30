@@ -500,6 +500,7 @@
     "statusAuthorized": "已授权",
     "statusQueued": "排队中",
     "statusRunning": "执行中",
+    "statusReporting": "正在发布报告",
     "statusCompleted": "已完成",
     "statusFailed": "失败",
     "operationFailed": "操作失败，请在技术详情中查看失败代码。",

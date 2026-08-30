@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -20,6 +21,9 @@ from lode.crypto import encrypt_value
 from lode.db.models import (
     Alert,
     DeadLetter,
+    EvidenceArtifact,
+    EvidenceCollection,
+    GitRepository,
     Incident,
     IngestionEvent,
     Investigation,
@@ -27,7 +31,6 @@ from lode.db.models import (
     InvestigationJob,
     InvestigationResourceGraphSnapshot,
     PlatformSettings,
-    GitRepository,
     RepositoryAnalysisJob,
     ResourceGraphRevision,
     SealedEvidenceValue,
@@ -58,6 +61,23 @@ def _sha256(value: str) -> str:
 
 def _signature(workspace_id: int, event: str, trace_id: str | None) -> str:
     return canonical_hash({"event": event, "trace_id": trace_id, "workspace_id": workspace_id})
+
+
+def _incident_evidence_content(
+    incident: NormalizedIncident, trace_value_ref: str | None
+) -> dict[str, Any]:
+    return {
+        "source_type": incident.source_type,
+        "alert_id": incident.alert_id,
+        "event": incident.event,
+        "severity": incident.severity,
+        "occurred_at": incident.occurred_at.isoformat(),
+        "trace_value_ref": trace_value_ref,
+        "source_revision": incident.source_revision,
+        "error": incident.error_masked,
+        "raw_payload": incident.raw_payload_masked,
+        "attachments": list(incident.attachments_masked),
+    }
 
 
 async def _repository_analysis_current(session: AsyncSession, workspace_id: int) -> bool | None:
@@ -465,6 +485,58 @@ class PostgresIntakeStore:
                 raw_payload_masked=incident.raw_payload_masked,
                 attachments_masked=list(incident.attachments_masked),
                 created_by=created_by,
+            )
+        )
+        input_content = _incident_evidence_content(incident, trace_value_ref)
+        input_hash = canonical_hash(input_content)
+        archived_at = datetime.now(UTC)
+        input_collection = EvidenceCollection(
+            investigation_id=investigation.id,
+            operation_id=None,
+            connector_snapshot_id=None,
+            collection_kind="input",
+            status="succeeded",
+            fingerprint=canonical_hash(
+                {
+                    "investigation_id": investigation.id,
+                    "artifact_kind": "incident_input",
+                    "content_hash": input_hash,
+                }
+            ),
+            purpose="Archive the immutable normalized incident input.",
+            selector_masked={"investigation_input_id": investigation.id},
+            artifact_count=1,
+            result_bytes=len(
+                json.dumps(
+                    input_content,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ),
+            started_at=archived_at,
+            finished_at=archived_at,
+        )
+        self.session.add(input_collection)
+        await self.session.flush()
+        self.session.add(
+            EvidenceArtifact(
+                investigation_id=investigation.id,
+                collection_id=input_collection.id,
+                artifact_kind="incident_input",
+                evidence_class="input",
+                content_masked=input_content,
+                content_hash=input_hash,
+                provenance={
+                    "source_type": "investigation_input",
+                    "source_id": investigation.id,
+                    "masking_categories": list(incident.masking_categories),
+                },
+                source_time_start=incident.occurred_at,
+                source_time_end=incident.occurred_at,
+                source_revision=incident.source_revision,
+                data_class="masked",
+                prompt_injection_markers=[],
             )
         )
         if trace_value_ref is not None and trace_ciphertext is not None and trace_hash is not None:

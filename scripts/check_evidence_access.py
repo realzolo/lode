@@ -52,6 +52,7 @@ from lode.evidence_connectors.registry import build_native_policy_registry
 from lode.evidence_connectors.types import ProviderExecutionError
 from lode.infrastructure.evidence_archive import PostgresEvidenceResultArchiver
 from lode.infrastructure.intake_store import PostgresIntakeStore
+from lode.infrastructure.native_query import GeneratedNativeQuery
 from lode.infrastructure.native_read_executor import NativeReadOperationExecutor
 from lode.model_catalog import require_model
 
@@ -142,6 +143,15 @@ class StaticAdapterResolver:
         return SlowCaptureAdapter(self.calls)
 
 
+class StaticNativeQueryGenerator:
+    def __init__(self, invocation_id: int, candidate: NativeReadCandidateInput) -> None:
+        self.invocation_id = invocation_id
+        self.candidate = candidate
+
+    async def generate(self, _operation_id, _operation):
+        return GeneratedNativeQuery(self.invocation_id, self.candidate)
+
+
 def _find_trace_value(value):
     if isinstance(value, dict):
         term = value.get("term")
@@ -221,7 +231,7 @@ async def _create_fixture(session):
     )
     context_policy = ContextPolicyRevision(
         workspace_id=workspace.id,
-        pinned_evidence_kinds=["investigation_input"],
+        pinned_evidence_kinds=["incident_input"],
         compression_levels=["full"],
         minimum_output_tokens=1_000,
         provider_safety_margin_tokens=256,
@@ -327,7 +337,7 @@ async def _create_fixture(session):
     await session.flush()
     scope = EvidenceAccessScope(
         connector_id=connector.id,
-        allowed_languages=["elasticsearch_query_dsl", "sql"],
+        allowed_languages=["elasticsearch_query_dsl"],
         scope_config={
             "allowed_indices": ["logs"],
             "required_terms": {},
@@ -375,6 +385,8 @@ async def _create_fixture(session):
             "max_total_output_bytes": 2_000_000,
             "max_window_seconds": 900,
             "max_native_reads": 8,
+            "max_parallel_operations": 1,
+            "estimated_cost": 0.0,
         },
         normalization_policy_revision=1,
         revision=1,
@@ -673,7 +685,7 @@ async def main() -> None:
             ),
             _context(workspace, investigation, connector, snapshot, operations[1], invocations[1]),
         )
-        assert unsupported.rejection_code == "unsupported_node"
+        assert unsupported.rejection_code == "scope_violation"
 
         connector.state = "disabled"
         await session.flush()
@@ -733,7 +745,9 @@ async def main() -> None:
         variant="bridge",
     )
     bridge_result = await NativeReadOperationExecutor(
-        AsyncSessionLocal, StaticAdapterResolver(bridge_calls)
+        AsyncSessionLocal,
+        StaticAdapterResolver(bridge_calls),
+        StaticNativeQueryGenerator(invocations[5].id, bridge_candidate),
     ).execute(
         operations[5].id,
         PlannedOperation(
@@ -746,7 +760,6 @@ async def main() -> None:
             selection_reason="Exercise the durable native operation bridge",
             stop_condition="Stop after the result is archived",
             estimated_cost=0.0,
-            native_candidate=bridge_candidate.model_dump(mode="json"),
         ),
     )
     assert bridge_result.status == "succeeded"
@@ -832,7 +845,7 @@ async def main() -> None:
                     "replay_rejected": any(
                         isinstance(item, AuthorizationTokenError) for item in outcomes
                     ),
-                    "unsupported_sql": unsupported.rejection_code,
+                    "cross_protocol_sql": unsupported.rejection_code,
                     "provider_failure": failed.failure_code,
                 },
                 indent=2,

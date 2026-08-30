@@ -34,6 +34,8 @@ def access_context(language: str, *, scope: dict, catalog: dict) -> AccessContex
             "max_output_bytes": 1_000_000,
             "max_total_output_bytes": 2_000_000,
             "max_window_seconds": 1_800,
+            "max_parallel_operations": 1,
+            "estimated_cost": 0.0,
         },
         investigation_window_start=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
         investigation_window_end=datetime(2026, 8, 26, 10, 0, tzinfo=UTC),
@@ -83,6 +85,17 @@ def logql_context(**changes) -> AccessContext:
             "fields": ["duration_ms", "level"],
         },
     )
+
+
+def test_logql_generation_contract_publishes_effective_scope_only() -> None:
+    contract = LogQLPolicy().generation_contract(
+        scope_config={},
+        schema_catalog={"labels": ["app"], "fields": []},
+    )
+
+    assert contract["allowed_pipeline_stages"] == ["line_filter"]
+    assert contract["allowed_selector_labels"] == ["app"]
+    assert "json" not in contract["allowed_pipeline_stages"]
 
 
 def search_context(language: str, **changes) -> AccessContext:

@@ -10,7 +10,7 @@ quality and Wilson confidence thresholds below. The final Phase 9 API and Web
 Workbench implementation is present and passes its deterministic API, database,
 SSE, type, build, and responsive-browser checks. Phase 10 local hardening and
 the deterministic release gate pass on a fresh isolated database; the latest
-full backend run is 361 tests. The complete gate includes deterministic fuzz,
+full backend run is 492 tests. The complete gate includes deterministic fuzz,
 security, worker soak/crash/lease-loss, release-bundle, operational-metric, and
 canary mechanism tests. Final release still requires frozen real-provider and
 deployment-canary observations to pass the statistical and non-regression gate.
@@ -97,7 +97,11 @@ deployment-canary observations to pass the statistical and non-regression gate.
   contract. `src/lode/infrastructure/intake_store.py` atomically resolves the
   Workspace from the Kafka topic and persists the alert, incident,
   investigation, immutable input, sealed values, graph snapshot, and durable
-  job. `src/lode/consumer/main.py` commits Kafka offsets only after that
+  job. The same transaction archives exactly one succeeded input collection and
+  one canonical masked `incident_input` evidence artifact for every new
+  investigation; the artifact contains the complete normalized incident while
+  secret values remain ValueRef sentinels. `src/lode/consumer/main.py` commits
+  Kafka offsets only after that
   transaction succeeds. The consumer uses an exact escaped pattern over the
   active topic inventory, so metadata discovery cannot auto-create a missing
   Workspace topic. A partition-initialization error remains visible until a
@@ -156,6 +160,13 @@ deployment-canary observations to pass the statistical and non-regression gate.
   candidates by default; the planner decides whether they are relevant. A
   disabled or unhealthy Connector rejects only future authorization, while a
   frozen snapshot prevents later reactivation from expanding the investigation.
+  Every scope and snapshot uses the closed canonical execution-budget fields
+  `max_result_limit`, `max_timeout_ms`, `max_output_bytes`,
+  `max_total_output_bytes`, `max_native_reads`, `max_window_seconds`,
+  `max_parallel_operations`, and `estimated_cost`; control-plane names are not
+  translated at runtime. SQL scope ownership is equally explicit: PostgreSQL
+  owns only the `postgres` dialect, MySQL owns only `mysql`, and non-SQL
+  Connectors cannot advertise the SQL language.
 - ValueRef plaintext is resolved only after policy allow, replaces one parser-
   approved value node, and must preserve the parsed structure. Candidate and
   decision JSON retain sentinels; the exact bound action exists only encrypted
@@ -298,16 +309,36 @@ deployment-canary observations to pass the statistical and non-regression gate.
   frozen role/execution-class routing, per-investigation and per-binding call/
   cost limits, `tiktoken` counting of the complete serialized OpenAI request,
   immutable context bundles, audited
-  replay, and one bounded compaction retry. Pinned input and counter-evidence are
-  never tail-truncated. Compaction rejects reference, number, timestamp, SHA, or
+  replay, and one bounded compaction retry. Canonical `incident_input` evidence
+  is mandatory pinned context for planner, synthesis, and verification regardless
+  of optional Workspace pin configuration; pinned counter-evidence is also never
+  tail-truncated. Compaction rejects reference, number, timestamp, SHA, or
   identity drift; hidden reasoning, raw provider output, sessions, and provider
   caches never cross role/model boundaries.
-- Planner, synthesizer, verifier, and context compactor are separate audited
+- `src/lode/structured_output.py` owns the single provider-facing structured-output
+  contract. Every response schema is validated before network I/O: every object is
+  closed, every property is required, defaults and unconstrained values are rejected,
+  and nullable fields remain required. Provider-open documents are represented by an
+  explicit bounded duplicate-free JSON string and decoded only at the application
+  boundary. Planner decisions use the v5 internal wire schema, which requires one
+  to 20 hypotheses and contains only investigation hypotheses and operation intent;
+  provider payloads and native-read candidates are forbidden planner fields. The
+  separate operation-bound `native-query.v1` protocol returns only one bounded
+  provider-payload JSON document. The server derives ValueRef bindings and owns the
+  action, Connector, language, purpose, anchors, window, limit, and timeout before
+  constructing the strict native-read candidate. Synthesis reports and context
+  summaries use v2. DTO or domain
+  validation failures become the single controlled `invalid_structured_output`
+  result; no older model-output alias or runtime schema rewrite exists.
+- Planner, native-query generator, synthesizer, verifier, and context compactor are separate audited
   invocations. Simple tasks route to eligible latency account models; conflict,
   multi-component/repository, deep causal, synthesis, and verification tasks
   require reasoning account models. A route with no eligible frozen candidate is
   persisted with every exclusion and zero capacity before returning unavailable.
-  Provider/account-model drift cannot silently admit a replacement model.
+  Provider/account-model drift cannot silently admit a replacement model. Model-visible
+  data classes are the closed `masked`, `source_code`, `internal`, and `restricted`
+  values; binding requests reject unknown values, and route exclusions retain the
+  requested and allowed classes.
 - `src/lode/infrastructure/report_store.py` is the sole report publisher. It
   validates strict structured synthesis/verifier payloads, investigation-owned
   evidence, exact source provenance, runtime configuration authority, frozen
@@ -329,6 +360,21 @@ deployment-canary observations to pass the statistical and non-regression gate.
   longer owned; expired work is resumed only through durable lease recovery.
   A missing frozen model policy is an expected `model_capability_unavailable`
   terminal result with an unavailable report, not an unhandled worker failure.
+  Invalid planner output is likewise an expected `invalid_structured_output`
+  terminal result and cannot escape as a domain validation worker crash.
+  A native read is generated only after its durable operation exists. Its
+  `native_query` invocation stores that exact `operation_id`; authorization
+  rejects planner invocations, unbound invocations, and cross-operation reuse.
+  Native-language generation contracts are derived from the exact frozen scope
+  and schema snapshot. They expose effective labels, fields, indices, tables,
+  endpoints, working-set IDs, grammar, and forbidden constructs without copying
+  the complete schema catalog into the prompt a second time.
+  Investigation jobs persist separate `investigation` and `reporting` phases.
+  Analysis termination moves the public investigation to `reporting` while
+  retaining the worker lease; only the report publication transaction moves it
+  to `completed` and sets `finished_at`. A crash during reporting resumes that
+  phase without re-running the planner or evidence operations, and a job cannot
+  complete until its immutable report exists.
 
 - Repository scanner keys and observation refs use the single canonical
   `repository:<binding-id>/...` namespace constructed by
@@ -364,7 +410,10 @@ Run `make analysis-check` whenever repository resolution/source archival, model
 policy/binding snapshots, routing, tokenizer/context assembly, compaction,
 planner roles, synthesis/verification, authority gates, or report publication
 changes. It runs the deterministic quality smoke suite and a repeatable real-
-database execution checker. `make provider-release-check` is the strict
+database execution checker, including every production strict response schema.
+Run `make api-check` whenever account-model protocol probing or Workspace model
+readiness changes; it includes the representative strict-probe and response-validation
+tests. `make provider-release-check` is the strict
 provider-run release gate. It requires candidate quality observations and run
 manifest, operational observations and frozen baseline, distinct canary
 baseline observations and run manifest, and a SHA-256-bound release bundle.
@@ -435,8 +484,10 @@ running the stack.
 
 The account-model revision adds the direct `tiktoken` runtime dependency. It
 uses explicit OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages
-protocol accounts with reviewed catalog-backed account models and a strict
-structured-output health probe. It
+protocol accounts with reviewed catalog-backed account models and a representative
+strict structured-output health probe covering required, nullable, nested, array,
+and enum behavior. A probe is healthy only when its returned payload also validates
+locally. It
 also requires `make contracts`, `make schema-check`, `make api-check`,
 `make analysis-check`, and `make web-check` for changes in this surface.
 
@@ -498,6 +549,10 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/infrastructure/investigation_leases.py`: skip-locked job claims, heartbeat, retry, and expired-owner recovery.
 - `src/lode/infrastructure/evidence_graph_store.py`: ownership-checked idempotent graph persistence.
 - `src/lode/infrastructure/evidence_archive.py`: normalized native-result collection/artifact archival.
+- `src/lode/application/native_query.py`: minimal native-query DTO, canonical
+  ValueRef sentinel derivation, and server-owned candidate assembly.
+- `src/lode/infrastructure/native_query.py`: operation-bound audited native-query
+  invocation over frozen Connector, model-policy, evidence, and budget snapshots.
 - `src/lode/infrastructure/native_read_executor.py`: dynamic operation to Evidence Access authorization/execution bridge.
 - `src/lode/application/model_routing.py`: deterministic selection over frozen binding snapshots and server-owned task complexity.
 - `src/lode/application/context.py`: exact-token, role-isolated context assembly without hidden provider state.
@@ -552,6 +607,9 @@ unless all three blocking conditions hold:
 Initial start and resume call the same backend readiness gate. Current
 repository analysis, healthy evidence connectors, and non-empty architecture
 context are explicit warnings; they do not block alert ingestion.
+Model readiness requires every mandatory model role to have a healthy current
+binding that accepts the baseline `masked` data class used by the first planner
+decision; role-only coverage cannot make a Workspace ready.
 The globally unique topic is editable only while ingestion is `draft` or
 `paused`. Changing it resets ingestion to `draft`, clears the prior start
 position and listener timestamps, and requires a fresh `earliest`/`latest`
@@ -588,27 +646,33 @@ backend gate remains authoritative for stale clients and direct API callers.
 
 An investigation owns exactly one active decision wave:
 
-1. Canonicalize and mask the complete error input.
+1. Canonicalize and mask the complete error input, then archive it as the
+   mandatory pinned `incident_input` evidence artifact in the intake transaction.
 2. Parse stack frames and the structured error contract.
 3. Reload committed evidence, hypotheses, completed fingerprints, and remaining
    server budget.
 4. Use the repository, Connector, scope, model binding/policy, context, and graph
    snapshots frozen atomically at intake; build a minimal credential-free server
    action catalog.
-5. Ask the planner to finish or select one to four independent actions. An
-   external action may include a provider-native candidate, while a decision
-   may select zero external connectors.
-6. Apply deterministic relevance, ValueRef provenance, dependency, duplicate,
+5. Ask the planner to finish or select one to four independent operation intents;
+   planner output never contains a provider payload or native-read candidate.
+6. Apply deterministic relevance, dependency, duplicate,
    resource-conflict, counter-evidence, and server-budget policy. One structured
    repair is allowed after rejection.
 7. Persist operation IDs and execute the allowed wave with at most four sibling
    operations.
-8. Persist every operation result and evidence artifact independently; one
+8. For each native read, invoke the `native_query` role with the persisted
+   operation ID and frozen Connector context. Accept only its bounded provider
+   payload, then derive ValueRef bindings and assemble the candidate envelope,
+   window, limit, and timeout on the server.
+9. Authorize and execute the assembled candidate through the Evidence Access
+   kernel; dispatch uses the persisted server-owned operation kind, never model data.
+10. Persist every operation result and evidence artifact independently; one
    failed operation does not cancel its siblings.
-9. Project standard events, entities, relations, observations, and a stable
+11. Project standard events, entities, relations, observations, and a stable
    timeline only from archived evidence. Shared trace membership alone never
    creates direction.
-10. Start the next decision only from evidence committed by the prior wave.
+12. Start the next decision only from evidence committed by the prior wave.
 
 Parallelism is allowed only inside an explicit wave and must remain at or below four operations. Allocate operation IDs/ordinals before launching work, use `return_exceptions=True`, and persist each result separately. Do not overlap decision waves. `LODE_WORKER_CONCURRENCY` separately controls how many investigations workers may run.
 
@@ -647,11 +711,23 @@ do not use Kafka do not validate Kafka transport configuration at startup.
 (`en`, `zh`); it applies only to new investigations and is frozen into every
 investigation and all model role prompts.
 
-Every action uses a server-generated fingerprint and may run once. Connector evidence reuse uses the complete immutable query fingerprint, including connector, endpoint, generated query, time window, direction and limit. Steps and operations commit independently. PostgreSQL permits one running step/decision wave while multiple operations in that wave may run. On worker recovery, completed evidence is reused and the first unfinished durable action resumes. Lease cleanup only changes jobs whose own leases expired.
+Every action uses a server-generated fingerprint and may be attempted once; succeeded,
+rejected, failed, and interrupted operations all prevent the planner from selecting the
+same fingerprint again. Connector evidence reuse uses the complete immutable query
+fingerprint, including connector, endpoint, generated query, time window, direction and
+limit. Steps and operations commit independently. PostgreSQL permits one running
+step/decision wave while multiple operations in that wave may run. On worker recovery,
+completed evidence is reused and the first unfinished durable action resumes. A second
+policy rejection after the single repair terminates as `insufficient`, not model
+unavailability. Lease cleanup only changes jobs whose own leases expired and whose
+persisted phase matches the investigation state.
 
-Model output may select catalog IDs, cite archived evidence IDs, and propose
-LogQL, Elasticsearch/OpenSearch Query DSL, SQL, safe HTTPS, or fixed command
-candidates using only cataloged resources and ValueRefs. Every candidate still
+Planner output may select catalog IDs and cite archived evidence IDs. Only the
+operation-bound native-query role may propose the provider-specific LogQL,
+Elasticsearch/OpenSearch Query DSL, SQL, safe HTTPS, or fixed-command payload,
+using exact server-published ValueRef sentinels. The service derives the binding
+map and all candidate envelope fields; no model role can choose Connector scope,
+window, limit, or timeout. Every assembled candidate still
 passes the complete Evidence Access parser, ownership, relevance, budget,
 ValueRef, authorization, preflight, execution, masking, and archive chain. The
 model may never create credentials, connector configuration, access scope, or
@@ -664,14 +740,16 @@ endpoint, but URL shape never selects a protocol. Accounts store only a
 write-only API key, use protocol-defined paths and authentication headers, and
 select exact model IDs from the reviewed provider/protocol catalog. Create,
 connection updates, and model-set updates run a restricted structured-output
-probe for every selected model before it becomes routable. The only routing
+probe for every selected model before it becomes routable. The same protocol-native
+probe is used by the explicit model-test endpoint; it is not a plain-text completion
+check. The only routing
 targets are reviewed fixed catalog IDs. Each account model records
 `synced`/`manual`/`missing` discovery and
 `untested`/`healthy`/`unavailable` protocol health; an upstream disappearance
 soft-disables a synced model without removing the audit record, while a manual
 model remains until explicit removal or a failed probe. `List models` never
 proves completion compatibility: `POST /ai-provider-accounts/{id}/models/{model_id}/test`
-uses Chat Completions and must succeed before routing can select it.
+uses the account's registered protocol and must succeed before routing can select it.
 
 The catalog, not user input, owns `context_window_tokens`,
 `max_output_tokens`, tokenizer encoding, safety margin, capabilities, catalog
@@ -819,8 +897,9 @@ explicitly untrusted background: it may clarify boundaries and architecture,
 but it cannot override system rules or independently prove an incident cause or
 code defect. Later context edits affect only new investigations.
 
-Native connector queries are generated only by server helpers from frozen
-scope. AI-generated native candidates can reach a provider only through the
+Native connector payloads are generated by an operation-bound `native_query`
+invocation from frozen scope, then wrapped only by deterministic server assembly.
+AI-generated native payloads can reach a provider only through the
 Evidence Access authorization chain. Raw trace values are resolved server-side
 from sealed storage only after authorization and are never supplied to the
 model. Log provider credentials support exactly one registered authentication
@@ -844,7 +923,10 @@ The context package always retains normalized input and error structure. Evidenc
 
 Investigation result states are `pending`, `confirmed`, `hypothesis`, `insufficient`, and `unavailable`. There is no overall confidence number.
 
-- `confirmed` requires at least one incident-version code finding that passes all structural gates and an independent semantic verification pass.
+- `confirmed` requires an independent semantic verification pass plus at least one
+  evidence-backed confirmed incident cause or a confirmed incident-version code
+  finding that passes all structural gates. External causes do not require a
+  project code finding.
 - `hypothesis` contains one supported mechanism, exact candidate code when available, counter-evidence, and a validation method.
 - `insufficient` contains no invented cause.
 - `unavailable` reports missing required capability or repeated strict-output contract failure without a fabricated fallback conclusion. Output contract failure explicitly states that it does not prove evidence insufficiency.
@@ -904,8 +986,20 @@ Database revisions may already be deployed and are immutable once executed.
 secret-rejection trigger function: ordinary Connector and scope configuration
 still rejects credential keys recursively, while server-generated Schema
 catalogues may preserve legitimate provider identifiers such as `token` or
-`password`. It changes no table, trigger inventory, or stored row. Executed
-V1/V2 migration files remain immutable. There is one current schema and no
+`password`. It changes no table, trigger inventory, or stored row.
+`0004_workspace_ingestion_state.py` closes the Workspace ingestion lifecycle.
+`0005_canonical_evidence_budget.py` publishes immutable canonical scope revisions
+and enforces their exact execution-budget shape. `0006_sql_scope_dialect.py`
+publishes explicit SQL dialect revisions and adds bidirectional Connector-kind,
+language, and dialect enforcement. `0007_investigation_job_phase.py` adds the
+durable investigation/reporting job phase and the non-terminal public
+`reporting` status. `0008_confirmed_report_semantics.py` aligns the immutable
+report trigger with the result contract: a confirmed report requires a successful
+investigation verifier plus an owned-evidence incident cause or the exact confirmed
+code findings referenced by the report. `0009_confirmed_report_invocation_anchors.py`
+makes nested status checks null-safe and requires the report's successful synthesizer,
+verifier, and confirmed findings to belong to the same investigation and verification
+decision. Executed migration files remain immutable. There is one current schema and no
 compatibility view or dual write. The V2 forward migration preserves historical jobs as non-current records,
 freezes available inputs for legacy queued/running tasks, maps the retired
 manifest failure category to `repository_analysis_failed`, and backfills terminal
@@ -919,8 +1013,8 @@ digit length, JavaScript safety, and fresh-schema foreign keys.
 
 The table inventory and database invariants are frozen independently under
 `contracts/v1/database`. SQLAlchemy metadata must exactly match the migration.
-The schema trigger inventory is frozen with the initial migration and database
-contract. `set_updated_at()` uses
+The schema trigger inventory is frozen by the complete forward migration chain and
+database contract. `set_updated_at()` uses
 `clock_timestamp()` so updates within one transaction still advance the value.
 Ordinary connector/scope JSON is traversed structurally and rejects credential
 keys at any object depth. Schema catalogues are excluded from that key-name
@@ -1186,6 +1280,9 @@ partial parser behavior, scope and budget intersection, arbitrary ValueRef
 strings and injection shapes, authorization key separation, token tamper/
 expiry/replay, fingerprint dedupe, Connector lifecycle changes, forged execution permits,
 preflight/execution/cancellation terminals, output bounds, and immutable audit.
+Native-query changes must additionally cover operation-bound invocation ownership,
+unknown or transformed sentinels, server-derived bindings/window/limit/timeout,
+strict payload-only output, and rejection of removed planner candidate fields.
 
 Log Connector changes must additionally cover complete LogQL CST parsing and
 parser differential inputs, nested filter normalization, DNF complexity and
@@ -1218,7 +1315,8 @@ counter-evidence and budget gates, one repair only, four-operation concurrency,
 partial sibling failure, terminal replay reuse without budget growth, frozen
 connector health/scope, artifact-before-attempt archival, graph causal rules,
 unknown/ambiguous entities, idempotent graph persistence, skip-locked claims,
-heartbeats, and expired-lease recovery.
+heartbeats, analysis-to-reporting transition, report-before-job completion,
+and expired-lease recovery in both investigation and reporting phases.
 
 Source/model/report changes must additionally cover exact-SHA resolution with no
 default-branch fallback, ambiguous multi-repository matches, credential/revision

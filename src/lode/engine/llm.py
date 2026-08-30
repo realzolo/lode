@@ -29,6 +29,7 @@ from lode.runtime_defaults import (
     LLM_REQUEST_TIMEOUT_SECONDS,
     LLM_RETRY_BASE_DELAY_SECONDS,
 )
+from lode.structured_output import validate_strict_response_schema
 
 logger = logging.getLogger("lode.engine.llm")
 
@@ -48,6 +49,11 @@ class ResponseSchema:
 
     name: str
     schema: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        if not self.name or len(self.name) > 64:
+            raise ValueError("response schema name is invalid")
+        validate_strict_response_schema(self.schema)
 
 
 @dataclass(frozen=True)

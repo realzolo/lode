@@ -21,6 +21,7 @@ from lode.db.models import (
     EvidenceArtifact,
     EvidenceAssertion,
     Investigation,
+    InvestigationJob,
     InvestigationOperation,
     InvestigationOperationEvent,
     InvestigationRepositorySnapshot,
@@ -250,9 +251,7 @@ class PostgresInvestigationStore:
                     *(f"assertion:{value}" for value in assertions),
                 ),
                 allowed_value_refs=value_refs,
-                completed_fingerprints=frozenset(
-                    row.fingerprint for row in operations if row.status == "succeeded"
-                ),
+                attempted_fingerprints=frozenset(row.fingerprint for row in operations),
                 budget=remaining,
                 state_packet={
                     "investigation_id": investigation_id,
@@ -376,7 +375,9 @@ class PostgresInvestigationStore:
             await session.commit()
             for policy in decision.policy_decisions:
                 DECISION_POLICY.labels(outcome=policy.outcome, code=policy.code).inc()
-            native_reads = sum(value.operation.native_candidate is not None for value in prepared)
+            native_reads = sum(
+                _operation_kind(value.operation, decision) == "native_read" for value in prepared
+            )
             if native_reads:
                 CONNECTOR_SELECTION.labels(outcome="selected").inc(native_reads)
             DECISION_COST.labels(kind="estimated").inc(
@@ -573,14 +574,23 @@ class PostgresInvestigationStore:
                     .with_for_update()
                 )
             ).scalar_one()
-            investigation.status = "completed"
+            investigation.status = "reporting"
             investigation.result_state = result_state
-            investigation.finished_at = datetime.now(UTC)
-            investigation.lease_owner = None
-            investigation.lease_expires_at = None
             usage = dict(investigation.budget_usage or {})
             usage["terminal_reason"] = reason
             investigation.budget_usage = usage
+            job = (
+                await session.execute(
+                    select(InvestigationJob)
+                    .where(
+                        InvestigationJob.investigation_id == investigation_id,
+                        InvestigationJob.status == "running",
+                        InvestigationJob.phase == "investigation",
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one()
+            job.phase = "reporting"
             await session.commit()
             if reason == "planner_finished":
                 CONNECTOR_SELECTION.labels(outcome="zero_call").inc()
@@ -688,7 +698,11 @@ def _operation_kind(operation: PlannedOperation, decision: EvaluatedDecision) ->
             kind = policy.detail.get("operation_kind")
             if isinstance(kind, str):
                 return kind
-    return "native_read" if operation.native_candidate is not None else "validation"
+    if operation.action_id.startswith("native:"):
+        return "native_read"
+    if operation.action_id.startswith("source:"):
+        return "source_read"
+    return "validation"
 
 
 def _plain(value: Any) -> Any:
@@ -738,7 +752,6 @@ def _plain_operation(value: PlannedOperation) -> dict[str, Any]:
         "selection_reason": value.selection_reason,
         "stop_condition": value.stop_condition,
         "estimated_cost": value.estimated_cost,
-        "native_candidate": _plain(value.native_candidate),
         "depends_on": list(value.depends_on),
     }
 

@@ -8,8 +8,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 import lode.worker.main as worker
-from lode.config import settings
 from lode.application.investigation_limits import INVESTIGATION_HARD_LIMITS
+from lode.config import settings
 from lode.infrastructure.investigation_leases import ClaimedInvestigationJob
 
 
@@ -17,7 +17,13 @@ class FakeLeaseStore:
     def __init__(self, count: int, stop: asyncio.Event) -> None:
         now = datetime.now(UTC)
         self.jobs = [
-            ClaimedInvestigationJob(index, index, 1, now + timedelta(minutes=1))
+            ClaimedInvestigationJob(
+                index,
+                index,
+                1,
+                now + timedelta(minutes=1),
+                "investigation",
+            )
             for index in range(1, count + 1)
         ]
         self.stop = stop
@@ -63,7 +69,7 @@ async def test_worker_soak_never_preclaims_beyond_worker_concurrency(monkeypatch
     in_flight = 0
     maximum = 0
 
-    async def handler(_investigation_id: int) -> None:
+    async def handler(_job: ClaimedInvestigationJob) -> None:
         nonlocal in_flight, maximum
         in_flight += 1
         maximum = max(maximum, in_flight)
@@ -94,7 +100,7 @@ async def test_lease_loss_cancels_handler_without_mutating_unowned_job(monkeypat
     job = store.jobs.pop()
     cancelled = asyncio.Event()
 
-    async def handler(_investigation_id: int) -> None:
+    async def handler(_job: ClaimedInvestigationJob) -> None:
         try:
             await asyncio.Future()
         finally:
@@ -124,7 +130,7 @@ async def test_worker_failure_matrix_preserves_retry_classification(
     store = FakeLeaseStore(1, stop)
     job = store.jobs.pop()
 
-    async def handler(_investigation_id: int) -> None:
+    async def handler(_job: ClaimedInvestigationJob) -> None:
         raise failure
 
     async def quiet_heartbeat(_store, _job_id):

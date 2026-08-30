@@ -121,6 +121,8 @@ def context(*, catalog_endpoint: Mapping[str, Any] | None = None) -> AccessConte
             "max_total_output_bytes": 100_000,
             "max_window_seconds": 3_600,
             "max_native_reads": 8,
+            "max_parallel_operations": 1,
+            "estimated_cost": 0.0,
         },
         investigation_window_start=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
         investigation_window_end=datetime(2026, 8, 26, 10, 0, tzinfo=UTC),

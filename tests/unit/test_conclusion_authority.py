@@ -12,8 +12,16 @@ SHA = "a" * 40
 def report() -> dict:
     return {
         "result_state": "confirmed",
-        "incident_cause": {"status": "confirmed", "mechanism": "application_code"},
-        "code_diagnosis": {"status": "confirmed", "summary": "branch defect"},
+        "incident_cause": {
+            "status": "confirmed",
+            "mechanism": "application_code",
+            "evidence_refs": [7],
+        },
+        "code_diagnosis": {
+            "status": "confirmed",
+            "summary": "branch defect",
+            "finding_refs": [11],
+        },
     }
 
 
@@ -149,6 +157,39 @@ def test_confirmed_external_cause_does_not_require_source_authority() -> None:
     )
 
     assert result.result_state == "confirmed"
+
+
+def test_confirmed_report_without_a_confirmation_anchor_is_downgraded() -> None:
+    value = report()
+    value["incident_cause"]["status"] = "hypothesis"
+    value["code_diagnosis"]["status"] = "not_found"
+
+    result = ConclusionValidator().validate(
+        value,
+        source_assessments=(),
+        configuration_assessments=(),
+        verifier_status="approved",
+    )
+
+    assert result.result_state == "hypothesis"
+    assert "confirmed_conclusion_anchor_missing" in result.reasons
+
+
+def test_confirmed_incident_cause_without_evidence_is_downgraded() -> None:
+    value = report()
+    value["incident_cause"]["mechanism"] = "external_dependency"
+    value["incident_cause"]["evidence_refs"] = []
+    value["code_diagnosis"]["status"] = "not_found"
+
+    result = ConclusionValidator().validate(
+        value,
+        source_assessments=(),
+        configuration_assessments=(),
+        verifier_status="approved",
+    )
+
+    assert result.result_state == "hypothesis"
+    assert "confirmed_incident_evidence_missing" in result.reasons
 
 
 def test_verifier_failure_downgrades_an_otherwise_confirmed_report() -> None:

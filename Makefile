@@ -88,13 +88,13 @@ investigation-check:
 
 # Exercise frozen multi-model routing, exact context, replay, role isolation, and drift failure.
 analysis-check:
-	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_model_routing.py tests/unit/test_context_manager.py tests/unit/test_context_compaction.py tests/unit/test_conclusion_authority.py tests/unit/test_model_planner.py tests/unit/test_git_source.py tests/evals/test_analysis_quality.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_model_routing.py tests/unit/test_context_manager.py tests/unit/test_context_compaction.py tests/unit/test_conclusion_authority.py tests/unit/test_model_planner.py tests/unit/test_structured_output.py tests/unit/test_git_source.py tests/evals/test_analysis_quality.py
 	$(UV) run python scripts/check_analysis_quality.py
 	$(ISOLATED_DB) $(UV) run python scripts/check_analysis_execution.py
 
 # Verify the frozen API surface, control-plane permissions, secret redaction, and SSE lifecycle.
 api-check:
-	$(ISOLATED_DB) $(UV) run pytest -q tests/contract/test_api_surface.py tests/unit/test_control_api_schemas.py tests/unit/test_provider_introspection.py tests/test_control_plane_api.py tests/test_investigation_api.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/contract/test_api_surface.py tests/unit/test_control_api_schemas.py tests/unit/test_control_plane_readiness.py tests/unit/test_provider_introspection.py tests/test_control_plane_api.py tests/test_investigation_api.py
 
 # Type-check and produce the deployable Workbench build.
 web-check:

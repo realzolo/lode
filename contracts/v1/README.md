@@ -7,6 +7,7 @@ generated schemas are structurally identical.
 - `kafka/incident-alert.schema.json`: the only Kafka alert payload.
 - `evidence/native-read-candidate.schema.json`: untrusted AI read candidate.
 - `ai/investigation-decision.schema.json`: one adaptive decision wave.
+- `ai/native-query.schema.json`: operation-bound provider query output.
 - `ai/investigation-report.schema.json`: terminal report shape.
 - `control-plane/entities.schema.json`: JavaScript-safe compact entity IDs,
   provider-kind/protocol model portfolios, discovery state, and context snapshot

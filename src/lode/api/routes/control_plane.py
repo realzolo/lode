@@ -4,60 +4,62 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 from aiokafka.admin import AIOKafkaAdminClient
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lode.ai_output import SUPPORTED_AI_OUTPUT_LANGUAGES
+from lode.api.audit import audit_action
 from lode.api.control_schemas import (
     ConnectorCreate,
     ConnectorOut,
     GitAccountCreate,
     GitAccountOut,
     GitAccountPatch,
-    GitBranchOut,
-    GitBranchPageOut,
     GitAccountRepositoryOut,
     GitAccountTokenRotate,
+    GitBranchOut,
+    GitBranchPageOut,
     IngestionStart,
     ModelBindingInput,
     ModelBindingOut,
     ModelBindingPatch,
-    ProviderAccountModelOut,
-    ProviderAccountModelSelection,
-    ProviderAccountConnectionInput,
-    ProviderModelCatalogOut,
-    ProviderModelDiscoveryOut,
-    ProviderModelSelectionItem,
     ModelPolicyInput,
     ModelPolicyOut,
     PlatformSettingsOut,
     PlatformSettingsUpdate,
+    ProviderAccountConnectionInput,
     ProviderAccountCreate,
+    ProviderAccountModelOut,
+    ProviderAccountModelSelection,
     ProviderAccountOut,
     ProviderAccountPatch,
-    RepositoryBind,
-    RepositoryAnalysisJobOut,
+    ProviderModelCatalogOut,
+    ProviderModelDiscoveryOut,
+    ProviderModelSelectionItem,
     RepositoryAnalysisIssueOut,
     RepositoryAnalysisIssuePageOut,
+    RepositoryAnalysisJobOut,
+    RepositoryBind,
     RepositoryBindingOut,
     RepositoryBindingPatch,
-    WorkspaceCreate,
-    WorkspacePatch,
     WorkspaceArchitectureContextOut,
     WorkspaceArchitectureContextPut,
+    WorkspaceCreate,
     WorkspaceOut,
+    WorkspacePatch,
     WorkspaceReadinessOut,
 )
+from lode.api.deps import assert_workspace_permission, require_admin, require_user
 from lode.api.schemas import WorkspaceMemberOut, WorkspaceMemberPutIn
 from lode.api.types import EntityId
-from lode.api.deps import assert_workspace_permission, require_admin, require_user
-from lode.api.audit import audit_action
-from lode.ai_output import SUPPORTED_AI_OUTPUT_LANGUAGES
 from lode.application.intake import canonical_hash
 from lode.config import kafka_security_kwargs, settings
 from lode.crypto import CryptoError, decrypt_secret, encrypt_secret
@@ -73,48 +75,63 @@ from lode.db.models import (
     GitAccountSyncJob,
     GitRepository,
     Investigation,
-    ProviderAccountModel,
     ModelPolicyRevision,
     ModelRoutingDecision,
     PlatformSettings,
+    ProviderAccountModel,
+    RepositoryAnalysisIssue,
+    RepositoryAnalysisJob,
     User,
     Workspace,
+    WorkspaceArchitectureContextRevision,
+    WorkspaceIngestionRuntime,
     WorkspaceModelBinding,
     WorkspacePermission,
     WorkspaceRepositoryBinding,
-    WorkspaceIngestionRuntime,
-    WorkspaceArchitectureContextRevision,
-    RepositoryAnalysisJob,
-    RepositoryAnalysisIssue,
 )
 from lode.db.session import AsyncSessionLocal
-from lode.engine.llm import ModelConfig, ResponseSchema, complete_with_usage
+from lode.domain.evidence_budget import standard_execution_budget_policy
+from lode.domain.types import ModelDataClass
+from lode.engine.llm import CompletionResult, ModelConfig, ResponseSchema, complete_with_usage
+from lode.evidence_access.loki_scope import normalize_loki_filter
+from lode.evidence_connectors.common import response_json
 from lode.evidence_connectors.registry import (
     create_evidence_connector,
     native_connector_capabilities,
 )
-from lode.evidence_access.loki_scope import normalize_loki_filter
-from lode.evidence_connectors.common import response_json
 from lode.evidence_connectors.types import IntrospectionBudget, ProviderExecutionError
 from lode.git_accounts import (
     GitAccountSecret,
-    credential_identity_hash as git_credential_identity_hash,
     encode_credential_secret,
+)
+from lode.git_accounts import (
+    credential_identity_hash as git_credential_identity_hash,
 )
 from lode.git_accounts.providers import (
     GitProviderError,
     authenticate_access_token,
     endpoint_identity_hash,
-    list_branches as list_provider_branches,
-    list_repositories as list_provider_repositories,
     registered_adapters,
     require_adapter,
     resolve_api_url,
+)
+from lode.git_accounts.providers import (
+    list_branches as list_provider_branches,
+)
+from lode.git_accounts.providers import (
+    list_repositories as list_provider_repositories,
+)
+from lode.git_accounts.providers import (
     verify_branch as verify_provider_branch,
 )
-from lode.infrastructure.provider_http import provider_endpoint, provider_request, validate_provider_endpoint
+from lode.infrastructure.provider_http import (
+    provider_endpoint,
+    provider_request,
+    validate_provider_endpoint,
+)
 from lode.model_catalog import CATALOG_REVISION, find_model, require_model, supported_models
-from lode.runtime_defaults import LLM_PROBE_TIMEOUT_SECONDS, KAFKA_TOPIC_VALIDATION_TIMEOUT_SECONDS
+from lode.runtime_defaults import KAFKA_TOPIC_VALIDATION_TIMEOUT_SECONDS, LLM_PROBE_TIMEOUT_SECONDS
+from lode.structured_output import ProtocolHealthPayload, protocol_health_json_schema
 
 router = APIRouter(tags=["control-plane"])
 _REQUIRED_MODEL_ROLES = {
@@ -124,11 +141,36 @@ _REQUIRED_MODEL_ROLES = {
     "verifier",
     "context_compactor",
 }
+_BASELINE_MODEL_DATA_CLASS = ModelDataClass.MASKED.value
 
 
 async def get_session() -> AsyncSession:
     async with AsyncSessionLocal() as session:
         yield session
+
+
+def _model_role_coverage(
+    bindings: Sequence[tuple[WorkspaceModelBinding, ProviderAccountModel, AIProviderAccount]],
+    expected_revisions: Mapping[int, int],
+) -> tuple[set[str], set[str]]:
+    eligible_bindings = tuple(
+        binding
+        for binding, deployment, provider in bindings
+        if binding.state == "active"
+        and binding.revision == expected_revisions.get(binding.id)
+        and deployment.state == "active"
+        and deployment.availability_state == "healthy"
+        and provider.state == "active"
+        and provider.verification_status == "healthy"
+    )
+    roles = {role for binding in eligible_bindings for role in binding.allowed_roles}
+    baseline_roles = {
+        role
+        for binding in eligible_bindings
+        if _BASELINE_MODEL_DATA_CLASS in binding.allowed_data_classes
+        for role in binding.allowed_roles
+    }
+    return roles, baseline_roles
 
 
 def _error(status: int, code: str, message: str, **details) -> HTTPException:
@@ -378,9 +420,34 @@ async def _probe_model(
     *,
     api_key_ciphertext: str | None = None,
 ) -> tuple[bool, str | None]:
+    result = await _run_model_probe(
+        account, model_id, api_key_ciphertext=api_key_ciphertext
+    )
+    return _model_probe_outcome(result)
+
+
+def _model_probe_outcome(result: CompletionResult) -> tuple[bool, str | None]:
+    if result.text is None:
+        return False, result.error_code
+    try:
+        ProtocolHealthPayload.model_validate_json(result.text)
+    except (ValidationError, ValueError):
+        return False, "invalid_response"
+    return True, None
+
+
+async def _run_model_probe(
+    account: AIProviderAccount,
+    model_id: str,
+    *,
+    api_key_ciphertext: str | None = None,
+) -> CompletionResult:
     result = await complete_with_usage(
         "You are a protocol health probe.",
-        "Return a JSON object with the field ok set to true.",
+        (
+            "Return ok=true, detail.protocol=structured_output, "
+            "detail.checks=[required, nullable, nested], and nullable=null."
+        ),
         ModelConfig(
             protocol_id=account.protocol_id,
             base_url=account.base_url,
@@ -388,13 +455,12 @@ async def _probe_model(
             model=model_id,
             max_completion_tokens=32,
         ),
-        json_mode=True,
         response_schema=ResponseSchema(
-            name="protocol_health", schema={"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
+            name="protocol_health", schema=protocol_health_json_schema()
         ),
         timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
     )
-    return bool(result.text), result.error_code
+    return result
 
 
 async def _apply_model_selection(
@@ -827,26 +893,17 @@ async def test_provider_account_model(
         or row.catalog_profile_hash != profile.profile_hash
     ):
         raise _error(409, "model_catalog_changed", "Resync the account model after catalog changes.")
-    result = await complete_with_usage(
-        "You are a protocol health probe.",
-        "Reply with OK.",
-        ModelConfig(
-            protocol_id=provider.protocol_id,
-            base_url=provider.base_url,
-            api_key_ciphertext=provider.api_key_ciphertext,
-            model=row.provider_model_id,
-            max_completion_tokens=16,
-        ),
-        timeout_seconds=LLM_PROBE_TIMEOUT_SECONDS,
-    )
-    row.availability_state = "healthy" if result.text else "unavailable"
+    result = await _run_model_probe(provider, row.provider_model_id)
+    valid, error_code = _model_probe_outcome(result)
+    row.availability_state = "healthy" if valid else "unavailable"
     row.revision += 1
     row.health_checked_at = datetime.now(UTC)
+    await _sync_provider_verification_status(session, provider)
     await session.commit()
     return {
-        "available": bool(result.text),
+        "available": valid,
         "latency_ms": result.latency_ms,
-        "error_code": result.error_code,
+        "error_code": error_code,
     }
 
 
@@ -1123,24 +1180,17 @@ async def _workspace_readiness(session: AsyncSession, workspace: Workspace) -> W
                 )
             ).all()
         )
-        roles = {
-            role
-            for binding, deployment, provider in bindings
-            if binding.state == "active"
-            and binding.revision == expected_revisions.get(binding.id)
-            and deployment.state == "active"
-            and deployment.availability_state == "healthy"
-            and provider.state == "active"
-            and provider.verification_status == "healthy"
-            for role in binding.allowed_roles
-        }
+        roles, baseline_roles = _model_role_coverage(bindings, expected_revisions)
         missing_roles = sorted(_REQUIRED_MODEL_ROLES - roles)
+        missing_data_class_roles = sorted((_REQUIRED_MODEL_ROLES & roles) - baseline_roles)
         model_details = {
             "policy_revision": policy.revision,
             "eligible_binding_count": len(bindings),
             "missing_roles": missing_roles,
+            "required_data_class": _BASELINE_MODEL_DATA_CLASS,
+            "missing_data_class_roles": missing_data_class_roles,
         }
-        model_ready = not missing_roles
+        model_ready = not missing_roles and not missing_data_class_roles
     checks.append(
         {
             "code": "model_policy",
@@ -2536,7 +2586,7 @@ def _connector_secrets(payload: ConnectorCreate) -> dict[str, str]:
 
 
 def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], dict, dict]:
-    budget = {"timeout_ms": 5_000, "max_rows": 1_000, "max_output_bytes": 1_000_000}
+    budget = standard_execution_budget_policy()
     if payload.kind == "loki":
         if payload.root_filter is None:
             raise ValueError("Loki root filter is required")
@@ -2605,6 +2655,7 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
             },
             {"password": payload.database_password or ""},
             {
+                "dialect": "postgres" if payload.kind == "postgresql" else "mysql",
                 **allowed_schemas,
                 "allowed_tables": [],
                 "table_policies": {},
@@ -2676,6 +2727,12 @@ def _scope_config_from_catalog(
         for table, descriptor in tables.items()
     ):
         raise ValueError("SQL discovery returned an invalid catalog")
+    expected_dialect = "postgres" if kind == "postgresql" else "mysql"
+    if (
+        current_scope.get("dialect") != expected_dialect
+        or resources.get("dialect") != expected_dialect
+    ):
+        raise ValueError("SQL discovery returned an unexpected dialect")
     allowed_schemas = {}
     if kind == "postgresql":
         schemas = current_scope.get("allowed_schemas")
@@ -2683,6 +2740,7 @@ def _scope_config_from_catalog(
             raise ValueError("PostgreSQL Schema allowlist is required")
         allowed_schemas = {"allowed_schemas": list(schemas)}
     return {
+        "dialect": expected_dialect,
         **allowed_schemas,
         "allowed_tables": sorted(tables),
         "table_policies": {

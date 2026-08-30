@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from lode.domain.errors import DomainValidationError
+from lode.domain.evidence_budget import ExecutionBudgetPolicy
 from lode.domain.types import NativeLanguage, RelationKind
 
 DecisionKind = Literal["continue", "finish"]
@@ -111,9 +113,10 @@ class ConnectorCapabilitySnapshot:
             raise DomainValidationError(
                 "invalid_timestamp", "last_verified_at must include timezone"
             )
+        budget = ExecutionBudgetPolicy.from_mapping(self.execution_budget_policy)
         object.__setattr__(self, "schema_catalog", _freeze(self.schema_catalog))
         object.__setattr__(self, "scope_config", _freeze(self.scope_config))
-        object.__setattr__(self, "execution_budget_policy", _freeze(self.execution_budget_policy))
+        object.__setattr__(self, "execution_budget_policy", _freeze(budget.as_dict()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +203,6 @@ class PlannedOperation:
     selection_reason: str
     stop_condition: str
     estimated_cost: float
-    native_candidate: Mapping[str, Any] | None = None
     depends_on: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -224,7 +226,6 @@ class PlannedOperation:
             )
         if self.estimated_cost < 0:
             raise DomainValidationError("invalid_estimate", "estimated_cost must be non-negative")
-        object.__setattr__(self, "native_candidate", _freeze(self.native_candidate))
 
     @property
     def fingerprint(self) -> str:
@@ -232,7 +233,6 @@ class PlannedOperation:
             {
                 "action_id": self.action_id,
                 "evidence_anchors": self.evidence_anchors,
-                "native_candidate": self.native_candidate,
             }
         )
 

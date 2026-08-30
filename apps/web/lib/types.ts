@@ -112,6 +112,20 @@ export interface ProviderModelDiscovery {
   unsupported_model_ids: string[];
 }
 
+export type ModelDataClass = 'masked' | 'source_code' | 'internal' | 'restricted';
+
+export interface ModelBindingCreateInput {
+  provider_account_model_id: number;
+  execution_classes: string[];
+  allowed_roles: string[];
+  priority: number;
+  max_calls: number;
+  max_cost_per_call: number;
+  timeout_ms: number;
+  allowed_data_classes: ModelDataClass[];
+  max_context_utilization: number;
+}
+
 export interface ModelBinding {
   id: number;
   workspace_id: number;
@@ -122,7 +136,7 @@ export interface ModelBinding {
   max_calls: number;
   max_cost_per_call: number;
   timeout_ms: number;
-  allowed_data_classes: string[];
+  allowed_data_classes: ModelDataClass[];
   max_context_utilization: number;
   state: 'active' | 'disabled';
   revision: number;
@@ -336,7 +350,7 @@ export type EntityId = number;
 export interface InvestigationSummary {
   id: EntityId;
   workspace_id: number;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'reporting' | 'completed' | 'failed';
   result_state: 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
   output_language: 'en' | 'zh';
   event: string | null;
@@ -389,7 +403,7 @@ export interface InvestigationReportSummary {
 export interface InvestigationOverview {
   id: EntityId;
   workspace_id: number;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'reporting' | 'completed' | 'failed';
   result_state: 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
   output_language: 'en' | 'zh';
   archived_at: string | null;

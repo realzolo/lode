@@ -500,6 +500,7 @@
     "statusAuthorized": "Authorized",
     "statusQueued": "Queued",
     "statusRunning": "Running",
+    "statusReporting": "Publishing report",
     "statusCompleted": "Completed",
     "statusFailed": "Failed",
     "operationFailed": "Operation failed. See technical details for the failure code.",

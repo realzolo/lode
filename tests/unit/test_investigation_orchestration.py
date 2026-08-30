@@ -44,7 +44,7 @@ def native_capability(action_id: str, snapshot_id: int, connector_id: int):
     )
 
 
-def native_operation(action_id: str, connector_id: int):
+def native_operation(action_id: str):
     return PlannedOperation(
         action_id=action_id,
         purpose="Resolve the current evidence gap",
@@ -55,20 +55,6 @@ def native_operation(action_id: str, connector_id: int):
         selection_reason="The newly committed evidence makes this source relevant",
         stop_condition="Stop after the first matching record",
         estimated_cost=0.0,
-        native_candidate={
-            "schema_version": "native-read-candidate.v1",
-            "action_id": action_id,
-            "connector_id": connector_id,
-            "language": "sql",
-            "purpose": "Resolve the current evidence gap",
-            "expected_evidence": "A bounded database record",
-            "evidence_anchors": ["incident.trace_id"],
-            "payload": {"query": "SELECT * FROM orders LIMIT 10"},
-            "value_bindings": {},
-            "requested_window": None,
-            "requested_limit": 10,
-            "requested_timeout_ms": 1_000,
-        },
     )
 
 
@@ -90,7 +76,7 @@ class FakeRepository:
     def __init__(self, capabilities=()):
         self.capabilities = tuple(capabilities)
         self.wave_count = 0
-        self.completed: set[str] = set()
+        self.attempted: set[str] = set()
         self.finished: tuple[str, str] | None = None
         self.rejected = []
         self.operation_results = []
@@ -104,7 +90,7 @@ class FakeRepository:
             tuple(range(1, self.wave_count + 1)),
             ("incident.trace_id",),
             frozenset({"incident.trace_id"}),
-            frozenset(self.completed),
+            frozenset(self.attempted),
             budget(20 - self.wave_count),
             {"wave_count": self.wave_count},
         )
@@ -137,7 +123,7 @@ class FakeRepository:
 
     async def finish_wave(self, wave, results):
         self.wave_count += 1
-        self.completed.update(value.fingerprint for value in wave.operations)
+        self.attempted.update(value.fingerprint for value in wave.operations)
 
 
 class ChangingPlanner:
@@ -182,8 +168,8 @@ class CaptureExecutor:
 
 
 async def test_new_evidence_can_change_the_next_connector_and_unselected_calls_stay_zero() -> None:
-    first = native_operation("native:1:sql", 1)
-    second = native_operation("native:2:sql", 2)
+    first = native_operation("native:1:sql")
+    second = native_operation("native:2:sql")
     repository = FakeRepository(
         (
             native_capability("native:1:sql", 1, 1),
@@ -248,6 +234,36 @@ async def test_model_capability_failure_finishes_unavailable_without_operations(
     assert executor.calls == []
 
 
+class PolicyRejectedPlanner:
+    async def decide(self, state, catalog, rejection=()):
+        return InvestigationDecision(
+            "continue",
+            state.hypotheses,
+            (native_operation("native:999:sql"),),
+            "Select an action outside the frozen catalog",
+        )
+
+
+async def test_policy_rejection_after_repair_finishes_insufficient_not_unavailable() -> None:
+    repository = FakeRepository()
+    executor = CaptureExecutor()
+
+    result = await InvestigationOrchestrator(
+        planner=PolicyRejectedPlanner(),
+        repository=repository,
+        wave_coordinator=DurableWaveCoordinator(repository, executor),
+    ).run(42)
+
+    assert result.result_state == "insufficient"
+    assert result.terminal_reason == "decision_policy_rejected_after_repair"
+    assert repository.finished == (
+        "insufficient",
+        "decision_policy_rejected_after_repair",
+    )
+    assert len(repository.rejected) == 1
+    assert executor.calls == []
+
+
 async def test_model_call_budget_exhaustion_stops_before_planner_invocation() -> None:
     class ExhaustedRepository(FakeRepository):
         async def load_state(self, investigation_id):
@@ -259,7 +275,7 @@ async def test_model_call_budget_exhaustion_stops_before_planner_invocation() ->
                 evidence_refs=state.evidence_refs,
                 evidence_anchors=state.evidence_anchors,
                 allowed_value_refs=state.allowed_value_refs,
-                completed_fingerprints=state.completed_fingerprints,
+                attempted_fingerprints=state.attempted_fingerprints,
                 budget=state.budget,
                 remaining_model_calls=0,
             )

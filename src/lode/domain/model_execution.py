@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal
 
 from lode.domain.errors import DomainValidationError
-from lode.domain.types import ExecutionClass, ModelRole
+from lode.domain.types import ExecutionClass, ModelDataClass, ModelRole
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SourceRevisionRole = Literal["incident_source", "repository_search_candidate", "runtime_identified"]
 AuthorityStatus = Literal["exact", "unverified", "corroborated", "contradicted", "unresolved"]
 ConfigurationStatus = Literal["unknown", "corroborated", "contradicted"]
+MANDATORY_PINNED_EVIDENCE_KINDS = frozenset({"incident_input"})
 
 
 def _freeze(value: Any) -> Any:
@@ -186,6 +187,27 @@ class ContextEvidence:
         _required(self.artifact_kind, "artifact_kind", 100)
         _required(self.data_class, "data_class", 100)
         object.__setattr__(self, "content", _freeze(self.content))
+
+
+def highest_model_data_class(evidence: Sequence[ContextEvidence]) -> str:
+    priority = {
+        ModelDataClass.MASKED.value: 0,
+        ModelDataClass.SOURCE_CODE.value: 1,
+        ModelDataClass.INTERNAL.value: 2,
+        ModelDataClass.RESTRICTED.value: 3,
+    }
+    return max(
+        (item.data_class for item in evidence),
+        key=lambda value: priority.get(value, len(priority)),
+        default=ModelDataClass.MASKED.value,
+    )
+
+
+def model_evidence_is_pinned(
+    artifact_kind: str,
+    configured_kinds: set[str] | frozenset[str],
+) -> bool:
+    return artifact_kind in MANDATORY_PINNED_EVIDENCE_KINDS or artifact_kind in configured_kinds
 
 
 @dataclass(frozen=True, slots=True)

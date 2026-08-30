@@ -16,13 +16,14 @@ const evidenceKindKeys = { source_file: 'evidenceKinds.source_file', normalized_
 const evidenceClassKeys = { runtime: 'evidenceClasses.runtime', incident_source: 'evidenceClasses.incident_source', repository_search_candidate: 'evidenceClasses.repository_search_candidate', runtime_identified: 'evidenceClasses.runtime_identified' } as const;
 
 function statusClass(status: string) {
-  return status === 'completed' || status === 'succeeded' || status === 'allowed' || status === 'authorized' ? 'success' : status === 'failed' || status === 'rejected' ? 'danger' : status === 'running' ? 'warning' : 'neutral';
+  return status === 'completed' || status === 'succeeded' || status === 'allowed' || status === 'authorized' ? 'success' : status === 'failed' || status === 'rejected' ? 'danger' : status === 'running' || status === 'reporting' ? 'warning' : 'neutral';
 }
 
 function statusLabel(status: string, t: ReturnType<typeof useTranslations>) {
   const key: Record<string, string> = {
     queued: 'statusQueued',
     running: 'statusRunning',
+    reporting: 'statusReporting',
     completed: 'statusCompleted',
     failed: 'statusFailed',
     pending: 'statusPending',

@@ -15,9 +15,9 @@ from lode.db.models import (
     InvestigationOperation,
     InvestigationRepositorySnapshot,
 )
-from lode.git_accounts import credential_identity_hash, decode_credential_secret
 from lode.domain.investigation import OperationResult, PlannedOperation
 from lode.engine.evidence.git import derive_query_terms
+from lode.git_accounts import credential_identity_hash, decode_credential_secret
 from lode.infrastructure.git_source import (
     GitCredentialMaterial,
     GitSourceReader,
@@ -41,7 +41,7 @@ class SourceReadOperationExecutor:
 
     async def execute(self, operation_id: int, operation: PlannedOperation) -> OperationResult:
         match = _ACTION.fullmatch(operation.action_id)
-        if match is None or operation.native_candidate is not None:
+        if match is None:
             return _failure("invalid_source_action")
         repository_snapshot_id = int(match.group("snapshot"))
         async with self.session_factory() as session:
@@ -49,6 +49,7 @@ class SourceReadOperationExecutor:
             snapshot = await session.get(InvestigationRepositorySnapshot, repository_snapshot_id)
             if (
                 operation_row is None
+                or operation_row.operation_kind != "source_read"
                 or snapshot is None
                 or operation_row.investigation_id != snapshot.investigation_id
                 or operation_row.action_id != operation.action_id

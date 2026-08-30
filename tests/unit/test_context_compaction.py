@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from lode.application.context_compaction import (
     ContextSummaryPayload,
     ContextSummaryValidator,
@@ -22,7 +24,7 @@ def evidence(artifact_id: int, *, counter: bool = False, pinned: bool = False) -
 def test_summary_retains_counter_evidence_and_stable_scalars() -> None:
     values = (evidence(1), evidence(2, counter=True))
     payload = ContextSummaryPayload(
-        summary={"status": 503, "revision": "a" * 40},
+        summary_json=json.dumps({"status": 503, "revision": "a" * 40}),
         input_evidence_refs=(1, 2),
         covered_claim_refs=(1,),
         retained_counter_evidence_refs=(2,),
@@ -37,7 +39,7 @@ def test_summary_retains_counter_evidence_and_stable_scalars() -> None:
 def test_summary_rejects_counter_evidence_loss_and_scalar_drift() -> None:
     values = (evidence(1), evidence(2, counter=True))
     payload = ContextSummaryPayload(
-        summary={"status": 200, "revision": "b" * 40},
+        summary_json=json.dumps({"status": 200, "revision": "b" * 40}),
         input_evidence_refs=(1, 2),
         covered_claim_refs=(1,),
         retained_counter_evidence_refs=(),
@@ -53,7 +55,7 @@ def test_summary_rejects_counter_evidence_loss_and_scalar_drift() -> None:
 
 def test_pinned_evidence_cannot_enter_a_summary() -> None:
     payload = ContextSummaryPayload(
-        summary={"status": 503},
+        summary_json=json.dumps({"status": 503}),
         input_evidence_refs=(1,),
         covered_claim_refs=(1,),
         retained_counter_evidence_refs=(),

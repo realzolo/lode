@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any, Literal
 
 from lode.domain.errors import DomainValidationError
+from lode.domain.evidence_budget import ExecutionBudgetPolicy
 from lode.domain.types import (
     EVIDENCE_REQUIRED_RELATIONS,
     ComponentKind,
@@ -435,8 +436,9 @@ class EvidenceAccessScope:
         ):
             raise DomainValidationError("invalid_reference", "scope revisions must be positive")
         _unique_nonempty(self.allowed_languages, "allowed_languages")
+        budget = ExecutionBudgetPolicy.from_mapping(self.execution_budget_policy)
         object.__setattr__(self, "scope_config", _freeze(self.scope_config))
-        object.__setattr__(self, "execution_budget_policy", _freeze(self.execution_budget_policy))
+        object.__setattr__(self, "execution_budget_policy", _freeze(budget.as_dict()))
 
 
 @dataclass(frozen=True, slots=True)

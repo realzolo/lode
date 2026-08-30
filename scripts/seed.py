@@ -6,27 +6,28 @@ import asyncio
 import logging
 from decimal import Decimal
 
+from current_git_fixture import (
+    FIXTURE_ADAPTER_ID,
+    FIXTURE_ENDPOINT_HASH,
+    ensure_repository_access,
+)
 from sqlalchemy import select
 
 from lode.db.models import (
     AIProviderAccount,
     ContextPolicyRevision,
     GitRepository,
-    ProviderAccountModel,
     ModelPolicyRevision,
+    ProviderAccountModel,
     User,
     Workspace,
     WorkspaceArchitectureContextRevision,
     WorkspaceModelBinding,
     WorkspaceRepositoryBinding,
 )
-from lode.model_catalog import require_model
 from lode.db.session import AsyncSessionLocal
-from current_git_fixture import (
-    FIXTURE_ADAPTER_ID,
-    FIXTURE_ENDPOINT_HASH,
-    ensure_repository_access,
-)
+from lode.model_catalog import require_model
+
 WORKSPACE_NAME = "Checkout"
 INGESTION_TOPIC = "incident.checkout.v1"
 
@@ -128,7 +129,7 @@ async def main() -> None:
             max_calls=10,
             max_cost_per_call=Decimal(0),
             timeout_ms=120000,
-            allowed_data_classes=["masked_incident", "source_code"],
+            allowed_data_classes=["masked", "source_code"],
             max_context_utilization=Decimal("0.75"),
             state="disabled",
         )
@@ -137,7 +138,7 @@ async def main() -> None:
 
         context_policy = ContextPolicyRevision(
             workspace_id=workspace.id,
-            pinned_evidence_kinds=["normalized_input", "counter_evidence"],
+            pinned_evidence_kinds=["incident_input", "counter_evidence"],
             compression_levels=["full", "summary", "reference"],
             minimum_output_tokens=4096,
             provider_safety_margin_tokens=1024,

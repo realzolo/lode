@@ -162,6 +162,7 @@ class InvestigationJob(TimestampMixin, Base):
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, unique=True
     )
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    phase: Mapped[str] = mapped_column(Text, nullable=False, server_default="investigation")
     available_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
@@ -173,6 +174,13 @@ class InvestigationJob(TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint("status IN ('pending', 'running', 'completed', 'failed')", name="status"),
+        CheckConstraint("phase IN ('investigation', 'reporting')", name="phase"),
         CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
-        Index("ix_investigation_jobs_claim", "status", "available_at", "lease_expires_at"),
+        Index(
+            "ix_investigation_jobs_claim",
+            "status",
+            "phase",
+            "available_at",
+            "lease_expires_at",
+        ),
     )

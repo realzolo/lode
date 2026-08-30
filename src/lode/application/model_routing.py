@@ -55,11 +55,19 @@ class ModelSelectionPolicyEngine:
             if code is None and task.required_context_tokens > allowed_input:
                 code = "context_capacity_exceeded"
             if code is not None:
+                detail = {"required_execution_class": required_class.value}
+                if code == "data_class_not_allowed":
+                    detail.update(
+                        {
+                            "requested_data_class": task.data_class,
+                            "allowed_data_classes": sorted(candidate.allowed_data_classes),
+                        }
+                    )
                 exclusions.append(
                     RouteExclusion(
                         candidate.binding_snapshot_id,
                         code,
-                        {"required_execution_class": required_class.value},
+                        detail,
                     )
                 )
                 continue

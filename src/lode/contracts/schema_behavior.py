@@ -64,8 +64,39 @@ BEGIN
     ) VALUES (
         connector_id, ARRAY['https']::text[], '{}'::jsonb,
         '{"tables":{"public.accounts":{"columns":{"password":{"type":"text"},"token":{"type":"text"}}}}}'::jsonb,
-        1, 1, '{}'::jsonb, 1, 1
+        1, 1,
+        jsonb_build_object(
+            'max_result_limit', 1000,
+            'max_timeout_ms', 5000,
+            'max_output_bytes', 1000000,
+            'max_total_output_bytes', 20000000,
+            'max_native_reads', 8,
+            'max_window_seconds', 7200,
+            'max_parallel_operations', 1,
+            'estimated_cost', 0.0
+        ),
+        1, 1
     ) RETURNING id INTO scope_id;
+
+    rejected := false;
+    BEGIN
+        INSERT INTO evidence_access_scopes (
+            connector_id, allowed_languages, scope_config, schema_catalog,
+            schema_catalog_revision, read_policy_revision, execution_budget_policy,
+            normalization_policy_revision, revision
+        ) VALUES (
+            connector_id, ARRAY['https']::text[], '{}'::jsonb, '{}'::jsonb,
+            2, 2, jsonb_build_object('timeout_ms', 5000, 'max_rows', 1000), 1, 2
+        );
+    EXCEPTION WHEN check_violation THEN
+        IF position('execution budget policy is not canonical' IN SQLERRM) = 0 THEN
+            RAISE;
+        END IF;
+        rejected := true;
+    END;
+    IF NOT rejected THEN
+        RAISE EXCEPTION 'canonical budget trigger accepted legacy fields';
+    END IF;
 
     rejected := false;
     BEGIN
@@ -76,7 +107,18 @@ BEGIN
         ) VALUES (
             connector_id, ARRAY['https']::text[],
             '{"nested":{"token":"plaintext"}}'::jsonb, '{}'::jsonb,
-            2, 1, '{}'::jsonb, 1, 2
+            2, 1,
+            jsonb_build_object(
+                'max_result_limit', 1000,
+                'max_timeout_ms', 5000,
+                'max_output_bytes', 1000000,
+                'max_total_output_bytes', 20000000,
+                'max_native_reads', 8,
+                'max_window_seconds', 7200,
+                'max_parallel_operations', 1,
+                'estimated_cost', 0.0
+            ),
+            1, 2
         );
     EXCEPTION WHEN raise_exception THEN
         IF position('ordinary JSON config may not contain credentials' IN SQLERRM) = 0 THEN

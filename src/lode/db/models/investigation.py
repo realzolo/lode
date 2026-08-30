@@ -62,7 +62,10 @@ class Investigation(TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint("trigger_signature_hash ~ '^[0-9a-f]{64}$'", name="trigger_hash_sha256"),
-        CheckConstraint("status IN ('queued', 'running', 'completed', 'failed')", name="status"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'reporting', 'completed', 'failed')",
+            name="status",
+        ),
         CheckConstraint(
             "result_state IN ('pending', 'confirmed', 'hypothesis', 'insufficient', 'unavailable')",
             name="result_state",

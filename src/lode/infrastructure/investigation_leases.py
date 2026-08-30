@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from lode.db.models import (
@@ -14,6 +14,7 @@ from lode.db.models import (
     InvestigationJob,
     InvestigationOperation,
     InvestigationOperationEvent,
+    InvestigationReport,
     InvestigationStep,
 )
 from lode.masking import mask_structure
@@ -26,6 +27,7 @@ class ClaimedInvestigationJob:
     investigation_id: int
     attempt_count: int
     lease_expires_at: datetime
+    phase: str
 
 
 class InvestigationLeaseStore:
@@ -59,7 +61,7 @@ class InvestigationLeaseStore:
                             .where(
                                 InvestigationJob.status == "pending",
                                 InvestigationJob.available_at <= current,
-                                Investigation.status.in_(("queued", "running")),
+                                self._claimable_phase(),
                                 (
                                     Investigation.lease_expires_at.is_(None)
                                     | (Investigation.lease_expires_at < current)
@@ -81,7 +83,7 @@ class InvestigationLeaseStore:
                             .where(
                                 InvestigationJob.status == "pending",
                                 InvestigationJob.available_at <= current,
-                                Investigation.status.in_(("queued", "running")),
+                                self._claimable_phase(),
                                 (
                                     Investigation.lease_expires_at.is_(None)
                                     | (Investigation.lease_expires_at < current)
@@ -114,15 +116,16 @@ class InvestigationLeaseStore:
                 job.claimed_by = self.owner
                 job.lease_expires_at = expires
                 job.attempt_count += 1
-                investigation.status = "running"
+                if job.phase == "investigation":
+                    investigation.status = "running"
                 investigation.lease_owner = self.owner
                 investigation.lease_expires_at = expires
-                if investigation.started_at is None:
+                if job.phase == "investigation" and investigation.started_at is None:
                     investigation.started_at = current
                 await session.commit()
                 JOB_QUEUE_DEPTH.set(max(0, queue_depth - 1))
                 return ClaimedInvestigationJob(
-                    job.id, job.investigation_id, job.attempt_count, expires
+                    job.id, job.investigation_id, job.attempt_count, expires, job.phase
                 )
         finally:
             JOB_CLAIM_LATENCY.observe(monotonic() - started)
@@ -166,6 +169,19 @@ class InvestigationLeaseStore:
     async def complete(self, job_id: int) -> None:
         async with self.session_factory() as session:
             job = await self._owned_job(session, job_id)
+            report_id = await session.scalar(
+                select(InvestigationReport.investigation_id)
+                .join(
+                    Investigation,
+                    Investigation.id == InvestigationReport.investigation_id,
+                )
+                .where(
+                    InvestigationReport.investigation_id == job.investigation_id,
+                    Investigation.status == "completed",
+                )
+            )
+            if job.phase != "reporting" or report_id is None:
+                raise RuntimeError("investigation job cannot complete before report publication")
             job.status = "completed"
             job.claimed_by = None
             job.lease_expires_at = None
@@ -199,16 +215,22 @@ class InvestigationLeaseStore:
                 job.available_at = current + timedelta(
                     seconds=base_delay_seconds * (2 ** max(0, job.attempt_count - 1))
                 )
-                if investigation is not None:
+                if investigation is not None and job.phase == "investigation":
                     investigation.status = "queued"
+                    investigation.lease_owner = None
+                    investigation.lease_expires_at = None
+                elif investigation is not None:
                     investigation.lease_owner = None
                     investigation.lease_expires_at = None
                 outcome = "pending"
             else:
                 job.status = "failed"
-                if investigation is not None:
+                if investigation is not None and job.phase == "investigation":
                     investigation.status = "failed"
                     investigation.finished_at = current
+                    investigation.lease_owner = None
+                    investigation.lease_expires_at = None
+                elif investigation is not None:
                     investigation.lease_owner = None
                     investigation.lease_expires_at = None
                 outcome = "failed"
@@ -222,9 +244,14 @@ class InvestigationLeaseStore:
                 (
                     await session.execute(
                         select(InvestigationJob)
+                        .join(
+                            Investigation,
+                            Investigation.id == InvestigationJob.investigation_id,
+                        )
                         .where(
                             InvestigationJob.status == "running",
                             InvestigationJob.lease_expires_at < current,
+                            self._claimable_phase(),
                         )
                         .order_by(InvestigationJob.id)
                         .with_for_update(skip_locked=True)
@@ -241,6 +268,18 @@ class InvestigationLeaseStore:
                         .with_for_update()
                     )
                 ).scalar_one()
+                if job.phase == "reporting":
+                    if investigation.status not in {"reporting", "completed"}:
+                        raise RuntimeError("reporting job requires a terminal analysis state")
+                    job.status = "pending"
+                    job.available_at = current
+                    job.claimed_by = None
+                    job.lease_expires_at = None
+                    investigation.lease_owner = None
+                    investigation.lease_expires_at = None
+                    continue
+                if investigation.status not in {"queued", "running"}:
+                    raise RuntimeError("investigation job phase does not match business state")
                 running_operations = tuple(
                     (
                         await session.execute(
@@ -297,6 +336,19 @@ class InvestigationLeaseStore:
             await session.commit()
             LEASE_RECOVERIES.inc(len(jobs))
             return len(jobs)
+
+    @staticmethod
+    def _claimable_phase():
+        return or_(
+            and_(
+                InvestigationJob.phase == "investigation",
+                Investigation.status.in_(("queued", "running")),
+            ),
+            and_(
+                InvestigationJob.phase == "reporting",
+                Investigation.status.in_(("reporting", "completed")),
+            ),
+        )
 
     async def _owned_job(self, session: AsyncSession, job_id: int) -> InvestigationJob:
         job = (

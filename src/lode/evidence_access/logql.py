@@ -189,6 +189,43 @@ class LogQLPolicy:
     def __init__(self, parser: LogQLParser | None = None) -> None:
         self._parser = parser or LogQLParser()
 
+    def generation_contract(
+        self,
+        *,
+        scope_config: Mapping[str, object],
+        schema_catalog: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        allowed_stages = sorted(
+            self._string_set(
+                scope_config.get("allowed_pipeline_stages", ["line_filter"]),
+                "allowed pipeline stages",
+            )
+        )
+        allowed_labels = sorted(
+            self._string_set(schema_catalog.get("labels"), "schema labels")
+        )
+        allowed_fields = sorted(
+            self._string_set(schema_catalog.get("fields", []), "schema fields")
+        )
+        return {
+            "payload_shape": {"query": "string"},
+            "query_kind": ["log"],
+            "selector_count": 1,
+            "selector_operators": ["="],
+            "line_filter_operators": ["|=", "!="],
+            "allowed_selector_labels": allowed_labels,
+            "allowed_fields": allowed_fields,
+            "allowed_pipeline_stages": allowed_stages,
+            "rules": [
+                "Use exactly one selector and at least one equality matcher.",
+                "Never use regex or negative selector matchers (=~, !~, !=).",
+                "Never combine multiple root-filter values into a regex; choose one exact value.",
+                "Use only labels, fields, and pipeline stages listed in this contract.",
+                "If allowed_pipeline_stages contains only line_filter, do not append json, logfmt, or label filters.",
+                "Do not use formatting, unwrap, offset, pattern, regexp, binary, or label-replacement expressions.",
+            ],
+        }
+
     def parse(self, candidate: NativeReadCandidateInput) -> ParsedNativeAction:
         if not isinstance(candidate.payload, QueryPayload):
             raise AccessRejection("invalid_syntax", "LogQL requires a query payload")

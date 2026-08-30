@@ -72,10 +72,29 @@ def context() -> AccessContext:
             "max_output_bytes": 50_000,
             "max_total_output_bytes": 100_000,
             "max_native_reads": 8,
+            "max_window_seconds": 7_200,
+            "max_parallel_operations": 1,
+            "estimated_cost": 0.0,
         },
         investigation_window_start=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
         investigation_window_end=datetime(2026, 8, 26, 10, 0, tzinfo=UTC),
     )
+
+
+def test_command_generation_contract_is_bound_to_frozen_working_sets() -> None:
+    access = context()
+    contract = CommandPolicy().generation_contract(
+        scope_config=access.scope_config,
+        schema_catalog=access.schema_catalog,
+    )
+
+    assert contract["payload_shape"]["argv"] == [
+        "--fixed-strings",
+        "--",
+        "<exact-sentinel>",
+        "<one-file>",
+    ]
+    assert contract["working_set_ids"] == ["orders-repo"]
 
 
 def test_command_policy_builds_server_owned_rg_argv_and_binds_literal_pattern() -> None:

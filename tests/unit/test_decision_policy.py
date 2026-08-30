@@ -51,23 +51,6 @@ def capability(action_id: str = "native:7:sql", *, resource_key: str = "connecto
     return CapabilityEntry(**values)
 
 
-def candidate(action_id: str = "native:7:sql", *, value_ref: str = "incident.trace_id"):
-    return {
-        "schema_version": "native-read-candidate.v1",
-        "action_id": action_id,
-        "connector_id": 3,
-        "language": "sql",
-        "purpose": "Check the current hypothesis",
-        "expected_evidence": "One bounded database row",
-        "evidence_anchors": ["incident.trace_id"],
-        "payload": {"query": "SELECT * FROM orders WHERE trace_id = __LODE_VALUE_REF_TRACE__"},
-        "value_bindings": {"__LODE_VALUE_REF_TRACE__": value_ref},
-        "requested_window": None,
-        "requested_limit": 10,
-        "requested_timeout_ms": 1_000,
-    }
-
-
 def operation(action_id: str = "native:7:sql", **overrides):
     values = {
         "action_id": action_id,
@@ -79,7 +62,6 @@ def operation(action_id: str = "native:7:sql", **overrides):
         "selection_reason": "This action distinguishes the likely mechanisms",
         "stop_condition": "Stop after one matching row",
         "estimated_cost": 0.0,
-        "native_candidate": candidate(action_id),
     }
     values.update(overrides)
     return PlannedOperation(**values)
@@ -108,6 +90,10 @@ def test_capability_catalog_is_minimal_stable_and_credential_free() -> None:
             "max_timeout_ms": 2_000,
             "max_result_limit": 25,
             "max_output_bytes": 20_000,
+            "max_total_output_bytes": 200_000,
+            "max_native_reads": 8,
+            "max_window_seconds": 7_200,
+            "max_parallel_operations": 1,
             "estimated_cost": 1.5,
         },
         snapshot_hash="a" * 64,
@@ -120,6 +106,7 @@ def test_capability_catalog_is_minimal_stable_and_credential_free() -> None:
     model_value = catalog_for_model(entries)
 
     assert [value.action_id for value in entries] == ["native:7:sql"]
+    assert "connector_id" not in model_value[0]
     assert model_value[0]["resource_summary"] == {"tables": {"names": ["orders"], "count": 1}}
     rendered = repr(model_value)
     assert "secret" not in rendered
@@ -127,7 +114,7 @@ def test_capability_catalog_is_minimal_stable_and_credential_free() -> None:
     assert "credential" not in rendered
 
 
-def test_policy_uses_server_cost_and_validates_value_ref_provenance() -> None:
+def test_policy_uses_server_cost_for_native_operation_intent() -> None:
     engine = DecisionPolicyEngine()
     value = decision(operation(estimated_cost=0.0))
 
@@ -135,39 +122,39 @@ def test_policy_uses_server_cost_and_validates_value_ref_provenance() -> None:
         value,
         (capability(),),
         budget=budget(),
-        allowed_value_refs=frozenset({"incident.trace_id"}),
     )
     rejected_cost = engine.evaluate(
         value,
         (capability(),),
         budget=budget(remaining_cost=1.0),
-        allowed_value_refs=frozenset({"incident.trace_id"}),
-    )
-    rejected_ref = engine.evaluate(
-        decision(operation(native_candidate=candidate(value_ref="untrusted.value"))),
-        (capability(),),
-        budget=budget(),
-        allowed_value_refs=frozenset({"incident.trace_id"}),
     )
 
     assert allowed.outcome == "allow" and allowed.server_cost == 2.0
     assert rejected_cost.outcome == "reject"
     assert rejected_cost.policy_decisions[-1].code == "wave_budget_exceeded"
-    assert rejected_ref.outcome == "reject"
-    assert rejected_ref.policy_decisions[0].code == "invalid_value_ref_provenance"
+
+
+def test_policy_rejects_every_previously_attempted_operation() -> None:
+    item = operation()
+
+    result = DecisionPolicyEngine().evaluate(
+        decision(item),
+        (capability(),),
+        budget=budget(),
+        attempted_fingerprints={item.fingerprint},
+    )
+
+    assert result.outcome == "reject"
+    assert result.policy_decisions[0].code == "duplicate_operation"
 
 
 def test_policy_trims_dependency_duplicate_and_resource_conflict() -> None:
     first = operation()
     dependent = operation(
         action_id="native:8:sql",
-        native_candidate={**candidate("native:8:sql"), "connector_id": 4},
         depends_on=(first.action_id,),
     )
-    second = operation(
-        action_id="native:9:sql",
-        native_candidate={**candidate("native:9:sql")},
-    )
+    second = operation(action_id="native:9:sql")
     entries = (
         capability(),
         capability(
@@ -183,7 +170,6 @@ def test_policy_trims_dependency_duplicate_and_resource_conflict() -> None:
         decision(first, dependent, second),
         entries,
         budget=budget(),
-        allowed_value_refs=frozenset({"incident.trace_id"}),
     )
 
     assert result.outcome == "trim"

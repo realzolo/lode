@@ -49,6 +49,34 @@ class HTTPSPolicy:
     parser_version = "3.12-safe-http-url.2"
     policy_version = "http-safe-read.2"
 
+    def generation_contract(
+        self,
+        *,
+        scope_config: Mapping[str, object],
+        schema_catalog: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        endpoints = scope_config.get("safe_read_endpoints", [])
+        endpoint_ids = [
+            endpoint["id"]
+            for endpoint in endpoints
+            if isinstance(endpoint, Mapping) and isinstance(endpoint.get("id"), str)
+        ] if isinstance(endpoints, list) else []
+        return {
+            "payload_shape": {
+                "method": "GET|HEAD",
+                "url": "absolute cataloged URL",
+                "query": "object",
+                "body": None,
+            },
+            "safe_read_endpoint_ids": endpoint_ids,
+            "rules": [
+                "Select exactly one frozen safe-read endpoint.",
+                "Use only its cataloged path and candidate-owned query parameters.",
+                "Place ValueRef sentinels only in query values.",
+                "Never include a body, credentials, redirects, or a non-cataloged origin.",
+            ],
+        }
+
     def parse(self, candidate: NativeReadCandidateInput) -> ParsedNativeAction:
         if not isinstance(candidate.payload, HTTPSPayload):
             raise AccessRejection("invalid_syntax", "HTTP(S) requires a structured request")

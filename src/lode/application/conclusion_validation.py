@@ -42,9 +42,23 @@ class ConclusionValidator:
             if any(item.status == "contradicted" for item in source_assessments):
                 reasons.append("runtime_source_contradicted")
         incident = normalized.get("incident_cause", {})
+        incident_status = (
+            str(incident.get("status", "not_found"))
+            if isinstance(incident, dict)
+            else "not_found"
+        )
+        if result_state == "confirmed":
+            if incident_status != "confirmed" and code_status != "confirmed":
+                reasons.append("confirmed_conclusion_anchor_missing")
+            if incident_status == "confirmed" and not incident.get("evidence_refs"):
+                reasons.append("confirmed_incident_evidence_missing")
+            if code_status == "confirmed" and (
+                not isinstance(code, dict) or not code.get("finding_refs")
+            ):
+                reasons.append("confirmed_code_finding_missing")
         if (
             isinstance(incident, dict)
-            and incident.get("status") == "confirmed"
+            and incident_status == "confirmed"
             and incident.get("mechanism") == "configuration"
             and (
                 not configuration_assessments

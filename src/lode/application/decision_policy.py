@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from typing import Any
-
-from pydantic import ValidationError
 
 from lode.domain.investigation import (
     CapabilityEntry,
@@ -16,7 +15,6 @@ from lode.domain.investigation import (
     PlannedOperation,
     PolicyDecision,
 )
-from lode.evidence_access.candidate import NativeReadCandidateInput
 
 
 class DecisionPolicyEngine:
@@ -28,8 +26,7 @@ class DecisionPolicyEngine:
         catalog: Sequence[CapabilityEntry],
         *,
         budget: DecisionBudget,
-        allowed_value_refs: Set[str] = frozenset(),
-        completed_fingerprints: Set[str] = frozenset(),
+        attempted_fingerprints: AbstractSet[str] = frozenset(),
     ) -> EvaluatedDecision:
         entries = {entry.action_id: entry for entry in catalog}
         policy_log: list[PolicyDecision] = []
@@ -50,8 +47,7 @@ class DecisionPolicyEngine:
                 operation,
                 entry,
                 hypothesis_ids=hypothesis_ids,
-                allowed_value_refs=allowed_value_refs,
-                completed_fingerprints=completed_fingerprints,
+                attempted_fingerprints=attempted_fingerprints,
                 seen_fingerprints=seen_fingerprints,
             )
             if reason is not None:
@@ -182,8 +178,7 @@ class DecisionPolicyEngine:
         entry: CapabilityEntry | None,
         *,
         hypothesis_ids: set[str],
-        allowed_value_refs: Set[str],
-        completed_fingerprints: Set[str],
+        attempted_fingerprints: AbstractSet[str],
         seen_fingerprints: set[str],
     ) -> PolicyDecision | None:
         if entry is None:
@@ -210,57 +205,12 @@ class DecisionPolicyEngine:
                 operation.action_id,
                 {"depends_on": list(operation.depends_on)},
             )
-        if operation.fingerprint in completed_fingerprints | seen_fingerprints:
+        if operation.fingerprint in attempted_fingerprints | seen_fingerprints:
             return PolicyDecision(
                 "duplicate_operation",
                 "trim",
                 operation.action_id,
                 {"fingerprint": operation.fingerprint},
-            )
-        if entry.operation_kind == "native_read":
-            candidate_error = self._native_candidate_error(
-                operation, entry, allowed_value_refs=allowed_value_refs
-            )
-            if candidate_error is not None:
-                return candidate_error
-        elif operation.native_candidate is not None:
-            return PolicyDecision("unexpected_native_candidate", "trim", operation.action_id, {})
-        return None
-
-    def _native_candidate_error(
-        self,
-        operation: PlannedOperation,
-        entry: CapabilityEntry,
-        *,
-        allowed_value_refs: Set[str],
-    ) -> PolicyDecision | None:
-        if operation.native_candidate is None:
-            return PolicyDecision("native_candidate_required", "trim", operation.action_id, {})
-        try:
-            candidate = NativeReadCandidateInput.model_validate(_plain(operation.native_candidate))
-        except (ValidationError, ValueError) as exc:
-            return PolicyDecision(
-                "invalid_native_candidate",
-                "trim",
-                operation.action_id,
-                {"error_count": len(exc.errors()) if isinstance(exc, ValidationError) else 1},
-            )
-        if (
-            candidate.action_id != operation.action_id
-            or candidate.connector_id != entry.connector_id
-            or candidate.language != entry.native_language.value
-            or tuple(candidate.evidence_anchors) != operation.evidence_anchors
-            or candidate.purpose != operation.purpose
-            or candidate.expected_evidence != operation.expected_evidence
-        ):
-            return PolicyDecision("native_candidate_mismatch", "trim", operation.action_id, {})
-        value_refs = set(candidate.value_bindings.values())
-        if not value_refs <= allowed_value_refs:
-            return PolicyDecision(
-                "invalid_value_ref_provenance",
-                "trim",
-                operation.action_id,
-                {"unknown_count": len(value_refs - allowed_value_refs)},
             )
         return None
 

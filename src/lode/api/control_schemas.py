@@ -10,6 +10,7 @@ from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lode.api.types import EntityId
+from lode.domain.types import ModelDataClass
 
 ExecutionClassValue = Literal["latency_optimized", "reasoning_optimized"]
 ModelRoleValue = Literal["planner", "native_query", "synthesizer", "verifier", "context_compactor"]
@@ -284,7 +285,7 @@ class ModelBindingInput(_StrictInput):
     max_calls: int = Field(gt=0)
     max_cost_per_call: float = Field(ge=0)
     timeout_ms: int = Field(gt=0, le=600_000)
-    allowed_data_classes: tuple[str, ...] = Field(min_length=1)
+    allowed_data_classes: tuple[ModelDataClass, ...] = Field(min_length=1)
     max_context_utilization: float = Field(gt=0, lt=1)
 
     @model_validator(mode="after")
@@ -306,7 +307,7 @@ class ModelBindingPatch(_StrictPatch):
     max_calls: int | None = Field(default=None, gt=0)
     max_cost_per_call: float | None = Field(default=None, ge=0)
     timeout_ms: int | None = Field(default=None, gt=0, le=600_000)
-    allowed_data_classes: tuple[str, ...] | None = Field(default=None, min_length=1)
+    allowed_data_classes: tuple[ModelDataClass, ...] | None = Field(default=None, min_length=1)
     max_context_utilization: float | None = Field(default=None, gt=0, lt=1)
     state: Literal["active", "disabled"] | None = None
 
@@ -321,7 +322,7 @@ class ModelBindingOut(_ORMOutput):
     max_calls: int
     max_cost_per_call: float
     timeout_ms: int
-    allowed_data_classes: list[str]
+    allowed_data_classes: list[ModelDataClass]
     max_context_utilization: float
     state: str
     revision: int

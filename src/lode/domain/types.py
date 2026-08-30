@@ -24,6 +24,13 @@ class ModelRole(StrEnum):
     CONTEXT_COMPACTOR = "context_compactor"
 
 
+class ModelDataClass(StrEnum):
+    MASKED = "masked"
+    SOURCE_CODE = "source_code"
+    INTERNAL = "internal"
+    RESTRICTED = "restricted"
+
+
 class LifecycleState(StrEnum):
     ACTIVE = "active"
     DISABLED = "disabled"

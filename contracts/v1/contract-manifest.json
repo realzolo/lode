@@ -3,6 +3,7 @@
   "files": [
     "ai/investigation-decision.schema.json",
     "ai/investigation-report.schema.json",
+    "ai/native-query.schema.json",
     "api/endpoints.json",
     "control-plane/entities.schema.json",
     "database/invariants.json",

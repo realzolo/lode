@@ -60,6 +60,8 @@ def context(**changes) -> AccessContext:
             "max_total_output_bytes": 2_000_000,
             "max_window_seconds": 900,
             "max_native_reads": 8,
+            "max_parallel_operations": 1,
+            "estimated_cost": 0.0,
         },
         "investigation_window_start": datetime(2026, 8, 26, 9, 10, tzinfo=UTC),
         "investigation_window_end": datetime(2026, 8, 26, 9, 50, tzinfo=UTC),

@@ -15,6 +15,7 @@ from lode.application.investigation import (
 )
 from lode.application.model_planner import StructuredInvestigationPlanner
 from lode.config import settings
+from lode.db.models import Investigation, InvestigationReport
 from lode.db.session import AsyncSessionLocal
 from lode.infrastructure.connector_resolver import PostgresConnectorAdapterResolver
 from lode.infrastructure.investigation_leases import (
@@ -30,6 +31,7 @@ from lode.infrastructure.investigation_reporting import (
 )
 from lode.infrastructure.investigation_store import PostgresInvestigationStore
 from lode.infrastructure.model_runtime import PostgresModelRuntime
+from lode.infrastructure.native_query import AuditedNativeQueryGenerator
 from lode.infrastructure.native_read_executor import NativeReadOperationExecutor
 from lode.infrastructure.operation_executor import InvestigationOperationExecutor
 from lode.infrastructure.report_store import PostgresReportStore
@@ -49,7 +51,7 @@ from lode.runtime_defaults import (
 
 logger = logging.getLogger("lode.worker")
 WORKER_ID = f"{platform.node()}:{uuid.uuid4().hex[:8]}"
-InvestigationHandler = Callable[[int], Awaitable[None]]
+InvestigationHandler = Callable[[ClaimedInvestigationJob], Awaitable[None]]
 
 
 class LeaseOwnershipLost(RuntimeError):
@@ -87,7 +89,7 @@ async def run_job(
     result = "interrupted"
     ENGINE_IN_FLIGHT.inc()
     heartbeat = asyncio.create_task(_heartbeat(durable, job.job_id))
-    investigation = asyncio.create_task(handler(job.investigation_id))
+    investigation = asyncio.create_task(handler(job))
     try:
         done, _ = await asyncio.wait(
             {heartbeat, investigation}, return_when=asyncio.FIRST_COMPLETED
@@ -227,7 +229,12 @@ def build_handler() -> InvestigationHandler:
     runtime = PostgresModelRuntime(AsyncSessionLocal)
     repository = PostgresInvestigationStore(AsyncSessionLocal)
     executor = InvestigationOperationExecutor(
-        native=NativeReadOperationExecutor(AsyncSessionLocal, PostgresConnectorAdapterResolver()),
+        AsyncSessionLocal,
+        native=NativeReadOperationExecutor(
+            AsyncSessionLocal,
+            PostgresConnectorAdapterResolver(),
+            AuditedNativeQueryGenerator(AsyncSessionLocal, runtime),
+        ),
         source=SourceReadOperationExecutor(AsyncSessionLocal),
     )
     orchestrator = InvestigationOrchestrator(
@@ -239,21 +246,53 @@ def build_handler() -> InvestigationHandler:
     )
     reporter = AuditedInvestigationReporter(AsyncSessionLocal, runtime)
 
-    async def handle(investigation_id: int) -> None:
-        result = await orchestrator.run(investigation_id)
-        if result.result_state == "unavailable":
-            await _publish_unavailable(investigation_id, result.terminal_reason)
+    async def handle(job: ClaimedInvestigationJob) -> None:
+        if job.phase == "investigation":
+            result = await orchestrator.run(job.investigation_id)
+            result_state = result.result_state
+            terminal_reason = result.terminal_reason
+            report_published = False
+        elif job.phase == "reporting":
+            result_state, terminal_reason, report_published = await _reporting_state(
+                job.investigation_id
+            )
+        else:
+            raise RuntimeError("unknown investigation job phase")
+        if report_published:
+            return
+        if result_state == "unavailable":
+            await _publish_unavailable(job.investigation_id, terminal_reason)
             return
         try:
-            await reporter.generate(investigation_id)
+            await reporter.generate(job.investigation_id)
         except ReportGenerationUnavailable as exc:
             await _publish_unavailable(
-                investigation_id,
+                job.investigation_id,
                 exc.code,
                 synthesizer_invocation_id=exc.invocation_id,
             )
 
     return handle
+
+
+async def _reporting_state(investigation_id: int) -> tuple[str, str, bool]:
+    async with AsyncSessionLocal() as session:
+        investigation = await session.get(Investigation, investigation_id)
+        report = await session.get(InvestigationReport, investigation_id)
+        if (
+            investigation is None
+            or investigation.status not in {"reporting", "completed"}
+            or investigation.result_state
+            not in {"confirmed", "hypothesis", "insufficient", "unavailable"}
+        ):
+            raise RuntimeError("reporting job has no terminal investigation state")
+        if investigation.status == "completed" and report is None:
+            raise RuntimeError("completed investigation has no published report")
+        budget_usage = investigation.budget_usage or {}
+        terminal_reason = budget_usage.get("terminal_reason")
+        if not isinstance(terminal_reason, str) or not terminal_reason:
+            raise RuntimeError("reporting job has no terminal reason")
+        return investigation.result_state, terminal_reason, report is not None
 
 
 async def _publish_unavailable(

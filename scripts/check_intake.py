@@ -18,6 +18,8 @@ from lode.crypto import decrypt_value
 from lode.db.models import (
     Alert,
     DeadLetter,
+    EvidenceArtifact,
+    EvidenceCollection,
     Incident,
     IngestionEvent,
     Investigation,
@@ -54,7 +56,12 @@ async def main() -> None:
     require_isolated_database("intake check")
     trace_id = '  引号\'" {job=~".*"} | json  '
     async with AsyncSessionLocal() as session:
-        user = User(username="intake-check", display_name="Intake Check", password_hash="checker", status="active")
+        user = User(
+            username="intake-check",
+            display_name="Intake Check",
+            password_hash="checker",
+            status="active",
+        )
         workspace = Workspace(
             name="Intake behavior",
             ingestion_topic="incident.intake.behavior.v1",
@@ -257,6 +264,17 @@ async def main() -> None:
                 select(Incident).where(Incident.event == "payment.order_create.failed")
             )
         ).scalar_one()
+        incident_input_artifact = (
+            await session.execute(
+                select(EvidenceArtifact).where(
+                    EvidenceArtifact.investigation_id == first.investigation_id,
+                    EvidenceArtifact.artifact_kind == "incident_input",
+                )
+            )
+        ).scalar_one()
+        incident_input_collection = await session.get(
+            EvidenceCollection, incident_input_artifact.collection_id
+        )
         counts = {
             "alerts": await session.scalar(select(func.count(Alert.id))),
             "dead_letters": await session.scalar(select(func.count(DeadLetter.id))),
@@ -272,6 +290,22 @@ async def main() -> None:
         raise RuntimeError("masked alert payload exposed its trace value")
     if incident.occurrence_count != 2:
         raise RuntimeError("active incident deduplication did not count the second alert")
+    if incident_input_collection is None:
+        raise RuntimeError("canonical incident input collection is missing")
+    if (
+        incident_input_collection.collection_kind != "input"
+        or incident_input_collection.status != "succeeded"
+        or incident_input_collection.artifact_count != 1
+    ):
+        raise RuntimeError("canonical incident input collection is invalid")
+    input_content = incident_input_artifact.content_masked
+    if (
+        input_content["event"] != "payment.order_create.failed"
+        or input_content["error"]["message"] != "Payment creation failed"
+        or input_content["trace_value_ref"] != "incident.trace_id"
+        or input_content["raw_payload"]["trace_id"] != "<VALUE_REF:incident.trace_id>"
+    ):
+        raise RuntimeError("canonical incident input evidence is incomplete or unmasked")
     if replayed_dead_letter is None or not replayed_dead_letter.replayed:
         raise RuntimeError("valid replay did not mark its dead letter")
     if any(

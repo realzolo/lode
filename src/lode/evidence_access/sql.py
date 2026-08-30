@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC
-import re
 from typing import Any
 
 import sqlglot
@@ -98,6 +98,41 @@ class SQLPolicy:
     parser_name = "sqlglot"
     parser_version = _PARSER_VERSION
     policy_version = _POLICY_VERSION
+
+    def generation_contract(
+        self,
+        *,
+        scope_config: Mapping[str, object],
+        schema_catalog: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        return {
+            "payload_shape": {"query": "string"},
+            "dialect": scope_config.get("dialect"),
+            "allowed_tables": scope_config.get("allowed_tables", []),
+            "allowed_statement_modes": ["SELECT", "EXPLAIN SELECT"],
+            "allowed_ast_nodes": sorted(_ALLOWED_NODE_NAMES),
+            "allowed_functions": sorted(_ALLOWED_FUNCTIONS),
+            "max_inner_joins": scope_config.get("max_joins", 2),
+            "forbidden_constructs": [
+                "UNION|INTERSECT|EXCEPT",
+                "subquery",
+                "CAST|type annotation",
+                "JSON|array|path operator",
+                "wildcard projection",
+                "OFFSET",
+                "comment|semicolon",
+                "write|lock|DDL",
+            ],
+            "rules": [
+                "Return exactly one read-only statement in the frozen dialect.",
+                "Use only tables and columns present in the frozen Connector context.",
+                "Use INNER JOIN with an ON predicate to combine tables; never use a set operation.",
+                "Include an evidence-relevant scalar predicate and place each ValueRef sentinel in one complete standalone string literal.",
+                "If no cataloged scalar column can compare to the evidence anchor, do not invent JSON, cast, or path syntax.",
+                "Do not add time bounds, ordering, or limits that the server owns.",
+                "Use only the published AST nodes and functions; every other construct is forbidden.",
+            ],
+        }
 
     def parse(self, candidate: NativeReadCandidateInput) -> ParsedNativeAction:
         if not isinstance(candidate.payload, QueryPayload):
@@ -319,15 +354,14 @@ class SQLPolicy:
         with_clause = tree.args.get("with_")
         if len(selects) > 2 or (len(selects) == 2 and with_clause is None):
             raise AccessRejection("unsupported_node", "SQL subqueries are disabled")
-        if with_clause is not None:
-            if (
-                with_clause.args.get("recursive")
-                or len(with_clause.expressions) != 1
-                or not isinstance(with_clause.expressions[0], exp.CTE)
-                or not isinstance(with_clause.expressions[0].this, exp.Select)
-                or with_clause.expressions[0].args.get("materialized") is not None
-            ):
-                raise AccessRejection("unsupported_node", "SQL CTE shape is disabled")
+        if with_clause is not None and (
+            with_clause.args.get("recursive")
+            or len(with_clause.expressions) != 1
+            or not isinstance(with_clause.expressions[0], exp.CTE)
+            or not isinstance(with_clause.expressions[0].this, exp.Select)
+            or with_clause.expressions[0].args.get("materialized") is not None
+        ):
+            raise AccessRejection("unsupported_node", "SQL CTE shape is disabled")
         if tree.args.get("into") is not None or tree.args.get("locks"):
             raise AccessRejection("write_semantics", "SQL write or locking semantics are disabled")
         if tree.args.get("offset") is not None:

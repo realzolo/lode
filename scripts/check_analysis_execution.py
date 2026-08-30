@@ -14,6 +14,7 @@ from current_git_fixture import (
     ensure_repository_access,
 )
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
 
 from lode.application.intake import ManualIncidentRequest, normalize_manual
 from lode.crypto import encrypt_secret
@@ -27,8 +28,12 @@ from lode.db.models import (
     GitAccount,
     GitAccountCredentialRevision,
     GitRepository,
+    InvestigationDecision,
     InvestigationModelBindingSnapshot,
+    InvestigationOperation,
+    InvestigationReport,
     InvestigationRepositorySnapshot,
+    InvestigationStep,
     ModelPolicyRevision,
     ModelRoutingDecision,
     ProviderAccountModel,
@@ -77,7 +82,7 @@ class FixtureGateway:
             evidence_refs = [item["artifact_id"] for item in request.get("evidence", [])]
             counter_refs = request["state_packet"].get("required_counter_evidence_refs", [])
             output = {
-                "summary": {"observed_status": 503},
+                "summary_json": json.dumps({"observed_status": 503}),
                 "input_evidence_refs": evidence_refs,
                 "covered_claim_refs": evidence_refs[:1],
                 "retained_counter_evidence_refs": counter_refs,
@@ -161,7 +166,7 @@ async def _binding(
     return binding
 
 
-async def _fixture() -> tuple[int, int, int, int, int, int]:
+async def _fixture() -> tuple[int, int, int, int, int, int, int]:
     suffix = uuid4().hex[:12]
     async with AsyncSessionLocal() as session:
         user = User(
@@ -202,7 +207,7 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
             workspace.id,
             latency_deployment.id,
             execution_class="latency_optimized",
-            roles=["planner"],
+            roles=["planner", "native_query"],
             priority=0,
         )
         reasoning = await _binding(
@@ -223,7 +228,7 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
         )
         context = ContextPolicyRevision(
             workspace_id=workspace.id,
-            pinned_evidence_kinds=["normalized_input", "counter_evidence"],
+            pinned_evidence_kinds=["incident_input", "counter_evidence"],
             compression_levels=["deduplicate", "relevance", "summary"],
             minimum_output_tokens=1_000,
             provider_safety_margin_tokens=500,
@@ -242,6 +247,7 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
                     {"binding_id": latency.id},
                     {"binding_id": reasoning.id},
                 ],
+                "native_query": {"binding_id": latency.id},
                 "synthesizer": {"binding_id": reasoning.id},
                 "verifier": {"binding_id": verifier.id},
             },
@@ -279,6 +285,50 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
             created_by=user.id,
         )
         assert intake.investigation_id is not None
+        step = InvestigationStep(
+            investigation_id=intake.investigation_id,
+            ordinal=1,
+            objective="Exercise an operation-bound model invocation",
+            status="running",
+            hypothesis_snapshot={"hypothesis_id": "h1"},
+            input_evidence_refs=[],
+            output_evidence_refs=[],
+        )
+        session.add(step)
+        await session.flush()
+        decision = InvestigationDecision(
+            investigation_id=intake.investigation_id,
+            step_id=step.id,
+            ordinal=1,
+            decision="continue",
+            hypotheses=[{"hypothesis_id": "h1"}],
+            operation_plan=[{"action_id": "native:1:sql"}],
+            policy_outcome="allow",
+            policy_decisions=[],
+            selected_operation_count=1,
+            decision_hash=canonical_hash({"fixture": "operation-bound-native-query"}),
+        )
+        session.add(decision)
+        await session.flush()
+        operation = InvestigationOperation(
+            investigation_id=intake.investigation_id,
+            step_id=step.id,
+            decision_id=decision.id,
+            ordinal=1,
+            wave_ordinal=1,
+            action_id="native:1:sql",
+            operation_kind="native_read",
+            purpose="Generate one bounded native query",
+            expected_evidence="One bounded row",
+            evidence_anchors=["incident.trace_id"],
+            selection_reason="Exercise operation-bound runtime ownership",
+            stop_condition="Stop after one result",
+            input_masked={},
+            fingerprint=canonical_hash({"fixture": "native-operation"}),
+        )
+        session.add(operation)
+        await session.flush()
+        await session.commit()
         return (
             intake.investigation_id,
             workspace.id,
@@ -286,6 +336,7 @@ async def _fixture() -> tuple[int, int, int, int, int, int]:
             latency_deployment.id,
             reasoning_deployment.id,
             verifier_deployment.id,
+            operation.id,
         )
 
 
@@ -315,12 +366,18 @@ async def main() -> None:
         latency_deployment_id,
         reasoning_deployment_id,
         verifier_deployment_id,
+        operation_id,
     ) = await _fixture()
     gateway = FixtureGateway()
     runtime = PostgresModelRuntime(AsyncSessionLocal, gateway=gateway)
     schema = ResponseSchema(
         name="analysis_check",
-        schema={"type": "object", "additionalProperties": True},
+        schema={
+            "type": "object",
+            "properties": {"result": {"type": "string"}},
+            "required": ["result"],
+            "additionalProperties": False,
+        },
     )
     common = {
         "investigation_id": investigation_id,
@@ -344,6 +401,12 @@ async def main() -> None:
         state_packet=simple_state,
     )
     assert simple.invocation_id == replay.invocation_id
+    native_query = await runtime.invoke(
+        **common,
+        operation_id=operation_id,
+        task=_task(ModelRole.NATIVE_QUERY),
+        state_packet={"operation_id": operation_id, "objective": "generate native query"},
+    )
     complex_result = await runtime.invoke(
         **common,
         task=_task(
@@ -375,7 +438,13 @@ async def main() -> None:
         verifier_separate_account_model=True,
         verifier_separate_provider=True,
     )
-    assert len(gateway.calls) == 4
+    assert len(gateway.calls) == 5
+
+    async with AsyncSessionLocal() as session:
+        native_query_row = await session.get(AIInvocation, native_query.invocation_id)
+        assert native_query_row is not None
+        assert native_query_row.operation_id == operation_id
+        assert native_query_row.role == "native_query"
 
     async with AsyncSessionLocal() as session:
         large_artifacts: list[EvidenceArtifact] = []
@@ -416,7 +485,7 @@ async def main() -> None:
         state_packet={"objective": "classify a long evidence set"},
     )
     assert compacted.payload is not None
-    assert len(gateway.calls) == 5
+    assert len(gateway.calls) == 6
 
     async with AsyncSessionLocal() as session:
         latency_provider = await session.get(AIProviderAccount, latency_provider_id)
@@ -435,7 +504,7 @@ async def main() -> None:
         unavailable_route_id = exc.routing_decision_id
     else:
         raise AssertionError("control-plane drift did not invalidate the frozen route")
-    assert len(gateway.calls) == 5
+    assert len(gateway.calls) == 6
 
     async with AsyncSessionLocal() as session:
         snapshots = int(
@@ -492,15 +561,18 @@ async def main() -> None:
             .all()
         )
     assert snapshots == 3
-    assert len(routes) == 6 and routes[-1].id == unavailable_route_id
-    assert routes[0].execution_class == "latency_optimized"
-    assert routes[0].model_binding_snapshot_id is not None
-    assert routes[1].execution_class == "reasoning_optimized"
+    assert len(routes) == 7 and routes[-1].id == unavailable_route_id
     assert routes[-1].model_binding_snapshot_id is None
     assert routes[-1].allowed_input_tokens == routes[-1].allowed_output_tokens == 0
-    assert len(contexts) == len(invocations) == 5
+    assert len(contexts) == len(invocations) == 6
     assert not summaries
     by_id = {row.id: row for row in invocations}
+    route_by_id = {row.id: row for row in routes}
+    simple_route = route_by_id[by_id[simple.invocation_id].routing_decision_id]
+    complex_route = route_by_id[by_id[complex_result.invocation_id].routing_decision_id]
+    assert simple_route.execution_class == "latency_optimized"
+    assert simple_route.model_binding_snapshot_id is not None
+    assert complex_route.execution_class == "reasoning_optimized"
     compacted_context = next(
         row
         for row in contexts
@@ -512,6 +584,7 @@ async def main() -> None:
     assert all("raw_model_output" not in row.state_packet for row in contexts)
     assert {row.role for row in contexts} == {
         "planner",
+        "native_query",
         "synthesizer",
         "verifier",
     }
@@ -565,9 +638,7 @@ async def _check_report_publication(
         )
         session.add(repository)
         await session.flush()
-        account_connection_id = await ensure_repository_access(
-            session, workspace_id, repository
-        )
+        account_connection_id = await ensure_repository_access(session, workspace_id, repository)
         account = (
             await session.execute(
                 select(GitAccount).where(
@@ -643,6 +714,24 @@ async def _check_report_publication(
             ),
         )
         artifact_id = archived.artifact_ids[0]
+        external_content = {
+            "provider": "payments",
+            "response_code": "invalid_parameter",
+        }
+        external_artifact = EvidenceArtifact(
+            investigation_id=investigation_id,
+            collection_id=None,
+            artifact_kind="provider_response",
+            evidence_class="runtime",
+            content_masked=external_content,
+            content_hash=canonical_hash(external_content),
+            provenance={"fixture": "confirmed-external-cause"},
+            source_revision=None,
+            data_class="masked",
+            prompt_injection_markers=[],
+        )
+        session.add(external_artifact)
+        await session.flush()
         synthesis = _confirmed_report(
             repository_id=repository.id,
             source_artifact_id=artifact_id,
@@ -652,6 +741,48 @@ async def _check_report_publication(
         broken = json.loads(json.dumps(synthesis))
         broken["code_findings"][0]["path"] = "src/wrong.py"
         store = PostgresReportStore(session)
+        external_savepoint = await session.begin_nested()
+        external_published = await store.publish(
+            investigation_id=investigation_id,
+            synthesis=_confirmed_external_report(external_artifact.id),
+            synthesizer_invocation_id=synthesizer_invocation_id,
+            verification=_approved_external_verification(external_artifact.id),
+            verifier_invocation_id=verifier_invocation_id,
+        )
+        await session.flush()
+        assert external_published.result_state == "confirmed"
+        await external_savepoint.rollback()
+
+        invalid_savepoint = await session.begin_nested()
+        session.add(
+            InvestigationReport(
+                investigation_id=investigation_id,
+                result_state="confirmed",
+                headline="Invalid unanchored confirmation",
+                summary="This row must be rejected by the database invariant.",
+                incident_cause={},
+                code_diagnosis={},
+                participants=[],
+                timeline_summary=[],
+                source_assessments=[],
+                configuration_assessments=[],
+                confirmed_facts=[],
+                counter_evidence=[],
+                evidence_gaps=[],
+                next_step="Correct the external request.",
+                synthesizer_invocation_id=synthesizer_invocation_id,
+                verifier_invocation_id=verifier_invocation_id,
+                report_hash=canonical_hash({"fixture": "unanchored-confirmation"}),
+            )
+        )
+        try:
+            await session.flush()
+        except DBAPIError as exc:
+            assert "confirmed report requires a confirmed incident cause" in str(exc.orig)
+            await invalid_savepoint.rollback()
+        else:
+            raise AssertionError("database accepted an unanchored confirmed incident cause")
+
         try:
             await store.publish(
                 investigation_id=investigation_id,
@@ -749,6 +880,39 @@ def _confirmed_report(
     }
 
 
+def _confirmed_external_report(artifact_id: int) -> dict:
+    return {
+        "result_state": "confirmed",
+        "headline": "The payment provider rejected the request",
+        "summary": "Runtime evidence confirms an external provider rejection.",
+        "incident_cause": {
+            "status": "confirmed",
+            "mechanism": "external_dependency",
+            "causal_chain": ["provider rejected parameter", "payment creation failed"],
+            "evidence_refs": [artifact_id],
+        },
+        "code_diagnosis": {
+            "status": "not_found",
+            "summary": "No project code defect was established.",
+            "finding_indices": [],
+        },
+        "code_findings": [],
+        "participants": [],
+        "timeline_summary": [],
+        "source_assessments": [],
+        "configuration_assessments": [],
+        "confirmed_facts": [
+            {
+                "text": "The provider returned an invalid-parameter response.",
+                "evidence_refs": [artifact_id],
+            }
+        ],
+        "counter_evidence": [],
+        "evidence_gaps": [],
+        "next_step": "Correct the provider request parameter.",
+    }
+
+
 def _approved_verification(artifact_id: int) -> dict:
     return {
         "verdict": "approved",
@@ -763,6 +927,16 @@ def _approved_verification(artifact_id: int) -> dict:
         "alternative_explanations_checked": ["configuration", "dependency"],
         "counter_evidence_refs": [],
         "reasons": ["The source and incident mechanism are consistent."],
+    }
+
+
+def _approved_external_verification(artifact_id: int) -> dict:
+    return {
+        "verdict": "approved",
+        "finding_verdicts": [],
+        "alternative_explanations_checked": ["application_code", "network"],
+        "counter_evidence_refs": [],
+        "reasons": [f"Runtime artifact {artifact_id} confirms the provider rejection."],
     }
 
 

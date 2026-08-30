@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
+from lode.domain.evidence_budget import ExecutionBudgetPolicy
 from lode.domain.investigation import (
     CapabilityEntry,
     ConnectorCapabilitySnapshot,
@@ -23,28 +24,13 @@ _EVIDENCE_TYPES: Mapping[NativeLanguage, tuple[str, ...]] = {
 }
 
 
-def _positive_int(value: Any, default: int) -> int:
-    return (
-        value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default
-    )
-
-
-def _nonnegative_float(value: Any, default: float) -> float:
-    return (
-        float(value)
-        if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
-        else default
-    )
-
-
 def _resource_summary(catalog: Mapping[str, Any]) -> Mapping[str, Any]:
     summary: dict[str, Any] = {}
     for key in ("indices", "tables", "endpoints", "working_sets", "resources"):
         value = catalog.get(key)
-        if isinstance(value, Mapping):
-            names = sorted(str(name) for name in value)[:100]
-            summary[key] = {"names": names, "count": len(value)}
-        elif isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        if isinstance(value, Mapping) or (
+            isinstance(value, Sequence) and not isinstance(value, str | bytes)
+        ):
             names = sorted(str(name) for name in value)[:100]
             summary[key] = {"names": names, "count": len(value)}
     if not summary:
@@ -64,13 +50,13 @@ class CapabilityCatalogBuilder:
         static_capabilities: Sequence[CapabilityEntry] = (),
     ) -> tuple[CapabilityEntry, ...]:
         if budget.remaining_operations == 0:
-            return tuple()
+            return ()
         anchors = tuple(dict.fromkeys(str(value) for value in evidence_anchors if value))
         entries = list(static_capabilities)
         for snapshot in sorted(snapshots, key=lambda value: value.snapshot_id):
             if snapshot.health_status != "healthy":
                 continue
-            policy = snapshot.execution_budget_policy
+            policy = ExecutionBudgetPolicy.from_mapping(snapshot.execution_budget_policy)
             scope = snapshot.scope_config
             snapshot_anchors = tuple(
                 dict.fromkeys(
@@ -82,16 +68,16 @@ class CapabilityCatalogBuilder:
             if not snapshot_anchors:
                 continue
             timeout_ms = min(
-                _positive_int(policy.get("max_timeout_ms"), 10_000),
+                policy.max_timeout_ms,
                 max(1, budget.remaining_timeout_ms),
             )
-            result_limit = _positive_int(policy.get("max_result_limit"), 100)
+            result_limit = policy.max_result_limit
             output_bytes = min(
-                _positive_int(policy.get("max_output_bytes"), 1_000_000),
+                policy.max_output_bytes,
                 max(1, budget.remaining_output_bytes),
             )
-            max_parallelism = _positive_int(policy.get("max_parallel_operations"), 1)
-            server_cost = _nonnegative_float(policy.get("estimated_cost"), 0.0)
+            max_parallelism = policy.max_parallel_operations
+            server_cost = policy.estimated_cost
             if server_cost > budget.remaining_cost:
                 continue
             for language in sorted(snapshot.allowed_languages, key=lambda value: value.value):

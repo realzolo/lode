@@ -160,6 +160,7 @@ async def test_connector_creation_verifies_discovers_and_persists_atomically(mon
     assert response.json()["configured_secret_fields"] == ["password"]
     assert "postgres-private-value" not in response.text
     assert "BEGIN CERTIFICATE" not in response.text
+    assert created_adapters[0].scope["dialect"] == "postgres"
     assert created_adapters[0].scope["allowed_schemas"] == ["billing"]
     assert created_adapters[0].introspection_timeout_ms == 10_000
     connector_id = response.json()["id"]
@@ -168,6 +169,7 @@ async def test_connector_creation_verifies_discovers_and_persists_atomically(mon
             select(EvidenceAccessScope).where(EvidenceAccessScope.connector_id == connector_id)
         )
         assert scope is not None
+        assert scope.scope_config["dialect"] == "postgres"
         assert scope.scope_config["allowed_schemas"] == ["billing"]
         assert scope.scope_config["allowed_tables"] == ["billing.events"]
         assert "billing.events" in scope.schema_catalog["tables"]

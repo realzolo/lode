@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -14,13 +13,11 @@ from lode.db.models import (
     EvidenceReadAttempt,
     Investigation,
     InvestigationConnectorSnapshot,
-    InvestigationDecision,
     InvestigationOperation,
     NativeReadCandidate,
 )
 from lode.domain.investigation import OperationResult, PlannedOperation
 from lode.evidence_access.authorizer import EvidenceAccessAuthorizer
-from lode.evidence_access.candidate import NativeReadCandidateInput
 from lode.evidence_access.orchestrator import (
     EvidenceExecutionAdapter,
     EvidenceReadOrchestrator,
@@ -28,6 +25,10 @@ from lode.evidence_access.orchestrator import (
 from lode.evidence_access.types import AccessContext, EvidenceExecutionFailure
 from lode.evidence_connectors.registry import build_native_policy_registry
 from lode.infrastructure.evidence_archive import PostgresEvidenceResultArchiver
+from lode.infrastructure.native_query import (
+    GeneratedNativeQuery,
+    NativeQueryGenerationUnavailable,
+)
 
 
 class ConnectorAdapterResolver(Protocol):
@@ -38,47 +39,46 @@ class ConnectorAdapterResolver(Protocol):
     ) -> EvidenceExecutionAdapter: ...
 
 
+class NativeQueryGenerator(Protocol):
+    async def generate(
+        self, operation_id: int, operation: PlannedOperation
+    ) -> GeneratedNativeQuery: ...
+
+
 class NativeReadOperationExecutor:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         resolver: ConnectorAdapterResolver,
+        generator: NativeQueryGenerator,
     ) -> None:
         self.session_factory = session_factory
         self.resolver = resolver
+        self.generator = generator
         self.registry = build_native_policy_registry()
 
     async def execute(self, operation_id: int, operation: PlannedOperation) -> OperationResult:
-        if operation.native_candidate is None:
-            return _failure("native_candidate_missing")
+        try:
+            generated = await self.generator.generate(operation_id, operation)
+        except NativeQueryGenerationUnavailable as exc:
+            return _failure(exc.code, invocation_id=exc.invocation_id)
+        candidate = generated.candidate
         async with self.session_factory() as session:
             row = await session.get(InvestigationOperation, operation_id)
             if row is None or row.operation_kind != "native_read":
                 return _failure("native_operation_ownership_failed")
-            decision = await session.get(InvestigationDecision, row.decision_id)
             snapshot = (
                 await session.execute(
                     select(InvestigationConnectorSnapshot).where(
                         InvestigationConnectorSnapshot.investigation_id == row.investigation_id,
                         InvestigationConnectorSnapshot.connector_id
-                        == int(operation.native_candidate["connector_id"]),
+                        == candidate.connector_id,
                     )
                 )
             ).scalar_one_or_none()
             investigation = await session.get(Investigation, row.investigation_id)
-            if (
-                decision is None
-                or decision.model_invocation_id is None
-                or snapshot is None
-                or investigation is None
-            ):
+            if snapshot is None or investigation is None:
                 return _failure("native_execution_context_missing")
-            try:
-                candidate = NativeReadCandidateInput.model_validate(
-                    _plain(operation.native_candidate)
-                )
-            except ValueError:
-                return _failure("invalid_native_candidate")
             used = int(
                 (
                     await session.execute(
@@ -101,7 +101,7 @@ class NativeReadOperationExecutor:
                 investigation_id=row.investigation_id,
                 operation_id=row.id,
                 connector_snapshot_id=snapshot.id,
-                model_invocation_id=decision.model_invocation_id,
+                model_invocation_id=generated.invocation_id,
                 workspace_id=investigation.workspace_id,
                 connector_id=snapshot.connector_id,
                 snapshot_hash=snapshot.snapshot_hash,
@@ -169,10 +169,10 @@ class NativeReadOperationExecutor:
             )
 
 
-def _failure(code: str) -> OperationResult:
+def _failure(code: str, *, invocation_id: int | None = None) -> OperationResult:
     return OperationResult(
         "failed",
-        {},
+        {"model_invocation_id": invocation_id} if invocation_id is not None else {},
         (),
         {"output_bytes": 0, "duration_ms": 0, "cost": 0.0},
         code,
@@ -193,11 +193,3 @@ class _UnavailableAdapter:
 
     async def execute(self, _permit):
         raise AssertionError("an unavailable adapter cannot execute")
-
-
-def _plain(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(key): _plain(child) for key, child in value.items()}
-    if isinstance(value, tuple | list):
-        return [_plain(child) for child in value]
-    return value

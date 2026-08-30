@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lode.domain.errors import DomainValidationError
+from lode.domain.evidence_budget import standard_execution_budget_policy
 from lode.domain.models import (
     BuildUnit,
     Component,
@@ -16,9 +17,9 @@ from lode.domain.models import (
     EvidenceArtifact,
     IdentityResolution,
     ModelBindingRevisionRef,
-    ProviderAccountModel,
     ModelPolicyRevision,
     ObservedRelation,
+    ProviderAccountModel,
     ResourceObservation,
     Workspace,
     WorkspaceModelBinding,
@@ -194,11 +195,25 @@ def test_evidence_scope_has_closed_native_languages_and_frozen_budget() -> None:
         scope_config={"root_selector": {"tenant": "payments"}},
         schema_catalog_revision=2,
         read_policy_revision=3,
-        execution_budget_policy={"max_rows": 1000},
+        execution_budget_policy=standard_execution_budget_policy(),
         normalization_policy_revision=4,
     )
     assert scope.allowed_languages == (NativeLanguage.LOGQL,)
     assert scope.scope_config["root_selector"]["tenant"] == "payments"
+
+
+def test_evidence_scope_rejects_legacy_budget_fields() -> None:
+    with pytest.raises(DomainValidationError) as exc:
+        EvidenceAccessScope(
+            connector_id=1,
+            allowed_languages=(NativeLanguage.LOGQL,),
+            scope_config={"root_selector": {"tenant": "payments"}},
+            schema_catalog_revision=1,
+            read_policy_revision=1,
+            execution_budget_policy={"timeout_ms": 5_000, "max_rows": 1_000},
+            normalization_policy_revision=1,
+        )
+    assert exc.value.code == "invalid_execution_budget_policy"
 
 
 def test_causal_relations_require_explicit_evidence() -> None:
@@ -223,7 +238,7 @@ def test_causal_relations_require_explicit_evidence() -> None:
 def test_evidence_artifact_is_immutable_and_timestamped() -> None:
     artifact = EvidenceArtifact(
         investigation_id=1,
-        artifact_kind="normalized_input",
+        artifact_kind="incident_input",
         content_hash="b" * 64,
         provenance={"source": "kafka"},
         evidence_class="runtime_observation",

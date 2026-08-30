@@ -82,6 +82,25 @@ class StructuredSearchPolicy:
         self.parser_version = profile.parser_version
         self.policy_version = profile.policy_version
 
+    def generation_contract(
+        self,
+        *,
+        scope_config: Mapping[str, object],
+        schema_catalog: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        return {
+            "payload_shape": {"path": "/<allowed-index>/_search", "body": "object"},
+            "allowed_query_nodes": sorted(self.profile.allowed_query_nodes),
+            "allowed_aggregations": sorted(self.profile.allowed_aggregations),
+            "allowed_indices": scope_config.get("allowed_indices", []),
+            "rules": [
+                "Use only an index and fields present in the frozen Connector context.",
+                "Place every ValueRef sentinel in a query value node.",
+                "Do not include scripts, runtime mappings, wildcard, regexp, or provider extensions.",
+                "Do not add an incident time filter; the server injects the absolute window.",
+            ],
+        }
+
     def parse(self, candidate: NativeReadCandidateInput) -> ParsedNativeAction:
         if not isinstance(candidate.payload, SearchPayload):
             raise AccessRejection("invalid_syntax", "search DSL requires a structured payload")

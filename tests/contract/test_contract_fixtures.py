@@ -20,7 +20,7 @@ def test_contract_manifest_is_complete_and_deterministic() -> None:
     second = validate_contracts()
 
     assert first == second
-    assert first["count"] == 8
+    assert first["count"] == 9
     assert first["endpoint_count"] >= 40
     assert first["table_count"] >= 60
     assert len(first["sha256"]) == 64
@@ -71,7 +71,15 @@ def test_decision_wave_and_terminal_report_contracts_match_v1() -> None:
     report = _load("ai/investigation-report.schema.json")
 
     assert decision["properties"]["operations"]["maxItems"] == 4
+    assert decision["properties"]["hypotheses"]["minItems"] == 1
     assert decision["properties"]["decision"]["enum"] == ["continue", "finish"]
+    operation = decision["$defs"]["operation"]
+    assert decision["title"] == "investigation-decision.v5"
+    assert "native_candidate" not in operation["properties"]
+    assert "native_candidate_json" not in operation["properties"]
+    native_query = _load("ai/native-query.schema.json")
+    assert native_query["title"] == "native-query.v1"
+    assert set(native_query["properties"]) == {"payload_json"}
     assert report["properties"]["result_state"]["enum"] == [
         "confirmed",
         "hypothesis",
@@ -110,7 +118,7 @@ def test_contract_check_cli_output_is_reproducible() -> None:
     second = subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
 
     assert first.stdout == second.stdout
-    assert json.loads(first.stdout)["contracts"]["count"] == 8
+    assert json.loads(first.stdout)["contracts"]["count"] == 9
 
 
 def test_eval_corpus_has_a_repeatable_complete_oracle() -> None:
@@ -138,7 +146,14 @@ def test_database_invariant_contract_covers_only_frozen_tables() -> None:
     inventory, triggers = expected_schema()
 
     assert len(inventory) == 73
-    assert sum(len(names) for names in triggers.values()) == 90
+    assert sum(len(names) for names in triggers.values()) == 92
+    assert (
+        "trg_evidence_access_scopes_budget_canonical"
+        in triggers["evidence_access_scopes"]
+    )
+    assert "trg_evidence_access_scopes_sql_dialect" in triggers[
+        "evidence_access_scopes"
+    ]
     assert "trg_evidence_read_attempts_immutable" in triggers["evidence_read_attempts"]
     assert "trg_investigation_reports_semantics" in triggers["investigation_reports"]
 

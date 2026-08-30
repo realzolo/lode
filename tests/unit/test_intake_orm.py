@@ -63,7 +63,14 @@ def test_job_schema_supports_skip_locked_lease_recovery() -> None:
     job = Base.metadata.tables["investigation_jobs"]
     columns = set(job.c.keys())
 
-    assert {"status", "available_at", "claimed_by", "lease_expires_at", "attempt_count"}.issubset(columns)
+    assert {
+        "status",
+        "phase",
+        "available_at",
+        "claimed_by",
+        "lease_expires_at",
+        "attempt_count",
+    }.issubset(columns)
     assert any(index.name == "ix_investigation_jobs_claim" for index in job.indexes)
 
 

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lode.local/contracts/v1/ai/native-query.schema.json",
+  "title": "native-query.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["payload_json"],
+  "properties": {
+    "payload_json": {"type": "string", "minLength": 2, "maxLength": 262144}
+  }
+}

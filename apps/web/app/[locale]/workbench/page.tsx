@@ -14,7 +14,7 @@ import { Link, useRouter } from '@/lib/navigation';
 import type { InvestigationSummary, Workspace } from '@/lib/types';
 
 function statusLabel(status: InvestigationSummary['status'], t: ReturnType<typeof useTranslations>) {
-  return t({ queued: 'statusQueued', running: 'statusRunning', completed: 'statusCompleted', failed: 'statusFailed' }[status]);
+  return t({ queued: 'statusQueued', running: 'statusRunning', reporting: 'statusReporting', completed: 'statusCompleted', failed: 'statusFailed' }[status]);
 }
 
 function resultStateLabel(resultState: InvestigationSummary['result_state'], t: ReturnType<typeof useTranslations>) {
@@ -91,6 +91,7 @@ export default function InvestigationsPage() {
         <option value="all">{t('allStates')}</option>
         <option value="queued">{t('statusQueued')}</option>
         <option value="running">{t('statusRunning')}</option>
+        <option value="reporting">{t('statusReporting')}</option>
         <option value="completed">{t('statusCompleted')}</option>
         <option value="failed">{t('statusFailed')}</option>
       </Select>
@@ -102,7 +103,7 @@ export default function InvestigationsPage() {
         <tbody>{rows.map((row) => <tr key={row.id}>
           <td><p className="font-medium">{row.headline || row.event || t('analysisInProgress')}</p><p className="mono mt-1 text-xs text-muted-foreground">{row.id}</p></td>
           <td>{names.get(row.workspace_id) || row.workspace_id}</td>
-          <td><span className={`table-status table-status-${row.status === 'completed' ? 'success' : row.status === 'failed' ? 'danger' : row.status === 'running' ? 'warning' : 'neutral'}`}><i />{statusLabel(row.status, t)}</span></td>
+          <td><span className={`table-status table-status-${row.status === 'completed' ? 'success' : row.status === 'failed' ? 'danger' : row.status === 'running' || row.status === 'reporting' ? 'warning' : 'neutral'}`}><i />{statusLabel(row.status, t)}</span></td>
           <td>{resultStateLabel(row.result_state, t)}</td>
           <td className="text-xs text-muted-foreground">{new Date(row.created_at).toLocaleString(dateLocale)}</td>
           <td><Button size="icon" variant="ghost" asChild><Link href={`/workbench/investigation/${row.id}`} aria-label={tc('open')} title={tc('open')}><ArrowUpRight size={16} /></Link></Button></td>

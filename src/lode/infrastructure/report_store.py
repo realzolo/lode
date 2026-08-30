@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
@@ -114,6 +115,8 @@ class PostgresReportStore:
             )
         )
         investigation.result_state = "unavailable"
+        investigation.status = "completed"
+        investigation.finished_at = datetime.now(UTC)
         return PublishedReport(investigation_id, "unavailable", report_hash, (), ())
 
     async def publish(
@@ -402,6 +405,8 @@ class PostgresReportStore:
                 )
             )
         investigation.result_state = validated.result_state
+        investigation.status = "completed"
+        investigation.finished_at = datetime.now(UTC)
         return PublishedReport(
             investigation_id,
             validated.result_state,

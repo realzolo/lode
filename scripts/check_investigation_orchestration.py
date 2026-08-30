@@ -22,6 +22,7 @@ from lode.db.models import (
     Investigation,
     InvestigationJob,
     InvestigationOperation,
+    InvestigationReport,
     InvestigationStep,
     ObservedEntity,
     ObservedEvent,
@@ -175,6 +176,7 @@ async def _fixture() -> tuple[int, int, int]:
                 connector_id=connector.id,
                 allowed_languages=["sql"],
                 scope_config={
+                    "dialect": "postgres",
                     "evidence_anchors": ["incident.trace_id"],
                     "data_class": "masked",
                     "allowed_tables": ["public.orders"],
@@ -207,7 +209,11 @@ async def _fixture() -> tuple[int, int, int]:
                     "max_result_limit": 10,
                     "max_timeout_ms": 1_000,
                     "max_output_bytes": 10_000,
+                    "max_total_output_bytes": 100_000,
+                    "max_native_reads": 8,
+                    "max_window_seconds": 7_200,
                     "max_parallel_operations": 1,
+                    "estimated_cost": 0.0,
                 },
                 normalization_policy_revision=1,
                 revision=1,
@@ -264,7 +270,6 @@ async def main() -> None:
         decision,
         tuple(_capability(value.action_id) for value in operations),
         budget=_budget(),
-        allowed_value_refs=frozenset({"incident.trace_id"}),
     )
     store = PostgresInvestigationStore(AsyncSessionLocal)
     executor = ArtifactExecutor(investigation_id)
@@ -273,6 +278,9 @@ async def main() -> None:
     assert [value.status for value in first.results] == ["succeeded", "failed"]
     calls_after_first = list(executor.calls)
     state_after_first = await store.load_state(investigation_id)
+    assert state_after_first.attempted_fingerprints == frozenset(
+        operation.fingerprint for operation in operations
+    )
     replay = await coordinator.execute(investigation_id, evaluated)
     state_after_replay = await store.load_state(investigation_id)
     assert executor.calls == calls_after_first
@@ -332,7 +340,7 @@ async def main() -> None:
         )
     assert len(projection.relations) == 1
 
-    lease_time = datetime(2026, 8, 27, 11, 0, tzinfo=UTC)
+    lease_time = datetime.now(UTC)
     async with AsyncSessionLocal() as session:
         earliest = (
             await session.execute(select(func.min(InvestigationJob.available_at)))
@@ -383,6 +391,15 @@ async def main() -> None:
     )
     reclaimed = await second_lease.claim(now=lease_time + timedelta(seconds=31))
     assert reclaimed is not None and reclaimed.investigation_id == investigation_id
+    await store.finish_investigation(
+        investigation_id,
+        result_state="insufficient",
+        reason="verification_fixture_finished",
+    )
+    assert await second_lease.heartbeat(
+        reclaimed.job_id,
+        now=lease_time + timedelta(seconds=32),
+    )
 
     async with AsyncSessionLocal() as session:
         job = (
@@ -445,7 +462,12 @@ async def main() -> None:
                 .all()
             ),
         }
-        assert job.status == "running" and job.claimed_by == "worker:second"
+        assert (
+            job.status == "running"
+            and job.phase == "reporting"
+            and job.claimed_by == "worker:second"
+        )
+        assert run.status == "reporting" and run.result_state == "insufficient"
         assert run.lease_owner == "worker:second"
         assert recovered_operation.status == "interrupted"
         assert recovered_step.status == "interrupted"
@@ -458,11 +480,65 @@ async def main() -> None:
                     "provider_calls_after_replay": len(executor.calls),
                     "replay_budget_stable": True,
                     "lease_reclaimed": True,
+                    "terminal_heartbeat_preserved": True,
                 },
                 indent=2,
                 sort_keys=True,
             )
         )
+    try:
+        await second_lease.complete(reclaimed.job_id)
+    except RuntimeError as exc:
+        assert str(exc) == "investigation job cannot complete before report publication"
+    else:
+        raise AssertionError("report publication must precede job completion")
+    assert await second_lease.reclaim_expired(
+        now=lease_time + timedelta(seconds=63)
+    ) >= 1
+    third_lease = InvestigationLeaseStore(
+        AsyncSessionLocal, owner="worker:third", lease_ttl_seconds=30
+    )
+    reporting_claim = await third_lease.claim(now=lease_time + timedelta(seconds=63))
+    assert (
+        reporting_claim is not None
+        and reporting_claim.investigation_id == investigation_id
+        and reporting_claim.phase == "reporting"
+    )
+    async with AsyncSessionLocal() as session:
+        report_value = {
+            "result_state": "insufficient",
+            "headline": "Investigation evidence was insufficient",
+            "summary": "The orchestration fixture completed without a supported conclusion.",
+            "incident_cause": {"status": "not_found"},
+            "code_diagnosis": {"status": "not_found"},
+            "participants": [],
+            "timeline_summary": [],
+            "source_assessments": [],
+            "configuration_assessments": [],
+            "confirmed_facts": [],
+            "counter_evidence": [],
+            "evidence_gaps": ["verification_fixture"],
+            "next_step": "Collect additional evidence.",
+        }
+        session.add(
+            InvestigationReport(
+                investigation_id=investigation_id,
+                synthesizer_invocation_id=None,
+                verifier_invocation_id=None,
+                report_hash=canonical_hash(report_value),
+                **report_value,
+            )
+        )
+        run = await session.get(Investigation, investigation_id)
+        run.status = "completed"
+        run.finished_at = datetime.now(UTC)
+        await session.commit()
+    await third_lease.complete(reporting_claim.job_id)
+    async with AsyncSessionLocal() as session:
+        completed_job = await session.get(InvestigationJob, reclaimed.job_id)
+        completed_run = await session.get(Investigation, investigation_id)
+        assert completed_job.status == "completed" and completed_job.claimed_by is None
+        assert completed_run.lease_owner is None and completed_run.lease_expires_at is None
     await engine.dispose()
 
 

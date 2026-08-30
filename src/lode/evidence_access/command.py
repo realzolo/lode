@@ -29,6 +29,29 @@ class CommandPolicy:
     parser_version = "rg-fixed-search.1"
     policy_version = "isolated-command.1"
 
+    def generation_contract(
+        self,
+        *,
+        scope_config: Mapping[str, object],
+        schema_catalog: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        working_sets = schema_catalog.get("working_sets", {})
+        return {
+            "payload_shape": {
+                "executable": "/usr/bin/rg",
+                "argv": ["--fixed-strings", "--", "<exact-sentinel>", "<one-file>"],
+                "working_set_id": "string",
+            },
+            "command_capabilities": scope_config.get("command_capabilities", {}),
+            "working_set_ids": sorted(working_sets) if isinstance(working_sets, Mapping) else [],
+            "rules": [
+                "Use exactly the fixed argv shape shown in payload_shape.",
+                "Use one working_set_id and one file from the frozen working_sets catalog.",
+                "Copy one exact ValueRef sentinel into argv position 2.",
+                "Never add options, shell syntax, paths outside the working set, or another executable.",
+            ],
+        }
+
     def parse(self, candidate: NativeReadCandidateInput) -> ParsedNativeAction:
         if not isinstance(candidate.payload, CommandPayload):
             raise AccessRejection("invalid_syntax", "command requires executable and argv")

@@ -11,6 +11,7 @@ import type {
   InvestigationOverview,
   InvestigationSummary,
   ModelBinding,
+  ModelBindingCreateInput,
   ProviderAccountModel,
   ProviderModelCatalogItem,
   ProviderModelDiscovery,
@@ -202,7 +203,7 @@ export function testProviderAccountModel(accountId: number, accountModelId: numb
 export function fetchModelBindings(workspaceId: number | string) {
   return get<ModelBinding[]>(`/workspaces/${workspaceId}/model-bindings`);
 }
-export function createModelBinding(workspaceId: number | string, input: Record<string, unknown>) {
+export function createModelBinding(workspaceId: number | string, input: ModelBindingCreateInput) {
   return send<ModelBinding>(`/workspaces/${workspaceId}/model-bindings`, 'POST', input);
 }
 export function publishModelPolicy(workspaceId: number | string, input: Record<string, unknown>) {

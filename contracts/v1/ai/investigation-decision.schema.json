@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lode.local/contracts/v1/ai/investigation-decision.schema.json",
-  "title": "investigation-decision.v1",
+  "title": "investigation-decision.v5",
   "type": "object",
   "additionalProperties": false,
   "required": ["decision", "hypotheses", "operations", "objective", "next_model_hint"],
@@ -9,6 +9,7 @@
     "decision": {"type": "string", "enum": ["continue", "finish"]},
     "hypotheses": {
       "type": "array",
+      "minItems": 1,
       "maxItems": 20,
       "items": {"$ref": "#/$defs/hypothesis"}
     },
@@ -17,7 +18,7 @@
       "maxItems": 4,
       "items": {"$ref": "#/$defs/operation"}
     },
-    "objective": {"type": "string", "minLength": 1},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 2000},
     "next_model_hint": {
       "oneOf": [
         {"type": "null"},
@@ -39,10 +40,10 @@
       "required": ["hypothesis_id", "mechanism", "supporting_evidence_refs", "counter_evidence_refs", "evidence_gaps", "confirmation_requested", "counter_evidence_unavailable"],
       "properties": {
         "hypothesis_id": {"type": "string", "pattern": "^h[1-9][0-9]{0,5}$"},
-        "mechanism": {"type": "string", "minLength": 1},
+        "mechanism": {"type": "string", "minLength": 1, "maxLength": 2000},
         "supporting_evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
         "counter_evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
-        "evidence_gaps": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "evidence_gaps": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
         "confirmation_requested": {"type": "boolean"},
         "counter_evidence_unavailable": {"type": "boolean"}
       }
@@ -60,20 +61,18 @@
         "selection_reason",
         "estimated_cost",
         "stop_condition",
-        "native_candidate",
         "depends_on"
       ],
       "properties": {
-        "action_id": {"type": "string", "minLength": 1},
-        "purpose": {"type": "string", "minLength": 1},
-        "expected_evidence": {"type": "string", "minLength": 1},
-        "evidence_anchors": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "action_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9:._-]{0,199}$"},
+        "purpose": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "expected_evidence": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "evidence_anchors": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
         "supports_hypotheses": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "refutes_hypotheses": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "selection_reason": {"type": "string", "minLength": 1},
+        "selection_reason": {"type": "string", "minLength": 1, "maxLength": 2000},
         "estimated_cost": {"type": "number", "minimum": 0},
-        "stop_condition": {"type": "string", "minLength": 1},
-        "native_candidate": {"type": ["object", "null"]},
+        "stop_condition": {"type": "string", "minLength": 1, "maxLength": 2000},
         "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}}
       }
     },
@@ -88,7 +87,7 @@
         },
         "execution_class": {"type": "string", "enum": ["latency_optimized", "reasoning_optimized"]},
         "required_context_tokens": {"type": "integer", "minimum": 1},
-        "reason": {"type": "string", "minLength": 1}
+        "reason": {"type": "string", "minLength": 1, "maxLength": 2000}
       }
     }
   }

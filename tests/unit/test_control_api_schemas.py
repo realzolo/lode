@@ -11,9 +11,9 @@ from lode.api.control_schemas import (
     ConnectorCreate,
     GitAccountCreate,
     ModelBindingInput,
-    ProviderAccountModelSelection,
     ModelPolicyInput,
     PlatformSettingsUpdate,
+    ProviderAccountModelSelection,
     ProviderAccountPatch,
     RepositoryBind,
     RepositoryBindingPatch,
@@ -28,17 +28,50 @@ def system_ca_pem() -> str:
     return ssl.DER_cert_to_PEM_cert(certificate)
 
 
-def test_model_binding_rejects_duplicate_roles() -> None:
-    values = {
+def model_binding_values() -> dict:
+    return {
         "provider_account_model_id": 1,
         "execution_classes": ["latency_optimized"],
-        "allowed_roles": ["planner", "planner"],
+        "allowed_roles": ["planner"],
         "max_calls": 2,
         "max_cost_per_call": 1,
         "timeout_ms": 1_000,
-        "allowed_data_classes": ["masked_operational"],
+        "allowed_data_classes": ["masked"],
         "max_context_utilization": 0.8,
     }
+
+
+def test_model_binding_rejects_duplicate_roles() -> None:
+    values = model_binding_values()
+    values["allowed_roles"] = ["planner", "planner"]
+    with pytest.raises(ValidationError):
+        ModelBindingInput.model_validate(values)
+
+
+def test_model_binding_rejects_unknown_data_class() -> None:
+    values = model_binding_values()
+    values["allowed_data_classes"] = ["masked_operational"]
+    with pytest.raises(ValidationError):
+        ModelBindingInput.model_validate(values)
+
+
+def test_model_binding_accepts_runtime_data_classes() -> None:
+    values = model_binding_values()
+    values["allowed_data_classes"] = ["masked", "source_code", "internal", "restricted"]
+
+    binding = ModelBindingInput.model_validate(values)
+
+    assert binding.model_dump(mode="json")["allowed_data_classes"] == [
+        "masked",
+        "source_code",
+        "internal",
+        "restricted",
+    ]
+
+
+def test_model_binding_rejects_duplicate_data_classes() -> None:
+    values = model_binding_values()
+    values["allowed_data_classes"] = ["masked", "masked"]
     with pytest.raises(ValidationError):
         ModelBindingInput.model_validate(values)
 

@@ -91,7 +91,11 @@
   "required_triggers": {
     "ai_invocations": ["trg_ai_invocations_context"],
     "authorized_evidence_reads": ["trg_authorized_evidence_reads_allow"],
-    "evidence_access_scopes": ["trg_evidence_access_scopes_secret_free"],
+    "evidence_access_scopes": [
+      "trg_evidence_access_scopes_budget_canonical",
+      "trg_evidence_access_scopes_secret_free",
+      "trg_evidence_access_scopes_sql_dialect"
+    ],
     "evidence_connectors": ["trg_evidence_connectors_secret_free"],
     "evidence_read_attempts": ["trg_evidence_read_attempts_authorization"],
     "investigation_code_findings": ["trg_investigation_code_findings_anchor"],

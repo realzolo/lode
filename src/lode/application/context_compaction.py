@@ -8,9 +8,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field, field_validator
 
 from lode.domain.model_execution import ContextEvidence
+from lode.structured_output import StrictResponseModel, parse_json_document
 
 _STABLE_SCALAR = re.compile(
     r"(?:\b\d+(?:\.\d+)?\b|\b[0-9a-f]{40}\b|\b[0-9a-f]{64}\b|"
@@ -19,14 +20,27 @@ _STABLE_SCALAR = re.compile(
 )
 
 
-class ContextSummaryPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    summary: Mapping[str, Any]
+class ContextSummaryPayload(StrictResponseModel):
+    summary_json: str = Field(max_length=256 * 1024)
     input_evidence_refs: tuple[int, ...] = Field(min_length=1)
     covered_claim_refs: tuple[int, ...]
     retained_counter_evidence_refs: tuple[int, ...]
     omitted_evidence_refs: tuple[int, ...]
+
+    @field_validator("summary_json")
+    @classmethod
+    def summary_is_a_json_object(cls, value: str) -> str:
+        decoded = parse_json_document(value)
+        if not isinstance(decoded, dict):
+            raise ValueError("context summary must be a JSON object")
+        return value
+
+    @property
+    def summary(self) -> Mapping[str, Any]:
+        decoded = parse_json_document(self.summary_json)
+        if not isinstance(decoded, dict):
+            raise TypeError("context summary must be a JSON object")
+        return decoded
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +92,7 @@ class ContextSummaryValidator:
 
 
 def context_summary_json_schema() -> dict[str, Any]:
-    return ContextSummaryPayload.model_json_schema()
+    return ContextSummaryPayload.response_json_schema()
 
 
 def _plain(value: Any) -> Any:

@@ -19,7 +19,7 @@ def state() -> InvestigationState:
         evidence_refs=(1,),
         evidence_anchors=("incident.trace_id",),
         allowed_value_refs=frozenset({"incident.trace_id"}),
-        completed_fingerprints=frozenset(),
+        attempted_fingerprints=frozenset(),
         budget=DecisionBudget(10, 8, 1_000_000, 10, 100_000),
         state_packet={},
     )
@@ -73,7 +73,6 @@ def payload() -> dict:
                 "selection_reason": "The trace is the strongest available anchor",
                 "stop_condition": "Stop after the bounded trace window",
                 "estimated_cost": 0.1,
-                "native_candidate": {"schema_version": "native-read-candidate.v1"},
                 "depends_on": [],
             }
         ],
@@ -101,6 +100,32 @@ async def test_old_hypothesis_refs_field_is_rejected_without_compatibility() -> 
 async def test_model_cannot_supply_its_own_invocation_id() -> None:
     value = payload()
     value["model_invocation_id"] = 999
+
+    with pytest.raises(PlannerUnavailable, match="invalid_structured_output"):
+        await StructuredInvestigationPlanner(FakeModel(value)).decide(state(), ())
+
+
+async def test_planner_rejects_removed_native_candidate_field_without_compatibility() -> None:
+    value = payload()
+    value["operations"][0]["native_candidate"] = None
+
+    with pytest.raises(PlannerUnavailable, match="invalid_structured_output"):
+        await StructuredInvestigationPlanner(FakeModel(value)).decide(state(), ())
+
+
+async def test_old_opaque_native_candidate_field_is_rejected_without_compatibility() -> None:
+    value = payload()
+    value["operations"][0]["native_candidate_json"] = "{}"
+
+    with pytest.raises(PlannerUnavailable, match="invalid_structured_output"):
+        await StructuredInvestigationPlanner(FakeModel(value)).decide(state(), ())
+
+
+async def test_planner_rejects_empty_hypotheses_as_controlled_unavailability() -> None:
+    value = payload()
+    value["decision"] = "finish"
+    value["hypotheses"] = []
+    value["operations"] = []
 
     with pytest.raises(PlannerUnavailable, match="invalid_structured_output"):
         await StructuredInvestigationPlanner(FakeModel(value)).decide(state(), ())

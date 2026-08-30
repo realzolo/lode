@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Protocol
+from collections.abc import Mapping
+from typing import Protocol
 
 from lode.evidence_access.candidate import NativeReadCandidateInput
 from lode.evidence_access.types import (
@@ -18,6 +19,13 @@ class NativeLanguagePolicy(Protocol):
     parser_name: str
     parser_version: str
     policy_version: str
+
+    def generation_contract(
+        self,
+        *,
+        scope_config: Mapping[str, object],
+        schema_catalog: Mapping[str, object],
+    ) -> Mapping[str, object]: ...
 
     def parse(self, candidate: NativeReadCandidateInput) -> ParsedNativeAction: ...
 

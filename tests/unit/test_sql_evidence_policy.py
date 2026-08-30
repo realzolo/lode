@@ -87,6 +87,8 @@ def context(*, dialect: str = "postgres", required: bool = True) -> AccessContex
             "max_total_output_bytes": 200_000,
             "max_window_seconds": 3_600,
             "max_native_reads": 8,
+            "max_parallel_operations": 1,
+            "estimated_cost": 0.0,
         },
         investigation_window_start=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
         investigation_window_end=datetime(2026, 8, 26, 10, 0, tzinfo=UTC),
@@ -212,6 +214,20 @@ def test_sql_policy_requires_relevant_predicate_without_server_tenant_filter() -
     with pytest.raises(AccessRejection) as error:
         policy.evaluate(parsed, raw, context(required=False))
     assert error.value.code == "scope_violation"
+
+
+def test_sql_generation_contract_matches_the_positive_ast_subset() -> None:
+    access = context()
+    contract = SQLPolicy().generation_contract(
+        scope_config=access.scope_config,
+        schema_catalog=access.schema_catalog,
+    )
+
+    assert contract["dialect"] == "postgres"
+    assert contract["allowed_statement_modes"] == ["SELECT", "EXPLAIN SELECT"]
+    assert "Union" not in contract["allowed_ast_nodes"]
+    assert "UNION|INTERSECT|EXCEPT" in contract["forbidden_constructs"]
+    assert "schema_catalog" not in contract
 
 
 def test_sql_policy_uses_snapshot_mysql_dialect() -> None:
