@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from collections.abc import Mapping
 from typing import Any
@@ -19,13 +18,13 @@ from lode.db.models import (
     GitAccountCredentialRevision,
     GitAccountRepositoryAccess,
     GitRepository,
-    InvestigationDescriptorSnapshot,
     InvestigationArchitectureContextSnapshot,
+    InvestigationDescriptorSnapshot,
     InvestigationModelBindingSnapshot,
     InvestigationModelPolicySnapshot,
     InvestigationRepositorySnapshot,
-    ProviderAccountModel,
     ModelPolicyRevision,
+    ProviderAccountModel,
     RepositoryDescriptor,
     Workspace,
     WorkspaceArchitectureContextRevision,
@@ -33,24 +32,16 @@ from lode.db.models import (
     WorkspaceRepositoryBinding,
 )
 from lode.git_accounts import credential_identity_hash, decode_credential_secret
-from lode.infrastructure.git_source import (
-    GitCredentialMaterial,
-    GitRemoteRevisionResolver,
-    GitRevisionResolver,
-)
-from lode.model_catalog import require_model
 from lode.masking import mask_structure
+from lode.model_catalog import require_model
 
 
 class InvestigationControlSnapshotStore:
     def __init__(
         self,
         session: AsyncSession,
-        *,
-        revision_resolver: GitRevisionResolver | None = None,
     ) -> None:
         self.session = session
-        self.revision_resolver = revision_resolver or GitRemoteRevisionResolver(timeout_seconds=2.0)
 
     async def freeze(
         self,
@@ -58,9 +49,15 @@ class InvestigationControlSnapshotStore:
         investigation_id: int,
         workspace_id: int,
         incident_source_revision: str | None,
+        incident_source_type: str,
     ) -> None:
         await self._freeze_architecture_context(investigation_id, workspace_id)
-        await self._freeze_repositories(investigation_id, workspace_id, incident_source_revision)
+        await self._freeze_repositories(
+            investigation_id,
+            workspace_id,
+            incident_source_revision,
+            incident_source_type,
+        )
         await self._freeze_models(investigation_id, workspace_id)
 
     async def _freeze_architecture_context(
@@ -96,6 +93,7 @@ class InvestigationControlSnapshotStore:
         investigation_id: int,
         workspace_id: int,
         incident_source_revision: str | None,
+        incident_source_type: str,
     ) -> None:
         active_binding_ids = set(
             (
@@ -122,8 +120,7 @@ class InvestigationControlSnapshotStore:
                     )
                     .join(
                         GitAccount,
-                        GitAccount.id
-                        == WorkspaceRepositoryBinding.account_connection_id,
+                        GitAccount.id == WorkspaceRepositoryBinding.account_connection_id,
                     )
                     .join(
                         GitAccountCredentialRevision,
@@ -151,7 +148,7 @@ class InvestigationControlSnapshotStore:
         )
         if {binding.id for binding, _, _, _ in rows} != active_binding_ids:
             raise ValueError("an active repository binding is no longer authorized")
-        credentials: dict[int, tuple[int, int, str, GitCredentialMaterial]] = {}
+        credentials: dict[int, tuple[int, int, str]] = {}
         for binding, _, connection, revision in rows:
             try:
                 plaintext = decrypt_secret(revision.secret_ciphertext)
@@ -164,69 +161,51 @@ class InvestigationControlSnapshotStore:
                 connection.id,
                 revision.id,
                 revision.credential_identity_hash,
-                GitCredentialMaterial("https", secret.username, secret.token),
             )
-
-        exact_results = await asyncio.gather(
-            *(
-                self._resolve_exact(
-                    repository, credentials[binding.id], incident_source_revision
-                )
-                for binding, repository, _, _ in rows
-                if binding.role == "runtime_source" and incident_source_revision is not None
-            )
-        )
-        runtime_rows = [
-            (binding, repository)
-            for binding, repository, _, _ in rows
-            if binding.role == "runtime_source" and incident_source_revision is not None
+        alert_sources = [
+            binding
+            for binding, _, _, _ in rows
+            if binding.is_alert_source and binding.analysis_mode == "code"
         ]
-        exact_binding_ids = {
-            binding.id
-            for (binding, _), resolved in zip(runtime_rows, exact_results, strict=True)
-            if resolved == incident_source_revision
-        }
-        branch_rows = [
-            (binding, repository)
-            for binding, repository, _, _ in rows
-            if binding.id not in exact_binding_ids
-        ]
-        branch_results = await asyncio.gather(
-            *(
-                self._resolve_branch(binding, repository, credentials[binding.id])
-                for binding, repository in branch_rows
+        if (
+            incident_source_type == "kafka"
+            and incident_source_revision is not None
+            and len(alert_sources) != 1
+        ):
+            raise ValueError(
+                "an investigation source revision requires one alert source repository"
             )
-        )
-        branch_by_binding = {
-            binding.id: resolved
-            for (binding, _), resolved in zip(branch_rows, branch_results, strict=True)
-        }
 
         for binding, repository, _, _ in rows:
-            connection_id, credential_revision_id, credential_hash, _ = credentials[binding.id]
-            if binding.id in exact_binding_ids:
-                candidate_sha = incident_source_revision
-                revision_role = "incident_source"
-                resolution_status = "exact" if len(exact_binding_ids) == 1 else "unverified"
+            connection_id, credential_revision_id, credential_hash = credentials[binding.id]
+            if (
+                incident_source_type == "kafka"
+                and binding.is_alert_source
+                and incident_source_revision is not None
+            ):
+                revision_sha = incident_source_revision
+                revision_policy = "alert_revision"
+                revision_authority = "authoritative"
             else:
-                candidate_sha = branch_by_binding.get(binding.id)
-                revision_role = "repository_search_candidate"
-                resolution_status = "unverified" if candidate_sha else "unresolved"
+                revision_sha = None
+                revision_policy = "bound_branch_head"
+                revision_authority = "pending"
             payload = {
                 "repository_binding_id": binding.id,
                 "repository_id": repository.id,
                 "account_connection_id": connection_id,
                 "credential_revision_id": credential_revision_id,
                 "binding_revision": binding.revision,
-                "role": binding.role,
+                "analysis_mode": binding.analysis_mode,
+                "is_alert_source": binding.is_alert_source,
                 "priority": binding.priority,
                 "repo_url": repository.repo_url,
                 "default_branch": repository.default_branch,
                 "branch_mode": binding.branch_mode,
                 "selected_branch": _effective_branch(binding, repository),
-                "frozen_candidate_sha": candidate_sha,
-                "frozen_revision_role": revision_role,
-                "frozen_resolution_status": resolution_status,
+                "frozen_revision_sha": revision_sha,
+                "revision_policy": revision_policy,
+                "revision_authority": revision_authority,
                 "repository_identity_hash": canonical_hash(
                     {
                         "repository_id": repository.id,
@@ -273,35 +252,6 @@ class InvestigationControlSnapshotStore:
                     )
                 )
 
-    async def _resolve_exact(
-        self,
-        repository: GitRepository,
-        credential: tuple[int, int, str, GitCredentialMaterial],
-        revision: str,
-    ) -> str | None:
-        try:
-            return await self.revision_resolver.resolve_revision(
-                repo_url=repository.repo_url,
-                revision=revision,
-                credential=credential[3],
-            )
-        except (OSError, RuntimeError, ValueError):
-            return None
-
-    async def _resolve_branch(
-        self,
-        binding: WorkspaceRepositoryBinding,
-        repository: GitRepository,
-        credential: tuple[int, int, str, GitCredentialMaterial],
-    ) -> str | None:
-        try:
-            return await self.revision_resolver.resolve_branch(
-                repo_url=repository.repo_url,
-                branch=_effective_branch(binding, repository),
-                credential=credential[3],
-            )
-        except (OSError, RuntimeError, ValueError):
-            return None
     async def _freeze_models(self, investigation_id: int, workspace_id: int) -> None:
         workspace = await self.session.get(Workspace, workspace_id)
         if workspace is None or workspace.model_policy_revision_id is None:
@@ -367,14 +317,20 @@ class InvestigationControlSnapshotStore:
         for binding in bindings:
             if binding.revision != eligible_bindings[binding.id]:
                 raise ValueError("eligible model binding revision changed")
-            deployment = await self.session.get(ProviderAccountModel, binding.provider_account_model_id)
+            deployment = await self.session.get(
+                ProviderAccountModel, binding.provider_account_model_id
+            )
             if deployment is None:
                 raise ValueError("model binding deployment is missing")
             provider = await self.session.get(AIProviderAccount, deployment.provider_account_id)
             if provider is None:
                 raise ValueError("account model provider is missing")
-            provider_kind = "anthropic" if provider.protocol_id == "anthropic.messages.v1" else "openai"
-            profile = require_model(provider_kind, provider.protocol_id, deployment.provider_model_id)
+            provider_kind = (
+                "anthropic" if provider.protocol_id == "anthropic.messages.v1" else "openai"
+            )
+            profile = require_model(
+                provider_kind, provider.protocol_id, deployment.provider_model_id
+            )
             if (
                 deployment.catalog_revision != profile.catalog_revision
                 or deployment.catalog_profile_hash != profile.profile_hash

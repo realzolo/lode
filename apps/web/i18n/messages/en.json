@@ -310,6 +310,10 @@
     "provider": "Provider",
     "remote": "Remote",
     "role": "Role",
+    "analysisMode": "Analysis mode",
+    "alertSource": "Alert source repository",
+    "yes": "Yes",
+    "no": "No",
     "branch": "Branch",
     "addConnector": "Add connector",
     "noConnectors": "No evidence connectors are configured yet.",
@@ -328,9 +332,7 @@
     "create": "Create",
     "addReadOnlyRepository": "Add read-only repository",
     "defaultBranch": "Default branch",
-    "runtimeSource": "Runtime source",
-    "sharedLibrary": "Shared library",
-    "infrastructure": "Infrastructure",
+    "codeAnalysis": "Code",
     "documentation": "Documentation",
     "addEvidenceConnector": "Add evidence connector",
     "connectorBasicInformation": "Basic information",
@@ -650,7 +652,7 @@
     },
     "operationKinds": {"model": "Model call", "source_read": "Source read", "native_read": "Native read", "snapshot": "Snapshot", "validation": "Validation", "synthesis": "Synthesis"},
     "evidenceKinds": {"source_file": "Source file", "normalized_log_result": "Log result", "normalized_search_result": "Search result", "normalized_sql_result": "SQL result", "normalized_https_result": "HTTPS result", "normalized_command_result": "Command result"},
-    "evidenceClasses": {"runtime": "Runtime", "incident_source": "Incident source", "repository_search_candidate": "Repository candidate", "runtime_identified": "Runtime identified"}
+    "evidenceClasses": {"runtime": "Runtime", "alert_revision": "Alert revision", "bound_branch_head": "Bound branch HEAD", "runtime_observed": "Runtime observed"}
   },
   "login": {
     "title": "Welcome back",

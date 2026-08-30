@@ -179,9 +179,9 @@ SOURCE_RESOLUTION = Counter(
     ["status"],
 )
 
-SOURCE_MISMATCH = Counter(
-    "lode_runtime_source_mismatch_total",
-    "Runtime source revision mismatches",
+SOURCE_INCOMPATIBILITY = Counter(
+    "lode_source_snapshot_incompatible_total",
+    "Explicit runtime revision conflicts and high-specificity source incompatibilities",
 )
 
 # --- LLM --------------------------------------------------------------------

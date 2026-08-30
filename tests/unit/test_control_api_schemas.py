@@ -268,9 +268,7 @@ def test_postgresql_creation_rejects_invalid_schema_scopes(allowed_schemas) -> N
         ("mysql", "-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----"),
     ],
 )
-def test_database_creation_rejects_invalid_ca_configuration(
-    kind: str, invalid_ca: str
-) -> None:
+def test_database_creation_rejects_invalid_ca_configuration(kind: str, invalid_ca: str) -> None:
     payload = {
         "name": "warehouse",
         "kind": kind,
@@ -365,7 +363,8 @@ def test_git_account_and_repository_binding_forms_require_complete_authorization
         {
             "account_connection_id": 1,
             "repository_id": 2,
-            "role": "runtime_source",
+            "analysis_mode": "code",
+            "is_alert_source": True,
         }
     )
     assert binding.repository_id == 2
@@ -376,25 +375,46 @@ def test_repository_branch_policy_requires_a_valid_fixed_branch() -> None:
         {
             "account_connection_id": 1,
             "repository_id": 2,
-            "role": "runtime_source",
+            "analysis_mode": "code",
+            "is_alert_source": True,
             "branch_mode": "branch",
             "branch_name": "release/2026.08",
         }
     )
     assert fixed.branch_name == "release/2026.08"
-    assert RepositoryBind.model_validate(
-        {"account_connection_id": 1, "repository_id": 2, "role": "runtime_source"}
-    ).branch_mode == "default"
+    assert (
+        RepositoryBind.model_validate(
+            {
+                "account_connection_id": 1,
+                "repository_id": 2,
+                "analysis_mode": "code",
+                "is_alert_source": False,
+            }
+        ).branch_mode
+        == "default"
+    )
     with pytest.raises(ValidationError):
         RepositoryBind.model_validate(
-            {"account_connection_id": 1, "repository_id": 2, "role": "runtime_source", "branch_mode": "branch"}
+            {
+                "account_connection_id": 1,
+                "repository_id": 2,
+                "analysis_mode": "code",
+                "is_alert_source": False,
+                "branch_mode": "branch",
+            }
         )
     with pytest.raises(ValidationError):
         RepositoryBind.model_validate(
-            {"account_connection_id": 1, "repository_id": 2, "role": "runtime_source", "branch_name": "main"}
+            {
+                "account_connection_id": 1,
+                "repository_id": 2,
+                "analysis_mode": "code",
+                "is_alert_source": False,
+                "branch_name": "main",
+            }
         )
     with pytest.raises(ValidationError):
-        RepositoryBindingPatch.model_validate({"role": "runtime_source"})
+        RepositoryBindingPatch.model_validate({"analysis_mode": "code"})
 
 
 def test_provider_patch_rejects_removed_organization_and_project_fields() -> None:
@@ -423,19 +443,26 @@ def test_entity_ids_are_positive_javascript_safe_integers() -> None:
                 {
                     "account_connection_id": value,
                     "repository_id": 1,
-                    "role": "runtime_source",
+                    "analysis_mode": "code",
+                    "is_alert_source": True,
                 }
             )
 
 
 def test_ai_output_language_is_a_closed_set() -> None:
-    assert PlatformSettingsUpdate(ai_output_language="zh", expected_revision=1).ai_output_language == "zh"
+    assert (
+        PlatformSettingsUpdate(ai_output_language="zh", expected_revision=1).ai_output_language
+        == "zh"
+    )
     with pytest.raises(ValidationError):
         PlatformSettingsUpdate(ai_output_language="ja", expected_revision=1)
 
 
 def test_workspace_topic_patch_is_trimmed_and_nonblank() -> None:
-    assert WorkspacePatch(ingestion_topic=" incident.checkout.v2 ").ingestion_topic == "incident.checkout.v2"
+    assert (
+        WorkspacePatch(ingestion_topic=" incident.checkout.v2 ").ingestion_topic
+        == "incident.checkout.v2"
+    )
     with pytest.raises(ValidationError):
         WorkspacePatch(ingestion_topic="  ")
 

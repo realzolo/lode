@@ -93,7 +93,8 @@ async def main() -> None:
                 workspace_id=workspace.id,
                 repository_id=repository.id,
                 account_connection_id=account_connection_id,
-                role="runtime_source",
+                analysis_mode="code",
+                is_alert_source=True,
                 priority=0,
                 description="Seed runtime source",
             )

@@ -310,6 +310,10 @@
     "provider": "提供商",
     "remote": "远程地址",
     "role": "角色",
+    "analysisMode": "分析模式",
+    "alertSource": "告警主仓库",
+    "yes": "是",
+    "no": "否",
     "branch": "分支",
     "addConnector": "添加连接器",
     "noConnectors": "尚未配置证据连接器。",
@@ -328,9 +332,7 @@
     "create": "创建",
     "addReadOnlyRepository": "添加只读仓库",
     "defaultBranch": "默认分支",
-    "runtimeSource": "运行时代码",
-    "sharedLibrary": "共享库",
-    "infrastructure": "基础设施",
+    "codeAnalysis": "代码",
     "documentation": "文档",
     "addEvidenceConnector": "添加证据连接器",
     "connectorBasicInformation": "基本信息",
@@ -650,7 +652,7 @@
     },
     "operationKinds": {"model": "模型调用", "source_read": "源码读取", "native_read": "原生数据读取", "snapshot": "快照", "validation": "验证", "synthesis": "结论合成"},
     "evidenceKinds": {"source_file": "源码文件", "normalized_log_result": "日志结果", "normalized_search_result": "搜索结果", "normalized_sql_result": "SQL 结果", "normalized_https_result": "HTTPS 结果", "normalized_command_result": "命令结果"},
-    "evidenceClasses": {"runtime": "运行时", "incident_source": "事件源码", "repository_search_candidate": "候选仓库", "runtime_identified": "运行时识别"}
+    "evidenceClasses": {"runtime": "运行时", "alert_revision": "告警版本", "bound_branch_head": "绑定分支 HEAD", "runtime_observed": "运行时观测"}
   },
   "login": {
     "title": "欢迎回来",

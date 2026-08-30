@@ -23,7 +23,7 @@ from lode.domain.types import (
     ModelRole,
     NativeLanguage,
     RelationKind,
-    RepositoryRole,
+    RepositoryAnalysisMode,
     ResolutionKind,
     ResolutionStatus,
     SourceBindingRole,
@@ -119,12 +119,8 @@ class ProviderAccount:
             "anthropic.messages.v1",
         }:
             raise DomainValidationError("unsupported_protocol", "model protocol is not supported")
-        if (
-            self.provider_kind == "openai"
-            and not self.protocol_id.startswith("openai.")
-        ) or (
-            self.provider_kind == "anthropic"
-            and self.protocol_id != "anthropic.messages.v1"
+        if (self.provider_kind == "openai" and not self.protocol_id.startswith("openai.")) or (
+            self.provider_kind == "anthropic" and self.protocol_id != "anthropic.messages.v1"
         ):
             raise DomainValidationError(
                 "provider_protocol_mismatch", "model protocol does not match provider"
@@ -253,7 +249,8 @@ class ModelPolicyRevision:
 class RepositoryBinding:
     workspace_id: int
     repository_id: int
-    role: RepositoryRole
+    analysis_mode: RepositoryAnalysisMode
+    is_alert_source: bool
     priority: int
     descriptor_revision: int
     description: str = ""
@@ -266,6 +263,10 @@ class RepositoryBinding:
             )
         if self.priority < 0:
             raise DomainValidationError("invalid_priority", "priority must be non-negative")
+        if self.is_alert_source and self.analysis_mode != RepositoryAnalysisMode.CODE:
+            raise DomainValidationError(
+                "invalid_alert_source", "alert source repository must use code analysis mode"
+            )
         if self.description != self.description.strip():
             raise DomainValidationError("invalid_text", "description must be trimmed")
 

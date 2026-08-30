@@ -84,7 +84,7 @@ def test_wave_operation_ordinal_enforces_four_operation_ceiling() -> None:
 
     assert "wave_ordinal BETWEEN 1 AND 4" in sql
     assert ("step_id", "wave_ordinal") in unique_columns
-    assert ("investigation_id", "fingerprint") in unique_columns
+    assert ("investigation_id", "fingerprint") not in unique_columns
 
 
 def test_connector_snapshot_freezes_health_and_freshness() -> None:
@@ -102,8 +102,11 @@ def test_repository_snapshot_freezes_location_and_identity() -> None:
     assert {
         "account_connection_id",
         "credential_revision_id",
-        "frozen_resolution_status",
-        "frozen_revision_role",
+        "analysis_mode",
+        "is_alert_source",
+        "frozen_revision_sha",
+        "revision_policy",
+        "revision_authority",
         "repo_url",
         "branch_mode",
         "selected_branch",
@@ -199,9 +202,11 @@ def test_model_invocation_always_references_route_and_context_bundle() -> None:
 
     assert not invocation.c.routing_decision_id.nullable
     assert not invocation.c.context_bundle_revision_id.nullable
-    assert {"provider_account_revision", "provider_account_model_revision", "execution_class"}.issubset(
-        invocation.c.keys()
-    )
+    assert {
+        "provider_account_revision",
+        "provider_account_model_revision",
+        "execution_class",
+    }.issubset(invocation.c.keys())
 
 
 def test_code_finding_requires_exact_source_anchor_when_causal() -> None:

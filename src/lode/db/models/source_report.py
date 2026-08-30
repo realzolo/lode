@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,27 +31,37 @@ class SourceRevision(CreatedAtMixin, Base):
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
     repository_snapshot_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("investigation_repository_snapshots.id", ondelete="RESTRICT"), nullable=False
+        BigInteger,
+        ForeignKey("investigation_repository_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
     )
-    revision_role: Mapped[str] = mapped_column(Text, nullable=False)
+    revision_origin: Mapped[str] = mapped_column(Text, nullable=False)
     requested_ref: Mapped[str | None] = mapped_column(Text)
     resolved_sha: Mapped[str | None] = mapped_column(Text)
-    resolution_status: Mapped[str] = mapped_column(Text, nullable=False)
+    authority_status: Mapped[str] = mapped_column(Text, nullable=False)
+    compatibility_status: Mapped[str] = mapped_column(Text, nullable=False)
     resolution_basis: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    source_artifact_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
-
     __table_args__ = (
         CheckConstraint(
-            "revision_role IN ('incident_source', 'repository_search_candidate', 'runtime_identified')",
-            name="revision_role",
+            "revision_origin IN ('alert_revision', 'bound_branch_head', 'runtime_observed')",
+            name="revision_origin",
         ),
         CheckConstraint(
-            "resolution_status IN ('exact', 'unverified', 'corroborated', 'contradicted', 'unresolved')",
-            name="resolution_status",
+            "authority_status IN ('authoritative', 'corroborated', 'contradicted', 'unavailable')",
+            name="authority_status",
         ),
-        CheckConstraint("resolved_sha IS NULL OR resolved_sha ~ '^[0-9a-f]{40}$'", name="resolved_sha"),
+        CheckConstraint(
+            "compatibility_status IN ('not_checked', 'compatible', 'incompatible')",
+            name="compatibility_status",
+        ),
+        CheckConstraint(
+            "resolved_sha IS NULL OR resolved_sha ~ '^[0-9a-f]{40}$'", name="resolved_sha"
+        ),
         UniqueConstraint(
-            "investigation_id", "repository_snapshot_id", "revision_role", "resolved_sha",
+            "investigation_id",
+            "repository_snapshot_id",
+            "revision_origin",
+            "resolved_sha",
             name="uq_source_revision",
         ),
     )
@@ -62,18 +83,25 @@ class SourceAssessment(CreatedAtMixin, Base):
     component_snapshot_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("investigation_component_snapshots.id", ondelete="SET NULL")
     )
-    runtime_match_status: Mapped[str] = mapped_column(Text, nullable=False)
+    authority_status: Mapped[str] = mapped_column(Text, nullable=False)
+    compatibility_status: Mapped[str] = mapped_column(Text, nullable=False)
     mismatch_reasons: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     evidence_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
     assessment_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
         CheckConstraint(
-            "runtime_match_status IN ('exact', 'unverified', 'corroborated', 'contradicted', 'unresolved')",
-            name="runtime_match_status",
+            "authority_status IN ('authoritative', 'corroborated', 'contradicted', 'unavailable')",
+            name="authority_status",
+        ),
+        CheckConstraint(
+            "compatibility_status IN ('not_checked', 'compatible', 'incompatible')",
+            name="compatibility_status",
         ),
         CheckConstraint("assessment_hash ~ '^[0-9a-f]{64}$'", name="assessment_hash_sha256"),
-        UniqueConstraint("investigation_id", "source_revision_id", name="uq_source_assessment_revision"),
+        UniqueConstraint(
+            "investigation_id", "source_revision_id", name="uq_source_assessment_revision"
+        ),
         UniqueConstraint("investigation_id", "assessment_hash", name="uq_source_assessment_hash"),
     )
 
@@ -96,7 +124,7 @@ class InvestigationCodeFinding(CreatedAtMixin, Base):
         BigInteger, ForeignKey("git_repositories.id", ondelete="RESTRICT")
     )
     revision: Mapped[str | None] = mapped_column(Text)
-    revision_role: Mapped[str | None] = mapped_column(Text)
+    revision_origin: Mapped[str | None] = mapped_column(Text)
     path: Mapped[str | None] = mapped_column(Text)
     symbol: Mapped[str | None] = mapped_column(Text)
     start_line: Mapped[int | None] = mapped_column(Integer)
@@ -121,9 +149,9 @@ class InvestigationCodeFinding(CreatedAtMixin, Base):
             name="status",
         ),
         CheckConstraint(
-            "revision_role IS NULL OR revision_role IN ('incident_source', "
-            "'repository_search_candidate', 'runtime_identified')",
-            name="revision_role",
+            "revision_origin IS NULL OR revision_origin IN ('alert_revision', "
+            "'bound_branch_head', 'runtime_observed')",
+            name="revision_origin",
         ),
         CheckConstraint("revision IS NULL OR revision ~ '^[0-9a-f]{40}$'", name="revision_sha"),
         CheckConstraint("start_line IS NULL OR start_line > 0", name="start_line_positive"),
@@ -196,12 +224,16 @@ class AIInvocation(CreatedAtMixin, Base):
         ),
         CheckConstraint("status IN ('succeeded', 'failed', 'unavailable')", name="status"),
         CheckConstraint("provider_account_revision > 0", name="account_revision_positive"),
-        CheckConstraint("provider_account_model_revision > 0", name="account_model_revision_positive"),
+        CheckConstraint(
+            "provider_account_model_revision > 0", name="account_model_revision_positive"
+        ),
         CheckConstraint("attempt_count > 0", name="attempt_count_positive"),
         CheckConstraint("latency_ms >= 0", name="latency_nonnegative"),
         CheckConstraint("context_hash ~ '^[0-9a-f]{64}$'", name="context_hash_sha256"),
         CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'", name="request_hash_sha256"),
-        CheckConstraint("response_hash IS NULL OR response_hash ~ '^[0-9a-f]{64}$'", name="response_hash_sha256"),
+        CheckConstraint(
+            "response_hash IS NULL OR response_hash ~ '^[0-9a-f]{64}$'", name="response_hash_sha256"
+        ),
         Index("ix_ai_invocations_run_role", "investigation_id", "role", "created_at"),
     )
 
@@ -231,7 +263,9 @@ class InvestigationReport(CreatedAtMixin, Base):
     verifier_invocation_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("ai_invocations.id", ondelete="RESTRICT")
     )
-    schema_version: Mapped[str] = mapped_column(Text, nullable=False, server_default="investigation-report.v1")
+    schema_version: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="investigation-report.v2"
+    )
     report_hash: Mapped[str] = mapped_column(Text, nullable=False)
     published_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -242,6 +276,6 @@ class InvestigationReport(CreatedAtMixin, Base):
             "result_state IN ('confirmed', 'hypothesis', 'insufficient', 'unavailable')",
             name="result_state",
         ),
-        CheckConstraint("schema_version = 'investigation-report.v1'", name="schema_version"),
+        CheckConstraint("schema_version = 'investigation-report.v2'", name="schema_version"),
         CheckConstraint("report_hash ~ '^[0-9a-f]{64}$'", name="report_hash_sha256"),
     )

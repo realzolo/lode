@@ -14,6 +14,7 @@ from lode.domain.investigation import (
     InvestigationDecision,
     PlannedOperation,
     PolicyDecision,
+    SourceQuery,
 )
 from lode.structured_output import StrictResponseModel
 
@@ -79,6 +80,7 @@ class OperationPayload(StrictResponseModel):
     stop_condition: BoundedText
     estimated_cost: float = Field(ge=0)
     depends_on: tuple[str, ...]
+    source_query: SourceQueryPayload | None
 
     @model_validator(mode="after")
     def candidate_is_valid(self):
@@ -97,6 +99,34 @@ class OperationPayload(StrictResponseModel):
             raise ValueError("operation must support or refute a hypothesis")
         for anchor in self.evidence_anchors:
             _require_trimmed(anchor, "evidence_anchors")
+        if self.action_id.startswith("source:") != (self.source_query is not None):
+            raise ValueError(
+                "source operations require source_query and other operations forbid it"
+            )
+        return self
+
+
+class SourceQueryPayload(StrictResponseModel):
+    terms: tuple[Annotated[str, Field(min_length=1, max_length=200)], ...] = Field(max_length=12)
+    symbols: tuple[Annotated[str, Field(min_length=1, max_length=200)], ...] = Field(max_length=12)
+    path_hints: tuple[Annotated[str, Field(min_length=1, max_length=200)], ...] = Field(
+        max_length=12
+    )
+    evidence_refs: tuple[PositiveEvidenceRef, ...] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def query_is_bounded(self):
+        for values, field_name in (
+            (self.terms, "terms"),
+            (self.symbols, "symbols"),
+            (self.path_hints, "path_hints"),
+            (self.evidence_refs, "evidence_refs"),
+        ):
+            _require_unique(values, field_name)
+        if not self.terms and not self.symbols and not self.path_hints:
+            raise ValueError("source_query requires a term, symbol, or path hint")
+        for value in (*self.terms, *self.symbols, *self.path_hints):
+            _require_trimmed(value, "source_query value")
         return self
 
 
@@ -169,6 +199,16 @@ class StructuredInvestigationPlanner:
                         stop_condition=value.stop_condition,
                         estimated_cost=value.estimated_cost,
                         depends_on=value.depends_on,
+                        source_query=(
+                            SourceQuery(
+                                terms=value.source_query.terms,
+                                symbols=value.source_query.symbols,
+                                path_hints=value.source_query.path_hints,
+                                evidence_refs=value.source_query.evidence_refs,
+                            )
+                            if value.source_query is not None
+                            else None
+                        ),
                     )
                     for value in payload.operations
                 ),

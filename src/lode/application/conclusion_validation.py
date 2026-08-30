@@ -35,27 +35,34 @@ class ConclusionValidator:
         code_status = (
             str(code.get("status", "not_found")) if isinstance(code, dict) else "not_found"
         )
-        reasons: list[str] = []
+        code_reasons: list[str] = []
         if code_status == "confirmed":
             if not any(item.permits_confirmed_code for item in source_assessments):
-                reasons.append("confirmed_source_authority_missing")
-            if any(item.status == "contradicted" for item in source_assessments):
-                reasons.append("runtime_source_contradicted")
+                code_reasons.append("confirmed_source_authority_missing")
+            if any(
+                item.authority_status == "contradicted"
+                or item.compatibility_status == "incompatible"
+                for item in source_assessments
+            ):
+                code_reasons.append("source_snapshot_incompatible")
+        if code_reasons:
+            code_status = "hypothesis"
+            if isinstance(code, dict):
+                code["status"] = "hypothesis"
         incident = normalized.get("incident_cause", {})
         incident_status = (
-            str(incident.get("status", "not_found"))
-            if isinstance(incident, dict)
-            else "not_found"
+            str(incident.get("status", "not_found")) if isinstance(incident, dict) else "not_found"
         )
+        conclusion_reasons: list[str] = []
         if result_state == "confirmed":
             if incident_status != "confirmed" and code_status != "confirmed":
-                reasons.append("confirmed_conclusion_anchor_missing")
+                conclusion_reasons.append("confirmed_conclusion_anchor_missing")
             if incident_status == "confirmed" and not incident.get("evidence_refs"):
-                reasons.append("confirmed_incident_evidence_missing")
+                conclusion_reasons.append("confirmed_incident_evidence_missing")
             if code_status == "confirmed" and (
                 not isinstance(code, dict) or not code.get("finding_refs")
             ):
-                reasons.append("confirmed_code_finding_missing")
+                conclusion_reasons.append("confirmed_code_finding_missing")
         if (
             isinstance(incident, dict)
             and incident_status == "confirmed"
@@ -65,12 +72,12 @@ class ConclusionValidator:
                 or any(item.status != "corroborated" for item in configuration_assessments)
             )
         ):
-            reasons.append("runtime_configuration_not_corroborated")
+            conclusion_reasons.append("runtime_configuration_not_corroborated")
         if (
             result_state == "confirmed" or code_status == "confirmed"
         ) and verifier_status != "approved":
-            reasons.append("independent_verifier_not_approved")
-        if reasons:
+            conclusion_reasons.append("independent_verifier_not_approved")
+        if conclusion_reasons:
             result_state = "hypothesis"
             if code_status == "confirmed":
                 code_status = "hypothesis"
@@ -80,7 +87,7 @@ class ConclusionValidator:
         return ConclusionValidationResult(
             result_state=result_state,
             code_status=code_status,
-            reasons=tuple(reasons),
+            reasons=(*code_reasons, *conclusion_reasons),
             report=normalized,
         )
 

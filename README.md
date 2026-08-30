@@ -4,7 +4,9 @@ Lode turns production incident alerts into evidence-backed incident causes and
 exact code diagnoses. It accepts the strict `incident.alert.v1` Kafka contract
 or authorized manual input, executes bounded read-only investigations, archives
 the complete evidence trail, and refuses to present a related source file as a
-confirmed defect without runtime-authoritative proof.
+confirmed defect without repository-scoped source authority. Independently
+verified runtime evidence may confirm an external service, configuration,
+network, or data cause without a code finding.
 
 The project is unreleased. It maintains one current architecture, one API, and
 one database baseline. There are no compatibility routes, schema adapters,
@@ -27,8 +29,8 @@ URLs, commands, paths, or credentials.
 Result states are:
 
 - `pending`: no terminal report exists.
-- `confirmed`: an incident-revision code finding passed structural authority
-  gates and independent semantic verification.
+- `confirmed`: an evidence-backed incident cause or authoritative code finding
+  passed independent semantic verification.
 - `hypothesis`: one supported mechanism remains to be validated.
 - `insufficient`: available evidence cannot support one cause.
 - `unavailable`: a required capability or strict output contract failed.
@@ -40,16 +42,25 @@ an exact resilience weakness.
 
 ## Source Authority
 
-A code finding references an immutable source artifact with repository ID, full
-SHA, repository role, path, symbol, and exact line bounds. `confirmed` requires
-the runtime-observed incident SHA and a stack, runtime, dependency, or archived
-alert link to the location. A missing, ambiguous, or unresolvable revision is an
-explicit evidence gap. The default branch never substitutes for incident code.
+A binding has two orthogonal fields: `analysis_mode` (`code` or
+`documentation`) and `is_alert_source`. Every Kafka-enabled Workspace has
+exactly one active code binding marked as the alert source. Build Units,
+Components, and identity aliases express service, gateway, Worker, library, and
+infrastructure semantics; bindings do not use repository roles.
 
-Repository search in other bound repositories produces candidates only. A
-candidate must independently establish its runtime revision and relationship to
-the incident before it can contribute to a confirmed conclusion. Configuration
-without runtime evidence cannot prove deployed behavior.
+Kafka `source_revision` is authoritative only for the alert-source repository
+and is frozen without a remote Git availability check. The first source read of
+any other code repository resolves and freezes its bound branch HEAD, which the
+Workspace contract treats as that repository's authoritative production
+revision. Only an explicit runtime SHA conflict or an evidence-grounded exact
+path/symbol incompatibility creates `source_snapshot_incompatible`. Generic
+absence of deployment-version proof is not an evidence gap.
+
+A code finding references a source artifact with repository ID, full SHA,
+revision origin, path, symbol, and exact line bounds. Source authority gates
+only findings for that repository. Reports include only repositories actually
+read or identified by runtime evidence; unrelated bindings do not generate
+assessments or gaps. Configuration claims still require runtime evidence.
 
 ## Workspaces And Models
 
@@ -59,10 +70,11 @@ resuming ingestion is allowed only when:
 1. the topic is configured;
 2. the active model policy covers planner, native query, synthesizer, verifier,
    and context compactor roles with healthy deployments;
-3. the broker confirms the topic is reachable.
+3. the broker confirms the topic is reachable;
+4. exactly one active code repository is marked as the alert source.
 
-Repository, ResourceGraph, and evidence capability gaps remain visible but do
-not block intake.
+Stale repository analysis and evidence capability gaps remain visible as
+warnings; a missing or ambiguous alert-source binding blocks Kafka activation.
 
 The topic can change while ingestion is draft or paused. A real change resets
 ingestion to draft, releases the old subscription, and requires a new explicit
@@ -85,6 +97,15 @@ PostgreSQL, MySQL, cataloged HTTPS reads, and an isolated command runner. Native
 candidate parsers and policies enforce scope, time, row, byte, cardinality,
 and cost limits before issuing a single-use signed authorization.
 
+The first Loki read that uses the sealed incident trace is server-expanded to
+the Connector root scope, so every allowed app participates in discovery. Loki
+archives complete scope coverage, returned apps, misses, truncation state,
+normalized business events, and a server-generated exact-trace correlation
+assertion without exposing the trace or an enumerable trace hash. Later reads
+may target a component identified by evidence. Native and source reads reuse
+only an identical effective full-query fingerprint; different queries against
+the same Connector or repository execute normally.
+
 PostgreSQL/MySQL adapters require read-only replicas and restricted roles. HTTPS
 uses canonical, redirect-free, byte-bounded transport. The command
 runner is a separate process and image with its own key, private network,
@@ -101,7 +122,8 @@ never returned. Evidence-read authorization and Runner signing use distinct keys
 Kafka input uses `incident.alert.v1`. Unknown fields are rejected. The topic,
 not the payload, selects the Workspace. `trace_id` is an opaque optional string
 and is preserved exactly in encrypted storage; source revision is a required
-full lowercase Git SHA used only for source resolution.
+full lowercase Git SHA authoritative only for the Workspace alert-source
+repository.
 
 ```json
 {
@@ -174,6 +196,14 @@ uv sync --all-extras
 uv run alembic upgrade head
 uv run python scripts/seed.py
 ```
+
+Migration `0010_evidence_authority` intentionally clears investigations,
+derived evidence/report/source/ResourceGraph data, and Workspace repository
+bindings. Rebind repositories with the new analysis-mode/alert-source model
+after upgrading. Active or paused ingestion returns to `draft` and must pass
+readiness again before starting. The migration preserves Workspace, Git
+catalogue/account, Connector, and model configuration and introduces no new
+dependency.
 
 Run processes individually with:
 

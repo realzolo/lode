@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lode.local/contracts/v1/ai/investigation-decision.schema.json",
-  "title": "investigation-decision.v5",
+  "title": "investigation-decision.v6",
   "type": "object",
   "additionalProperties": false,
   "required": ["decision", "hypotheses", "operations", "objective", "next_model_hint"],
@@ -61,7 +61,8 @@
         "selection_reason",
         "estimated_cost",
         "stop_condition",
-        "depends_on"
+        "depends_on",
+        "source_query"
       ],
       "properties": {
         "action_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9:._-]{0,199}$"},
@@ -73,7 +74,24 @@
         "selection_reason": {"type": "string", "minLength": 1, "maxLength": 2000},
         "estimated_cost": {"type": "number", "minimum": 0},
         "stop_condition": {"type": "string", "minLength": 1, "maxLength": 2000},
-        "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "source_query": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/sourceQuery"}
+          ]
+        }
+      }
+    },
+    "sourceQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["terms", "symbols", "path_hints", "evidence_refs"],
+      "properties": {
+        "terms": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+        "symbols": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+        "path_hints": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+        "evidence_refs": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "integer", "minimum": 1}}
       }
     },
     "modelHint": {

@@ -111,7 +111,8 @@ async def _repository_analysis_current(session: AsyncSession, workspace_id: int)
             "configuration_revision": binding.descriptor_revision,
             "repository_id": repository.id,
             "account_connection_id": binding.account_connection_id,
-            "role": binding.role,
+            "analysis_mode": binding.analysis_mode,
+            "is_alert_source": binding.is_alert_source,
             "branch_mode": binding.branch_mode,
             "effective_branch": binding.branch_name
             if binding.branch_mode == "branch"
@@ -586,6 +587,7 @@ class PostgresIntakeStore:
             investigation_id=investigation.id,
             workspace_id=workspace_id,
             incident_source_revision=incident.source_revision,
+            incident_source_type=incident.source_type,
         )
         await ConnectorSnapshotStore.freeze_in_session(self.session, investigation.id)
         job = InvestigationJob(investigation_id=investigation.id)

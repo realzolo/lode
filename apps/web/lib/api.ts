@@ -249,10 +249,10 @@ export function fetchRepositoryAnalysisIssues(workspaceId: number | string, jobI
   const suffix = after === undefined ? '' : `?after=${after}`;
   return get<import('./types').RepositoryAnalysisIssuePage>(`/workspaces/${workspaceId}/repository-analysis/${jobId}/issues${suffix}`);
 }
-export function bindRepository(workspaceId: number | string, input: { account_connection_id: number; repository_id: number; role: string; branch_mode?: 'default' | 'branch'; branch_name?: string | null; priority?: number; description?: string }) {
+export function bindRepository(workspaceId: number | string, input: { account_connection_id: number; repository_id: number; analysis_mode: 'code' | 'documentation'; is_alert_source: boolean; branch_mode?: 'default' | 'branch'; branch_name?: string | null; priority?: number; description?: string }) {
   return send<RepositoryBinding>(`/workspaces/${workspaceId}/repositories`, 'POST', input);
 }
-export function updateRepositoryBinding(workspaceId: number | string, bindingId: number, input: { expected_revision: number; role?: string; branch_mode?: 'default' | 'branch'; branch_name?: string | null; priority?: number; description?: string; state?: 'active' | 'disabled' }) {
+export function updateRepositoryBinding(workspaceId: number | string, bindingId: number, input: { expected_revision: number; analysis_mode?: 'code' | 'documentation'; is_alert_source?: boolean; branch_mode?: 'default' | 'branch'; branch_name?: string | null; priority?: number; description?: string; state?: 'active' | 'disabled' }) {
   return send<RepositoryBinding>(`/workspaces/${workspaceId}/repositories/${bindingId}`, 'PATCH', input);
 }
 export function disableRepositoryBinding(workspaceId: number | string, bindingId: number, expectedRevision: number) {

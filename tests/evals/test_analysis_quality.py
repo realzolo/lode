@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from lode.application.quality_evaluation import (
@@ -105,3 +108,22 @@ def test_false_confirmation_and_missing_provenance_block_release() -> None:
     assert "confirmed_evidence_reference_completeness_below_100_percent" in (
         result.release_gate_failures
     )
+
+
+def test_payssion_sandbox_regression_oracle_is_frozen() -> None:
+    corpus = Path(__file__).parents[2] / "evals" / "v1" / "gold-incidents.jsonl"
+    cases = [json.loads(line) for line in corpus.read_text().splitlines() if line.strip()]
+    case = next(
+        item
+        for item in cases
+        if item["case_id"] == "investigation-215272664893440-payssion-sandbox"
+    )
+
+    assert case["result_state"] == "confirmed"
+    assert case["cause_class"] == "external_service"
+    assert case["runtime_evidence_correlated"] is True
+    assert case["expected_loki_apps"] == ["pornbox", "payment-gateway", "sonakit"]
+    assert case["expected_repository"] == "ai-dol-team/aidol-payment-gateway"
+    assert case["expected_source_terms"] == ["Payssion", "createOrder", "pm_id", "result_code"]
+    assert case["expected_provider_result_code"] == "405"
+    assert case["expected_sandbox_method"] == "payssion_test"

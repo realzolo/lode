@@ -40,22 +40,18 @@ class DecisionPolicyEngine:
             return EvaluatedDecision(decision, "allow", (), (), 0.0, 0, 0)
 
         accepted: list[tuple[PlannedOperation, CapabilityEntry]] = []
-        seen_fingerprints: set[str] = set()
         for operation in decision.operations:
             entry = entries.get(operation.action_id)
             reason = self._operation_rejection(
                 operation,
                 entry,
                 hypothesis_ids=hypothesis_ids,
-                attempted_fingerprints=attempted_fingerprints,
-                seen_fingerprints=seen_fingerprints,
             )
             if reason is not None:
                 policy_log.append(reason)
                 continue
             assert entry is not None
             accepted.append((operation, entry))
-            seen_fingerprints.add(operation.fingerprint)
 
         resource_counts = Counter(entry.resource_key for _, entry in accepted)
         conflicts = {
@@ -178,8 +174,6 @@ class DecisionPolicyEngine:
         entry: CapabilityEntry | None,
         *,
         hypothesis_ids: set[str],
-        attempted_fingerprints: AbstractSet[str],
-        seen_fingerprints: set[str],
     ) -> PolicyDecision | None:
         if entry is None:
             return PolicyDecision("unknown_action", "trim", operation.action_id, {})
@@ -204,13 +198,6 @@ class DecisionPolicyEngine:
                 "trim",
                 operation.action_id,
                 {"depends_on": list(operation.depends_on)},
-            )
-        if operation.fingerprint in attempted_fingerprints | seen_fingerprints:
-            return PolicyDecision(
-                "duplicate_operation",
-                "trim",
-                operation.action_id,
-                {"fingerprint": operation.fingerprint},
             )
         return None
 

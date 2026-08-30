@@ -43,7 +43,8 @@ async def test_repository_analysis_job_claims_heartbeats_and_fails_durably() -> 
                     "configuration_revision": 1,
                     "repository_id": 2,
                     "account_connection_id": 3,
-                    "role": "runtime_source",
+                    "analysis_mode": "code",
+                    "is_alert_source": True,
                     "branch_mode": "default",
                     "effective_branch": "main",
                 }

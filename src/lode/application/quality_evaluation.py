@@ -142,16 +142,23 @@ def observation_from_oracle(record: Mapping[str, Any]) -> IncidentObservation:
     cause = _required_string(record, "incident_cause")
     verifier_required = bool(record.get("requires_verifier", False))
 
-    if cause == "not_found" and "model-contract-failure" in case_id:
-        actual = "unavailable"
-    elif cause == "not_found":
-        actual = "insufficient"
-    elif (
+    code_confirmed = (
         cause == "application_code"
         and source_status == "exact"
         and verifier_required
         and bool(record.get("has_counter_evidence"))
-    ):
+    )
+    external_confirmed = (
+        record.get("cause_class") == "external_service"
+        and record.get("runtime_evidence_correlated") is True
+        and verifier_required
+        and bool(record.get("has_counter_evidence"))
+    )
+    if cause == "not_found" and "model-contract-failure" in case_id:
+        actual = "unavailable"
+    elif cause == "not_found":
+        actual = "insufficient"
+    elif code_confirmed or external_confirmed:
         actual = "confirmed"
     else:
         actual = "hypothesis"
@@ -162,8 +169,14 @@ def observation_from_oracle(record: Mapping[str, Any]) -> IncidentObservation:
         actual_result_state=actual,
         cause_correct=actual == expected,
         causal_relation_correct=actual == expected,
-        evidence_references_complete=not is_confirmed or source_status == "exact",
-        version_gate_satisfied=not is_confirmed or source_status == "exact",
+        evidence_references_complete=(
+            not is_confirmed
+            or source_status == "exact"
+            or record.get("runtime_evidence_correlated") is True
+        ),
+        version_gate_satisfied=(
+            not is_confirmed or cause != "application_code" or source_status == "exact"
+        ),
         counter_evidence_gate_satisfied=(
             not is_confirmed or bool(record.get("has_counter_evidence"))
         ),

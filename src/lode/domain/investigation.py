@@ -193,6 +193,30 @@ class Hypothesis:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceQuery:
+    terms: tuple[str, ...]
+    symbols: tuple[str, ...]
+    path_hints: tuple[str, ...]
+    evidence_refs: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        _unique(self.terms, "source query terms", allow_empty=True)
+        _unique(self.symbols, "source query symbols", allow_empty=True)
+        _unique(self.path_hints, "source query path hints", allow_empty=True)
+        _unique(self.evidence_refs, "source query evidence refs")
+        if not self.terms and not self.symbols and not self.path_hints:
+            raise DomainValidationError(
+                "empty_source_query", "source query requires a term, symbol, or path hint"
+            )
+        for value in (*self.terms, *self.symbols, *self.path_hints):
+            _required(value, "source query value", maximum=200)
+        if any(value < 1 for value in self.evidence_refs):
+            raise DomainValidationError(
+                "invalid_reference", "source query evidence refs must be positive"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class PlannedOperation:
     action_id: str
     purpose: str
@@ -204,6 +228,7 @@ class PlannedOperation:
     stop_condition: str
     estimated_cost: float
     depends_on: tuple[str, ...] = field(default_factory=tuple)
+    source_query: SourceQuery | None = None
 
     def __post_init__(self) -> None:
         if _ACTION_ID.fullmatch(self.action_id) is None:
@@ -226,15 +251,15 @@ class PlannedOperation:
             )
         if self.estimated_cost < 0:
             raise DomainValidationError("invalid_estimate", "estimated_cost must be non-negative")
+        if self.action_id.startswith("source:") != (self.source_query is not None):
+            raise DomainValidationError(
+                "invalid_source_query",
+                "source operations require source_query and other operations forbid it",
+            )
 
     @property
     def fingerprint(self) -> str:
-        return canonical_hash(
-            {
-                "action_id": self.action_id,
-                "evidence_anchors": self.evidence_anchors,
-            }
-        )
+        return canonical_hash(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,9 +283,7 @@ class InvestigationDecision:
                 "invalid_decision", "continue decision requires one to four operations"
             )
         if self.model_invocation_id is not None and self.model_invocation_id < 1:
-            raise DomainValidationError(
-                "invalid_reference", "model_invocation_id must be positive"
-            )
+            raise DomainValidationError("invalid_reference", "model_invocation_id must be positive")
         object.__setattr__(self, "next_model_hint", _freeze(self.next_model_hint))
 
     @property
@@ -366,12 +389,19 @@ class NormalizedLogEvent:
         _required(self.provider_position, "provider_position", maximum=1_000)
         if len(self.raw_excerpt_masked) > 40_000:
             raise DomainValidationError("invalid_event", "raw excerpt exceeds the event budget")
-        value_hash = self.trace_match.get("value_hash")
-        location = self.trace_match.get("location")
-        if not isinstance(value_hash, str) or _SHA256.fullmatch(value_hash) is None:
-            raise DomainValidationError("invalid_trace_match", "trace value hash is invalid")
-        if not isinstance(location, str) or not location:
-            raise DomainValidationError("invalid_trace_match", "trace location is required")
+        if self.trace_match:
+            assertion_id = self.trace_match.get("assertion_id")
+            location = self.trace_match.get("location")
+            if (
+                not isinstance(assertion_id, int)
+                or isinstance(assertion_id, bool)
+                or assertion_id < 1
+            ):
+                raise DomainValidationError(
+                    "invalid_trace_match", "server correlation assertion is required"
+                )
+            if not isinstance(location, str) or not location:
+                raise DomainValidationError("invalid_trace_match", "trace location is required")
         for key in self.provider_metadata:
             if "." not in str(key):
                 raise DomainValidationError(

@@ -410,7 +410,9 @@ def _discovery_out(
     return ProviderModelDiscoveryOut(
         catalog_revision=CATALOG_REVISION,
         available_model_ids=tuple(model_id for model_id in discovered if model_id in supported),
-        unsupported_model_ids=tuple(model_id for model_id in discovered if model_id not in supported),
+        unsupported_model_ids=tuple(
+            model_id for model_id in discovered if model_id not in supported
+        ),
     )
 
 
@@ -420,9 +422,7 @@ async def _probe_model(
     *,
     api_key_ciphertext: str | None = None,
 ) -> tuple[bool, str | None]:
-    result = await _run_model_probe(
-        account, model_id, api_key_ciphertext=api_key_ciphertext
-    )
+    result = await _run_model_probe(account, model_id, api_key_ciphertext=api_key_ciphertext)
     return _model_probe_outcome(result)
 
 
@@ -634,9 +634,7 @@ async def get_provider_model_catalog(
     ]
 
 
-@router.post(
-    "/ai-provider-accounts/discover-models", response_model=ProviderModelDiscoveryOut
-)
+@router.post("/ai-provider-accounts/discover-models", response_model=ProviderModelDiscoveryOut)
 async def discover_unsaved_provider_models(
     payload: ProviderAccountConnectionInput,
     _: int = Depends(require_admin),
@@ -687,7 +685,9 @@ async def discover_saved_provider_models(
         models=tuple(
             ProviderModelSelectionItem(
                 provider_model_id=model.provider_model_id,
-                source=model.discovery_state if model.discovery_state != "missing" else "discovered",
+                source=model.discovery_state
+                if model.discovery_state != "missing"
+                else "discovered",
             )
             for model in current
         ),
@@ -892,7 +892,9 @@ async def test_provider_account_model(
         row.catalog_revision != profile.catalog_revision
         or row.catalog_profile_hash != profile.profile_hash
     ):
-        raise _error(409, "model_catalog_changed", "Resync the account model after catalog changes.")
+        raise _error(
+            409, "model_catalog_changed", "Resync the account model after catalog changes."
+        )
     result = await _run_model_probe(provider, row.provider_model_id)
     valid, error_code = _model_probe_outcome(result)
     row.availability_state = "healthy" if valid else "unavailable"
@@ -1099,7 +1101,9 @@ async def archive_investigation_as_admin(
     if row is None:
         raise _error(404, "investigation_not_found", "Investigation not found.")
     if row.status not in {"completed", "failed", "cancelled"}:
-        raise _error(409, "investigation_not_terminal", "Only a terminal investigation can archive.")
+        raise _error(
+            409, "investigation_not_terminal", "Only a terminal investigation can archive."
+        )
     if row.archived_at is not None:
         raise _error(409, "investigation_already_archived", "Investigation is already archived.")
     row.archived_at = datetime.now(UTC)
@@ -1128,7 +1132,9 @@ async def _broker_has_topic(topic: str) -> bool:
         await client.close()
 
 
-async def _workspace_readiness(session: AsyncSession, workspace: Workspace) -> WorkspaceReadinessOut:
+async def _workspace_readiness(
+    session: AsyncSession, workspace: Workspace
+) -> WorkspaceReadinessOut:
     checks: list[dict] = []
     topic_details: dict = {"topic": workspace.ingestion_topic}
     topic_ready = bool(workspace.ingestion_topic.strip())
@@ -1212,6 +1218,10 @@ async def _workspace_readiness(session: AsyncSession, workspace: Workspace) -> W
         ).scalars()
     )
     repository_count = len(active_repositories)
+    alert_sources = [
+        row for row in active_repositories if row.is_alert_source and row.analysis_mode == "code"
+    ]
+    alert_source_ready = len(alert_sources) == 1
     latest_analysis = (
         await session.execute(
             select(RepositoryAnalysisJob)
@@ -1233,9 +1243,13 @@ async def _workspace_readiness(session: AsyncSession, workspace: Workspace) -> W
     checks.append(
         {
             "code": "repositories",
-            "outcome": "passed" if analysis_current else "warning",
+            "outcome": (
+                "blocked" if not alert_source_ready else "passed" if analysis_current else "warning"
+            ),
             "details": {
                 "active_count": repository_count,
+                "alert_source_count": len(alert_sources),
+                "alert_source_binding_id": (alert_sources[0].id if alert_source_ready else None),
                 "analysis_current": analysis_current,
                 "analysis_job_id": None if latest_analysis is None else latest_analysis.id,
             },
@@ -1349,9 +1363,7 @@ async def start_ingestion(
     user, workspace = await _workspace_access(session, user_id, workspace_id, "admin")
     if workspace.ingestion_state != "draft":
         raise _error(409, "ingestion_transition_invalid", "Only draft ingestion can start.")
-    return await _set_ingestion(
-        session, user, workspace, "active", payload.start_position, "start"
-    )
+    return await _set_ingestion(session, user, workspace, "active", payload.start_position, "start")
 
 
 @router.post("/workspaces/{workspace_id}/ingestion/pause", response_model=WorkspaceOut)
@@ -1416,14 +1428,17 @@ async def put_workspace_architecture_context(
         select(Workspace).where(Workspace.id == workspace_id).with_for_update()
     )
     assert workspace is not None
-    revision = int(
-        await session.scalar(
-            select(func.coalesce(func.max(WorkspaceArchitectureContextRevision.revision), 0)).where(
-                WorkspaceArchitectureContextRevision.workspace_id == workspace_id
+    revision = (
+        int(
+            await session.scalar(
+                select(
+                    func.coalesce(func.max(WorkspaceArchitectureContextRevision.revision), 0)
+                ).where(WorkspaceArchitectureContextRevision.workspace_id == workspace_id)
             )
+            or 0
         )
-        or 0
-    ) + 1
+        + 1
+    )
     row = WorkspaceArchitectureContextRevision(
         workspace_id=workspace_id,
         entries=[item.model_dump() for item in payload.entries],
@@ -1725,7 +1740,8 @@ def _repository_out(
         branch_mode=binding.branch_mode,
         branch_name=binding.branch_name,
         effective_branch=_effective_branch(binding, repository),
-        role=binding.role,
+        analysis_mode=binding.analysis_mode,
+        is_alert_source=binding.is_alert_source,
         priority=binding.priority,
         description=binding.description,
         state=binding.state,
@@ -1746,7 +1762,8 @@ def _analysis_binding_snapshot(
         "configuration_revision": binding.descriptor_revision,
         "repository_id": repository.id,
         "account_connection_id": binding.account_connection_id,
-        "role": binding.role,
+        "analysis_mode": binding.analysis_mode,
+        "is_alert_source": binding.is_alert_source,
         "branch_mode": binding.branch_mode,
         "effective_branch": _effective_branch(binding, repository),
     }
@@ -1781,9 +1798,7 @@ async def _repository_analysis_out(
     )
 
 
-async def _git_account_out(
-    session: AsyncSession, row: GitAccount
-) -> GitAccountOut:
+async def _git_account_out(session: AsyncSession, row: GitAccount) -> GitAccountOut:
     repository_count = int(
         await session.scalar(
             select(func.count())
@@ -1813,6 +1828,8 @@ async def _git_account_out(
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
 async def _append_account_credential(
     session: AsyncSession,
     account: GitAccount,
@@ -1844,9 +1861,7 @@ async def _append_account_credential(
     return row
 
 
-async def _account_secret(
-    session: AsyncSession, account: GitAccount
-) -> GitAccountSecret:
+async def _account_secret(session: AsyncSession, account: GitAccount) -> GitAccountSecret:
     if account.current_credential_revision_id is None:
         raise ValueError("Git account credential is unavailable")
     revision = await session.get(
@@ -1976,7 +1991,9 @@ async def list_git_adapters(_: int = Depends(require_admin)):
 async def list_git_accounts(
     _: int = Depends(require_admin), session: AsyncSession = Depends(get_session)
 ):
-    rows = (await session.execute(select(GitAccount).order_by(GitAccount.adapter_id, GitAccount.name))).scalars()
+    rows = (
+        await session.execute(select(GitAccount).order_by(GitAccount.adapter_id, GitAccount.name))
+    ).scalars()
     return [await _git_account_out(session, row) for row in rows]
 
 
@@ -1990,7 +2007,9 @@ async def _create_git_account(
             adapter_id=adapter.id, api_url=api_url, token=payload.access_token
         )
     except (GitProviderError, ValueError) as exc:
-        code = exc.code if isinstance(exc, GitProviderError) else "git_account_configuration_invalid"
+        code = (
+            exc.code if isinstance(exc, GitProviderError) else "git_account_configuration_invalid"
+        )
         raise _error(422, code, "Git account verification failed.") from exc
     account = GitAccount(
         adapter_id=adapter.id,
@@ -2009,9 +2028,13 @@ async def _create_git_account(
         await session.flush()
     except IntegrityError as exc:
         await session.rollback()
-        raise _error(409, "git_account_conflict", "Git account already exists for this endpoint.") from exc
+        raise _error(
+            409, "git_account_conflict", "Git account already exists for this endpoint."
+        ) from exc
     username = "oauth2" if adapter.id in {"gitlab", "gitee"} else "x-access-token"
-    await _append_account_credential(session, account, username=username, token=payload.access_token)
+    await _append_account_credential(
+        session, account, username=username, token=payload.access_token
+    )
     job = await _sync_git_account(session, account)
     if job.state != "succeeded":
         await session.rollback()
@@ -2069,9 +2092,13 @@ async def rotate_git_account_token(
     except GitProviderError as exc:
         raise _error(422, exc.code, "Git account credential verification failed.") from exc
     if profile.external_id != account.external_account_id:
-        raise _error(422, "git_account_identity_mismatch", "Access token belongs to another Git account.")
+        raise _error(
+            422, "git_account_identity_mismatch", "Access token belongs to another Git account."
+        )
     username = "oauth2" if account.adapter_id in {"gitlab", "gitee"} else "x-access-token"
-    await _append_account_credential(session, account, username=username, token=payload.access_token)
+    await _append_account_credential(
+        session, account, username=username, token=payload.access_token
+    )
     job = await _sync_git_account(session, account)
     session.add(_audit(user, "git_account.token_rotate", "git_account", account.id))
     await session.commit()
@@ -2111,7 +2138,10 @@ async def list_git_account_repositories_current(
     rows = (
         await session.execute(
             select(GitRepository)
-            .join(GitAccountRepositoryAccess, GitAccountRepositoryAccess.repository_id == GitRepository.id)
+            .join(
+                GitAccountRepositoryAccess,
+                GitAccountRepositoryAccess.repository_id == GitRepository.id,
+            )
             .where(
                 GitAccountRepositoryAccess.account_connection_id == account_id,
                 GitAccountRepositoryAccess.state == "available",
@@ -2154,11 +2184,17 @@ async def list_git_account_repository_branches(
     repository = await session.get(GitRepository, repository_id)
     access = await session.get(GitAccountRepositoryAccess, (account_id, repository_id))
     if account is None or account.state != "active" or account.verification_status != "healthy":
-        raise _error(422, "git_account_connection_invalid", "A healthy active Git account is required.")
+        raise _error(
+            422, "git_account_connection_invalid", "A healthy active Git account is required."
+        )
     if repository is None or repository.archived:
         raise _error(404, "repository_not_found", "Repository was not found.")
     if access is None or access.state != "available":
-        raise _error(409, "repository_access_lost", "Git account no longer has read access to this repository.")
+        raise _error(
+            409,
+            "repository_access_lost",
+            "Git account no longer has read access to this repository.",
+        )
     try:
         secret = await _account_secret(session, account)
         branches, next_cursor = await list_provider_branches(
@@ -2171,9 +2207,14 @@ async def list_git_account_repository_branches(
             query=q,
         )
     except GitProviderError as exc:
-        raise _error(502, f"git_branch_catalog_{exc.code}", "Git branches could not be loaded.") from exc
+        raise _error(
+            502, f"git_branch_catalog_{exc.code}", "Git branches could not be loaded."
+        ) from exc
     return GitBranchPageOut(
-        items=[GitBranchOut(name=branch.name, is_default=branch.name == repository.default_branch) for branch in branches],
+        items=[
+            GitBranchOut(name=branch.name, is_default=branch.name == repository.default_branch)
+            for branch in branches
+        ],
         next_cursor=next_cursor,
     )
 
@@ -2202,7 +2243,8 @@ async def _create_repository_binding(session, workspace_id, user, account, repos
         workspace_id=workspace_id,
         repository_id=repository.id,
         account_connection_id=account.id,
-        role=payload.role,
+        analysis_mode=payload.analysis_mode,
+        is_alert_source=payload.is_alert_source,
         branch_mode=payload.branch_mode,
         branch_name=payload.branch_name,
         priority=payload.priority,
@@ -2243,7 +2285,9 @@ async def _validate_fixed_branch(
             branch_name=branch_name,
         )
     except GitProviderError as exc:
-        raise _error(502, f"git_branch_catalog_{exc.code}", "Git branch could not be verified.") from exc
+        raise _error(
+            502, f"git_branch_catalog_{exc.code}", "Git branch could not be verified."
+        ) from exc
     if not exists:
         raise _error(422, "repository_branch_not_found", "The selected branch is not available.")
 
@@ -2261,18 +2305,24 @@ async def bind_repository(
     account = await session.get(GitAccount, payload.account_connection_id)
     repository = await session.get(GitRepository, payload.repository_id)
     if account is None or account.state != "active" or account.verification_status != "healthy":
-        raise _error(422, "git_account_connection_invalid", "A healthy active Git account is required.")
+        raise _error(
+            422, "git_account_connection_invalid", "A healthy active Git account is required."
+        )
     if repository is None or repository.archived:
         raise _error(404, "repository_not_found", "Repository was not found.")
-    access = await session.get(
-        GitAccountRepositoryAccess, (account.id, repository.id)
-    )
+    access = await session.get(GitAccountRepositoryAccess, (account.id, repository.id))
     if access is None or access.state != "available":
-        raise _error(409, "repository_access_lost", "Git account no longer has read access to this repository.")
+        raise _error(
+            409,
+            "repository_access_lost",
+            "Git account no longer has read access to this repository.",
+        )
     await _validate_fixed_branch(
         session, account, repository, payload.branch_mode, payload.branch_name
     )
-    return await _create_repository_binding(session, workspace_id, user, account, repository, payload)
+    return await _create_repository_binding(
+        session, workspace_id, user, account, repository, payload
+    )
 
 
 @router.patch(
@@ -2304,13 +2354,24 @@ async def patch_repository_binding(
         branch_name = None
     elif not branch_name:
         raise _error(422, "repository_branch_required", "A fixed branch must be selected.")
+    analysis_mode = values.get("analysis_mode", row.analysis_mode)
+    is_alert_source = values.get("is_alert_source", row.is_alert_source)
+    if is_alert_source and analysis_mode != "code":
+        raise _error(
+            422,
+            "repository_alert_source_requires_code",
+            "The alert source repository must use code analysis.",
+        )
     repository = await session.get(GitRepository, row.repository_id)
     account = await session.get(GitAccount, row.account_connection_id)
     assert repository is not None and account is not None
-    if branch_mode == "branch" and (branch_mode != row.branch_mode or branch_name != row.branch_name):
+    if branch_mode == "branch" and (
+        branch_mode != row.branch_mode or branch_name != row.branch_name
+    ):
         await _validate_fixed_branch(session, account, repository, branch_mode, branch_name)
     structural_change = (
-        values.get("role", row.role) != row.role
+        values.get("analysis_mode", row.analysis_mode) != row.analysis_mode
+        or values.get("is_alert_source", row.is_alert_source) != row.is_alert_source
         or branch_mode != row.branch_mode
         or branch_name != row.branch_name
         or values.get("state", row.state) != row.state
@@ -2516,9 +2577,7 @@ def _unique_pairs(values):
 
 
 def _connector_out(row: EvidenceConnector) -> ConnectorOut:
-    public_config = {
-        key: value for key, value in row.config.items() if key != "ca_certificate_pem"
-    }
+    public_config = {key: value for key, value in row.config.items() if key != "ca_certificate_pem"}
     return ConnectorOut(
         id=row.id,
         workspace_id=row.workspace_id,
@@ -2593,9 +2652,17 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
         root_filter = payload.root_filter.model_dump()
         branches = normalize_loki_filter(root_filter)
         return (
-            {"base_url": payload.endpoint, **({"tenant_id": payload.tenant_id} if payload.tenant_id else {})},
-            {"bearer_token": payload.credential} if payload.authentication == "bearer_token" else {},
-            {"root_filter": root_filter, "root_filter_dnf": [[dict(item) for item in branch] for branch in branches]},
+            {
+                "base_url": payload.endpoint,
+                **({"tenant_id": payload.tenant_id} if payload.tenant_id else {}),
+            },
+            {"bearer_token": payload.credential}
+            if payload.authentication == "bearer_token"
+            else {},
+            {
+                "root_filter": root_filter,
+                "root_filter_dnf": [[dict(item) for item in branch] for branch in branches],
+            },
             budget,
         )
     if payload.kind in {"elasticsearch", "opensearch"}:
@@ -2616,21 +2683,26 @@ def _connector_storage(payload: ConnectorCreate) -> tuple[dict, dict[str, str], 
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("HTTP connector endpoint must be an HTTP or HTTPS origin")
         return (
-            {"base_url": payload.endpoint, "verification_path": payload.verification_path or "/health"},
+            {
+                "base_url": payload.endpoint,
+                "verification_path": payload.verification_path or "/health",
+            },
             _connector_secrets(payload),
             {
-                "safe_read_endpoints": [{
-                    "id": "default-read",
-                    "method": "GET",
-                    "scheme": parsed.scheme,
-                    "host": parsed.hostname.lower(),
-                    "port": port,
-                    "path_template": payload.safe_read_path,
-                    "path_parameters": {},
-                    "query_parameters": {},
-                    "allowed_content_types": ["application/json"],
-                    "max_response_bytes": 1_000_000,
-                }]
+                "safe_read_endpoints": [
+                    {
+                        "id": "default-read",
+                        "method": "GET",
+                        "scheme": parsed.scheme,
+                        "host": parsed.hostname.lower(),
+                        "port": port,
+                        "path_template": payload.safe_read_path,
+                        "path_parameters": {},
+                        "query_parameters": {},
+                        "allowed_content_types": ["application/json"],
+                        "max_response_bytes": 1_000_000,
+                    }
+                ]
             },
             budget,
         )
@@ -2697,9 +2769,7 @@ def _connector_operation_error(
     if not isinstance(exc, ProviderExecutionError):
         return _error(502, f"connector_{operation}_failed", fallback_message)
     safe_details = {
-        key: value
-        for key, value in exc.detail.items()
-        if key in _CONNECTOR_PROVIDER_DETAIL_FIELDS
+        key: value for key, value in exc.detail.items() if key in _CONNECTOR_PROVIDER_DETAIL_FIELDS
     }
     return _error(
         _CONNECTOR_PROVIDER_ERROR_STATUS.get(exc.code, 502),
@@ -2710,9 +2780,7 @@ def _connector_operation_error(
     )
 
 
-def _scope_config_from_catalog(
-    kind: str, current_scope: dict, resources: dict
-) -> dict:
+def _scope_config_from_catalog(kind: str, current_scope: dict, resources: dict) -> dict:
     if kind not in {"postgresql", "mysql"}:
         return current_scope
     tables = resources.get("tables")

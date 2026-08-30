@@ -45,10 +45,7 @@ async def _admin_headers() -> dict[str, str]:
         admin.must_change_password = False
         await session.commit()
         admin_id = admin.id
-    return {
-        "Authorization": "Bearer "
-        + create_token(admin_id, settings.jwt_signing_key, 3600)
-    }
+    return {"Authorization": "Bearer " + create_token(admin_id, settings.jwt_signing_key, 3600)}
 
 
 class _StubEvidenceConnector:
@@ -268,15 +265,21 @@ async def test_failed_connector_creation_leaves_no_persisted_record(
             "failed_checks": ["read_only_session"],
         }
     async with AsyncSessionLocal() as session:
-        assert await session.scalar(
-            select(EvidenceConnector).where(EvidenceConnector.name == connector_name)
-        ) is None
-        assert await session.scalar(
-            select(AuditEvent).where(
-                AuditEvent.workspace_id == workspace_id,
-                AuditEvent.action == "evidence_connector.create",
+        assert (
+            await session.scalar(
+                select(EvidenceConnector).where(EvidenceConnector.name == connector_name)
             )
-        ) is None
+            is None
+        )
+        assert (
+            await session.scalar(
+                select(AuditEvent).where(
+                    AuditEvent.workspace_id == workspace_id,
+                    AuditEvent.action == "evidence_connector.create",
+                )
+            )
+            is None
+        )
 
 
 @pytest.mark.asyncio
@@ -463,9 +466,10 @@ async def test_repository_binding_uses_account_repository_access_directly() -> N
     payload = {
         "account_connection_id": account_id,
         "repository_id": repository_id,
-        "role": "runtime_source",
+        "analysis_mode": "code",
+        "is_alert_source": True,
         "priority": 0,
-        "description": "Primary runtime source",
+        "description": "Alert source repository",
     }
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         created = await client.post(
@@ -485,13 +489,15 @@ async def test_repository_binding_uses_account_repository_access_directly() -> N
             headers=headers,
             json={
                 "expected_revision": created.json()["revision"],
-                "role": "shared_library",
+                "analysis_mode": "documentation",
+                "is_alert_source": False,
                 "priority": 5,
-                "description": "Shared checkout utilities",
+                "description": "Repository documentation",
             },
         )
         assert edited.status_code == 200
-        assert edited.json()["role"] == "shared_library"
+        assert edited.json()["analysis_mode"] == "documentation"
+        assert edited.json()["is_alert_source"] is False
         assert edited.json()["revision"] == created.json()["revision"] + 1
 
         stale = await client.patch(
@@ -542,7 +548,9 @@ async def test_repository_binding_uses_account_repository_access_directly() -> N
 
 
 @pytest.mark.asyncio
-async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(monkeypatch) -> None:
+async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
+    monkeypatch,
+) -> None:
     suffix = uuid.uuid4().hex
     async with AsyncSessionLocal() as session:
         admin = await session.scalar(select(User).where(User.is_system_admin))
@@ -561,6 +569,7 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
         reader_id = reader.id
 
     secret = f"provider-secret-{suffix}"
+
     async def discover(**_kwargs):
         return ("gpt-5.6-sol",)
 
@@ -570,12 +579,10 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
     monkeypatch.setattr(control_plane, "_discover_provider_models", discover)
     monkeypatch.setattr(control_plane, "_probe_model", probe)
     admin_headers = {
-        "Authorization": "Bearer "
-        + create_token(admin_id, settings.jwt_signing_key, 3600)
+        "Authorization": "Bearer " + create_token(admin_id, settings.jwt_signing_key, 3600)
     }
     reader_headers = {
-        "Authorization": "Bearer "
-        + create_token(reader_id, settings.jwt_signing_key, 3600)
+        "Authorization": "Bearer " + create_token(reader_id, settings.jwt_signing_key, 3600)
     }
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         provider = await client.post(
@@ -633,15 +640,13 @@ async def test_control_plane_redacts_secrets_and_enforces_workspace_permissions(
             return True
 
         monkeypatch.setattr(control_plane, "_broker_has_topic", topic_exists)
-        readiness = await client.get(
-            f"/workspaces/{workspace_id}/readiness", headers=admin_headers
-        )
+        readiness = await client.get(f"/workspaces/{workspace_id}/readiness", headers=admin_headers)
         assert readiness.status_code == 200
         assert readiness.json()["can_start"] is False
         assert {item["code"]: item["outcome"] for item in readiness.json()["checks"]} == {
             "kafka_topic": "passed",
             "model_policy": "blocked",
-            "repositories": "warning",
+            "repositories": "blocked",
             "evidence_connectors": "warning",
             "architecture_context": "passed",
         }
@@ -748,7 +753,9 @@ async def test_account_model_sync_manual_selection_and_active_binding_guard(monk
         assert created.status_code == 201
         account = created.json()
         account_id = account["id"]
-        sol_id = next(item["id"] for item in account["models"] if item["provider_model_id"] == "gpt-5.6-sol")
+        sol_id = next(
+            item["id"] for item in account["models"] if item["provider_model_id"] == "gpt-5.6-sol"
+        )
 
         workspace = await client.post(
             "/workspaces",
@@ -784,13 +791,17 @@ async def test_account_model_sync_manual_selection_and_active_binding_guard(monk
         missing = await client.put(
             f"/ai-provider-accounts/{account_id}/models",
             headers=headers,
-            json={"models": [
-                {"provider_model_id": "gpt-5.6-sol", "source": "discovered"},
-                {"provider_model_id": "gpt-5.6-terra", "source": "discovered"},
-            ]},
+            json={
+                "models": [
+                    {"provider_model_id": "gpt-5.6-sol", "source": "discovered"},
+                    {"provider_model_id": "gpt-5.6-terra", "source": "discovered"},
+                ]
+            },
         )
         assert missing.status_code == 200
-        sol = next(item for item in missing.json()["models"] if item["provider_model_id"] == "gpt-5.6-sol")
+        sol = next(
+            item for item in missing.json()["models"] if item["provider_model_id"] == "gpt-5.6-sol"
+        )
         assert sol["discovery_state"] == "missing"
         assert sol["state"] == "disabled"
 

@@ -79,6 +79,35 @@
         }
       }
     },
+    "repositoryBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "workspace_id", "repository_id", "account_connection_id", "account_name", "external_account_login", "provider_kind", "name", "full_name", "repo_url", "web_url", "repo_type", "default_branch", "branch_mode", "branch_name", "effective_branch", "analysis_mode", "is_alert_source", "priority", "description", "state", "revision"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
+        "workspace_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
+        "repository_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
+        "account_connection_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
+        "account_name": {"type": "string", "minLength": 1},
+        "external_account_login": {"type": "string", "minLength": 1},
+        "provider_kind": {"type": "string", "enum": ["github", "gitlab", "gitee"]},
+        "name": {"type": "string", "minLength": 1},
+        "full_name": {"type": "string", "minLength": 1},
+        "repo_url": {"type": "string", "minLength": 1},
+        "web_url": {"type": "string", "minLength": 1},
+        "repo_type": {"type": "string"},
+        "default_branch": {"type": "string", "minLength": 1},
+        "branch_mode": {"type": "string", "enum": ["default", "branch"]},
+        "branch_name": {"type": ["string", "null"]},
+        "effective_branch": {"type": "string", "minLength": 1},
+        "analysis_mode": {"type": "string", "enum": ["code", "documentation"]},
+        "is_alert_source": {"type": "boolean"},
+        "priority": {"type": "integer", "minimum": 0},
+        "description": {"type": "string", "maxLength": 2000},
+        "state": {"type": "string", "enum": ["active", "disabled"]},
+        "revision": {"type": "integer", "minimum": 1}
+      }
+    },
     "repositoryAnalysisJob": {
       "type": "object",
       "additionalProperties": false,

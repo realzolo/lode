@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -66,10 +67,12 @@ def candidate(language: str, payload: dict, *, bindings: dict[str, str] | None =
 
 def logql_context(**changes) -> AccessContext:
     scope = {
-        "root_filter_dnf": [[
-            {"label": "cluster", "operator": "equals", "values": ["prod"]},
-            {"label": "namespace", "operator": "equals", "values": ["orders"]},
-        ]],
+        "root_filter_dnf": [
+            [
+                {"label": "cluster", "operator": "equals", "values": ["prod"]},
+                {"label": "namespace", "operator": "equals", "values": ["orders"]},
+            ]
+        ],
         "allowed_pipeline_stages": ["line_filter", "json", "label_filter"],
         "allow_metric_queries": True,
         "max_metric_range_seconds": 900,
@@ -175,6 +178,37 @@ def test_logql_full_parse_scope_injection_and_arbitrary_value_binding() -> None:
     rebound = policy._parser.parse(bound.canonical_action["queries"][0])
     assert any(item.get("value") == raw for item in rebound.strings)
     assert bound.structural_hash == evaluated.effective_structural_hash
+
+
+def test_initial_trace_discovery_replaces_model_app_with_complete_root_scope() -> None:
+    policy = LogQLPolicy()
+    item = candidate(
+        "logql",
+        {"query": f'{{app="payment-gateway"}} |= "{SENTINEL}"'},
+        bindings={SENTINEL: "incident.trace_id"},
+    )
+    context = replace(
+        logql_context(
+            root_filter_dnf=[
+                [
+                    {
+                        "label": "app",
+                        "operator": "any_of",
+                        "values": ["pornbox", "payment-gateway", "sonakit"],
+                    }
+                ]
+            ]
+        ),
+        trace_discovery_required=True,
+        trace_value_ref="incident.trace_id",
+    )
+
+    evaluated = policy.evaluate(policy.parse(item), item, context)
+    query = evaluated.effective_action["queries"][0]
+
+    assert 'app=~"^(?:pornbox|payment\\\\-gateway|sonakit)$"' in query
+    assert evaluated.effective_action["trace_discovery"] is True
+    assert evaluated.constraint_diff["root_filter"]["full_scope_discovery"] is True
 
 
 @pytest.mark.parametrize(

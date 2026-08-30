@@ -29,7 +29,7 @@ def test_required_operational_metrics_are_registered() -> None:
         "lode_identity_resolutions_total",
         "lode_resource_invalidation_duration_seconds",
         "lode_source_resolution_total",
-        "lode_runtime_source_mismatch_total",
+        "lode_source_snapshot_incompatible_total",
         "lode_ai_protocol_total",
         "lode_model_routing_total",
         "lode_model_capacity_gaps_total",

@@ -20,6 +20,7 @@ from lode.db.models import (
     AuthorizedEvidenceRead,
     EvidenceAccessDecision,
     EvidenceConnector,
+    EvidenceReadAttempt,
     Investigation,
     InvestigationConnectorSnapshot,
     InvestigationOperation,
@@ -34,9 +35,7 @@ from lode.metrics import EVIDENCE_ACCESS_STAGE_LATENCY, NATIVE_CANDIDATES
 from lode.runtime_defaults import EVIDENCE_AUTHORIZATION_TTL_SECONDS
 
 
-def _call_policy[PolicyResult](
-    stage: str, operation: Callable[[], PolicyResult]
-) -> PolicyResult:
+def _call_policy[PolicyResult](stage: str, operation: Callable[[], PolicyResult]) -> PolicyResult:
     """Turn candidate-driven parser failures into durable, non-sensitive rejects."""
     try:
         return operation()
@@ -148,9 +147,9 @@ class EvidenceAccessAuthorizer:
             NATIVE_CANDIDATES.labels(
                 language=candidate.language, outcome="rejected", reason=exc.code
             ).inc()
-            EVIDENCE_ACCESS_STAGE_LATENCY.labels(
-                stage="policy", outcome="rejected"
-            ).observe(monotonic() - started)
+            EVIDENCE_ACCESS_STAGE_LATENCY.labels(stage="policy", outcome="rejected").observe(
+                monotonic() - started
+            )
             return AuthorizedReadResult(
                 outcome="reject",
                 candidate_id=candidate_row.id,
@@ -186,17 +185,41 @@ class EvidenceAccessAuthorizer:
         )
         existing_fingerprint = (
             await self.session.execute(
-                select(AuthorizedEvidenceRead.id).where(
+                select(AuthorizedEvidenceRead).where(
                     AuthorizedEvidenceRead.investigation_id == context.investigation_id,
                     AuthorizedEvidenceRead.fingerprint == fingerprint,
                 )
             )
         ).scalar_one_or_none()
         if existing_fingerprint is not None:
+            succeeded = (
+                await self.session.execute(
+                    select(EvidenceReadAttempt).where(
+                        EvidenceReadAttempt.authorized_read_id == existing_fingerprint.id,
+                        EvidenceReadAttempt.status == "succeeded",
+                    )
+                )
+            ).scalar_one_or_none()
+            if succeeded is not None:
+                await self.session.commit()
+                NATIVE_CANDIDATES.labels(
+                    language=candidate.language, outcome="accepted", reason="reused"
+                ).inc()
+                EVIDENCE_ACCESS_STAGE_LATENCY.labels(stage="policy", outcome="accepted").observe(
+                    monotonic() - started
+                )
+                return AuthorizedReadResult(
+                    outcome="reuse",
+                    candidate_id=candidate_row.id,
+                    decision_id=existing_fingerprint.access_decision_id,
+                    authorized_read_id=existing_fingerprint.id,
+                    fingerprint=fingerprint,
+                    reused_artifact_refs=tuple(succeeded.result_artifact_refs),
+                )
             rejection = AccessRejection(
                 "budget_violation",
                 "an identical effective native read was already authorized",
-                {"existing_authorized_read_id": existing_fingerprint},
+                {"existing_authorized_read_id": existing_fingerprint.id},
             )
             decision = await self._persist_rejection(
                 candidate_row=candidate_row,
@@ -214,9 +237,9 @@ class EvidenceAccessAuthorizer:
                 outcome="rejected",
                 reason=rejection.code,
             ).inc()
-            EVIDENCE_ACCESS_STAGE_LATENCY.labels(
-                stage="policy", outcome="rejected"
-            ).observe(monotonic() - started)
+            EVIDENCE_ACCESS_STAGE_LATENCY.labels(stage="policy", outcome="rejected").observe(
+                monotonic() - started
+            )
             return AuthorizedReadResult(
                 outcome="reject",
                 candidate_id=candidate_row.id,
@@ -289,9 +312,9 @@ class EvidenceAccessAuthorizer:
         NATIVE_CANDIDATES.labels(
             language=candidate.language, outcome="accepted", reason="none"
         ).inc()
-        EVIDENCE_ACCESS_STAGE_LATENCY.labels(
-            stage="policy", outcome="accepted"
-        ).observe(monotonic() - started)
+        EVIDENCE_ACCESS_STAGE_LATENCY.labels(stage="policy", outcome="accepted").observe(
+            monotonic() - started
+        )
         return AuthorizedReadResult(
             outcome="allow",
             candidate_id=candidate_row.id,

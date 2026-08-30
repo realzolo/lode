@@ -159,7 +159,8 @@ export interface RepositoryBinding {
   branch_mode: 'default' | 'branch';
   branch_name: string | null;
   effective_branch: string;
-  role: string;
+  analysis_mode: 'code' | 'documentation';
+  is_alert_source: boolean;
   priority: number;
   description: string;
   state: 'active' | 'disabled';

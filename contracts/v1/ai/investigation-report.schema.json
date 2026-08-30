@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lode.local/contracts/v1/ai/investigation-report.schema.json",
-  "title": "investigation-report.v1",
+  "title": "investigation-report.v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -63,7 +63,7 @@
       "additionalProperties": false,
       "required": [
         "status", "source_artifact_id", "source_assessment_id", "repository_id",
-        "revision", "revision_role", "path", "symbol", "start_line", "end_line",
+        "revision", "revision_origin", "path", "symbol", "start_line", "end_line",
         "issue_type", "faulty_behavior", "why_wrong", "expected_behavior",
         "trigger_condition", "propagation", "incident_evidence_refs",
         "supporting_evidence_refs", "counter_evidence_refs", "missing_validation",
@@ -75,7 +75,7 @@
         "source_assessment_id": {"type": ["integer", "null"], "minimum": 1},
         "repository_id": {"type": ["integer", "null"], "minimum": 1},
         "revision": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
-        "revision_role": {"type": ["string", "null"], "enum": ["incident_source", "repository_search_candidate", "runtime_identified", null]},
+        "revision_origin": {"type": ["string", "null"], "enum": ["alert_revision", "bound_branch_head", "runtime_observed", null]},
         "path": {"type": ["string", "null"]},
         "symbol": {"type": ["string", "null"]},
         "start_line": {"type": ["integer", "null"], "minimum": 1},
@@ -118,14 +118,15 @@
     "sourceAssessment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository_id", "build_unit_id", "component_id", "revision", "revision_role", "runtime_match_status", "mismatch_reasons", "evidence_refs"],
+      "required": ["repository_id", "build_unit_id", "component_id", "revision", "revision_origin", "authority_status", "compatibility_status", "mismatch_reasons", "evidence_refs"],
       "properties": {
         "repository_id": {"type": "integer", "minimum": 1},
         "build_unit_id": {"type": ["integer", "null"], "minimum": 1},
         "component_id": {"type": ["integer", "null"], "minimum": 1},
         "revision": {"type": ["string", "null"]},
-        "revision_role": {"type": "string", "enum": ["incident_source", "repository_search_candidate", "runtime_identified"]},
-        "runtime_match_status": {"type": "string", "enum": ["exact", "unverified", "corroborated", "contradicted", "unresolved"]},
+        "revision_origin": {"type": "string", "enum": ["alert_revision", "bound_branch_head", "runtime_observed"]},
+        "authority_status": {"type": "string", "enum": ["authoritative", "corroborated", "contradicted", "unavailable"]},
+        "compatibility_status": {"type": "string", "enum": ["not_checked", "compatible", "incompatible"]},
         "mismatch_reasons": {"type": "array", "items": {"type": "string"}},
         "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
       }
@@ -133,11 +134,11 @@
     "configAssessment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scope", "declared_value", "runtime_value", "effective_status", "evidence_refs"],
+      "required": ["scope", "declared_value_json", "runtime_value_json", "effective_status", "evidence_refs"],
       "properties": {
         "scope": {"type": "string"},
-        "declared_value": {},
-        "runtime_value": {},
+        "declared_value_json": {"type": "string", "maxLength": 262144},
+        "runtime_value_json": {"type": "string", "maxLength": 262144},
         "effective_status": {"type": "string", "enum": ["unknown", "corroborated", "contradicted"]},
         "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
       }

@@ -12,8 +12,9 @@ from lode.domain.errors import DomainValidationError
 from lode.domain.types import ExecutionClass, ModelDataClass, ModelRole
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-SourceRevisionRole = Literal["incident_source", "repository_search_candidate", "runtime_identified"]
-AuthorityStatus = Literal["exact", "unverified", "corroborated", "contradicted", "unresolved"]
+SourceRevisionOrigin = Literal["alert_revision", "bound_branch_head", "runtime_observed"]
+SourceAuthorityStatus = Literal["authoritative", "corroborated", "contradicted", "unavailable"]
+SourceCompatibilityStatus = Literal["not_checked", "compatible", "incompatible"]
 ConfigurationStatus = Literal["unknown", "corroborated", "contradicted"]
 MANDATORY_PINNED_EVIDENCE_KINDS = frozenset({"incident_input"})
 
@@ -248,10 +249,11 @@ class AssembledContext:
 @dataclass(frozen=True, slots=True)
 class SourceAuthorityAssessment:
     repository_snapshot_id: int
-    revision_role: SourceRevisionRole
+    revision_origin: SourceRevisionOrigin
     requested_ref: str | None
     resolved_sha: str | None
-    status: AuthorityStatus
+    authority_status: SourceAuthorityStatus
+    compatibility_status: SourceCompatibilityStatus
     runtime_evidence_refs: tuple[int, ...]
     mismatch_reasons: tuple[str, ...]
 
@@ -270,9 +272,12 @@ class SourceAuthorityAssessment:
     @property
     def permits_confirmed_code(self) -> bool:
         return (
-            self.revision_role == "incident_source"
-            and self.status == "exact"
-            or (self.revision_role == "runtime_identified" and self.status == "corroborated")
+            self.authority_status
+            in {
+                "authoritative",
+                "corroborated",
+            }
+            and self.compatibility_status != "incompatible"
         )
 
 

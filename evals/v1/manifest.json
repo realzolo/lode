@@ -1,6 +1,6 @@
 {
   "schema_version": "lode-eval-manifest.v1",
-  "corpus_revision": "2026-08-26.1",
+  "corpus_revision": "2026-08-30.1",
   "release_test_only": true,
   "files": [
     "gold-incidents.jsonl",

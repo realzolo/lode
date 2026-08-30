@@ -58,7 +58,11 @@ def test_provider_credentials_are_separate_from_provider_account_models() -> Non
 
 def test_workspace_model_binding_has_portfolio_and_budget_constraints() -> None:
     table = Base.metadata.tables["workspace_model_bindings"]
-    checks = {constraint.name for constraint in table.constraints if isinstance(constraint, CheckConstraint)}
+    checks = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
     indexes = {index.name: index for index in table.indexes}
 
     assert {"execution_classes", "allowed_roles", "allowed_data_classes"}.issubset(table.c.keys())
@@ -68,7 +72,10 @@ def test_workspace_model_binding_has_portfolio_and_budget_constraints() -> None:
         "ck_workspace_model_bindings_context_utilization_range",
     }.issubset(checks)
     assert indexes["uq_workspace_model_binding_active"].unique
-    assert indexes["uq_workspace_model_binding_active"].dialect_options["postgresql"]["where"] is not None
+    assert (
+        indexes["uq_workspace_model_binding_active"].dialect_options["postgresql"]["where"]
+        is not None
+    )
 
 
 def test_workspace_activation_schema_has_no_repository_or_component_gate() -> None:
@@ -85,7 +92,8 @@ def test_workspace_activation_schema_has_no_repository_or_component_gate() -> No
     assert "repository_id" not in workspace.c
     assert "ck_workspaces_ingestion_state_shape" in checks
     assert any(
-        isinstance(constraint, UniqueConstraint) and {column.name for column in constraint.columns} == {"ingestion_topic"}
+        isinstance(constraint, UniqueConstraint)
+        and {column.name for column in constraint.columns} == {"ingestion_topic"}
         for constraint in workspace.constraints
     )
 
@@ -108,7 +116,9 @@ def test_repository_build_unit_and_component_identities_are_separate() -> None:
     build_unit = Base.metadata.tables["build_units"]
     component = Base.metadata.tables["components"]
 
-    assert {"adapter_id", "endpoint_identity_hash", "external_repository_id", "full_name"}.issubset(repository.c.keys())
+    assert {"adapter_id", "endpoint_identity_hash", "external_repository_id", "full_name"}.issubset(
+        repository.c.keys()
+    )
     assert {"workspace_id", "credential_id", "scope"}.isdisjoint(repository.c.keys())
     assert "current_credential_revision_id" in account.c
     assert {"account_connection_id", "secret_ciphertext", "credential_identity_hash"}.issubset(
@@ -119,12 +129,11 @@ def test_repository_build_unit_and_component_identities_are_separate() -> None:
         "account_connection_id",
         "repository_id",
         "workspace_id",
-        "role",
+        "analysis_mode",
+        "is_alert_source",
         "branch_mode",
         "branch_name",
-    }.issubset(
-        binding.c.keys()
-    )
+    }.issubset(binding.c.keys())
     assert {
         "repository_analysis_job_id",
         "repository_binding_id",

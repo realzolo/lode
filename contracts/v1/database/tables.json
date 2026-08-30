@@ -1,6 +1,6 @@
 {
   "schema_version": "lode-database-tables.v1",
-  "migration_head": "0002_repository_binding_analysis",
+  "migration_head": "0010_evidence_authority",
   "control_plane": [
     "platform_settings",
     "workspaces",

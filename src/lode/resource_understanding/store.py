@@ -68,7 +68,7 @@ class ResourceGraphStore:
         workspace_id: int,
         scans: Sequence[BoundRepositoryScan],
         annotations: Iterable[SemanticAnnotationDraft] = (),
-        runtime_binding_ids: set[int] | None = None,
+        code_binding_ids: set[int] | None = None,
         allow_inactive_binding_ids: set[int] | None = None,
         prompt_revision: str = "resource-understanding.1",
     ) -> PublishedResourceGraph:
@@ -89,19 +89,17 @@ class ResourceGraphStore:
             scans,
             allow_inactive_binding_ids=allow_inactive_binding_ids,
         )
-        if runtime_binding_ids is None:
-            runtime_binding_ids = {
+        if code_binding_ids is None:
+            code_binding_ids = {
                 binding_id
                 for binding_id, binding in bindings.items()
-                if binding.role == "runtime_source"
+                if binding.analysis_mode == "code"
             }
-        if not runtime_binding_ids.issubset({item.repository_binding_id for item in scans}):
-            raise ValueError("runtime scan bindings are not part of the publication")
-        runtime_scans = [
-            item.scan for item in scans if item.repository_binding_id in runtime_binding_ids
-        ]
+        if not code_binding_ids.issubset({item.repository_binding_id for item in scans}):
+            raise ValueError("code scan bindings are not part of the publication")
+        code_scans = [item.scan for item in scans if item.repository_binding_id in code_binding_ids]
         annotation_list = tuple(annotations)
-        drafts = list(self.validator.validate_many(runtime_scans, annotation_list))
+        drafts = list(self.validator.validate_many(code_scans, annotation_list))
         candidate_bindings = {
             unit.candidate_key: item.repository_binding_id
             for item in scans
@@ -123,7 +121,8 @@ class ResourceGraphStore:
         current = await self._current_resolution_rows(workspace_id)
         new_keys = {(row.stable_key, row.resolution_kind) for row in resolution_rows}
         members = [
-            row for row in current
+            row
+            for row in current
             if (row.stable_key, row.resolution_kind) not in new_keys
             and not self._belongs_to_bindings(row.resolved_payload, scanned_binding_ids)
         ]
@@ -131,14 +130,19 @@ class ResourceGraphStore:
         members = list({row.id: row for row in members}.values())
         members.sort(key=lambda row: (row.resolution_kind, row.stable_key, row.id))
 
-        input_hash = content_hash({
-            "scans": [
-                {"repository_binding_id": item.repository_binding_id, "input_hash": item.scan.input_hash}
-                for item in scans
-            ],
-            "members": [row.resolution_hash for row in members],
-            "validator_version": self.validator.version,
-        })
+        input_hash = content_hash(
+            {
+                "scans": [
+                    {
+                        "repository_binding_id": item.repository_binding_id,
+                        "input_hash": item.scan.input_hash,
+                    }
+                    for item in scans
+                ],
+                "members": [row.resolution_hash for row in members],
+                "validator_version": self.validator.version,
+            }
+        )
         latest = (
             await self.session.execute(
                 select(ResourceGraphRevision)
@@ -151,17 +155,25 @@ class ResourceGraphStore:
             await self.session.commit()
             RESOURCE_EVENTS.labels(kind="graph_revision", outcome="reused").inc()
             return PublishedResourceGraph(
-                latest.id, latest.revision, True,
-                len(observation_ids), len(members), sum(len(item.scan.issues) for item in scans),
+                latest.id,
+                latest.revision,
+                True,
+                len(observation_ids),
+                len(members),
+                sum(len(item.scan.issues) for item in scans),
             )
 
         previous_ids: set[int] = set()
         if latest is not None:
-            previous_ids = set((await self.session.execute(
-                select(ResourceGraphRevisionMember.identity_resolution_id).where(
-                    ResourceGraphRevisionMember.resource_graph_revision_id == latest.id
-                )
-            )).scalars())
+            previous_ids = set(
+                (
+                    await self.session.execute(
+                        select(ResourceGraphRevisionMember.identity_resolution_id).where(
+                            ResourceGraphRevisionMember.resource_graph_revision_id == latest.id
+                        )
+                    )
+                ).scalars()
+            )
         member_ids = {row.id for row in members}
         removed_ids = previous_ids - member_ids
         if removed_ids:
@@ -191,27 +203,31 @@ class ResourceGraphStore:
         )
         self.session.add(graph)
         await self.session.flush()
-        self.session.add_all([
-            ResourceGraphRevisionMember(
-                resource_graph_revision_id=graph.id,
-                identity_resolution_id=row.id,
-                member_kind=row.resolution_kind,
-            )
-            for row in members
-        ])
+        self.session.add_all(
+            [
+                ResourceGraphRevisionMember(
+                    resource_graph_revision_id=graph.id,
+                    identity_resolution_id=row.id,
+                    member_kind=row.resolution_kind,
+                )
+                for row in members
+            ]
+        )
         await self._reconcile_materialized_state(workspace_id, members)
         await self.session.commit()
-        RESOURCE_EVENTS.labels(kind="observation", outcome="persisted").inc(
-            len(observation_ids)
-        )
+        RESOURCE_EVENTS.labels(kind="observation", outcome="persisted").inc(len(observation_ids))
         RESOURCE_EVENTS.labels(kind="graph_revision", outcome="published").inc()
         for row in resolution_rows:
             IDENTITY_RESOLUTIONS.labels(status=row.status).inc()
         if removed_ids:
             RESOURCE_INVALIDATION_LATENCY.observe(monotonic() - started)
         return PublishedResourceGraph(
-            graph.id, graph.revision, False,
-            len(observation_ids), len(members), sum(len(item.scan.issues) for item in scans),
+            graph.id,
+            graph.revision,
+            False,
+            len(observation_ids),
+            len(members),
+            sum(len(item.scan.issues) for item in scans),
         )
 
     async def _validate_bindings(
@@ -225,14 +241,20 @@ class ResourceGraphStore:
         if len(ids) != len(set(ids)):
             raise ValueError("repository bindings must be unique per publication")
         allowed = allow_inactive_binding_ids or set()
-        rows = (await self.session.execute(
-            select(WorkspaceRepositoryBinding).where(
-                WorkspaceRepositoryBinding.id.in_(ids),
-                WorkspaceRepositoryBinding.workspace_id == workspace_id,
-                (WorkspaceRepositoryBinding.state == "active")
-                | WorkspaceRepositoryBinding.id.in_(allowed),
+        rows = (
+            (
+                await self.session.execute(
+                    select(WorkspaceRepositoryBinding).where(
+                        WorkspaceRepositoryBinding.id.in_(ids),
+                        WorkspaceRepositoryBinding.workspace_id == workspace_id,
+                        (WorkspaceRepositoryBinding.state == "active")
+                        | WorkspaceRepositoryBinding.id.in_(allowed),
+                    )
+                )
             )
-        )).scalars().all()
+            .scalars()
+            .all()
+        )
         by_id = {row.id: row for row in rows}
         if set(ids) != set(by_id):
             raise ValueError("scan references an inactive or foreign repository binding")
@@ -273,20 +295,24 @@ class ResourceGraphStore:
                     "parser_name": item.parser_name,
                     "parser_version": item.parser_version,
                 }
-                row_id = (await self.session.execute(
-                    pg_insert(ResourceObservation)
-                    .values(**values)
-                    .on_conflict_do_nothing(constraint="uq_resource_observation_source")
-                    .returning(ResourceObservation.id)
-                )).scalar_one_or_none()
+                row_id = (
+                    await self.session.execute(
+                        pg_insert(ResourceObservation)
+                        .values(**values)
+                        .on_conflict_do_nothing(constraint="uq_resource_observation_source")
+                        .returning(ResourceObservation.id)
+                    )
+                ).scalar_one_or_none()
                 if row_id is None:
-                    row_id = (await self.session.execute(
-                        select(ResourceObservation.id).where(
-                            ResourceObservation.source_ref == item.source_ref,
-                            ResourceObservation.source_revision == bound.scan.source_revision,
-                            ResourceObservation.content_hash == item.content_hash,
+                    row_id = (
+                        await self.session.execute(
+                            select(ResourceObservation.id).where(
+                                ResourceObservation.source_ref == item.source_ref,
+                                ResourceObservation.source_revision == bound.scan.source_revision,
+                                ResourceObservation.content_hash == item.content_hash,
+                            )
                         )
-                    )).scalar_one()
+                    ).scalar_one()
                 result[item.source_ref] = row_id
         return result
 
@@ -301,16 +327,18 @@ class ResourceGraphStore:
         for item in annotations:
             refs = [observation_ids[ref] for ref in item.observation_refs]
             payload = asdict(item)
-            existing = (await self.session.execute(
-                select(SemanticAnnotation.id).where(
-                    SemanticAnnotation.workspace_id == workspace_id,
-                    SemanticAnnotation.annotation_kind == item.annotation_kind,
-                    SemanticAnnotation.structured_payload == payload,
-                    SemanticAnnotation.observation_refs == refs,
-                    SemanticAnnotation.prompt_revision == prompt_revision,
-                    SemanticAnnotation.superseded_at.is_(None),
+            existing = (
+                await self.session.execute(
+                    select(SemanticAnnotation.id).where(
+                        SemanticAnnotation.workspace_id == workspace_id,
+                        SemanticAnnotation.annotation_kind == item.annotation_kind,
+                        SemanticAnnotation.structured_payload == payload,
+                        SemanticAnnotation.observation_refs == refs,
+                        SemanticAnnotation.prompt_revision == prompt_revision,
+                        SemanticAnnotation.superseded_at.is_(None),
+                    )
                 )
-            )).scalar_one_or_none()
+            ).scalar_one_or_none()
             if existing is None:
                 row = SemanticAnnotation(
                     workspace_id=workspace_id,
@@ -337,23 +365,27 @@ class ResourceGraphStore:
         for item in drafts:
             obs_refs = [observation_ids[ref] for ref in item.observation_refs]
             ann_refs = [annotation_ids[index] for index in item.annotation_indexes]
-            resolution_hash = content_hash({
-                "stable_key": item.stable_key,
-                "kind": item.resolution_kind,
-                "status": item.status,
-                "payload": item.resolved_payload,
-                "basis": item.evidence_basis,
-                "observations": obs_refs,
-                "annotations": ann_refs,
-                "provenance": item.root_provenance_refs,
-                "validator": self.validator.version,
-            })
-            row = (await self.session.execute(
-                select(IdentityResolution).where(
-                    IdentityResolution.workspace_id == workspace_id,
-                    IdentityResolution.resolution_hash == resolution_hash,
+            resolution_hash = content_hash(
+                {
+                    "stable_key": item.stable_key,
+                    "kind": item.resolution_kind,
+                    "status": item.status,
+                    "payload": item.resolved_payload,
+                    "basis": item.evidence_basis,
+                    "observations": obs_refs,
+                    "annotations": ann_refs,
+                    "provenance": item.root_provenance_refs,
+                    "validator": self.validator.version,
+                }
+            )
+            row = (
+                await self.session.execute(
+                    select(IdentityResolution).where(
+                        IdentityResolution.workspace_id == workspace_id,
+                        IdentityResolution.resolution_hash == resolution_hash,
+                    )
                 )
-            )).scalar_one_or_none()
+            ).scalar_one_or_none()
             if row is None:
                 row = IdentityResolution(
                     workspace_id=workspace_id,
@@ -387,12 +419,14 @@ class ResourceGraphStore:
                 continue
             payload = item.resolved_payload
             stable_key = item.stable_key
-            row = (await self.session.execute(
-                select(BuildUnit).where(
-                    BuildUnit.workspace_id == workspace_id,
-                    BuildUnit.stable_key == stable_key,
+            row = (
+                await self.session.execute(
+                    select(BuildUnit).where(
+                        BuildUnit.workspace_id == workspace_id,
+                        BuildUnit.stable_key == stable_key,
+                    )
                 )
-            )).scalar_one_or_none()
+            ).scalar_one_or_none()
             values = {
                 "repository_binding_id": payload["repository_binding_id"],
                 "source_root": payload["source_root"],
@@ -421,12 +455,14 @@ class ResourceGraphStore:
                 continue
             payload = item.resolved_payload
             families = list(item.evidence_basis.get("source_families", []))
-            row = (await self.session.execute(
-                select(Component).where(
-                    Component.workspace_id == workspace_id,
-                    Component.stable_key == item.stable_key,
+            row = (
+                await self.session.execute(
+                    select(Component).where(
+                        Component.workspace_id == workspace_id,
+                        Component.stable_key == item.stable_key,
+                    )
                 )
-            )).scalar_one_or_none()
+            ).scalar_one_or_none()
             values = {
                 "display_name": payload["display_name"],
                 "kind": payload["kind"],
@@ -462,23 +498,27 @@ class ResourceGraphStore:
             component = component_rows[payload["component_key"]]
             build = build_rows.get(payload["build_unit_key"])
             if build is None:
-                build = (await self.session.execute(
-                    select(BuildUnit).where(
-                        BuildUnit.workspace_id == workspace_id,
-                        BuildUnit.stable_key == payload["build_unit_key"],
+                build = (
+                    await self.session.execute(
+                        select(BuildUnit).where(
+                            BuildUnit.workspace_id == workspace_id,
+                            BuildUnit.stable_key == payload["build_unit_key"],
+                        )
                     )
-                )).scalar_one()
+                ).scalar_one()
             existing = await self.session.get(
                 ComponentSourceBinding,
                 (component.id, build.id, payload["role"]),
             )
             if existing is None:
-                self.session.add(ComponentSourceBinding(
-                    component_id=component.id,
-                    build_unit_id=build.id,
-                    role=payload["role"],
-                    path_prefix=payload["path_prefix"],
-                ))
+                self.session.add(
+                    ComponentSourceBinding(
+                        component_id=component.id,
+                        build_unit_id=build.id,
+                        role=payload["role"],
+                        path_prefix=payload["path_prefix"],
+                    )
+                )
             else:
                 existing.path_prefix = payload["path_prefix"]
 
@@ -489,9 +529,7 @@ class ResourceGraphStore:
     ) -> list[IdentityResolutionDraft]:
         current = await self._current_resolution_rows(workspace_id)
         owners: dict[str, set[str]] = {}
-        replacing = {
-            item.stable_key for item in drafts if item.resolution_kind == "component"
-        }
+        replacing = {item.stable_key for item in drafts if item.resolution_kind == "component"}
         for row in current:
             if row.resolution_kind != "component" or row.stable_key in replacing:
                 continue
@@ -512,12 +550,13 @@ class ResourceGraphStore:
             basis["alias_conflicts"] = sorted(
                 set(basis.get("alias_conflicts", [])) | set(conflicts)
             )
-            basis["conflicting_component_keys"] = sorted({
-                owner for alias in conflicts for owner in owners[alias]
-            })
+            basis["conflicting_component_keys"] = sorted(
+                {owner for alias in conflicts for owner in owners[alias]}
+            )
             result.append(replace(item, status="ambiguous", evidence_basis=basis))
         ambiguous_components = {
-            item.stable_key for item in result
+            item.stable_key
+            for item in result
             if item.resolution_kind == "component" and item.status == "ambiguous"
         }
         return [
@@ -533,12 +572,8 @@ class ResourceGraphStore:
         workspace_id: int,
         members: list[IdentityResolution],
     ) -> None:
-        build_keys = {
-            row.stable_key for row in members if row.resolution_kind == "build_unit"
-        }
-        component_keys = {
-            row.stable_key for row in members if row.resolution_kind == "component"
-        }
+        build_keys = {row.stable_key for row in members if row.resolution_kind == "build_unit"}
+        component_keys = {row.stable_key for row in members if row.resolution_kind == "component"}
         await self.session.execute(
             update(BuildUnit)
             .where(
@@ -577,22 +612,28 @@ class ResourceGraphStore:
         return replace(item, resolved_payload=payload)
 
     async def _current_resolution_rows(self, workspace_id: int) -> list[IdentityResolution]:
-        latest = (await self.session.execute(
-            select(ResourceGraphRevision)
-            .where(ResourceGraphRevision.workspace_id == workspace_id)
-            .order_by(ResourceGraphRevision.revision.desc())
-            .limit(1)
-        )).scalar_one_or_none()
+        latest = (
+            await self.session.execute(
+                select(ResourceGraphRevision)
+                .where(ResourceGraphRevision.workspace_id == workspace_id)
+                .order_by(ResourceGraphRevision.revision.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         if latest is None:
             return []
-        return list((await self.session.execute(
-            select(IdentityResolution)
-            .join(
-                ResourceGraphRevisionMember,
-                ResourceGraphRevisionMember.identity_resolution_id == IdentityResolution.id,
-            )
-            .where(ResourceGraphRevisionMember.resource_graph_revision_id == latest.id)
-        )).scalars())
+        return list(
+            (
+                await self.session.execute(
+                    select(IdentityResolution)
+                    .join(
+                        ResourceGraphRevisionMember,
+                        ResourceGraphRevisionMember.identity_resolution_id == IdentityResolution.id,
+                    )
+                    .where(ResourceGraphRevisionMember.resource_graph_revision_id == latest.id)
+                )
+            ).scalars()
+        )
 
     @staticmethod
     def _belongs_to_bindings(payload: dict[str, Any], binding_ids: set[int]) -> bool:

@@ -47,7 +47,7 @@ class RepositoryAnalysisResult:
     source_revisions: dict[str, str]
     source_branches: dict[str, str]
     scanned_file_count: int
-    issues: tuple["RepositoryAnalysisIssueDraft", ...]
+    issues: tuple[RepositoryAnalysisIssueDraft, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,14 +237,18 @@ class RepositoryAnalysisService:
                             GitAccount,
                             GitAccountCredentialRevision,
                         )
-                        .join(GitRepository, GitRepository.id == WorkspaceRepositoryBinding.repository_id)
+                        .join(
+                            GitRepository,
+                            GitRepository.id == WorkspaceRepositoryBinding.repository_id,
+                        )
                         .join(
                             GitAccount,
                             GitAccount.id == WorkspaceRepositoryBinding.account_connection_id,
                         )
                         .join(
                             GitAccountCredentialRevision,
-                            GitAccountCredentialRevision.id == GitAccount.current_credential_revision_id,
+                            GitAccountCredentialRevision.id
+                            == GitAccount.current_credential_revision_id,
                         )
                         .join(
                             GitAccountRepositoryAccess,
@@ -273,12 +277,16 @@ class RepositoryAnalysisService:
                 ):
                     raise RuntimeError("repository analysis configuration changed")
                 try:
-                    secret = decode_credential_secret(decrypt_secret(revision.secret_ciphertext) or "")
+                    secret = decode_credential_secret(
+                        decrypt_secret(revision.secret_ciphertext) or ""
+                    )
                 except (CryptoError, ValueError) as exc:
                     raise RuntimeError("repository analysis credential is unavailable") from exc
                 if credential_identity_hash(secret) != revision.credential_identity_hash:
                     raise RuntimeError("repository analysis credential identity changed")
-                credentials[binding.id] = GitCredentialMaterial("https", secret.username, secret.token)
+                credentials[binding.id] = GitCredentialMaterial(
+                    "https", secret.username, secret.token
+                )
 
         revisions = await asyncio.gather(
             *(
@@ -316,7 +324,10 @@ class RepositoryAnalysisService:
             for (binding, repository, _, _), scan in zip(rows, scans, strict=True)
         )
         annotations = _deterministic_component_annotations(
-            {binding_id: str(snapshot["role"]) for binding_id, snapshot in snapshots.items()},
+            {
+                binding_id: str(snapshot["analysis_mode"])
+                for binding_id, snapshot in snapshots.items()
+            },
             bound_scans,
         )
         async with self.session_factory() as session:
@@ -324,10 +335,10 @@ class RepositoryAnalysisService:
                 workspace_id=job.workspace_id,
                 scans=bound_scans,
                 annotations=annotations,
-                runtime_binding_ids={
+                code_binding_ids={
                     binding_id
                     for binding_id, snapshot in snapshots.items()
-                    if snapshot["role"] == "runtime_source"
+                    if snapshot["analysis_mode"] == "code"
                 },
                 allow_inactive_binding_ids=set(snapshots),
                 prompt_revision="deterministic-component-projection.1",
@@ -359,20 +370,26 @@ class RepositoryAnalysisService:
 
 
 def _deterministic_component_annotations(
-    roles: dict[int, str], scans: tuple[BoundRepositoryScan, ...]
+    analysis_modes: dict[int, str], scans: tuple[BoundRepositoryScan, ...]
 ):
     annotations: list[SemanticAnnotationDraft] = []
     for bound in scans:
-        if roles[bound.repository_binding_id] != "runtime_source":
+        if analysis_modes[bound.repository_binding_id] != "code":
             continue
         for unit in bound.scan.build_units:
             names = unit.artifact_hints.get("names", [])
             display_name = (
                 str(names[0]).strip()
                 if isinstance(names, list) and names and str(names[0]).strip()
-                else (unit.source_root if unit.source_root != "." else f"Repository {bound.repository_id}")
+                else (
+                    unit.source_root
+                    if unit.source_root != "."
+                    else f"Repository {bound.repository_id}"
+                )
             )
-            stable_key = f"component:auto-{hashlib.sha256(unit.candidate_key.encode()).hexdigest()[:20]}"
+            stable_key = (
+                f"component:auto-{hashlib.sha256(unit.candidate_key.encode()).hexdigest()[:20]}"
+            )
             annotations.append(
                 SemanticAnnotationDraft(
                     annotation_kind="component_identity",

@@ -74,9 +74,17 @@ def test_decision_wave_and_terminal_report_contracts_match_v1() -> None:
     assert decision["properties"]["hypotheses"]["minItems"] == 1
     assert decision["properties"]["decision"]["enum"] == ["continue", "finish"]
     operation = decision["$defs"]["operation"]
-    assert decision["title"] == "investigation-decision.v5"
+    assert decision["title"] == "investigation-decision.v6"
+    assert report["title"] == "investigation-report.v2"
     assert "native_candidate" not in operation["properties"]
     assert "native_candidate_json" not in operation["properties"]
+    assert "source_query" in operation["required"]
+    assert set(decision["$defs"]["sourceQuery"]["required"]) == {
+        "terms",
+        "symbols",
+        "path_hints",
+        "evidence_refs",
+    }
     native_query = _load("ai/native-query.schema.json")
     assert native_query["title"] == "native-query.v1"
     assert set(native_query["properties"]) == {"payload_json"}
@@ -98,6 +106,7 @@ def test_control_plane_freezes_portfolio_and_context_objects() -> None:
         "workspace",
         "workspaceArchitectureContextRevision",
         "workspaceReadiness",
+        "repositoryBinding",
         "repositoryAnalysisJob",
         "platformSettings",
         "aiProviderAccount",
@@ -110,6 +119,9 @@ def test_control_plane_freezes_portfolio_and_context_objects() -> None:
     assert binding["properties"]["execution_classes"]["minItems"] == 1
     assert binding["properties"]["allowed_roles"]["minItems"] == 1
     assert binding["properties"]["max_context_utilization"]["exclusiveMaximum"] == 1
+    repository = definitions["repositoryBinding"]
+    assert repository["properties"]["analysis_mode"]["enum"] == ["code", "documentation"]
+    assert repository["properties"]["is_alert_source"] == {"type": "boolean"}
 
 
 def test_contract_check_cli_output_is_reproducible() -> None:
@@ -124,7 +136,7 @@ def test_contract_check_cli_output_is_reproducible() -> None:
 def test_eval_corpus_has_a_repeatable_complete_oracle() -> None:
     result = validate_eval_corpus()
 
-    assert result["count"] == 29
+    assert result["count"] == 30
     assert result["baseline"] == "phase0-deterministic-oracle"
     assert len(result["sha256"]) == 64
 
@@ -147,13 +159,8 @@ def test_database_invariant_contract_covers_only_frozen_tables() -> None:
 
     assert len(inventory) == 73
     assert sum(len(names) for names in triggers.values()) == 92
-    assert (
-        "trg_evidence_access_scopes_budget_canonical"
-        in triggers["evidence_access_scopes"]
-    )
-    assert "trg_evidence_access_scopes_sql_dialect" in triggers[
-        "evidence_access_scopes"
-    ]
+    assert "trg_evidence_access_scopes_budget_canonical" in triggers["evidence_access_scopes"]
+    assert "trg_evidence_access_scopes_sql_dialect" in triggers["evidence_access_scopes"]
     assert "trg_evidence_read_attempts_immutable" in triggers["evidence_read_attempts"]
     assert "trg_investigation_reports_semantics" in triggers["investigation_reports"]
 

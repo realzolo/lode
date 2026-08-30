@@ -290,12 +290,12 @@ class EvidenceGraphProjector:
                 client_key = (
                     client.get("method"),
                     client.get("route"),
-                    client_event.trace_match.get("value_hash"),
+                    client_event.trace_match.get("assertion_id"),
                 )
                 server_key = (
                     server.get("method"),
                     server.get("route"),
-                    server_event.trace_match.get("value_hash"),
+                    server_event.trace_match.get("assertion_id"),
                 )
                 if client_key != server_key or None in client_key:
                     continue

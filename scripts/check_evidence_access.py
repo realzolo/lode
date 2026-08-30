@@ -729,6 +729,67 @@ async def main() -> None:
     assert len(calls) == 1
     assert _find_trace_value(calls[0]) == RAW_TRACE
 
+    async with AsyncSessionLocal() as reuse_session:
+        original_invocation = invocations[0]
+        reuse_step_operation = operations[5]
+        reuse_operation = InvestigationOperation(
+            investigation_id=investigation.id,
+            step_id=reuse_step_operation.step_id,
+            decision_id=reuse_step_operation.decision_id,
+            ordinal=7,
+            wave_ordinal=2,
+            action_id="evidence.check.reuse",
+            operation_kind="native_read",
+            purpose="Reuse an identical completed native query",
+            expected_evidence="Previously archived provider result",
+            evidence_anchors=["incident.trace_id"],
+            selection_reason="test exact effective query reuse",
+            stop_condition="reuse archived evidence",
+            input_masked={},
+            fingerprint=_hash("operation-reuse"),
+        )
+        reuse_session.add(reuse_operation)
+        await reuse_session.flush()
+        reuse_invocation = AIInvocation(
+            investigation_id=investigation.id,
+            operation_id=reuse_operation.id,
+            routing_decision_id=original_invocation.routing_decision_id,
+            context_bundle_revision_id=original_invocation.context_bundle_revision_id,
+            role="native_query",
+            provider_account_id=original_invocation.provider_account_id,
+            provider_account_model_id=original_invocation.provider_account_model_id,
+            provider_account_revision=original_invocation.provider_account_revision,
+            provider_account_model_revision=original_invocation.provider_account_model_revision,
+            execution_class=original_invocation.execution_class,
+            prompt_revision="test",
+            schema_revision="native-read-candidate.v1",
+            context_hash=original_invocation.context_hash,
+            request_hash=_hash("request-reuse"),
+            response_hash=_hash("response-reuse"),
+            status="succeeded",
+            attempt_count=1,
+            latency_ms=1,
+            output_masked={"candidate": "reuse"},
+        )
+        reuse_session.add(reuse_invocation)
+        await reuse_session.commit()
+        reused = await EvidenceAccessAuthorizer(reuse_session, registry).authorize(
+            _candidate(action_id=reuse_operation.action_id, connector_id=connector.id),
+            _context(
+                workspace,
+                investigation,
+                connector,
+                snapshot,
+                reuse_operation,
+                reuse_invocation,
+            ),
+        )
+        assert reused.outcome == "reuse"
+        successful_outcome = next(
+            item for item in outcomes if getattr(item, "status", None) == "succeeded"
+        )
+        assert reused.reused_artifact_refs == successful_outcome.artifact_refs
+
     async with AsyncSessionLocal() as failure_session:
         failed = await EvidenceReadOrchestrator(
             failure_session, PostgresEvidenceResultArchiver(failure_session)
@@ -841,6 +902,7 @@ async def main() -> None:
                     "durable_bridge_archived": len(bridge_result.evidence_refs) == 1,
                     "concurrent_adapter_calls": len(calls),
                     "duplicate_fingerprint": duplicate.rejection_code,
+                    "completed_query_reused": reused.outcome == "reuse",
                     "connector_lifecycle": disabled.rejection_code,
                     "replay_rejected": any(
                         isinstance(item, AuthorizationTokenError) for item in outcomes

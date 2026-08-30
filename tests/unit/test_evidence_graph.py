@@ -6,7 +6,6 @@ from lode.application.evidence_graph import EvidenceGraphProjector, FrozenIdenti
 from lode.domain.investigation import NormalizedLogEvent
 from lode.domain.types import RelationKind
 
-
 NOW = datetime(2026, 8, 27, 10, 0, tzinfo=UTC)
 
 
@@ -17,7 +16,7 @@ def event(
     occurred_at: datetime = NOW,
     identity: str = "api",
     relation_hints=(),
-    trace_hash: str = "a" * 64,
+    assertion_id: int = 99,
 ):
     return NormalizedLogEvent(
         occurred_at=occurred_at,
@@ -26,7 +25,7 @@ def event(
         raw_excerpt_masked="masked log",
         attributes_masked={},
         resource_attributes_masked={},
-        trace_match={"value_hash": trace_hash, "location": "body", "descriptor_id": None},
+        trace_match={"assertion_id": assertion_id, "location": "body"},
         component_candidates=({"identity": identity, "location": "resource.service"},),
         relation_hints=tuple(relation_hints),
         revision_hints=(),

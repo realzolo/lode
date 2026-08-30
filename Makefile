@@ -75,7 +75,7 @@ evidence-access-check:
 
 # Run fixed parser/policy/provider request-response contract tests.
 log-connectors-check:
-	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py
+	$(ISOLATED_DB) $(UV) run pytest -q tests/unit/test_log_evidence_policies.py tests/unit/test_log_evidence_connectors.py tests/unit/test_evidence_authority_pipeline.py
 
 # Run the complete native parser/connector/isolated-runner security contract suite.
 native-connectors-check:

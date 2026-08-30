@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -38,11 +39,15 @@ class GitAccount(TimestampMixin, Base):
     account_url: Mapped[str] = mapped_column(Text, nullable=False)
     current_credential_revision_id: Mapped[int | None] = mapped_column(BigInteger)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
-    verification_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="untested")
+    verification_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="untested"
+    )
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
-    sync_cursor: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    sync_cursor: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
 
     __table_args__ = (
@@ -65,7 +70,9 @@ class GitAccount(TimestampMixin, Base):
             name="fk_git_accounts_current_credential_revision",
         ),
         UniqueConstraint(
-            "adapter_id", "endpoint_identity_hash", "external_account_id",
+            "adapter_id",
+            "endpoint_identity_hash",
+            "external_account_id",
             name="uq_git_account_adapter_endpoint_external",
         ),
     )
@@ -93,7 +100,9 @@ class GitAccountCredentialRevision(CreatedAtMixin, Base):
         UniqueConstraint(
             "id", "account_connection_id", name="uq_git_account_credential_revision_identity"
         ),
-        UniqueConstraint("account_connection_id", "revision", name="uq_git_account_credential_revision"),
+        UniqueConstraint(
+            "account_connection_id", "revision", name="uq_git_account_credential_revision"
+        ),
     )
 
 
@@ -117,7 +126,9 @@ class GitRepository(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("visibility IN ('public', 'private', 'internal')", name="visibility"),
         UniqueConstraint(
-            "adapter_id", "endpoint_identity_hash", "external_repository_id",
+            "adapter_id",
+            "endpoint_identity_hash",
+            "external_repository_id",
             name="uq_git_repository_adapter_endpoint_external",
         ),
     )
@@ -154,7 +165,9 @@ class GitAccountSyncJob(TimestampMixin, Base):
     lease_owner: Mapped[str | None] = mapped_column(Text)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failure_code: Mapped[str | None] = mapped_column(Text)
-    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
@@ -170,11 +183,10 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
     workspace_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    repository_id: Mapped[int] = mapped_column(
-        BigInteger, nullable=False
-    )
+    repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     account_connection_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    role: Mapped[str] = mapped_column(Text, nullable=False)
+    analysis_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    is_alert_source: Mapped[bool] = mapped_column(Boolean, nullable=False)
     branch_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default="default")
     branch_name: Mapped[str | None] = mapped_column(Text)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
@@ -184,9 +196,10 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
 
     __table_args__ = (
+        CheckConstraint("analysis_mode IN ('code', 'documentation')", name="analysis_mode"),
         CheckConstraint(
-            "role IN ('runtime_source', 'shared_library', 'infrastructure', 'documentation')",
-            name="role",
+            "NOT is_alert_source OR analysis_mode = 'code'",
+            name="alert_source_requires_code",
         ),
         CheckConstraint(
             "(branch_mode = 'default' AND branch_name IS NULL) OR "
@@ -213,6 +226,12 @@ class WorkspaceRepositoryBinding(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("state = 'active'"),
         ),
+        Index(
+            "uq_workspace_alert_source_active",
+            "workspace_id",
+            unique=True,
+            postgresql_where=text("state = 'active' AND is_alert_source"),
+        ),
     )
 
 
@@ -221,7 +240,9 @@ class RepositoryDescriptor(CreatedAtMixin, Base):
 
     id: Mapped[int] = snowflake_pk()
     repository_binding_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("workspace_repository_bindings.id", ondelete="CASCADE"), nullable=False
+        BigInteger,
+        ForeignKey("workspace_repository_bindings.id", ondelete="CASCADE"),
+        nullable=False,
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     descriptor: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -230,7 +251,9 @@ class RepositoryDescriptor(CreatedAtMixin, Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("repository_binding_id", "revision", name="uq_repository_descriptor_revision"),
+        UniqueConstraint(
+            "repository_binding_id", "revision", name="uq_repository_descriptor_revision"
+        ),
         CheckConstraint("revision > 0", name="revision_positive"),
     )
 
@@ -243,7 +266,9 @@ class BuildUnit(TimestampMixin, Base):
         BigInteger, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
     repository_binding_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("workspace_repository_bindings.id", ondelete="CASCADE"), nullable=False
+        BigInteger,
+        ForeignKey("workspace_repository_bindings.id", ondelete="CASCADE"),
+        nullable=False,
     )
     stable_key: Mapped[str] = mapped_column(Text, nullable=False)
     source_root: Mapped[str] = mapped_column(Text, nullable=False)
@@ -262,7 +287,9 @@ class BuildUnit(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("workspace_id", "stable_key", name="uq_build_unit_stable_key"),
         CheckConstraint("source_root !~ '(^/|(^|/)\\.\\.(/|$)|\\\\)'", name="source_root_relative"),
-        CheckConstraint("identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"),
+        CheckConstraint(
+            "identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"
+        ),
         CheckConstraint("state IN ('active', 'disabled')", name="state"),
         CheckConstraint("ownership_priority >= 0", name="ownership_priority_nonnegative"),
         CheckConstraint("revision > 0", name="revision_positive"),
@@ -292,7 +319,9 @@ class Component(TimestampMixin, Base):
             "kind IN ('service', 'worker', 'job', 'gateway', 'library_runtime', 'unknown')",
             name="kind",
         ),
-        CheckConstraint("identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"),
+        CheckConstraint(
+            "identity_status IN ('verified', 'provisional', 'ambiguous')", name="identity_status"
+        ),
         CheckConstraint(
             "identity_status <> 'verified' OR cardinality(root_provenance_families) >= 2",
             name="verified_provenance",
@@ -368,14 +397,19 @@ class ResourceObservation(CreatedAtMixin, Base):
     parser_version: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("source_ref", "source_revision", "content_hash", name="uq_resource_observation_source"),
+        UniqueConstraint(
+            "source_ref", "source_revision", "content_hash", name="uq_resource_observation_source"
+        ),
         CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'", name="content_hash_sha256"),
         CheckConstraint(
             "observation_kind IN ('manifest', 'build_unit', 'entrypoint', 'deployment', "
             "'runtime_config', 'log_identity', 'relation_hint')",
             name="observation_kind",
         ),
-        CheckConstraint("valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from", name="valid_range"),
+        CheckConstraint(
+            "valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from",
+            name="valid_range",
+        ),
         Index("ix_resource_observations_workspace_kind", "workspace_id", "observation_kind"),
     )
 
@@ -427,7 +461,9 @@ class IdentityResolution(CreatedAtMixin, Base):
             "'identity_alias', 'relation_extraction_rule')",
             name="resolution_kind",
         ),
-        CheckConstraint("status IN ('verified', 'provisional', 'ambiguous', 'superseded')", name="status"),
+        CheckConstraint(
+            "status IN ('verified', 'provisional', 'ambiguous', 'superseded')", name="status"
+        ),
         CheckConstraint("cardinality(observation_refs) > 0", name="observations_nonempty"),
         CheckConstraint(
             "status <> 'verified' OR cardinality(root_provenance_refs) >= 2",
@@ -587,6 +623,8 @@ class RepositoryAnalysisIssue(CreatedAtMixin, Base):
         CheckConstraint("severity IN ('warning', 'error')", name="severity"),
         CheckConstraint("char_length(code) BETWEEN 1 AND 100", name="code_length"),
         CheckConstraint("char_length(detail) <= 500", name="detail_length"),
-        UniqueConstraint("repository_analysis_job_id", "ordinal", name="uq_repository_analysis_issue"),
+        UniqueConstraint(
+            "repository_analysis_job_id", "ordinal", name="uq_repository_analysis_issue"
+        ),
         Index("ix_repository_analysis_issues_job", "repository_analysis_job_id", "ordinal"),
     )

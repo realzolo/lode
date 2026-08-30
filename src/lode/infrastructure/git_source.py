@@ -5,15 +5,15 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol, TypeVar
+from typing import Protocol, TypeVar
 from urllib.parse import urlsplit
 
 from lode.config import settings
-from lode.engine.evidence.git import related_symbol_hits, search_tree, stack_hits
+from lode.engine.evidence.git import path_hits, related_symbol_hits, search_tree, stack_hits
 from lode.runtime_defaults import (
     SOURCE_GIT_TIMEOUT_SECONDS,
     SOURCE_MAX_BYTES,
@@ -183,6 +183,7 @@ class GitSourceReader:
         credential: GitCredentialMaterial | None,
         stack: str,
         query_terms: Sequence[str],
+        path_hints: Sequence[str] = (),
     ) -> tuple[GitSourceHit, ...]:
         validate_git_remote(repo_url)
         if not _is_sha(revision):
@@ -203,6 +204,13 @@ class GitSourceReader:
                 max_bytes=maximum_bytes,
             )
             remaining_files = max(0, maximum_files - len(primary))
+            exact_paths = path_hits(
+                root,
+                list(path_hints),
+                max_files=remaining_files,
+                max_bytes=maximum_bytes,
+            )
+            remaining_files = max(0, maximum_files - len(primary) - len(exact_paths))
             lexical = search_tree(
                 root,
                 list(query_terms),
@@ -210,7 +218,7 @@ class GitSourceReader:
                 max_bytes=maximum_bytes,
                 snippet_lines=max(12, SOURCE_SNIPPET_LINES * 4),
             )
-            selected = [*primary, *lexical]
+            selected = [*primary, *exact_paths, *lexical]
             remaining_files = max(0, maximum_files - len(selected))
             related = related_symbol_hits(
                 root,

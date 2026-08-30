@@ -42,10 +42,8 @@ class HealthState(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
-class RepositoryRole(StrEnum):
-    RUNTIME_SOURCE = "runtime_source"
-    SHARED_LIBRARY = "shared_library"
-    INFRASTRUCTURE = "infrastructure"
+class RepositoryAnalysisMode(StrEnum):
+    CODE = "code"
     DOCUMENTATION = "documentation"
 
 

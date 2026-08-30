@@ -20,7 +20,9 @@ from lode.db.models import (
     AIInvocation,
     EvidenceArtifact,
     EvidenceAssertion,
+    GitRepository,
     Investigation,
+    InvestigationDescriptorSnapshot,
     InvestigationJob,
     InvestigationOperation,
     InvestigationOperationEvent,
@@ -62,17 +64,31 @@ class PostgresInvestigationStore:
 
     async def static_capabilities(self, investigation_id: int) -> Sequence[CapabilityEntry]:
         async with self.session_factory() as session:
-            snapshots = tuple(
+            rows = tuple(
                 (
                     await session.execute(
-                        select(InvestigationRepositorySnapshot)
+                        select(InvestigationRepositorySnapshot, GitRepository)
+                        .join(
+                            GitRepository,
+                            GitRepository.id == InvestigationRepositorySnapshot.repository_id,
+                        )
                         .where(
                             InvestigationRepositorySnapshot.investigation_id == investigation_id,
-                            InvestigationRepositorySnapshot.frozen_candidate_sha.is_not(None),
+                            InvestigationRepositorySnapshot.analysis_mode == "code",
                         )
                         .order_by(
                             InvestigationRepositorySnapshot.priority,
                             InvestigationRepositorySnapshot.id,
+                        )
+                    )
+                ).all()
+            )
+            descriptors = tuple(
+                (
+                    await session.execute(
+                        select(InvestigationDescriptorSnapshot).where(
+                            InvestigationDescriptorSnapshot.investigation_id == investigation_id,
+                            InvestigationDescriptorSnapshot.descriptor_kind == "repository",
                         )
                     )
                 )
@@ -84,12 +100,23 @@ class PostgresInvestigationStore:
                 action_id=f"source:{snapshot.id}:inspect",
                 operation_kind="source_read",
                 evidence_types=("source_file",),
-                evidence_anchors=("incident.input",),
+                evidence_anchors=("incident.input", "runtime.evidence", "source.evidence"),
                 resource_summary={
                     "repository_snapshot_id": snapshot.id,
-                    "role": snapshot.role,
-                    "revision_role": snapshot.frozen_revision_role,
-                    "resolution_status": snapshot.frozen_resolution_status,
+                    "repository_id": repository.id,
+                    "repository_full_name": repository.full_name,
+                    "repository_name": repository.name,
+                    "analysis_mode": snapshot.analysis_mode,
+                    "is_alert_source": snapshot.is_alert_source,
+                    "bound_branch": snapshot.selected_branch,
+                    "revision_policy": snapshot.revision_policy,
+                    "frozen_revision_sha": snapshot.frozen_revision_sha,
+                    "revision_authority": snapshot.revision_authority,
+                    "component_identity_catalog": [
+                        descriptor.content.get("descriptor", {})
+                        for descriptor in descriptors
+                        if descriptor.content.get("repository_snapshot_id") == snapshot.id
+                    ],
                 },
                 resource_key=f"repository:{snapshot.repository_id}",
                 server_cost=0.0,
@@ -99,7 +126,7 @@ class PostgresInvestigationStore:
                 data_class="source_code",
                 max_parallelism=1,
             )
-            for snapshot in snapshots
+            for snapshot, repository in rows
         )
 
     async def load_state(self, investigation_id: int) -> InvestigationState:
@@ -203,9 +230,7 @@ class PostgresInvestigationStore:
                 remaining_native_reads=max(
                     0,
                     min(
-                        _positive_int(
-                            configured.get("max_native_reads"), limits.max_native_reads
-                        ),
+                        _positive_int(configured.get("max_native_reads"), limits.max_native_reads),
                         limits.max_native_reads,
                     )
                     - _nonnegative_int(usage.get("native_reads")),
@@ -213,9 +238,7 @@ class PostgresInvestigationStore:
                 remaining_output_bytes=max(
                     0,
                     min(
-                        _positive_int(
-                            configured.get("max_output_bytes"), limits.max_output_bytes
-                        ),
+                        _positive_int(configured.get("max_output_bytes"), limits.max_output_bytes),
                         limits.max_output_bytes,
                     )
                     - _nonnegative_int(usage.get("output_bytes")),
@@ -231,9 +254,7 @@ class PostgresInvestigationStore:
                 remaining_timeout_ms=max(
                     0,
                     min(
-                        _positive_int(
-                            configured.get("timeout_seconds"), limits.timeout_seconds
-                        ),
+                        _positive_int(configured.get("timeout_seconds"), limits.timeout_seconds),
                         limits.timeout_seconds,
                     )
                     * 1_000
@@ -753,6 +774,16 @@ def _plain_operation(value: PlannedOperation) -> dict[str, Any]:
         "stop_condition": value.stop_condition,
         "estimated_cost": value.estimated_cost,
         "depends_on": list(value.depends_on),
+        "source_query": (
+            None
+            if value.source_query is None
+            else {
+                "terms": list(value.source_query.terms),
+                "symbols": list(value.source_query.symbols),
+                "path_hints": list(value.source_query.path_hints),
+                "evidence_refs": list(value.source_query.evidence_refs),
+            }
+        ),
     }
 
 

@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from lode.db.models import (
+    EvidenceAssertion,
     EvidenceCollection,
     EvidenceReadAttempt,
     Investigation,
@@ -71,8 +72,7 @@ class NativeReadOperationExecutor:
                 await session.execute(
                     select(InvestigationConnectorSnapshot).where(
                         InvestigationConnectorSnapshot.investigation_id == row.investigation_id,
-                        InvestigationConnectorSnapshot.connector_id
-                        == candidate.connector_id,
+                        InvestigationConnectorSnapshot.connector_id == candidate.connector_id,
                     )
                 )
             ).scalar_one_or_none()
@@ -114,8 +114,39 @@ class NativeReadOperationExecutor:
                 investigation_window_end=investigation.window_finished_at,
                 native_reads_used=used,
                 archived_bytes_used=archived_bytes,
+                trace_discovery_required=(
+                    candidate.language == "logql"
+                    and "incident.trace_id" in candidate.value_bindings.values()
+                    and not bool(
+                        (
+                            await session.execute(
+                                select(EvidenceAssertion.id)
+                                .where(
+                                    EvidenceAssertion.investigation_id == row.investigation_id,
+                                    EvidenceAssertion.structured_claim["claim_type"].astext
+                                    == "sealed_trace_correlation",
+                                )
+                                .limit(1)
+                            )
+                        ).scalar_one_or_none()
+                    )
+                ),
+                trace_value_ref="incident.trace_id",
             )
-            authorized = await EvidenceAccessAuthorizer(session, self.registry).authorize(candidate, context)
+            authorized = await EvidenceAccessAuthorizer(session, self.registry).authorize(
+                candidate, context
+            )
+            if authorized.outcome == "reuse":
+                return OperationResult(
+                    "succeeded",
+                    {
+                        "artifact_refs": list(authorized.reused_artifact_refs),
+                        "reused": True,
+                        "query_fingerprint": authorized.fingerprint,
+                    },
+                    authorized.reused_artifact_refs,
+                    {"output_bytes": 0, "duration_ms": 0, "cost": 0.0},
+                )
             if authorized.outcome != "allow" or authorized.token is None:
                 return OperationResult(
                     "rejected",

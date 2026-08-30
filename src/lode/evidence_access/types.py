@@ -71,6 +71,8 @@ class AccessContext:
     investigation_window_end: datetime
     native_reads_used: int = 0
     archived_bytes_used: int = 0
+    trace_discovery_required: bool = False
+    trace_value_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,3 +122,4 @@ class AuthorizedReadResult:
     authorized_read_id: int | None = None
     token: str | None = None
     fingerprint: str | None = None
+    reused_artifact_refs: tuple[int, ...] = ()

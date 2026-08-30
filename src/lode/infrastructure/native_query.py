@@ -37,6 +37,11 @@ from lode.domain.types import ModelRole
 from lode.engine.llm import ResponseSchema
 from lode.evidence_access.candidate import NativeReadCandidateInput
 from lode.evidence_connectors.registry import build_native_policy_registry
+from lode.infrastructure.model_evidence import (
+    assertions_by_artifact,
+    model_assertion_graph,
+    model_evidence_package,
+)
 from lode.infrastructure.model_runtime import ModelRuntimeUnavailable, PostgresModelRuntime
 
 _NATIVE_ACTION = re.compile(
@@ -94,9 +99,7 @@ class AuditedNativeQueryGenerator:
             language = action.group(2)
             snapshot = await session.get(InvestigationConnectorSnapshot, snapshot_id)
             investigation = await session.get(Investigation, row.investigation_id)
-            policy = await session.get(
-                InvestigationModelPolicySnapshot, row.investigation_id
-            )
+            policy = await session.get(InvestigationModelPolicySnapshot, row.investigation_id)
             if (
                 snapshot is None
                 or snapshot.investigation_id != row.investigation_id
@@ -126,11 +129,13 @@ class AuditedNativeQueryGenerator:
                 .all()
             )
             pinned_kinds = set(policy.context_policy["pinned_evidence_kinds"])
+            assertions = await assertions_by_artifact(session, row.investigation_id)
+            assertion_graph = await model_assertion_graph(session, row.investigation_id)
             evidence = tuple(
                 ContextEvidence(
                     artifact_id=item.id,
                     artifact_kind=item.artifact_kind,
-                    content=item.content_masked,
+                    content=model_evidence_package(item, assertions.get(item.id, ())),
                     token_count=0,
                     relevance=1.0,
                     pinned=model_evidence_is_pinned(item.artifact_kind, pinned_kinds),
@@ -175,9 +180,7 @@ class AuditedNativeQueryGenerator:
             )
             context_policy = policy.context_policy
             connector_id = snapshot.connector_id
-            execution_budget = ExecutionBudgetPolicy.from_mapping(
-                snapshot.execution_budget_policy
-            )
+            execution_budget = ExecutionBudgetPolicy.from_mapping(snapshot.execution_budget_policy)
             requested_limit = execution_budget.max_result_limit
             requested_timeout_ms = execution_budget.max_timeout_ms
             requested_window = {
@@ -217,6 +220,7 @@ class AuditedNativeQueryGenerator:
                     for value_ref in sorted(value_refs)
                 ],
                 "query_policy": query_policy,
+                "server_assertion_graph": list(assertion_graph),
             }
             investigation_id = investigation.id
         try:

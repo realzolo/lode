@@ -433,7 +433,8 @@ class GitBranchPageOut(_StrictInput):
 class RepositoryBind(_StrictInput):
     account_connection_id: EntityId = Field(gt=0)
     repository_id: EntityId = Field(gt=0)
-    role: Literal["runtime_source", "shared_library", "infrastructure", "documentation"]
+    analysis_mode: Literal["code", "documentation"]
+    is_alert_source: bool
     branch_mode: Literal["default", "branch"] = "default"
     branch_name: str | None = Field(default=None, min_length=1, max_length=255)
     priority: int = Field(default=0, ge=0)
@@ -441,6 +442,8 @@ class RepositoryBind(_StrictInput):
 
     @model_validator(mode="after")
     def valid_branch_selection(self):
+        if self.is_alert_source and self.analysis_mode != "code":
+            raise ValueError("the alert source repository must use code analysis")
         if self.branch_name is not None and self.branch_name != self.branch_name.strip():
             raise ValueError("branch name must be trimmed")
         if self.branch_mode == "default" and self.branch_name is not None:
@@ -453,9 +456,8 @@ class RepositoryBind(_StrictInput):
 class RepositoryBindingPatch(_StrictPatch):
     nullable_fields: ClassVar[frozenset[str]] = frozenset({"branch_name"})
     expected_revision: int = Field(gt=0)
-    role: Literal["runtime_source", "shared_library", "infrastructure", "documentation"] | None = (
-        None
-    )
+    analysis_mode: Literal["code", "documentation"] | None = None
+    is_alert_source: bool | None = None
     branch_mode: Literal["default", "branch"] | None = None
     branch_name: str | None = Field(default=None, min_length=1, max_length=255)
     priority: int | None = Field(default=None, ge=0)
@@ -492,7 +494,8 @@ class RepositoryBindingOut(_StrictInput):
     branch_mode: Literal["default", "branch"]
     branch_name: str | None
     effective_branch: str
-    role: str
+    analysis_mode: Literal["code", "documentation"]
+    is_alert_source: bool
     priority: int
     description: str
     state: str
@@ -512,13 +515,16 @@ class RepositoryAnalysisJobOut(_ORMOutput):
     graph_revision_id: EntityId | None
     scanned_file_count: int
     issue_count: int
-    failure_code: Literal[
-        "repository_access_unavailable",
-        "repository_branch_unavailable",
-        "repository_checkout_failed",
-        "repository_scan_limit_exceeded",
-        "repository_analysis_failed",
-    ] | None
+    failure_code: (
+        Literal[
+            "repository_access_unavailable",
+            "repository_branch_unavailable",
+            "repository_checkout_failed",
+            "repository_scan_limit_exceeded",
+            "repository_analysis_failed",
+        ]
+        | None
+    )
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
@@ -597,13 +603,9 @@ def _validate_database_ca_certificate(value: str | None) -> str | None:
     return value
 
 
-def _validate_database_tls_configuration(
-    tls_mode: str, ca_certificate_pem: str | None
-) -> None:
+def _validate_database_tls_configuration(tls_mode: str, ca_certificate_pem: str | None) -> None:
     if tls_mode == "require" and ca_certificate_pem is not None:
-        raise ValueError(
-            "database CA certificate is valid only with full TLS verification"
-        )
+        raise ValueError("database CA certificate is valid only with full TLS verification")
 
 
 class _ConnectorCreateBase(_StrictInput):
@@ -688,9 +690,7 @@ class PostgreSQLConnectorCreate(_ConnectorCreateBase):
 
     @model_validator(mode="after")
     def valid_allowed_schemas(self):
-        _validate_database_tls_configuration(
-            self.tls_mode, self.ca_certificate_pem
-        )
+        _validate_database_tls_configuration(self.tls_mode, self.ca_certificate_pem)
         if len(self.allowed_schemas) != len(set(self.allowed_schemas)):
             raise ValueError("PostgreSQL allowed schemas must be unique")
         if any(
@@ -725,9 +725,7 @@ class MySQLConnectorCreate(_ConnectorCreateBase):
 
     @model_validator(mode="after")
     def valid_tls_configuration(self):
-        _validate_database_tls_configuration(
-            self.tls_mode, self.ca_certificate_pem
-        )
+        _validate_database_tls_configuration(self.tls_mode, self.ca_certificate_pem)
         return self
 
 

@@ -72,7 +72,8 @@ deployment-canary observations to pass the statistical and non-regression gate.
   default branch or fixes one verified remote branch; branches are provider-read,
   pageable/searchable values and are never accepted as arbitrary refs, tags, or
   SHAs. Repository and Git-account identity cannot be edited in place. Binding
-  edits and soft disable/restore use optimistic revisions; role, branch, and
+  edits and soft disable/restore use optimistic revisions; analysis mode,
+  alert-source selection, branch, and
   enablement changes make the current analysis stale, while priority and description
   remain metadata-only. Investigation and analysis snapshots resolve the
   binding's exact account and current credential revision and fail closed on
@@ -81,6 +82,12 @@ deployment-canary observations to pass the statistical and non-regression gate.
   GitHub, GitLab, and Gitee account tokens are verified
   before their repository catalogues are used. GitHub Enterprise Server and
   GitLab Self-Managed may override the API root; Gitee is official-endpoint only.
+  Repository bindings have no service/library/infrastructure role. Their only
+  semantic controls are `analysis_mode` (`code` or `documentation`) and
+  `is_alert_source`; the latter is valid only for code. A Workspace that can
+  start Kafka ingestion has exactly one active alert-source binding. Service,
+  gateway, Worker, library, and infrastructure identity comes from scanned Build
+  Units, Components, and aliases rather than operator-assigned repository roles.
 - `contracts/v1/database/invariants.json` freezes the required trigger inventory. The
   migration enforces timestamp updates, secret-free ordinary JSON,
   immutability, archived-investigation read-only behavior, authorization-chain
@@ -120,7 +127,8 @@ deployment-canary observations to pass the statistical and non-regression gate.
 - `src/lode/infrastructure/repository_analysis.py` owns the durable, leased
   repository-analysis workflow. An operator explicitly starts analysis for the
   current active bindings; the job stores an immutable hash-bound binding input
-  snapshot (binding/account/repository identity, role, effective branch, and
+  snapshot (binding/account/repository identity, `analysis_mode`,
+  `is_alert_source`, effective branch, and
   structural configuration revision). The worker always uses that snapshot, while rechecking current
   credential and repository access safety, resolves the selected branch to a full
   SHA, reads disposable exact-revision checkouts, publishes the ResourceGraph, and
@@ -135,7 +143,8 @@ deployment-canary observations to pass the statistical and non-regression gate.
   with distinct stable codes. Diagnostics never include manifest contents, raw parser
   exceptions, credentials, or tokens. `PyYAML` is a direct runtime dependency solely
   for safe YAML parsing; JSON, TOML, and XML use standard-library structured parsers.
-- Build Units are created only for `runtime_source` bindings. Semantic
+- Build Units are created for every `analysis_mode=code` binding. Documentation
+  bindings provide bounded context but never create executable Build Units. Semantic
   annotations may reference scanner-owned observations and candidate paths but
   cannot create paths, repository bindings, access scopes, or credentials and
   never count as independent identity evidence. Cross-batch alias conflict
@@ -203,7 +212,15 @@ deployment-canary observations to pass the statistical and non-regression gate.
   matcher. Only server code escapes set values into regex matchers. Branches
   execute independently under one shared budget, then deduplicate and sort;
   any branch failure rejects the complete read. Exact ValueRef string nodes are
-  reparsed after binding. Third-party HTTP evidence Connectors accept canonical
+  reparsed after binding. The first LogQL query using `incident.trace_id`
+  replaces the model selector with the complete Connector root selector; it
+  cannot narrow discovery to one app. Archival records the full root DNF,
+  allowed and returned apps, scopes without hits, truncation, and record count,
+  emits normalized `ObservedEvent` business attributes, and creates a
+  server-generated `sealed_trace_correlation` assertion. The trace plaintext
+  and enumerable hash never enter ordinary JSON, model context, logs, API, or
+  reports. Later component-scoped queries require prior evidence identifying
+  that component and create their own scoped correlation assertion. Third-party HTTP evidence Connectors accept canonical
   HTTP or HTTPS origins, including authenticated private-network deployments;
   redirects and URL-embedded credentials remain disabled.
 - Elasticsearch 8/9 and OpenSearch 2/3 use separate parser/policy versions,
@@ -290,20 +307,32 @@ deployment-canary observations to pass the statistical and non-regression gate.
   execution bridge. Connector credentials are hashed without decryption while
   snapshots are frozen; later control-plane edits cannot change an existing
   investigation.
-- Intake now freezes repository resolution, connector instances/scopes, eligible
+- Intake now freezes repository policy, connector instances/scopes, eligible
   model binding revisions, model policy, context policy, architecture context,
   and graph identity inside the same transaction as the investigation and job.
   Repository snapshots retain the exact URL, read-only credential identity,
-  full SHA, revision role, and resolution status. Model policy
+  selected branch, analysis mode, alert-source marker, revision policy, frozen
+  SHA when available, and authority status. Kafka `source_revision` is frozen
+  as authoritative only on the alert-source repository without a synchronous
+  remote Git check. Every other repository starts with `bound_branch_head`
+  pending and freezes that branch HEAD on its first source read. Model policy
   `eligible_bindings` contains explicit `{binding_id, revision}` objects; an ID
   or revision mismatch fails closed instead of selecting current control-plane
   state.
 - `src/lode/infrastructure/git_source.py`, `source_executor.py`, and
   `source_store.py` provide shell-free, bounded, disposable exact-revision source
-  reads. The alert SHA is never replaced by a default branch. Multi-repository
-  exact matches remain ambiguous, secondary/default-branch matches are search
-  candidates, and archived source artifacts retain repository snapshot, SHA,
-  role, path, symbol, line range, masking, and immutable assessment provenance.
+  reads. A structured `source_query` carries bounded exact terms, symbols, path
+  hints, and source evidence IDs; every value must occur in cited evidence,
+  stack frames, or verified component/repository descriptions. Runtime evidence
+  that identifies a repository deterministically rejects a different repository
+  selection. The alert SHA remains authoritative for the alert source, while a
+  non-alert repository's frozen bound-branch HEAD is authoritative by Workspace
+  contract. Only an explicit runtime SHA conflict or absence of cited exact
+  path/symbol anchors produces `source_snapshot_incompatible`; lack of a generic
+  deployment-version proof does not. Archived source artifacts retain repository
+  snapshot, SHA, revision origin, path, symbol, line range, masking, and authority/
+  compatibility assessment provenance. Source authority constrains only code
+  findings for the same repository.
 - `src/lode/application/model_routing.py`, `context.py`, and
   `context_compaction.py` plus `src/lode/infrastructure/model_runtime.py` own
   frozen role/execution-class routing, per-investigation and per-binding call/
@@ -607,16 +636,19 @@ start/pause/resume, and desired-versus-observed listener state. `GET
 /workspaces/{workspace_id}/readiness` returns typed `passed`, `warning`, and
 `blocked` checks plus consumer identity, assigned partitions, heartbeat, and
 error state. Every transition into active Kafka ingestion must fail closed
-unless all three blocking conditions hold:
+unless all four blocking conditions hold:
 
 1. the Workspace has its required globally unique ingestion topic;
 2. its active model policy can route every required role to an active,
    protocol-healthy account model;
-3. the broker can reach the configured topic.
+3. the broker can reach the configured topic;
+4. exactly one active `analysis_mode=code` repository is marked
+   `is_alert_source=true`.
 
 Initial start and resume call the same backend readiness gate. Current
 repository analysis, healthy evidence connectors, and non-empty architecture
-context are explicit warnings; they do not block alert ingestion.
+context are explicit warnings; they do not block alert ingestion. A missing or
+ambiguous alert source is a repository blocker.
 Model readiness requires every mandatory model role to have a healthy current
 binding that accepts the baseline `masked` data class used by the first planner
 decision; role-only coverage cannot make a Workspace ready.
@@ -721,11 +753,15 @@ do not use Kafka do not validate Kafka transport configuration at startup.
 (`en`, `zh`); it applies only to new investigations and is frozen into every
 investigation and all model role prompts.
 
-Every action uses a server-generated fingerprint and may be attempted once; succeeded,
-rejected, failed, and interrupted operations all prevent the planner from selecting the
-same fingerprint again. Connector evidence reuse uses the complete immutable query
-fingerprint, including connector, endpoint, generated query, time window, direction and
-limit. Steps and operations commit independently. PostgreSQL permits one running
+Operation ordinal is the durable wave idempotency boundary; `action_id` and
+planner-level operation fingerprints are not global duplicate gates. Connector
+evidence reuse uses the complete authorized effective-query fingerprint,
+including connector snapshot, language, generated query, bound sealed values,
+effective window, direction, limit, timeout, and budget. An identical successful
+native query reuses its artifacts; a different query against the same Connector
+executes normally. Source reuse uses repository snapshot, frozen SHA, normalized
+terms, symbols, path hints, and evidence references; only an identical source
+query reuses its collection. Steps and operations commit independently. PostgreSQL permits one running
 step/decision wave while multiple operations in that wave may run. On worker recovery,
 completed evidence is reused and the first unfinished durable action resumes. A second
 policy rejection after the single repair terminates as `insufficient`, not model
@@ -820,8 +856,9 @@ normalization and persistence services as Kafka. System administrators cannot
 read or operate investigations through the Workbench API.
 Removed service/environment/request fields fail strict validation.
 
-`source_revision` is immutable alert/input evidence for resolving the alert's
-source candidate. It is not a generic runtime commit for every repository.
+`source_revision` is immutable Kafka alert evidence and the authoritative SHA
+for the Workspace alert-source repository. It is not a generic runtime commit
+for every repository and is never compared with non-alert repository snapshots.
 
 ## Source Investigation
 
@@ -832,10 +869,13 @@ identity. Investigation creation freezes repository, component, resource,
 connector-scope, model-policy, architecture-context, and graph-revision
 snapshots. Identity is never learned from an inbound service-name header.
 
-The alert `source_revision` may resolve only the alert's source repository.
-Other repositories and components remain candidates until stack, build,
-deployment, dependency, or connector evidence verifies their participation.
-Unverified candidates are recorded as gaps and never promoted to facts.
+The alert `source_revision` is authoritative only for the single alert-source
+repository. All other code repositories are equal runtime participants: the
+first source operation freezes the configured bound-branch HEAD and treats that
+SHA as production-authoritative by Workspace contract. Runtime logs or component
+identity evidence establish participation and repository relevance; generic
+absence of a deployment SHA is never a gap. Unread and unidentified repositories
+do not appear in source assessments or report gaps.
 
 Repository scanning always receives a frozen lowercase 40-character revision
 and a binding namespace. It walks without following links, reads only bounded
@@ -918,16 +958,28 @@ ordinary config, or audit JSON.
 
 Source lookup order is fixed:
 
-1. Exact file, line, class, and function from the stack at the incident revision.
-2. Incident-revision symbols and structured error identifiers.
-3. Error code definitions and references.
-4. Caller, callee, error branch, exception conversion, return checks, timeout, retry, and related tests.
-5. Resolve each participating component only at the full revision independently
-   observed for it. Multiple revisions remain separate incident observations.
+1. Use the incident trace for a server-generated Loki root-scope discovery over
+   every allowed app and archive its exact correlation assertion.
+2. Parse returned app/service/business fields into `ObservedEvent`, then map
+   evidence-identified Components and repository aliases.
+3. Select the relevant code repository and freeze either its alert SHA or bound
+   branch HEAD according to repository policy.
+4. Search only bounded exact terms, symbols, and path hints grounded in cited
+   evidence, stack frames, or verified component descriptions.
+5. Inspect caller/callee, error branches, exception conversion, return checks,
+   timeout/retry handling, and related tests in further distinct source queries.
 
 Generated build directories are excluded. Project documentation provides vocabulary and repository context only. A file read, path match, error-code match, or README excerpt is never code-cause proof.
 
-The context package always retains normalized input and error structure. Evidence is ordered by causal relevance instead of a simple first-N slice. Exact tokenizer counts are verified before provider calls. Pinned evidence must fit or the route fails; optional evidence may be replaced once by a validated `ContextSummaryArtifact`, but summaries remain derived context and never become independent evidence. Counter-evidence and source mismatches are pinned through compaction.
+The context package always retains normalized input and error structure. Every
+evidence item contains masked content, masked provenance, source time/revision,
+scope coverage, and its server assertions. Planner, native query, synthesizer,
+and verifier also receive the complete structured server assertion graph,
+including assertions without a supporting artifact link. A confirmed
+`sealed_trace_correlation` assertion is authoritative for its exact claim; a
+model cannot reject the linked Loki records merely because the visible trace or
+request ID was redacted, and model output cannot create such an assertion.
+Evidence is ordered by causal relevance instead of a simple first-N slice. Exact tokenizer counts are verified before provider calls. Pinned evidence must fit or the route fails; optional evidence may be replaced once by a validated `ContextSummaryArtifact`, but summaries remain derived context and never become independent evidence. Counter-evidence and source mismatches are pinned through compaction.
 
 ## Result And Code Contracts
 
@@ -948,9 +1000,15 @@ Reports always separate:
 - `incident_cause`: the actual incident mechanism, including an external service, network, data, or infrastructure failure;
 - `code_diagnosis`: a project defect, a resilience gap, `no_defect`, or `not_found`.
 
-An `InvestigationCodeFinding` with `confirmed` or `hypothesis` must reference an immutable `source_file` artifact and exactly match its repository ID, full SHA, role, path, symbol, and line bounds. It explains faulty behavior, why it violates a contract, expected behavior, trigger, propagation, incident evidence, supporting evidence, counter-evidence, missing validation, and a test scenario.
+An `InvestigationCodeFinding` with `confirmed` or `hypothesis` must reference an immutable `source_file` artifact and exactly match its repository ID, full SHA, revision origin, path, symbol, and line bounds. It explains faulty behavior, why it violates a contract, expected behavior, trigger, propagation, incident evidence, supporting evidence, counter-evidence, missing validation, and a test scenario.
 
-For `confirmed`, the revision must be the immutable runtime-observed incident commit and the location must be linked by stack, runtime/dependency evidence, or the archived alert contract. Missing, malformed, or unresolvable commit evidence is an explicit evidence gap; the default branch must never stand in for incident code. The independent verifier must still prove the branch, trigger, and propagation.
+For `confirmed`, the revision origin must be `alert_revision`, authoritative
+`bound_branch_head`, or independently corroborated `runtime_observed`; the same
+repository assessment must not be incompatible. An explicit runtime SHA conflict
+or evidence-grounded exact path/symbol incompatibility blocks that code finding.
+It does not downgrade an independently verified external-service,
+configuration, network, or data incident cause. The independent verifier must
+still prove the branch, trigger, and propagation for confirmed code.
 
 External causes can be represented accurately while code diagnosis separately reports no project defect or an exact timeout, retry, validation, fallback, or error-preservation weakness.
 
@@ -1022,8 +1080,8 @@ reconnects with the last observed cursor and preserves the last canonical view.
 
 Database revisions may already be deployed and are immutable once executed.
 `alembic/versions/0001_initial.py` creates the original 72-table baseline and
-`0002_repository_binding_analysis.py` is the forward migration to the current
-73-table schema. `0003_schema_catalog_secret_scope.py` updates only the
+`0002_repository_binding_analysis.py` expands it to the 73-table inventory that
+the current forward chain retains. `0003_schema_catalog_secret_scope.py` updates only the
 secret-rejection trigger function: ordinary Connector and scope configuration
 still rejects credential keys recursively, while server-generated Schema
 catalogues may preserve legitimate provider identifiers such as `token` or
@@ -1040,12 +1098,20 @@ investigation verifier plus an owned-evidence incident cause or the exact confir
 code findings referenced by the report. `0009_confirmed_report_invocation_anchors.py`
 makes nested status checks null-safe and requires the report's successful synthesizer,
 verifier, and confirmed findings to belong to the same investigation and verification
-decision. Executed migration files remain immutable. There is one current schema and no
-compatibility view or dual write. The V2 forward migration preserves historical jobs as non-current records,
-freezes available inputs for legacy queued/running tasks, maps the retired
-manifest failure category to `repository_analysis_failed`, and backfills terminal
-result state before enforcing new constraints. Future schema changes use ordinary
-forward migrations.
+decision. `0010_evidence_authority.py` is the intentionally destructive forward
+replacement for repository roles, source revision authority, operation dedupe,
+and report v2 fields. It clears investigations and all derived evidence, report,
+source, and ResourceGraph state; removes every Workspace repository binding; and
+returns active or paused ingestion to `draft` with a new ingestion version so
+consumers stop until readiness passes again. It preserves Workspaces, Git
+accounts and repository catalogues, Connectors, and model configuration. No old
+role is mapped and there is no dual read, alias, or rollback. It installs
+one-time non-alert branch-HEAD snapshot freezing and one-way source-authority
+contradiction triggers. Executed migration files remain immutable. There is one
+current schema and no compatibility view or dual write.
+This architecture/workflow change introduces no new dependency; operators must
+rebind repositories under the new analysis-mode/alert-source contract after
+upgrade. Future schema changes use ordinary forward migrations.
 
 `next_lode_id()` and its state sequence are created before business tables in
 the initial migration. Tests exercise concurrent connections, independent
@@ -1095,7 +1161,7 @@ topic writes. The intake checker verifies strict validation, all dedupe layers,
 concurrent races, durable DLQ/unassigned handling, current-validator replay,
 manual HTTP intake, and exact encrypted trace round trips. `make resource-check`
 verifies single/monorepo and multi-repository
-identity, non-runtime repository exclusion, recovery reuse, alias conflict,
+identity, documentation-binding Build Unit exclusion, recovery reuse, alias conflict,
 revision invalidation, immutable historical membership, investigation snapshot
 freezing, access-boundary preservation, and the authenticated read-only graph
 view. `uv run python scripts/seed.py` is idempotent and may only create final
@@ -1105,7 +1171,8 @@ The evidence-access checker constructs the full snapshot/model/operation/audit
 chain through the production Elasticsearch policy. It verifies exact opaque
 ValueRef round trips, mandatory timestamp/source/sort constraints, budget
 shrinkage, unsupported SQL-node rejection, disabled-Connector rejection, duplicate
-fingerprint rejection, encrypted-only effective actions, signed hash-bound
+in-flight/failed fingerprint rejection, exact successful-query reuse,
+different-query execution, encrypted-only effective actions, signed hash-bound
 tokens, forged permit rejection, one adapter call under concurrent replay, and
 terminal immutable success and provider-rate-limit attempts.
 
@@ -1113,7 +1180,10 @@ terminal immutable success and provider-rate-limit attempts.
 JSON policy, provider request/response fixture, version isolation,
 budgeted introspection, stable pagination, partial response, timeout/rate/auth/5xx,
 ValueRef injection, aggregation cost, masking, prompt-injection marking,
-registry and forged-permit tests. Run `make install` first; it
+registry and forged-permit tests. It also verifies server-expanded three-app
+trace discovery, complete scope coverage, Payssion business-field parsing,
+sealed trace assertions, and model packages without trace plaintext or hashes.
+Run `make install` first; it
 performs both `uv sync --all-extras` and the locked, script-disabled npm install
 for `tools/logql_parser`. The backend Docker image builds that parser under
 Node 24 and copies only its runtime plus the Node executable into the Python
@@ -1172,7 +1242,10 @@ repository analysis, shows the exact analyzed branch and commit for every bindin
 warning diagnostics, and current/expired status. It presents identified build units
 and components only after a successful run, not raw resource-graph payloads or the
 internal binding revision. The repository table includes the actual account used by
-every binding plus edit, soft-unbind, and restore actions; unbind confirmation makes
+every binding, `analysis_mode`, and alert-source status plus edit, soft-unbind,
+and restore actions. The editor exposes code/documentation selection and one
+Workspace-wide alert-source choice; it never offers service/library/
+infrastructure repository roles. Unbind confirmation makes
 clear that history is retained. There is no separate Workspace Git-account
 authorization step or entitlement selector.
 Connector forms are one provider-specific page grouped into basic information,
@@ -1327,7 +1400,7 @@ archive immutability, structured operation detail, SSE replay,
 permissions, masking, and fresh schema creation.
 
 Resource-understanding changes must additionally cover single repositories,
-nested Node/Python/JVM workspaces, multi-repository Components, non-runtime
+nested Node/Python/JVM workspaces, multi-repository Components, documentation
 repositories, path/symlink/YAML/XML attacks, bounded structure parsing,
 provenance independence, within/cross-publication alias conflicts, annotation
 authorization expansion, observation/publication idempotency, invalidation,
@@ -1337,7 +1410,8 @@ Evidence-access kernel changes must cover duplicate/oversized/deep/invalid
 candidate JSON, every stable rejection class, snapshot ownership, missing or
 partial parser behavior, scope and budget intersection, arbitrary ValueRef
 strings and injection shapes, authorization key separation, token tamper/
-expiry/replay, fingerprint dedupe, Connector lifecycle changes, forged execution permits,
+expiry/replay, full authorized-query fingerprint reuse, distinct-query execution,
+Connector lifecycle changes, forged execution permits,
 preflight/execution/cancellation terminals, output bounds, and immutable audit.
 Native-query changes must additionally cover operation-bound invocation ownership,
 unknown or transformed sentinels, server-derived bindings/window/limit/timeout,
@@ -1352,7 +1426,9 @@ recursive Query DSL and aggregation allowlists, bucket/cardinality limits,
 independent Elasticsearch/OpenSearch version proof, schema introspection,
 provider request snapshots, stable pagination/order, partial and malformed
 responses, timeout/429/5xx/auth classification, redirect/byte controls, secret
-masking, prompt-injection marking, and provider-neutral core
+masking, prompt-injection marking, first-trace root-scope replacement, returned/
+missing app coverage, server-only correlation assertions, trace plaintext/hash
+absence, `ObservedEvent` business fields, and provider-neutral core
 imports.
 
 SQL/HTTPS/Command changes must additionally cover PostgreSQL and MySQL dialect
@@ -1389,12 +1465,17 @@ check English/Chinese light/dark layouts at 1440px, 768px, and 390px without
 page-level overflow or overlap.
 
 Source/model/report changes must additionally cover exact-SHA resolution with no
-default-branch fallback, ambiguous multi-repository matches, credential/revision
-drift, source/config authority matrices, strict source artifact provenance,
+alert-source fallback, authoritative non-alert bound-branch freezing,
+runtime-SHA and exact-anchor incompatibility, evidence-grounded source queries,
+same-repository multi-query execution, exact-query reuse, repository relevance,
+unparticipating-repository exclusion, credential/revision drift, source/config
+authority matrices, strict source artifact provenance,
 latency/reasoning routing, role and provider/deployment isolation, per-binding
 budgets, tokenizer boundaries, pinned-context overflow, compaction reference and
 literal drift, replay without another provider call, verifier disagreement,
 immutable report retry, prompt/evidence injection, deterministic gold cases,
-false-confirmed metrics, and Wilson confidence release gates.
+external-cause independence from code authority, full server assertion graphs,
+the `215272664893440` Payssion sandbox regression, false-confirmed metrics, and
+Wilson confidence release gates.
 
 Before declaring work complete, assess architecture, dependency, and development-workflow impact. Update this file immediately when any of those contracts change, then verify the documented commands and behavior match the implementation.

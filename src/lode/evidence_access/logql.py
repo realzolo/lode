@@ -15,7 +15,7 @@ from typing import Any
 from lode.application.intake import canonical_hash
 from lode.evidence_access.budget import intersect_budget
 from lode.evidence_access.candidate import NativeReadCandidateInput, QueryPayload
-from lode.evidence_access.loki_scope import matcher_text
+from lode.evidence_access.loki_scope import matcher_text, selector_for_branch
 from lode.evidence_access.types import (
     AccessContext,
     AccessRejection,
@@ -201,12 +201,8 @@ class LogQLPolicy:
                 "allowed pipeline stages",
             )
         )
-        allowed_labels = sorted(
-            self._string_set(schema_catalog.get("labels"), "schema labels")
-        )
-        allowed_fields = sorted(
-            self._string_set(schema_catalog.get("fields", []), "schema fields")
-        )
+        allowed_labels = sorted(self._string_set(schema_catalog.get("labels"), "schema labels"))
+        allowed_fields = sorted(self._string_set(schema_catalog.get("fields", []), "schema fields"))
         return {
             "payload_shape": {"query": "string"},
             "query_kind": ["log"],
@@ -256,12 +252,31 @@ class LogQLPolicy:
             raise AccessRejection("budget_violation", "LogQL requires an absolute bounded window")
         syntax = self._parser.parse(str(action.canonical_action["query"]))
         self._validate_scope(syntax, context)
+        trace_discovery = (
+            context.trace_discovery_required
+            and context.trace_value_ref is not None
+            and context.trace_value_ref in candidate.value_bindings.values()
+        )
+        if trace_discovery and (
+            syntax.query_kind != "log"
+            or not self._trace_ref_is_exact_line_filter(syntax, candidate)
+        ):
+            raise AccessRejection(
+                "scope_violation",
+                "initial trace discovery requires one exact line filter",
+            )
         queries: list[str] = []
         effective_syntaxes: list[LogQLSyntax] = []
         branches = self._root_branches(context)
         for branch in branches:
-            query, _ = self._inject_root_matchers(
-                str(action.canonical_action["query"]), syntax, branch
+            query = (
+                self._replace_selector_with_root(
+                    str(action.canonical_action["query"]), syntax, branch
+                )
+                if trace_discovery
+                else self._inject_root_matchers(
+                    str(action.canonical_action["query"]), syntax, branch
+                )[0]
             )
             effective_syntax = self._parser.parse(query)
             self._validate_syntax(effective_syntax, allow_generated_matchers=True)
@@ -275,7 +290,11 @@ class LogQLPolicy:
         step_seconds = max(1, math.ceil(duration / max_samples)) if metric else None
         if metric and not bool(context.scope_config.get("allow_metric_queries", False)):
             raise AccessRejection("scope_violation", "metric LogQL is disabled by the snapshot")
-        diff["root_filter"] = {"branch_count": len(branches), "injected": True}
+        diff["root_filter"] = {
+            "branch_count": len(branches),
+            "injected": True,
+            "full_scope_discovery": trace_discovery,
+        }
         effective_action = {
             "adapter_kind": "loki",
             "queries": queries,
@@ -286,14 +305,21 @@ class LogQLPolicy:
             "direction": "forward",
             "step_seconds": step_seconds,
             "timeout_ms": budget.timeout_ms,
+            "trace_discovery": trace_discovery,
         }
         return PolicyEvaluation(
             effective_action=effective_action,
-            effective_structural_hash=self._effective_structure(effective_action, effective_syntaxes),
+            effective_structural_hash=self._effective_structure(
+                effective_action, effective_syntaxes
+            ),
             validation_decisions=(
                 {"check": "logql_complete_cst", "outcome": "allow", "parser": self.parser_version},
                 {"check": "logql_node_allowlist", "outcome": "allow"},
                 {"check": "logql_root_scope", "outcome": "allow"},
+                {
+                    "check": "sealed_trace_global_discovery",
+                    "outcome": "allow" if trace_discovery else "not_applicable",
+                },
                 {"check": "logql_absolute_budget", "outcome": "allow"},
             ),
             constraint_diff=diff,
@@ -321,7 +347,9 @@ class LogQLPolicy:
             for sentinel, (start, end) in sorted(
                 spans.items(), key=lambda item: item[1][0], reverse=True
             ):
-                query = query[:start] + json.dumps(values[sentinel], ensure_ascii=False) + query[end:]
+                query = (
+                    query[:start] + json.dumps(values[sentinel], ensure_ascii=False) + query[end:]
+                )
             bound_syntax = self._parser.parse(query)
             self._validate_syntax(bound_syntax, allow_generated_matchers=True)
             bound_queries.append(query)
@@ -335,14 +363,15 @@ class LogQLPolicy:
             canonical_action=effective,
             structural_hash=shape,
             parse_tree_hash=canonical_hash(
-                {"queries": bound_queries, "trees": [item.structural_tree for item in bound_syntaxes]}
+                {
+                    "queries": bound_queries,
+                    "trees": [item.structural_tree for item in bound_syntaxes],
+                }
             ),
         )
 
     @staticmethod
-    def _validate_syntax(
-        syntax: LogQLSyntax, *, allow_generated_matchers: bool = False
-    ) -> None:
+    def _validate_syntax(syntax: LogQLSyntax, *, allow_generated_matchers: bool = False) -> None:
         if len(syntax.selectors) != 1:
             raise AccessRejection("unsupported_node", "LogQL must contain exactly one selector")
         nodes = set(syntax.node_counts)
@@ -400,7 +429,9 @@ class LogQLPolicy:
             required = {
                 (
                     item["label"],
-                    {"equals": "Eq", "not_equals": "Neq", "any_of": "Re", "not_any_of": "Nre"}[item["operator"]],
+                    {"equals": "Eq", "not_equals": "Neq", "any_of": "Re", "not_any_of": "Nre"}[
+                        item["operator"]
+                    ],
                     item["values"][0]
                     if item["operator"] in {"equals", "not_equals"}
                     else "^(?:" + "|".join(re.escape(value) for value in item["values"]) + ")$",
@@ -464,7 +495,8 @@ class LogQLPolicy:
             if item.get("operator") == "Eq"
         }
         missing = [
-            item for item in branch
+            item
+            for item in branch
             if item["operator"] != "equals" or (item["label"], item["values"][0]) not in present
         ]
         if not missing:
@@ -478,9 +510,42 @@ class LogQLPolicy:
             str(item["label"]) for item in missing
         ]
 
-    def _root_branches(
-        self, context: AccessContext
-    ) -> tuple[tuple[Mapping[str, Any], ...], ...]:
+    @staticmethod
+    def _replace_selector_with_root(
+        query: str,
+        syntax: LogQLSyntax,
+        branch: tuple[Mapping[str, Any], ...],
+    ) -> str:
+        selector = syntax.selectors[0]
+        return (
+            query[: int(selector["from"])]
+            + selector_for_branch(branch)
+            + query[int(selector["to"]) :]
+        )
+
+    @staticmethod
+    def _trace_ref_is_exact_line_filter(
+        syntax: LogQLSyntax,
+        candidate: NativeReadCandidateInput,
+    ) -> bool:
+        sentinels = {
+            sentinel
+            for sentinel, value_ref in candidate.value_bindings.items()
+            if value_ref == "incident.trace_id"
+        }
+        if len(sentinels) != 1:
+            return False
+        sentinel = next(iter(sentinels))
+        matches = [
+            item
+            for item in syntax.strings
+            if item.get("value") == sentinel and "LineFilter" in set(item.get("parents", []))
+        ]
+        return len(matches) == 1 and any(
+            item.get("operator") == "PipeExact" for item in syntax.line_filters
+        )
+
+    def _root_branches(self, context: AccessContext) -> tuple[tuple[Mapping[str, Any], ...], ...]:
         value = context.scope_config.get("root_filter_dnf")
         if not isinstance(value, list) or not 1 <= len(value) <= 8:
             raise AccessRejection("scope_violation", "LogQL snapshot has no root filter")
@@ -540,11 +605,13 @@ class LogQLPolicy:
         return spans
 
     @staticmethod
-    def _effective_structure(
-        action: Mapping[str, Any], syntaxes: list[LogQLSyntax]
-    ) -> str:
+    def _effective_structure(action: Mapping[str, Any], syntaxes: list[LogQLSyntax]) -> str:
         shape = {
-            key: ([item.structural_tree for item in syntaxes] if key == "queries" else type(value).__name__)
+            key: (
+                [item.structural_tree for item in syntaxes]
+                if key == "queries"
+                else type(value).__name__
+            )
             for key, value in sorted(action.items())
         }
         return canonical_hash(shape)

@@ -33,7 +33,9 @@ class NativeReadCandidate(CreatedAtMixin, Base):
         BigInteger, ForeignKey("investigation_operations.id", ondelete="CASCADE"), nullable=False
     )
     connector_snapshot_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("investigation_connector_snapshots.id", ondelete="RESTRICT"), nullable=False
+        BigInteger,
+        ForeignKey("investigation_connector_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     model_invocation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("ai_invocations.id", ondelete="RESTRICT"), nullable=False
@@ -64,7 +66,6 @@ class NativeReadCandidate(CreatedAtMixin, Base):
         CheckConstraint("requested_limit > 0", name="limit_positive"),
         CheckConstraint("requested_timeout_ms > 0", name="timeout_positive"),
         CheckConstraint("candidate_hash ~ '^[0-9a-f]{64}$'", name="candidate_hash_sha256"),
-        UniqueConstraint("investigation_id", "candidate_hash", name="uq_native_read_candidate_hash"),
         UniqueConstraint("operation_id", name="uq_native_read_candidate_operation"),
     )
 
@@ -77,7 +78,10 @@ class EvidenceAccessDecision(CreatedAtMixin, Base):
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
     candidate_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("native_read_candidates.id", ondelete="CASCADE"), nullable=False, unique=True
+        BigInteger,
+        ForeignKey("native_read_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
     )
     outcome: Mapped[str] = mapped_column(Text, nullable=False)
     parser_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -114,7 +118,9 @@ class EvidenceAccessDecision(CreatedAtMixin, Base):
             name="snapshot_authorization_hash_sha256",
         ),
         CheckConstraint("decision_hash ~ '^[0-9a-f]{64}$'", name="decision_hash_sha256"),
-        UniqueConstraint("investigation_id", "decision_hash", name="uq_evidence_access_decision_hash"),
+        UniqueConstraint(
+            "investigation_id", "decision_hash", name="uq_evidence_access_decision_hash"
+        ),
     )
 
 
@@ -126,7 +132,10 @@ class AuthorizedEvidenceRead(CreatedAtMixin, Base):
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
     )
     access_decision_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("evidence_access_decisions.id", ondelete="CASCADE"), nullable=False, unique=True
+        BigInteger,
+        ForeignKey("evidence_access_decisions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
     )
     candidate_hash: Mapped[str] = mapped_column(Text, nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
@@ -166,9 +175,7 @@ class EvidenceReadAttempt(CreatedAtMixin, Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     result_artifact_refs: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), nullable=False)
-    metrics: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
+    metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     failure_code: Mapped[str | None] = mapped_column(Text)
     failure_detail: Mapped[dict | None] = mapped_column(JSONB)
 

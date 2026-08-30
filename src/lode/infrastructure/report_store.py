@@ -188,27 +188,17 @@ class PostgresReportStore:
                 )
             ).all()
         )
-        repository_snapshots = tuple(
-            (
-                await self.session.execute(
-                    select(InvestigationRepositorySnapshot)
-                    .where(InvestigationRepositorySnapshot.investigation_id == investigation_id)
-                    .order_by(InvestigationRepositorySnapshot.id)
-                )
-            )
-            .scalars()
-            .all()
-        )
         source_by_id = {
             assessment.id: (revision, snapshot) for assessment, revision, snapshot in source_rows
         }
         source_authority = tuple(
             SourceAuthorityAssessment(
                 repository_snapshot_id=revision.repository_snapshot_id,
-                revision_role=revision.revision_role,
+                revision_origin=revision.revision_origin,
                 requested_ref=revision.requested_ref,
                 resolved_sha=revision.resolved_sha,
-                status=assessment.runtime_match_status,
+                authority_status=assessment.authority_status,
+                compatibility_status=assessment.compatibility_status,
                 runtime_evidence_refs=tuple(assessment.evidence_refs),
                 mismatch_reasons=tuple(assessment.mismatch_reasons),
             )
@@ -265,7 +255,7 @@ class PostgresReportStore:
                     source_assessment_id=finding.source_assessment_id,
                     repository_id=finding.repository_id,
                     revision=finding.revision,
-                    revision_role=finding.revision_role,
+                    revision_origin=finding.revision_origin,
                     path=finding.path,
                     symbol=finding.symbol,
                     start_line=finding.start_line,
@@ -319,28 +309,14 @@ class PostgresReportStore:
                 "build_unit_id": assessment.build_unit_snapshot_id,
                 "component_id": assessment.component_snapshot_id,
                 "revision": revision.resolved_sha,
-                "revision_role": revision.revision_role,
-                "runtime_match_status": assessment.runtime_match_status,
+                "revision_origin": revision.revision_origin,
+                "authority_status": assessment.authority_status,
+                "compatibility_status": assessment.compatibility_status,
                 "mismatch_reasons": list(assessment.mismatch_reasons),
                 "evidence_refs": list(assessment.evidence_refs),
             }
             for assessment, revision, snapshot in source_rows
         ]
-        assessed_snapshot_ids = {revision.repository_snapshot_id for _, revision, _ in source_rows}
-        source_assessment_values.extend(
-            {
-                "repository_id": snapshot.repository_id,
-                "build_unit_id": None,
-                "component_id": None,
-                "revision": snapshot.frozen_candidate_sha,
-                "revision_role": snapshot.frozen_revision_role,
-                "runtime_match_status": snapshot.frozen_resolution_status,
-                "mismatch_reasons": _snapshot_mismatch_reasons(snapshot),
-                "evidence_refs": [],
-            }
-            for snapshot in repository_snapshots
-            if snapshot.id not in assessed_snapshot_ids
-        )
         report_value["source_assessments"] = source_assessment_values
         report_value["configuration_assessments"] = [
             {
@@ -450,7 +426,7 @@ class PostgresReportStore:
         expected = {
             "repository_snapshot_id": snapshot.id,
             "repository_id": finding.repository_id,
-            "revision_role": finding.revision_role,
+            "revision_origin": finding.revision_origin,
             "revision": finding.revision,
             "path": finding.path,
             "symbol": finding.symbol,
@@ -463,7 +439,7 @@ class PostgresReportStore:
             or revision.investigation_id != investigation_id
             or revision.repository_snapshot_id != snapshot.id
             or revision.resolved_sha != finding.revision
-            or revision.revision_role != finding.revision_role
+            or revision.revision_origin != finding.revision_origin
             or any(provenance.get(key) != value for key, value in expected.items())
         ):
             raise ReportValidationError("code_finding_source_provenance_mismatch")
@@ -471,10 +447,11 @@ class PostgresReportStore:
         assert assessment is not None
         return SourceAuthorityAssessment(
             repository_snapshot_id=snapshot.id,
-            revision_role=revision.revision_role,
+            revision_origin=revision.revision_origin,
             requested_ref=revision.requested_ref,
             resolved_sha=revision.resolved_sha,
-            status=assessment.runtime_match_status,
+            authority_status=assessment.authority_status,
+            compatibility_status=assessment.compatibility_status,
             runtime_evidence_refs=tuple(assessment.evidence_refs),
             mismatch_reasons=tuple(assessment.mismatch_reasons),
         )
@@ -540,20 +517,8 @@ def _report_evidence_refs(payload: InvestigationReportPayload) -> frozenset[int]
         values.update(participant.evidence_refs)
     for item in payload.timeline_summary:
         values.update(item.evidence_refs)
-    for item in payload.source_assessments:
-        values.update(item.evidence_refs)
     for item in payload.configuration_assessments:
         values.update(item.evidence_refs)
     for item in (*payload.confirmed_facts, *payload.counter_evidence):
         values.update(item.evidence_refs)
     return frozenset(values)
-
-
-def _snapshot_mismatch_reasons(snapshot: InvestigationRepositorySnapshot) -> list[str]:
-    if snapshot.frozen_resolution_status == "unresolved":
-        return ["source_revision_unresolved"]
-    if snapshot.frozen_resolution_status == "unverified":
-        return ["source_revision_not_runtime_verified"]
-    if snapshot.frozen_resolution_status == "contradicted":
-        return ["runtime_revision_contradicted"]
-    return []

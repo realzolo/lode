@@ -6,17 +6,89 @@ import re
 from pathlib import Path
 from typing import Any
 
-_SKIP_DIRS = {".git", ".next", ".nuxt", ".output", ".tox", ".venv", "__pycache__", "build", "coverage", "dist", "node_modules", "target", "vendor", "venv"}
-_SOURCE_EXT = {".cs", ".go", ".java", ".js", ".jsx", ".kt", ".kts", ".php", ".py", ".rb", ".rs", ".scala", ".sh", ".sql", ".swift", ".ts", ".tsx"}
+_SKIP_DIRS = {
+    ".git",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+    "vendor",
+    "venv",
+}
+_SOURCE_EXT = {
+    ".cs",
+    ".go",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".php",
+    ".py",
+    ".rb",
+    ".rs",
+    ".scala",
+    ".sh",
+    ".sql",
+    ".swift",
+    ".ts",
+    ".tsx",
+}
 _TOKEN_SPLIT = re.compile(r"[\s:.,/()\[\]{}'\"`]+")
-_STOPWORDS = {"and", "cause", "error", "exception", "failed", "failure", "false", "from", "none", "null", "occurred", "service", "stack", "that", "this", "timeout", "traceback", "true", "with"}
+_STOPWORDS = {
+    "and",
+    "cause",
+    "error",
+    "exception",
+    "failed",
+    "failure",
+    "false",
+    "from",
+    "none",
+    "null",
+    "occurred",
+    "service",
+    "stack",
+    "that",
+    "this",
+    "timeout",
+    "traceback",
+    "true",
+    "with",
+}
 _STACK_PATTERNS = (
-    re.compile(r'File\s+"(?P<path>[^\"]+)",\s+line\s+(?P<line>\d+)(?:,\s+in\s+(?P<symbol>[^\s]+))?'),
-    re.compile(r"(?:at\s+(?:(?P<symbol>[^\s(]+)\s+\()?)(?P<path>[^\s():]+):(?P<line>\d+)(?::\d+)?\)?"),
-    re.compile(r"(?P<path>[\w./\\-]+\.(?:go|rs|rb|php|cs|swift|scala|kt|kts)):(?P<line>\d+)(?::\d+)?"),
+    re.compile(
+        r'File\s+"(?P<path>[^\"]+)",\s+line\s+(?P<line>\d+)(?:,\s+in\s+(?P<symbol>[^\s]+))?'
+    ),
+    re.compile(
+        r"(?:at\s+(?:(?P<symbol>[^\s(]+)\s+\()?)(?P<path>[^\s():]+):(?P<line>\d+)(?::\d+)?\)?"
+    ),
+    re.compile(
+        r"(?P<path>[\w./\\-]+\.(?:go|rs|rb|php|cs|swift|scala|kt|kts)):(?P<line>\d+)(?::\d+)?"
+    ),
 )
 _CALL_PATTERN = re.compile(r"(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(")
-_CALL_STOPWORDS = {"Boolean", "Error", "Number", "Object", "Promise", "Response", "String", "catch", "for", "if", "switch", "while"}
+_CALL_STOPWORDS = {
+    "Boolean",
+    "Error",
+    "Number",
+    "Object",
+    "Promise",
+    "Response",
+    "String",
+    "catch",
+    "for",
+    "if",
+    "switch",
+    "while",
+}
 
 
 def _walk_strings(value: object) -> list[str]:
@@ -106,7 +178,14 @@ def extract_stack_frames(stack: str | None) -> list[dict[str, Any]]:
             line = int(groups["line"])
             key = (path, line)
             if key not in seen:
-                frames.append({"path": path, "line": line, "symbol": (groups.get("symbol") or "").strip() or None, "raw": raw_line.strip()[:1_000]})
+                frames.append(
+                    {
+                        "path": path,
+                        "line": line,
+                        "symbol": (groups.get("symbol") or "").strip() or None,
+                        "raw": raw_line.strip()[:1_000],
+                    }
+                )
                 seen.add(key)
             break
     return frames[:40]
@@ -128,14 +207,20 @@ def _resolve_frame_path(root: Path, raw_path: str) -> Path | None:
     return sorted(candidates, key=lambda item: len(item.parts))[0] if candidates else None
 
 
-def _symbol_range(lines: list[str], target_line: int, symbol_hint: str | None) -> tuple[int, int, str | None]:
+def _symbol_range(
+    lines: list[str], target_line: int, symbol_hint: str | None
+) -> tuple[int, int, str | None]:
     target = max(1, min(target_line, len(lines)))
     declarations = (
         re.compile(r"^\s*(?:async\s+)?(?:def|function|func|fn)\s+([\w$]+)"),
         re.compile(r"^\s*export\s+default\s+([\w$]+)"),
-        re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>"),
+        re.compile(
+            r"^\s*(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>"
+        ),
         re.compile(r"^\s*(?:export\s+)?class\s+([\w$]+)"),
-        re.compile(r"^\s*(?:public|private|protected|static|final|synchronized|override|open|internal|export|async|[\w<>\[\],?]+\s+)*\s+([\w$]+)\s*\([^;]*\)\s*(?:\{|:)\s*$"),
+        re.compile(
+            r"^\s*(?:public|private|protected|static|final|synchronized|override|open|internal|export|async|[\w<>\[\],?]+\s+)*\s+([\w$]+)\s*\([^;]*\)\s*(?:\{|:)\s*$"
+        ),
     )
 
     def declared_symbol(line: str) -> str | None:
@@ -143,7 +228,16 @@ def _symbol_range(lines: list[str], target_line: int, symbol_hint: str | None) -
             match = declaration.match(line)
             if match:
                 symbol = match.group(1)
-                if symbol not in {"await", "catch", "else", "for", "if", "return", "switch", "while"}:
+                if symbol not in {
+                    "await",
+                    "catch",
+                    "else",
+                    "for",
+                    "if",
+                    "return",
+                    "switch",
+                    "while",
+                }:
                     return symbol
         return None
 
@@ -179,13 +273,20 @@ def _symbol_range(lines: list[str], target_line: int, symbol_hint: str | None) -
     for index in range(target, min(len(lines), start + 160)):
         stripped = lines[index].strip()
         indent = len(lines[index]) - len(lines[index].lstrip())
-        if stripped and index + 1 > target and indent <= base_indent and declared_symbol(lines[index]):
+        if (
+            stripped
+            and index + 1 > target
+            and indent <= base_indent
+            and declared_symbol(lines[index])
+        ):
             end = index
             break
     return start, end, symbol
 
 
-def stack_hits(root: Path, stack: str | None, *, max_files: int = 12, max_bytes: int = 160_000) -> list[dict[str, Any]]:
+def stack_hits(
+    root: Path, stack: str | None, *, max_files: int = 12, max_bytes: int = 160_000
+) -> list[dict[str, Any]]:
     """Open exact stack locations and archive the surrounding symbol body."""
     hits: list[dict[str, Any]] = []
     used = 0
@@ -206,7 +307,20 @@ def stack_hits(root: Path, stack: str | None, *, max_files: int = 12, max_bytes:
         size = len(snippet.encode("utf-8"))
         if hits and used + size > max_bytes:
             continue
-        hits.append({"path": relative, "line": frame["line"], "snippet_start_line": start, "snippet_end_line": end, "snippet": snippet, "symbol": symbol, "terms": [], "score": 10_000 - len(hits), "selection_reason": "exact incident stack frame", "stack_frame": frame["raw"]})
+        hits.append(
+            {
+                "path": relative,
+                "line": frame["line"],
+                "snippet_start_line": start,
+                "snippet_end_line": end,
+                "snippet": snippet,
+                "symbol": symbol,
+                "terms": [],
+                "score": 10_000 - len(hits),
+                "selection_reason": "exact incident stack frame",
+                "stack_frame": frame["raw"],
+            }
+        )
         seen.add(key)
         used += size
         if len(hits) == max_files:
@@ -214,14 +328,71 @@ def stack_hits(root: Path, stack: str | None, *, max_files: int = 12, max_bytes:
     return hits
 
 
-def search_tree(root: Path, terms: list[str], *, max_files: int = 20, max_bytes: int = 200_000, snippet_lines: int = 48) -> list[dict[str, Any]]:
+def path_hits(
+    root: Path,
+    path_hints: list[str],
+    *,
+    max_files: int = 12,
+    max_bytes: int = 160_000,
+) -> list[dict[str, Any]]:
+    """Open exact, evidence-grounded repository paths without executing code."""
+    hits: list[dict[str, Any]] = []
+    used = 0
+    seen: set[str] = set()
+    for hint in path_hints:
+        path = _resolve_frame_path(root, hint)
+        if path is None or path.suffix.lower() not in _SOURCE_EXT:
+            continue
+        relative = str(path.relative_to(root))
+        if relative in seen:
+            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if not lines:
+            continue
+        start, end, symbol = _symbol_range(lines, 1, None)
+        snippet = "\n".join(lines[start - 1 : end])
+        size = len(snippet.encode("utf-8"))
+        if hits and used + size > max_bytes:
+            continue
+        hits.append(
+            {
+                "path": relative,
+                "line": 1,
+                "snippet_start_line": start,
+                "snippet_end_line": end,
+                "snippet": snippet,
+                "symbol": symbol,
+                "terms": [],
+                "score": 9_000 - len(hits),
+                "selection_reason": "exact evidence-grounded path hint",
+            }
+        )
+        seen.add(relative)
+        used += size
+        if len(hits) == max_files:
+            break
+    return hits
+
+
+def search_tree(
+    root: Path,
+    terms: list[str],
+    *,
+    max_files: int = 20,
+    max_bytes: int = 200_000,
+    snippet_lines: int = 48,
+) -> list[dict[str, Any]]:
     """Return bounded lexical candidates; these are never causal proof alone."""
     if not terms:
         return []
     patterns = [(term, re.compile(re.escape(term), re.IGNORECASE)) for term in terms]
     candidates: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in _SOURCE_EXT or any(part in _SKIP_DIRS for part in path.parts):
+        if (
+            not path.is_file()
+            or path.suffix.lower() not in _SOURCE_EXT
+            or any(part in _SKIP_DIRS for part in path.parts)
+        ):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         matches = [(term, pattern.search(text)) for term, pattern in patterns]
@@ -237,7 +408,20 @@ def search_tree(root: Path, terms: list[str], *, max_files: int = 20, max_bytes:
             start = max(1, line - snippet_lines // 2)
             end = min(len(lines), start + snippet_lines - 1)
         snippet = "\n".join(lines[start - 1 : end])
-        candidates.append({"path": str(path.relative_to(root)), "line": line, "snippet_start_line": start, "snippet_end_line": end, "snippet": snippet, "symbol": symbol, "terms": [term for term, _ in matches], "score": len(matches) * 100 + (50 if any(term.isupper() for term, _ in matches) else 0), "selection_reason": "error identifier or symbol candidate; not causal proof"})
+        candidates.append(
+            {
+                "path": str(path.relative_to(root)),
+                "line": line,
+                "snippet_start_line": start,
+                "snippet_end_line": end,
+                "snippet": snippet,
+                "symbol": symbol,
+                "terms": [term for term, _ in matches],
+                "score": len(matches) * 100
+                + (50 if any(term.isupper() for term, _ in matches) else 0),
+                "selection_reason": "error identifier or symbol candidate; not causal proof",
+            }
+        )
     hits: list[dict[str, Any]] = []
     used = 0
     for candidate in sorted(candidates, key=lambda item: (-item["score"], item["path"])):
@@ -274,15 +458,27 @@ def related_symbol_hits(
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in _SOURCE_EXT or any(part in _SKIP_DIRS for part in path.parts):
+        if (
+            not path.is_file()
+            or path.suffix.lower() not in _SOURCE_EXT
+            or any(part in _SKIP_DIRS for part in path.parts)
+        ):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for priority, symbol in enumerate(symbols):
             patterns = (
-                re.compile(rf"^\s*(?:export\s+)?(?:async\s+)?(?:function|def|func|fn)\s+{re.escape(symbol)}\b", re.MULTILINE),
-                re.compile(rf"^\s*(?:export\s+)?(?:const|let|var)\s+{re.escape(symbol)}\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>", re.MULTILINE),
+                re.compile(
+                    rf"^\s*(?:export\s+)?(?:async\s+)?(?:function|def|func|fn)\s+{re.escape(symbol)}\b",
+                    re.MULTILINE,
+                ),
+                re.compile(
+                    rf"^\s*(?:export\s+)?(?:const|let|var)\s+{re.escape(symbol)}\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>",
+                    re.MULTILINE,
+                ),
             )
-            match = next((candidate for pattern in patterns if (candidate := pattern.search(text))), None)
+            match = next(
+                (candidate for pattern in patterns if (candidate := pattern.search(text))), None
+            )
             relative = str(path.relative_to(root))
             if match is None or (relative, symbol) in seen:
                 continue

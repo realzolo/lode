@@ -6,10 +6,9 @@ from collections.abc import Sequence
 from typing import Any
 
 from lode.domain.model_execution import (
-    AuthorityStatus,
     ConfigurationAuthorityAssessment,
     SourceAuthorityAssessment,
-    SourceRevisionRole,
+    SourceRevisionOrigin,
 )
 
 
@@ -18,44 +17,47 @@ class SourceAuthorityEngine:
         self,
         *,
         repository_snapshot_id: int,
-        revision_role: SourceRevisionRole,
+        revision_origin: SourceRevisionOrigin,
         requested_ref: str | None,
         resolved_sha: str | None,
         incident_source_revision: str | None,
-        frozen_resolution_status: AuthorityStatus | None = None,
         runtime_revision_evidence_refs: Sequence[int] = (),
         contradiction_evidence_refs: Sequence[int] = (),
+        contradiction_reasons: Sequence[str] = (),
     ) -> SourceAuthorityAssessment:
         runtime_refs = tuple(runtime_revision_evidence_refs)
         contradiction_refs = tuple(contradiction_evidence_refs)
         reasons: list[str] = []
         if resolved_sha is None:
-            status = "unresolved"
-            reasons.append("source_revision_unresolved")
+            authority_status = "unavailable"
+            compatibility_status = "not_checked"
+            reasons.append("source_revision_unavailable")
         elif contradiction_refs:
-            status = "contradicted"
-            reasons.append("runtime_revision_contradicted")
-        elif frozen_resolution_status == "unverified" and revision_role == "incident_source":
-            status = "unverified"
-            reasons.append("ambiguous_source_revision")
-        elif revision_role == "incident_source" and incident_source_revision == resolved_sha:
-            status = "exact"
-        elif revision_role == "runtime_identified" and runtime_refs:
-            status = "corroborated"
+            authority_status = "contradicted"
+            compatibility_status = "incompatible"
+            reasons.extend(contradiction_reasons or ("runtime_revision_contradicted",))
+        elif (
+            revision_origin == "alert_revision" and incident_source_revision == resolved_sha
+        ) or revision_origin == "bound_branch_head":
+            authority_status = "authoritative"
+            compatibility_status = "not_checked"
+        elif revision_origin == "runtime_observed" and runtime_refs:
+            authority_status = "corroborated"
+            compatibility_status = "compatible"
         else:
-            status = "unverified"
-            if revision_role == "repository_search_candidate":
-                reasons.append("repository_search_is_not_runtime_evidence")
-            elif revision_role == "incident_source":
+            authority_status = "contradicted"
+            compatibility_status = "incompatible"
+            if revision_origin == "alert_revision":
                 reasons.append("resolved_revision_does_not_match_alert_source")
             else:
                 reasons.append("runtime_revision_has_no_independent_evidence")
         return SourceAuthorityAssessment(
             repository_snapshot_id=repository_snapshot_id,
-            revision_role=revision_role,
+            revision_origin=revision_origin,
             requested_ref=requested_ref,
             resolved_sha=resolved_sha,
-            status=status,
+            authority_status=authority_status,
+            compatibility_status=compatibility_status,
             runtime_evidence_refs=tuple(dict.fromkeys((*runtime_refs, *contradiction_refs))),
             mismatch_reasons=tuple(reasons),
         )

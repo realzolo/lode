@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -160,15 +161,16 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
         nullable=False,
     )
     binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    role: Mapped[str] = mapped_column(Text, nullable=False)
+    analysis_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    is_alert_source: Mapped[bool] = mapped_column(Boolean, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False)
     repo_url: Mapped[str] = mapped_column(Text, nullable=False)
     default_branch: Mapped[str] = mapped_column(Text, nullable=False)
     branch_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default="default")
     selected_branch: Mapped[str] = mapped_column(Text, nullable=False, server_default="main")
-    frozen_candidate_sha: Mapped[str | None] = mapped_column(Text)
-    frozen_revision_role: Mapped[str] = mapped_column(Text, nullable=False)
-    frozen_resolution_status: Mapped[str] = mapped_column(Text, nullable=False)
+    frozen_revision_sha: Mapped[str | None] = mapped_column(Text)
+    revision_policy: Mapped[str] = mapped_column(Text, nullable=False)
+    revision_authority: Mapped[str] = mapped_column(Text, nullable=False)
     repository_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
     credential_identity_hash: Mapped[str] = mapped_column(Text, nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
@@ -186,25 +188,34 @@ class InvestigationRepositorySnapshot(CreatedAtMixin, Base):
         UniqueConstraint(
             "investigation_id", "repository_binding_id", name="uq_investigation_repository_snapshot"
         ),
+        CheckConstraint("analysis_mode IN ('code', 'documentation')", name="analysis_mode"),
         CheckConstraint(
-            "role IN ('runtime_source', 'shared_library', 'infrastructure', 'documentation')",
-            name="role",
+            "NOT is_alert_source OR analysis_mode = 'code'",
+            name="alert_source_code",
         ),
         CheckConstraint("binding_revision > 0", name="binding_revision_positive"),
         CheckConstraint("priority >= 0", name="priority_nonnegative"),
         CheckConstraint("branch_mode IN ('default', 'branch')", name="branch_mode"),
         CheckConstraint("char_length(selected_branch) > 0", name="selected_branch_nonempty"),
         CheckConstraint(
-            "frozen_candidate_sha IS NULL OR frozen_candidate_sha ~ '^[0-9a-f]{40}$'",
-            name="candidate_sha",
+            "frozen_revision_sha IS NULL OR frozen_revision_sha ~ '^[0-9a-f]{40}$'",
+            name="revision_sha",
         ),
         CheckConstraint(
-            "frozen_revision_role IN ('incident_source', 'repository_search_candidate')",
-            name="frozen_revision_role",
+            "revision_policy IN ('alert_revision', 'bound_branch_head')",
+            name="revision_policy",
         ),
         CheckConstraint(
-            "frozen_resolution_status IN ('exact', 'unverified', 'unresolved')",
-            name="frozen_resolution_status",
+            "revision_authority IN ('authoritative', 'pending', 'unavailable')",
+            name="revision_authority",
+        ),
+        CheckConstraint(
+            "(revision_policy = 'alert_revision' AND is_alert_source AND "
+            "frozen_revision_sha IS NOT NULL AND revision_authority = 'authoritative') OR "
+            "(revision_policy = 'bound_branch_head' AND ((frozen_revision_sha IS NULL AND "
+            "revision_authority IN ('pending', 'unavailable')) OR "
+            "(frozen_revision_sha IS NOT NULL AND revision_authority = 'authoritative')))",
+            name="revision_policy_coherent",
         ),
         CheckConstraint(
             "repository_identity_hash ~ '^[0-9a-f]{64}$'", name="repository_hash_sha256"
@@ -553,9 +564,6 @@ class InvestigationOperation(CreatedAtMixin, Base):
         CheckConstraint("fingerprint ~ '^[0-9a-f]{64}$'", name="fingerprint_sha256"),
         UniqueConstraint("investigation_id", "ordinal", name="uq_investigation_operation_ordinal"),
         UniqueConstraint("step_id", "wave_ordinal", name="uq_step_operation_wave_ordinal"),
-        UniqueConstraint(
-            "investigation_id", "fingerprint", name="uq_investigation_operation_fingerprint"
-        ),
         Index("ix_investigation_operations_step", "step_id", "wave_ordinal"),
     )
 

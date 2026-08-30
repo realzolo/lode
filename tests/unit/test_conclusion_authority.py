@@ -25,10 +25,10 @@ def report() -> dict:
     }
 
 
-def test_incident_source_exact_revision_permits_confirmed_code() -> None:
+def test_alert_revision_permits_confirmed_code_without_git_resolution() -> None:
     assessment = SourceAuthorityEngine().assess(
         repository_snapshot_id=1,
-        revision_role="incident_source",
+        revision_origin="alert_revision",
         requested_ref=SHA,
         resolved_sha=SHA,
         incident_source_revision=SHA,
@@ -45,14 +45,13 @@ def test_incident_source_exact_revision_permits_confirmed_code() -> None:
     assert result.result_state == "confirmed"
 
 
-def test_repository_search_candidate_never_confirms_code() -> None:
+def test_bound_branch_head_is_authoritative_for_secondary_repository_code() -> None:
     assessment = SourceAuthorityEngine().assess(
         repository_snapshot_id=1,
-        revision_role="repository_search_candidate",
-        requested_ref=SHA,
+        revision_origin="bound_branch_head",
+        requested_ref="main",
         resolved_sha=SHA,
         incident_source_revision=SHA,
-        runtime_revision_evidence_refs=(9,),
     )
 
     result = ConclusionValidator().validate(
@@ -62,15 +61,14 @@ def test_repository_search_candidate_never_confirms_code() -> None:
         verifier_status="approved",
     )
 
-    assert not assessment.permits_confirmed_code
-    assert result.result_state == "hypothesis"
-    assert "confirmed_source_authority_missing" in result.reasons
+    assert assessment.permits_confirmed_code
+    assert result.result_state == "confirmed"
 
 
-def test_runtime_source_mismatch_revokes_confirmation() -> None:
+def test_runtime_revision_conflict_revokes_code_confirmation() -> None:
     assessment = SourceAuthorityEngine().assess(
         repository_snapshot_id=1,
-        revision_role="incident_source",
+        revision_origin="alert_revision",
         requested_ref=SHA,
         resolved_sha=SHA,
         incident_source_revision=SHA,
@@ -83,23 +81,22 @@ def test_runtime_source_mismatch_revokes_confirmation() -> None:
         verifier_status="approved",
     )
 
-    assert assessment.status == "contradicted"
-    assert "runtime_source_contradicted" in result.reasons
+    assert assessment.authority_status == "contradicted"
+    assert "source_snapshot_incompatible" in result.reasons
 
 
-def test_ambiguous_incident_source_revision_does_not_confirm_code() -> None:
+def test_unavailable_bound_branch_head_does_not_confirm_code() -> None:
     assessment = SourceAuthorityEngine().assess(
         repository_snapshot_id=1,
-        revision_role="incident_source",
-        requested_ref=SHA,
-        resolved_sha=SHA,
+        revision_origin="bound_branch_head",
+        requested_ref="main",
+        resolved_sha=None,
         incident_source_revision=SHA,
-        frozen_resolution_status="unverified",
     )
 
-    assert assessment.status == "unverified"
+    assert assessment.authority_status == "unavailable"
     assert not assessment.permits_confirmed_code
-    assert assessment.mismatch_reasons == ("ambiguous_source_revision",)
+    assert assessment.mismatch_reasons == ("source_revision_unavailable",)
 
 
 def test_declared_configuration_without_runtime_evidence_is_not_effective() -> None:
@@ -110,7 +107,7 @@ def test_declared_configuration_without_runtime_evidence_is_not_effective() -> N
     )
     source = SourceAuthorityEngine().assess(
         repository_snapshot_id=1,
-        revision_role="incident_source",
+        revision_origin="alert_revision",
         requested_ref=SHA,
         resolved_sha=SHA,
         incident_source_revision=SHA,
@@ -159,6 +156,33 @@ def test_confirmed_external_cause_does_not_require_source_authority() -> None:
     assert result.result_state == "confirmed"
 
 
+def test_incompatible_code_snapshot_does_not_downgrade_external_cause() -> None:
+    source = SourceAuthorityEngine().assess(
+        repository_snapshot_id=2,
+        revision_origin="bound_branch_head",
+        requested_ref="main",
+        resolved_sha=SHA,
+        incident_source_revision=SHA,
+        contradiction_evidence_refs=(9,),
+        contradiction_reasons=("source_snapshot_incompatible",),
+    )
+    value = report()
+    value["incident_cause"]["mechanism"] = "external_dependency"
+    value["code_diagnosis"]["status"] = "confirmed"
+
+    result = ConclusionValidator().validate(
+        value,
+        source_assessments=(source,),
+        configuration_assessments=(),
+        verifier_status="approved",
+    )
+
+    assert source.compatibility_status == "incompatible"
+    assert result.result_state == "confirmed"
+    assert result.code_status == "hypothesis"
+    assert result.report["code_diagnosis"]["status"] == "hypothesis"
+
+
 def test_confirmed_report_without_a_confirmation_anchor_is_downgraded() -> None:
     value = report()
     value["incident_cause"]["status"] = "hypothesis"
@@ -195,7 +219,7 @@ def test_confirmed_incident_cause_without_evidence_is_downgraded() -> None:
 def test_verifier_failure_downgrades_an_otherwise_confirmed_report() -> None:
     source = SourceAuthorityEngine().assess(
         repository_snapshot_id=1,
-        revision_role="incident_source",
+        revision_origin="alert_revision",
         requested_ref=SHA,
         resolved_sha=SHA,
         incident_source_revision=SHA,

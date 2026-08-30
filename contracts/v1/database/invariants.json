@@ -24,7 +24,6 @@
     "investigation_model_policy_snapshots",
     "investigation_operation_events",
     "investigation_reports",
-    "investigation_repository_snapshots",
     "investigation_resource_graph_snapshots",
     "model_policy_revisions",
     "model_routing_decisions",
@@ -35,8 +34,6 @@
     "resource_graph_revisions",
     "resource_observations",
     "sealed_evidence_values",
-    "source_assessments",
-    "source_revisions",
     "workspace_architecture_context_revisions"
   ],
   "archive_readonly_tables": [
@@ -100,6 +97,9 @@
     "evidence_read_attempts": ["trg_evidence_read_attempts_authorization"],
     "investigation_code_findings": ["trg_investigation_code_findings_anchor"],
     "investigation_reports": ["trg_investigation_reports_semantics"],
+    "investigation_repository_snapshots": ["trg_investigation_repository_snapshots_freeze"],
+    "source_assessments": ["trg_source_assessments_authority_transition"],
+    "source_revisions": ["trg_source_revisions_authority_transition"],
     "users": ["trg_users_system_admin_immutable"]
   }
 }

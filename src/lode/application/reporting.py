@@ -33,9 +33,7 @@ class CodeFindingPayload(_StrictModel):
     source_assessment_id: int | None = Field(gt=0)
     repository_id: int | None = Field(gt=0)
     revision: str | None = Field(pattern=r"^[0-9a-f]{40}$")
-    revision_role: (
-        Literal["incident_source", "repository_search_candidate", "runtime_identified"] | None
-    )
+    revision_origin: Literal["alert_revision", "bound_branch_head", "runtime_observed"] | None
     path: str | None
     symbol: str | None
     start_line: int | None = Field(gt=0)
@@ -59,7 +57,7 @@ class CodeFindingPayload(_StrictModel):
             self.source_assessment_id,
             self.repository_id,
             self.revision,
-            self.revision_role,
+            self.revision_origin,
             self.path,
             self.symbol,
             self.start_line,
@@ -99,10 +97,9 @@ class SourceAssessmentPayload(_StrictModel):
     build_unit_id: int | None = Field(gt=0)
     component_id: int | None = Field(gt=0)
     revision: str | None = Field(pattern=r"^[0-9a-f]{40}$")
-    revision_role: Literal["incident_source", "repository_search_candidate", "runtime_identified"]
-    runtime_match_status: Literal[
-        "exact", "unverified", "corroborated", "contradicted", "unresolved"
-    ]
+    revision_origin: Literal["alert_revision", "bound_branch_head", "runtime_observed"]
+    authority_status: Literal["authoritative", "corroborated", "contradicted", "unavailable"]
+    compatibility_status: Literal["not_checked", "compatible", "incompatible"]
     mismatch_reasons: tuple[str, ...]
     evidence_refs: tuple[int, ...]
 

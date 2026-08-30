@@ -113,9 +113,7 @@ class UnusedConnector(BaseModel):
 
 
 class InvestigationExecutionGraph(BaseModel):
-    schema_version: Literal["investigation-execution-graph.v1"] = (
-        "investigation-execution-graph.v1"
-    )
+    schema_version: Literal["investigation-execution-graph.v1"] = "investigation-execution-graph.v1"
     investigation_id: EntityId
     status: str
     phase: GraphPhase
@@ -150,9 +148,7 @@ class ExecutionArtifactPage(BaseModel):
 
 
 class InvestigationExecutionNodeDetail(BaseModel):
-    schema_version: Literal["investigation-execution-node.v1"] = (
-        "investigation-execution-node.v1"
-    )
+    schema_version: Literal["investigation-execution-node.v1"] = "investigation-execution-node.v1"
     node_id: str
     node_type: NodeType
     status: str
@@ -232,7 +228,9 @@ async def _load_rows(session: AsyncSession, investigation_id: int) -> _Projectio
         select(InvestigationJob).where(InvestigationJob.investigation_id == investigation_id)
     )
     rows.report = await session.get(InvestigationReport, investigation_id)
-    rows.steps = await _owned_rows(session, InvestigationStep, investigation_id, InvestigationStep.ordinal)
+    rows.steps = await _owned_rows(
+        session, InvestigationStep, investigation_id, InvestigationStep.ordinal
+    )
     rows.decisions = await _owned_rows(
         session, InvestigationDecision, investigation_id, InvestigationDecision.ordinal
     )
@@ -248,7 +246,10 @@ async def _load_rows(session: AsyncSession, investigation_id: int) -> _Projectio
     connector_values = (
         await session.execute(
             select(InvestigationConnectorSnapshot, EvidenceConnector.name)
-            .join(EvidenceConnector, EvidenceConnector.id == InvestigationConnectorSnapshot.connector_id)
+            .join(
+                EvidenceConnector,
+                EvidenceConnector.id == InvestigationConnectorSnapshot.connector_id,
+            )
             .where(InvestigationConnectorSnapshot.investigation_id == investigation_id)
             .order_by(InvestigationConnectorSnapshot.id)
         )
@@ -262,9 +263,7 @@ async def _load_rows(session: AsyncSession, investigation_id: int) -> _Projectio
             .order_by(InvestigationRepositorySnapshot.priority, InvestigationRepositorySnapshot.id)
         )
     ).all()
-    rows.repository_snapshots = tuple(
-        (snapshot, str(name)) for snapshot, name in repository_values
-    )
+    rows.repository_snapshots = tuple((snapshot, str(name)) for snapshot, name in repository_values)
     rows.invocations = await _owned_rows(session, AIInvocation, investigation_id, AIInvocation.id)
     rows.candidates = await _owned_rows(
         session, NativeReadCandidate, investigation_id, NativeReadCandidate.id
@@ -293,9 +292,7 @@ async def _owned_rows(
     return tuple(
         (
             await session.execute(
-                select(model)
-                .where(model.investigation_id == investigation_id)
-                .order_by(order_by)
+                select(model).where(model.investigation_id == investigation_id).order_by(order_by)
             )
         )
         .scalars()
@@ -315,9 +312,7 @@ class _GraphBuilder:
         for event in rows.events:
             self.events_by_operation[event.operation_id].append(event)
         self.snapshot_by_id = {item.id: (item, name) for item, name in rows.connector_snapshots}
-        self.repository_by_id = {
-            item.id: (item, name) for item, name in rows.repository_snapshots
-        }
+        self.repository_by_id = {item.id: (item, name) for item, name in rows.repository_snapshots}
         self.candidate_by_operation = {item.operation_id: item for item in rows.candidates}
         self.access_by_candidate = {item.candidate_id: item for item in rows.access_decisions}
         self.authorized_by_access = {
@@ -338,9 +333,7 @@ class _GraphBuilder:
 
     def build(self) -> InvestigationExecutionGraph:
         nodes: list[ExecutionGraphNode] = [self._input_node()]
-        stages: list[ExecutionGraphStage] = [
-            ExecutionGraphStage(index=0, kind="input")
-        ]
+        stages: list[ExecutionGraphStage] = [ExecutionGraphStage(index=0, kind="input")]
         used_lanes: set[str] = {"control"}
         decision_nodes: dict[int, ExecutionGraphNode] = {}
         operation_nodes: dict[int, ExecutionGraphNode] = {}
@@ -349,9 +342,7 @@ class _GraphBuilder:
             decision_stage = decision.ordinal * 2 - 1
             execution_stage = decision.ordinal * 2
             stages.append(
-                ExecutionGraphStage(
-                    index=decision_stage, kind="decision", ordinal=decision.ordinal
-                )
+                ExecutionGraphStage(index=decision_stage, kind="decision", ordinal=decision.ordinal)
             )
             node = self._decision_node(decision, decision_stage)
             nodes.append(node)
@@ -364,9 +355,7 @@ class _GraphBuilder:
                     )
                 )
             for operation in operations:
-                operation_node = self._operation_node(
-                    operation, execution_stage, decision.ordinal
-                )
+                operation_node = self._operation_node(operation, execution_stage, decision.ordinal)
                 nodes.append(operation_node)
                 operation_nodes[operation.id] = operation_node
                 used_lanes.add(operation_node.lane_id)
@@ -378,9 +367,7 @@ class _GraphBuilder:
         nodes.extend(reporting_nodes)
         stages.extend(reporting_stages)
 
-        ephemeral = self._ephemeral_node(
-            max((item.stage_index for item in nodes), default=0) + 1
-        )
+        ephemeral = self._ephemeral_node(max((item.stage_index for item in nodes), default=0) + 1)
         if ephemeral is not None:
             nodes.append(ephemeral)
             stages.append(
@@ -401,9 +388,7 @@ class _GraphBuilder:
         active_node_ids = [item.id for item in nodes if item.status == "running"]
         if not active_node_ids:
             queued = [
-                item
-                for item in nodes
-                if item.status == "queued" and item.node_type == "operation"
+                item for item in nodes if item.status == "queued" and item.node_type == "operation"
             ]
             if queued:
                 latest_stage = max(item.stage_index for item in queued)
@@ -517,9 +502,7 @@ class _GraphBuilder:
                 if isinstance(verdict, str):
                     overview["verdict"] = verdict
                 if isinstance(reasons, list):
-                    overview["reasons"] = [
-                        item for item in reasons if isinstance(item, str)
-                    ][:20]
+                    overview["reasons"] = [item for item in reasons if isinstance(item, str)][:20]
             return InvestigationExecutionNodeDetail(
                 node_id=node.id,
                 node_type=node.node_type,
@@ -599,7 +582,9 @@ class _GraphBuilder:
             title=input_row.event if input_row is not None else "Incident input",
             subtitle=input_row.severity if input_row is not None else None,
             purpose="Immutable incident input",
-            started_at=input_row.created_at if input_row is not None else self.investigation.created_at,
+            started_at=input_row.created_at
+            if input_row is not None
+            else self.investigation.created_at,
             finished_at=input_row.created_at if input_row is not None else None,
             evidence_count=len(evidence_refs),
             evidence_refs=evidence_refs,
@@ -659,9 +644,7 @@ class _GraphBuilder:
             for collection in self.collections_by_operation.get(operation.id, [])
             for artifact in self.artifacts_by_collection.get(collection.id, [])
         ]
-        record_count = sum(
-            _artifact_record_count(artifact) or 0 for artifact in artifacts
-        )
+        record_count = sum(_artifact_record_count(artifact) or 0 for artifact in artifacts)
         return ExecutionGraphNode(
             id=f"operation:{operation.id}",
             node_type="operation",
@@ -681,9 +664,7 @@ class _GraphBuilder:
             failure_code=operation.failure_code,
         )
 
-    def _operation_identity(
-        self, operation: InvestigationOperation
-    ) -> tuple[str, str, str]:
+    def _operation_identity(self, operation: InvestigationOperation) -> tuple[str, str, str]:
         native = _NATIVE_ACTION.fullmatch(operation.action_id)
         if native is not None:
             snapshot_id = int(native.group("snapshot"))
@@ -787,7 +768,9 @@ class _GraphBuilder:
             node_type="phase",
             lane_id="control",
             stage_index=stage_index,
-            status="failed" if phase == "failed" else ("queued" if phase == "queued" else "running"),
+            status="failed"
+            if phase == "failed"
+            else ("queued" if phase == "queued" else "running"),
             title=title,
             detail_available=False,
             failure_code=self.rows.job.last_error_code if self.rows.job is not None else None,
@@ -823,8 +806,7 @@ class _GraphBuilder:
             operations = self.operations_by_decision.get(decision.id, [])
             if operations:
                 pairs.extend(
-                    (decision_id, operation_nodes[item.id].id, "dispatch")
-                    for item in operations
+                    (decision_id, operation_nodes[item.id].id, "dispatch") for item in operations
                 )
                 previous = [operation_nodes[item.id].id for item in operations]
             else:
@@ -832,10 +814,7 @@ class _GraphBuilder:
         reporting_chain = [item.id for item in reporting_nodes]
         if reporting_chain:
             pairs.extend((source, reporting_chain[0], "report") for source in tail_ids)
-            pairs.extend(
-                (source, target, "report")
-                for source, target in pairwise(reporting_chain)
-            )
+            pairs.extend((source, target, "report") for source, target in pairwise(reporting_chain))
         elif ephemeral is not None:
             pairs.extend((source, ephemeral.id, "sequence") for source in tail_ids)
         return [
@@ -887,7 +866,7 @@ class _GraphBuilder:
                         id=lane_id,
                         kind="repository",
                         label=name,
-                        subtitle=snapshot.frozen_revision_role,
+                        subtitle=snapshot.revision_policy,
                         snapshot_id=snapshot.id,
                     )
                 )
@@ -909,9 +888,7 @@ class _GraphBuilder:
                 continue
             reason = next(
                 (
-                    rejection_by_action.get(
-                        f"native:{snapshot.id}:{language}"
-                    )
+                    rejection_by_action.get(f"native:{snapshot.id}:{language}")
                     for language in snapshot.allowed_languages
                     if rejection_by_action.get(f"native:{snapshot.id}:{language}")
                 ),
@@ -1077,23 +1054,24 @@ def _artifact_page(
     else:
         items = [content]
         metadata = {}
-    metadata, metadata_truncated = _bounded_json_value(
-        metadata, byte_limit=_RESULT_PAGE_BYTES // 4
-    )
+    metadata, metadata_truncated = _bounded_json_value(metadata, byte_limit=_RESULT_PAGE_BYTES // 4)
     selected: list[Any] = []
     item_truncated = metadata_truncated
     consumed = 0
     for item in items[after_index : after_index + limit]:
         candidate_items = [*selected, item]
-        if _page_payload_size(
-            artifact,
-            metadata=metadata,
-            items=candidate_items,
-            total_items=len(items),
-            after_index=after_index,
-            next_after_index=after_index + len(candidate_items),
-            item_truncated=item_truncated,
-        ) > _RESULT_PAGE_BYTES - 64:
+        if (
+            _page_payload_size(
+                artifact,
+                metadata=metadata,
+                items=candidate_items,
+                total_items=len(items),
+                after_index=after_index,
+                next_after_index=after_index + len(candidate_items),
+                item_truncated=item_truncated,
+            )
+            > _RESULT_PAGE_BYTES - 64
+        ):
             if not selected:
                 bounded, _ = _bounded_json_value(
                     item,

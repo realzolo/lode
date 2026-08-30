@@ -74,6 +74,7 @@ def payload() -> dict:
                 "stop_condition": "Stop after the bounded trace window",
                 "estimated_cost": 0.1,
                 "depends_on": [],
+                "source_query": None,
             }
         ],
         "objective": "Resolve the first runtime evidence gap",
@@ -86,6 +87,35 @@ async def test_strict_planner_attaches_server_invocation_id() -> None:
 
     assert decision.model_invocation_id == 7
     assert decision.operations[0].supports_hypotheses == ("h1",)
+
+
+async def test_source_operation_requires_a_structured_grounded_query_shape() -> None:
+    value = payload()
+    operation = value["operations"][0]
+    operation["action_id"] = "source:9:inspect"
+    operation["source_query"] = {
+        "terms": ["Payssion", "pm_id", "result_code"],
+        "symbols": ["createOrder"],
+        "path_hints": [],
+        "evidence_refs": [1],
+    }
+
+    decision = await StructuredInvestigationPlanner(FakeModel(value)).decide(state(), ())
+
+    assert decision.operations[0].source_query is not None
+    assert decision.operations[0].source_query.terms == (
+        "Payssion",
+        "pm_id",
+        "result_code",
+    )
+
+
+async def test_source_operation_without_source_query_is_rejected() -> None:
+    value = payload()
+    value["operations"][0]["action_id"] = "source:9:inspect"
+
+    with pytest.raises(PlannerUnavailable, match="invalid_structured_output"):
+        await StructuredInvestigationPlanner(FakeModel(value)).decide(state(), ())
 
 
 async def test_old_hypothesis_refs_field_is_rejected_without_compatibility() -> None:

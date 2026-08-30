@@ -16,12 +16,13 @@ def _hash(binding: SimpleNamespace, repository: SimpleNamespace) -> str:
     )
 
 
-def test_analysis_hash_ignores_metadata_but_tracks_role_branch_and_default_branch() -> None:
+def test_analysis_hash_ignores_metadata_but_tracks_mode_source_branch_and_default_branch() -> None:
     binding = SimpleNamespace(
         id=1,
         descriptor_revision=1,
         account_connection_id=3,
-        role="runtime_source",
+        analysis_mode="code",
+        is_alert_source=True,
         branch_mode="default",
         branch_name=None,
         priority=0,
@@ -36,11 +37,13 @@ def test_analysis_hash_ignores_metadata_but_tracks_role_branch_and_default_branc
     binding.revision = 2
     assert _hash(binding, repository) == original
 
-    binding.role = "shared_library"
+    binding.analysis_mode = "documentation"
+    binding.is_alert_source = False
     binding.descriptor_revision = 2
     assert _hash(binding, repository) != original
 
-    binding.role = "runtime_source"
+    binding.analysis_mode = "code"
+    binding.is_alert_source = True
     binding.branch_mode = "branch"
     binding.branch_name = "release/2026.08"
     binding.descriptor_revision = 3

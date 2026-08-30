@@ -18,6 +18,7 @@ from lode.crypto import encrypt_value
 from lode.db.models import (
     EvidenceAccessScope,
     EvidenceArtifact,
+    EvidenceAssertion,
     EvidenceConnector,
     Investigation,
     InvestigationJob,
@@ -292,6 +293,33 @@ async def main() -> None:
 
     successful_artifact = first.results[0].evidence_refs[0]
     failed_artifact = await _artifact_for_action(investigation_id, "validate:fail")
+    trace_claim = {
+        "claim_type": "sealed_trace_correlation",
+        "server_generated": True,
+        "sealed_value_ref": "incident.trace_id",
+        "match_mode": "exact_line_filter",
+    }
+    async with AsyncSessionLocal() as session:
+        trace_assertion = EvidenceAssertion(
+            investigation_id=investigation_id,
+            assertion_kind="fact",
+            status="confirmed",
+            statement="Fixture events were correlated by a sealed trace filter.",
+            structured_claim=trace_claim,
+            supporting_evidence_refs=[successful_artifact],
+            counter_evidence_refs=[],
+            missing_validation=[],
+            assertion_hash=canonical_hash(
+                {
+                    "investigation_id": investigation_id,
+                    "claim": trace_claim,
+                    "artifact_id": successful_artifact,
+                }
+            ),
+        )
+        session.add(trace_assertion)
+        await session.commit()
+        trace_assertion_id = trace_assertion.id
     alpha = f"unknown:{canonical_hash({'identity': 'alpha'})[:24]}"
     beta = f"unknown:{canonical_hash({'identity': 'beta'})[:24]}"
     events = (
@@ -302,7 +330,7 @@ async def main() -> None:
             raw_excerpt_masked="alpha",
             attributes_masked={},
             resource_attributes_masked={},
-            trace_match={"value_hash": _sha("trace-check"), "location": "body"},
+            trace_match={"assertion_id": trace_assertion_id, "location": "body"},
             component_candidates=({"identity": "alpha", "location": "body"},),
             relation_hints=(),
             revision_hints=(),
@@ -316,7 +344,7 @@ async def main() -> None:
             raw_excerpt_masked="beta",
             attributes_masked={},
             resource_attributes_masked={},
-            trace_match={"value_hash": _sha("trace-check"), "location": "body"},
+            trace_match={"assertion_id": trace_assertion_id, "location": "body"},
             component_candidates=({"identity": "beta", "location": "body"},),
             relation_hints=(
                 {
@@ -492,9 +520,7 @@ async def main() -> None:
         assert str(exc) == "investigation job cannot complete before report publication"
     else:
         raise AssertionError("report publication must precede job completion")
-    assert await second_lease.reclaim_expired(
-        now=lease_time + timedelta(seconds=63)
-    ) >= 1
+    assert await second_lease.reclaim_expired(now=lease_time + timedelta(seconds=63)) >= 1
     third_lease = InvestigationLeaseStore(
         AsyncSessionLocal, owner="worker:third", lease_ttl_seconds=30
     )

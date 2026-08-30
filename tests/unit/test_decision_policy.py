@@ -134,7 +134,7 @@ def test_policy_uses_server_cost_for_native_operation_intent() -> None:
     assert rejected_cost.policy_decisions[-1].code == "wave_budget_exceeded"
 
 
-def test_policy_rejects_every_previously_attempted_operation() -> None:
+def test_policy_allows_reusing_action_before_full_query_fingerprint_exists() -> None:
     item = operation()
 
     result = DecisionPolicyEngine().evaluate(
@@ -144,11 +144,11 @@ def test_policy_rejects_every_previously_attempted_operation() -> None:
         attempted_fingerprints={item.fingerprint},
     )
 
-    assert result.outcome == "reject"
-    assert result.policy_decisions[0].code == "duplicate_operation"
+    assert result.outcome == "allow"
+    assert result.operations == (item,)
 
 
-def test_policy_trims_dependency_duplicate_and_resource_conflict() -> None:
+def test_policy_trims_dependency_and_resource_conflict() -> None:
     first = operation()
     dependent = operation(
         action_id="native:8:sql",
