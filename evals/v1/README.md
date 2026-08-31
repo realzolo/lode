@@ -1,7 +1,13 @@
 # Lode V1 Evaluation Corpus
 
 The corpus is versioned, deterministic, and contains no production data.
-`gold-incidents.jsonl` exercises report abstention and evidence authority.
+`gold-incidents.jsonl` contains exactly 100 frozen cases. It exercises report
+abstention and evidence authority across main-application Kafka alerts, manual
+main-application errors, manual side-service errors, unknown-source manual
+errors, and cross-service propagation. Intake expectations also freeze the
+new-incident, automatic-correlation, and human-candidate outcomes; every
+unknown-source case requires a new incident and forbids assuming the main
+application as its source.
 `security/native-reads.jsonl` is the policy oracle smoke corpus.
 `security/malicious-evidence.jsonl` exercises prompt/evidence injection handling.
 `operational-cases.jsonl` freezes identity, Connector-selection, and model-routing

@@ -15,7 +15,7 @@ DECLARE
     connector_id bigint;
     scope_id bigint;
     incident_id bigint;
-    occurrence_id bigint;
+    signal_id bigint;
     rejected boolean;
 BEGIN
     INSERT INTO workspaces (name, ingestion_topic)
@@ -145,26 +145,31 @@ BEGIN
     END IF;
 
     INSERT INTO incidents (
-        workspace_id, dedup_key, event, component, environment, severity,
-        first_occurred_at, last_occurred_at, state_changed_at
+        workspace_id, title, severity, first_occurred_at, last_occurred_at,
+        state_changed_at
     ) VALUES (
-        workspace_row.id, 'schema.behavior', 'schema.behavior.failure', 'schema',
-        'test', 'WARNING', now() - interval '1 minute', now(), now()
+        workspace_row.id, 'Schema behavior failure', 'UNCLASSIFIED',
+        now() - interval '1 minute', now(), now()
     ) RETURNING id INTO incident_id;
 
-    INSERT INTO incident_occurrences (
-        workspace_id, incident_id, source_type, source_event_id, event_kind,
-        dedup_key, occurred_at, severity, event, component, environment,
-        error, raw_payload_masked
+    INSERT INTO incident_signals (
+        workspace_id, schema_version, source_type, source_event_id,
+        idempotency_key_hash, signal_kind, observed_at, severity, title, summary,
+        fingerprint, error_masked, raw_payload_masked, raw_payload_ciphertext,
+        raw_payload_hash
     ) VALUES (
-        workspace_row.id, incident_id, 'kafka', 'schema-behavior-source-1', 'firing',
-        'schema.behavior', now(), 'WARNING', 'schema.behavior.failure', 'schema',
-        'test', '{}'::jsonb, '{}'::jsonb
-    ) RETURNING id INTO occurrence_id;
+        workspace_row.id, 'incident-signal.v1', 'manual', NULL,
+        repeat('a', 64), 'firing', now(), 'UNCLASSIFIED',
+        'Schema behavior failure', 'Immutable signal fixture', repeat('b', 64),
+        '{}'::jsonb, '{}'::jsonb, 'ciphertext', repeat('c', 64)
+    ) RETURNING id INTO signal_id;
+
+    INSERT INTO incident_signal_links (signal_id, incident_id)
+    VALUES (signal_id, incident_id);
 
     rejected := false;
     BEGIN
-        UPDATE incident_occurrences SET event = 'mutated' WHERE id = occurrence_id;
+        UPDATE incident_signals SET summary = 'mutated' WHERE id = signal_id;
     EXCEPTION WHEN raise_exception THEN
         IF position('immutable row cannot be changed' IN SQLERRM) = 0 THEN
             RAISE;
@@ -172,7 +177,7 @@ BEGIN
         rejected := true;
     END;
     IF NOT rejected THEN
-        RAISE EXCEPTION 'incident occurrence trigger accepted an update';
+        RAISE EXCEPTION 'incident signal trigger accepted an update';
     END IF;
 END
 $checks$;
@@ -227,7 +232,7 @@ async def check_schema_behavior(database_url: str) -> dict[str, Any]:
 
     return {
         "checks": [
-            "incident_occurrence_immutable",
+            "incident_signal_immutable",
             "concurrent_unique_topic",
             "immutable_rows",
             "secret_free_config",

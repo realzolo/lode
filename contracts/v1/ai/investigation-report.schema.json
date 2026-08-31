@@ -1,74 +1,81 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lode.local/contracts/v1/ai/investigation-report.schema.json",
-  "title": "investigation-report.v2",
+  "title": "investigation-report.v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "result_state",
     "headline",
-    "summary",
-    "incident_cause",
-    "code_diagnosis",
+    "executive_summary",
+    "impact_scope",
+    "causal_graph",
     "code_findings",
     "participants",
     "timeline_summary",
     "source_assessments",
     "configuration_assessments",
-    "confirmed_facts",
     "counter_evidence",
     "evidence_gaps",
-    "next_step"
+    "action_recommendations"
   ],
   "properties": {
     "result_state": {"type": "string", "enum": ["confirmed", "hypothesis", "insufficient", "unavailable"]},
     "headline": {"type": "string"},
-    "summary": {"type": "string"},
-    "incident_cause": {"$ref": "#/$defs/cause"},
-    "code_diagnosis": {"$ref": "#/$defs/codeDiagnosis"},
+    "executive_summary": {"type": "string"},
+    "impact_scope": {"type": "array", "items": {"$ref": "#/$defs/evidenceStatement"}},
+    "causal_graph": {"$ref": "#/$defs/causalGraph"},
     "code_findings": {"type": "array", "items": {"$ref": "#/$defs/codeFinding"}},
     "participants": {"type": "array", "items": {"$ref": "#/$defs/participant"}},
     "timeline_summary": {"type": "array", "items": {"$ref": "#/$defs/timelineItem"}},
     "source_assessments": {"type": "array", "items": {"$ref": "#/$defs/sourceAssessment"}},
     "configuration_assessments": {"type": "array", "items": {"$ref": "#/$defs/configAssessment"}},
-    "confirmed_facts": {"type": "array", "items": {"$ref": "#/$defs/evidenceStatement"}},
     "counter_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceStatement"}},
-    "evidence_gaps": {"type": "array", "items": {"type": "string"}},
-    "next_step": {"type": "string"}
+    "evidence_gaps": {"type": "array", "items": {"$ref": "#/$defs/evidenceGap"}},
+    "action_recommendations": {"type": "array", "items": {"$ref": "#/$defs/actionRecommendation"}}
   },
   "$defs": {
-    "cause": {
+    "causalNode": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "mechanism", "causal_chain", "evidence_refs"],
+      "required": ["node_id", "node_type", "status", "statement", "evidence_refs", "entity_refs"],
       "properties": {
-        "status": {"type": "string", "enum": ["confirmed", "hypothesis", "not_found"]},
-        "mechanism": {"type": "string"},
-        "causal_chain": {"type": "array", "items": {"type": "string"}},
-        "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+        "node_id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "node_type": {"type": "string", "enum": ["impact", "trigger", "root_cause", "contributing_factor", "propagation", "detection", "mitigation", "recovery", "counter_evidence", "evidence_gap"]},
+        "status": {"type": "string", "enum": ["confirmed", "hypothesis", "refuted", "unknown"]},
+        "statement": {"type": "string"},
+        "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "entity_refs": {"type": "array", "items": {"type": "integer", "minimum": 1}}
       }
     },
-    "codeDiagnosis": {
+    "causalEdge": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "summary", "finding_indices"],
+      "required": ["edge_id", "source_node_id", "target_node_id", "status", "relation", "statement", "evidence_refs"],
       "properties": {
-        "status": {"type": "string", "enum": ["confirmed", "hypothesis", "no_defect", "not_found"]},
-        "summary": {"type": "string"},
-        "finding_indices": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+        "edge_id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "source_node_id": {"type": "string"},
+        "target_node_id": {"type": "string"},
+        "status": {"type": "string", "enum": ["confirmed", "hypothesis", "refuted"]},
+        "relation": {"type": "string", "enum": ["triggers", "causes", "contributes_to", "propagates_to", "detected_by", "mitigated_by", "recovers", "contradicts"]},
+        "statement": {"type": "string"},
+        "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "causalGraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges", "root_node_ids"],
+      "properties": {
+        "nodes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/causalNode"}},
+        "edges": {"type": "array", "items": {"$ref": "#/$defs/causalEdge"}},
+        "root_node_ids": {"type": "array", "items": {"type": "string"}}
       }
     },
     "codeFinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "status", "source_artifact_id", "source_assessment_id", "repository_id",
-        "revision", "revision_origin", "path", "symbol", "start_line", "end_line",
-        "issue_type", "faulty_behavior", "why_wrong", "expected_behavior",
-        "trigger_condition", "propagation", "incident_evidence_refs",
-        "supporting_evidence_refs", "counter_evidence_refs", "missing_validation",
-        "test_scenario"
-      ],
+      "required": ["status", "source_artifact_id", "source_assessment_id", "repository_id", "revision", "revision_origin", "path", "symbol", "start_line", "end_line", "issue_type", "faulty_behavior", "why_wrong", "expected_behavior", "trigger_condition", "propagation", "incident_evidence_refs", "supporting_evidence_refs", "counter_evidence_refs", "missing_validation", "test_scenario"],
       "properties": {
         "status": {"type": "string", "enum": ["confirmed", "hypothesis", "no_defect", "not_found"]},
         "source_artifact_id": {"type": ["integer", "null"], "minimum": 1},
@@ -123,7 +130,7 @@
         "repository_id": {"type": "integer", "minimum": 1},
         "build_unit_id": {"type": ["integer", "null"], "minimum": 1},
         "component_id": {"type": ["integer", "null"], "minimum": 1},
-        "revision": {"type": ["string", "null"]},
+        "revision": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
         "revision_origin": {"type": "string", "enum": ["alert_revision", "bound_branch_head", "runtime_observed"]},
         "authority_status": {"type": "string", "enum": ["authoritative", "corroborated", "contradicted", "unavailable"]},
         "compatibility_status": {"type": "string", "enum": ["not_checked", "compatible", "incompatible"]},
@@ -149,6 +156,30 @@
       "required": ["text", "evidence_refs"],
       "properties": {
         "text": {"type": "string"},
+        "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "evidenceGap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "consequence", "required_evidence", "related_node_ids"],
+      "properties": {
+        "description": {"type": "string"},
+        "consequence": {"type": "string"},
+        "required_evidence": {"type": "string"},
+        "related_node_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "actionRecommendation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action_type", "priority", "title", "rationale", "validation", "evidence_refs"],
+      "properties": {
+        "action_type": {"type": "string", "enum": ["mitigate", "remediate", "validate", "prevent"]},
+        "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+        "title": {"type": "string"},
+        "rationale": {"type": "string"},
+        "validation": {"type": "string"},
         "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}}
       }
     }

@@ -28,7 +28,7 @@ from lode.domain.model_execution import (
     highest_model_data_class,
     model_evidence_is_pinned,
 )
-from lode.domain.types import ModelRole
+from lode.domain.types import ExecutionClass, ModelRole
 from lode.engine.llm import ResponseSchema
 from lode.infrastructure.model_evidence import (
     assertions_by_artifact,
@@ -216,6 +216,11 @@ class AuditedInvestigationDecisionModel:
                     ),
                     causal_depth=max(1, state.wave_count + 1),
                     conclusion_risk="medium" if state.wave_count >= 2 else "low",
+                    requested_execution_class=(
+                        ExecutionClass(str(state.approved_model_hint["execution_class"]))
+                        if state.approved_model_hint is not None
+                        else None
+                    ),
                 ),
                 state_packet=state_packet,
                 evidence=evidence,
@@ -224,8 +229,8 @@ class AuditedInvestigationDecisionModel:
                     name="investigation_decision",
                     schema=decision_json_schema(),
                 ),
-                prompt_revision="investigation-planner.6",
-                schema_revision="investigation-decision.v6",
+                prompt_revision="investigation-planner.v1",
+                schema_revision="investigation-decision.v1",
                 remaining_calls=max(0, max_calls - model_calls),
                 remaining_cost=max(0.0, max_cost - used_cost),
             )

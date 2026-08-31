@@ -2,28 +2,33 @@
 
 ## Final Rebuild Status
 
-The final replacement is being implemented from
-`workplace/LODE_V1_FINAL_ARCHITECTURE_AND_DEVELOPMENT_PLAN.md`. Phases 0-7 are
-the completed baseline. The Phase 8 implementation candidate is present, but
-Phase 8 remains release-gated until frozen provider-run observations satisfy the
-quality and Wilson confidence thresholds below. The final Phase 9 API and Web
-Workbench implementation is present and passes its deterministic API, database,
-SSE, type, build, and responsive-browser checks. Phase 10 local hardening and
-the deterministic release gate pass on a fresh isolated database; the latest
-full backend run is 492 tests. The complete gate includes deterministic fuzz,
-security, worker soak/crash/lease-loss, release-bundle, operational-metric, and
-canary mechanism tests. Final release still requires frozen real-provider and
-deployment-canary observations to pass the statistical and non-regression gate.
+Lode V1 is an AI-driven incident investigation platform with two input adapters,
+one canonical signal model, deterministic correlation, immutable investigation
+runs, sealed evidence, a normalized evidence graph, independently verified
+causal-DAG reports, and a human-controlled action workflow. Production and test
+are physically separate deployments with separate databases and configuration;
+there is no environment discriminator in the domain, API, database, or UI.
+Only the Workspace main application may auto-trigger an incident through Kafka.
+Side-service failures enter actively only through manual intake; Connectors are
+read-only evidence providers and never create incidents. Final release still
+requires frozen real-provider and deployment-canary observations to pass the
+statistical and non-regression gate.
 
 - `contracts/v1` freezes the final Kafka, AI, evidence-read, control-plane,
   HTTP-surface, and database-inventory fixtures. These fixtures contain no
   compatibility aliases.
+- `docs/architecture/v1-incident-platform.md` is the concise authoritative V1
+  component and workflow map. Update it with architecture, API-boundary,
+  migration-bootstrap, or development-workflow changes.
 - `docs/threat-models/evidence-access.md` owns the LogQL,
-  Elasticsearch/OpenSearch DSL, SQL, HTTPS, and command execution threat model
-  and review checklist.
-- `evals/v1` is the isolated, versioned release-test corpus. The Phase 0 smoke
-  baseline is deterministic and does not contain production data or hidden
-  model reasoning.
+  Elasticsearch/OpenSearch DSL, SQL, HTTPS, Prometheus, Tempo, Jaeger,
+  Kubernetes, GitHub, GitLab, Argo CD, and command execution threat model and
+  review checklist. All provider adapters expose typed read-only operations.
+- `evals/v1` is the isolated, versioned release-test corpus. Its gold set has
+  exactly 100 cases across main-application Kafka, manual main-application,
+  manual side-service, unknown-source, and cross-service incidents; the complete
+  corpus has 123 cases. The deterministic smoke baseline contains no production
+  data or hidden model reasoning.
 - `lode.contracts` provides the shared fixture validator and removed-contract
   scanner used by tests and command-line checks.
 - `src/lode/domain` contains immutable,
@@ -37,7 +42,7 @@ deployment-canary observations to pass the statistical and non-regression gate.
   context headroom, hash-bound expiring read authorizations, allowed/rejected
   decision consistency, and explicit evidence for causal relations. The
   package must not import ORM, web, queue, transport, or provider libraries.
-- The current ORM registry and migration chain register exactly the 76 tables in
+- The current ORM registry and sole V1 migration register exactly the 87 tables in
   `contracts/v1/database/tables.json`. Provider accounts, account models,
   static Git adapters/accounts/catalogue and account-to-repository access,
   direct Workspace repository bindings, build units, components, resource graph
@@ -50,9 +55,8 @@ deployment-canary observations to pass the statistical and non-regression gate.
 - Workspace ingestion state is database-shaped rather than API-conventional:
   draft rows have no activation fields, while active/paused rows require a
   positive generation, a frozen start position and activation kind, and
-  coherent lifecycle timestamps. Migration `0004_workspace_ingestion_state`
-  fail-closes incomplete legacy active rows back to draft without deleting
-  their audit history.
+  coherent lifecycle timestamps. These constraints are created directly by
+  `alembic/versions/v1_initial.py`; there is no legacy-state repair path.
 - Every generated business-entity primary key uses PostgreSQL `next_lode_id()`,
   a single-node compact snowflake allocator with the `2020-01-01 UTC` epoch,
   42 millisecond bits, and 10 sequence bits. A session advisory lock and
@@ -90,7 +94,7 @@ deployment-canary observations to pass the statistical and non-regression gate.
   Units, Components, and aliases rather than operator-assigned repository roles.
 - `contracts/v1/database/invariants.json` freezes the required trigger inventory. The
   migration enforces timestamp updates, secret-free ordinary JSON, immutable
-  occurrence/event/review history, incident lifecycle integrity, authorization-chain
+  signal/association/event/review history, incident lifecycle integrity, authorization-chain
   integrity, frozen AI routing/context, exact source anchors, and confirmed
   report semantics. `EvidenceReadAttempt` is inserted only after execution in
   `succeeded`, `failed`, or `interrupted` state; retry creates a new immutable
@@ -100,37 +104,53 @@ deployment-canary observations to pass the statistical and non-regression gate.
   performs rollback-only trigger checks plus a two-transaction uniqueness
   check. The final seed creates only Workspace, repository, provider/model,
   binding, and policy objects and is idempotent.
-- `src/lode/application/intake.py` owns the only Kafka/manual normalization
-  contract. `src/lode/infrastructure/intake_store.py` atomically resolves the
-  Workspace from the Kafka topic and persists an immutable occurrence, its
+- `src/lode/application/intake.py` owns the Kafka and manual adapters into
+  `incident-signal.v1`; the external request contracts remain intentionally
+  different. `src/lode/infrastructure/intake_store.py` atomically resolves the
+  Workspace and persists an immutable signal, its correlation decision, its
   operational incident, an immutable investigation run, input, sealed values,
   graph snapshot, and durable
   job. The same transaction archives exactly one succeeded input collection and
   one canonical masked `incident_input` evidence artifact for every new
   investigation; the artifact contains the complete normalized incident while
   secret values remain ValueRef sentinels. `src/lode/consumer/main.py` commits
-  Kafka offsets only after that
-  transaction succeeds. The consumer uses an exact escaped pattern over the
+  Kafka offsets only after that transaction succeeds. A transaction-scoped
+  advisory lock serializes every `(topic, partition, offset)` across accepted,
+  invalid, and unassigned paths. `ingestion_events` is inserted exactly once in
+  its terminal state and is never updated; DLQ replay preserves the original
+  failure event, appends or reuses the canonical signal, and records replay
+  completion only on the dead-letter record. The consumer uses an exact escaped pattern over the
   active topic inventory, so metadata discovery cannot auto-create a missing
   Workspace topic. A partition-initialization error remains visible until a
   later successful initialization of the same activation generation. Manual
-  `POST /incidents` uses the same service.
-- Intake has three independent idempotency/correlation boundaries:
-  topic/partition/offset, `(Workspace, alert_id)`, and the active
-  `(Workspace, event, opaque trace_id)` incident signature. Exact alert retries
-  are duplicates; distinct alert IDs sharing the active signature create
-  another immutable occurrence and return `correlated`. Invalid and unassigned
+  `POST /workspaces/{workspace_id}/manual-incidents` uses the manual adapter and
+  requires only summary and raw error text.
+- Intake has independent transport idempotency and deterministic correlation.
+  Kafka uses topic/partition/offset and `(Workspace, alert_id)`; manual requests
+  use the server-recorded `Idempotency-Key`. Both produce a server-owned
+  canonical fingerprint. Exact trace identity can auto-correlate; repository
+  plus error fingerprint and time proximity is scored. Scores at least `0.85`
+  auto-correlate, `0.60` through less than `0.85` create a human candidate, and
+  lower scores create a new incident. A manual signal without trace or selected
+  repository always creates a new incident. Invalid and unassigned
   records are durably masked before optional Kafka DLQ mirroring; replay always
-  runs the current strict validator. Concurrent offset and alert-ID races have
-  one accepted result and one duplicate result.
+  runs the current strict validator. Concurrent offset races across successful
+  intake and failure archival, plus concurrent alert-ID races, have one terminal
+  owner and duplicate followers without orphan dead letters. Accept/reject, merge, and split
+  corrections append association events and never rewrite signal history.
 - `src/lode/resource_understanding` provides the bounded, non-executing
   repository scanner, immutable scan values, deterministic identity validator,
   and transactional ResourceGraph publisher. It supports Node/pnpm, Python,
   Go, Cargo, Maven, Gradle, Docker, Kubernetes, Helm/compose metadata, nested
   workspaces, and multi-repository Components without running repository code.
 - `src/lode/infrastructure/repository_analysis.py` owns the durable, leased
-  repository-analysis workflow. An operator explicitly starts analysis for the
-  current active bindings; the job stores an immutable hash-bound binding input
+  repository-analysis workflow. Binding and revision changes enqueue analysis;
+  an operator may also start it explicitly. Analysis for a code binding first
+  publishes deterministic facts and then asks the policy-routed
+  `resource_analyst` role for anchored component, entrypoint, dependency,
+  runbook, and ownership annotations. Semantic output cannot create an
+  unanchored path or override scanner facts. The job stores an immutable
+  hash-bound binding input
   snapshot (binding/account/repository identity, `analysis_mode`,
   `is_alert_source`, effective branch, and
   structural configuration revision). The worker always uses that snapshot, while rechecking current
@@ -155,7 +175,9 @@ deployment-canary observations to pass the statistical and non-regression gate.
   deterministically downgrades identity to `ambiguous`.
 - ResourceGraph publication is serialized by a Workspace row lock. Identical
   input reuses the current revision; changed input publishes an immutable child
-  revision, records member differences and invalidation reasons, and never
+  revision, records typed member additions/removals and removal reasons in its
+  immutable diff, and never mutates prior `IdentityResolution` facts. Current
+  validity is defined exclusively by revision membership. Publication never
   changes Repository bindings or EvidenceAccessScope. New investigations freeze
   the latest graph revision while existing investigation snapshots remain
   unchanged. Derived knowledge is exposed only through read-only Build Unit,
@@ -197,7 +219,10 @@ deployment-canary observations to pass the statistical and non-regression gate.
   as policy rejection. A successful normalized result is masked and archived
   as an `EvidenceCollection` and `EvidenceArtifact` in the same transaction
   before the immutable attempt can reference it; an archive savepoint prevents
-  partial evidence from surviving a failed archive.
+  partial evidence from surviving a failed archive. Raw ValueRefs, masking
+  metadata, and sealed-correlation provenance are finalized before the
+  immutable artifact insert; assertions and `EvidenceLink` rows append the
+  reverse graph edges without updating the artifact.
 - `src/lode/evidence_connectors` is the native provider execution plane. Its
   provider-neutral registry activates independent Loki, Elasticsearch,
   OpenSearch, PostgreSQL, MySQL, ClickHouse, generic safe-read HTTPS, and
@@ -310,7 +335,7 @@ deployment-canary observations to pass the statistical and non-regression gate.
   one current implementation and never creates `_v1`/`_v2` module variants.
   Version literals remain only where an external wire or persisted schema
   contract requires them, such as `incident.alert.v1` and migration revision
-  `0001_initial` and forward migrations.
+  `v1` in the sole `v1_initial.py` baseline.
 - `src/lode/application/capabilities.py`, `decision_policy.py`,
   `evidence_graph.py`, and `investigation.py` implement the credential-free
   capability catalog, deterministic decision policy, evidence-backed graph
@@ -637,14 +662,27 @@ trace values, prompts, endpoints, or other unbounded data.
 - `src/lode/infrastructure/report_store.py`: strict semantic validation and immutable report publication.
 - `src/lode/infrastructure/connector_resolver.py`: frozen connector/secret verification and production adapter construction.
 - `src/lode/infrastructure/operation_executor.py`: provider-neutral native/source operation dispatch.
+- `src/lode/api/routes/evidence_connectors.py`: Connector control-plane routing,
+  typed endpoint-catalog assembly, verification, and introspection. The remaining
+  `control_plane.py` owns Workspace, model, repository, and ingestion management.
+- `src/lode/api/routes/incident_correlations.py`: candidate decisions and
+  append-only merge/split association APIs, separate from incident lifecycle and
+  action routing.
+- `src/lode/api/routes/investigation_controls.py`: safe stop commands, immutable
+  child runs, evidence/question/hypothesis interventions, and run comparison;
+  orchestration remains in `infrastructure/investigation_control.py` and the
+  intake/investigation stores.
 - `src/lode/integration_policy.py`: extensible integration-kind registry, config/secret validation, capabilities, and UI form metadata.
 - `src/lode/engine/integrations.py`: provider adapters for verification and bounded snapshots.
 - `src/lode/engine/evidence/git.py`: stack parsing, exact revision lookup, symbol range extraction, lexical candidates, and related-symbol expansion.
 - `apps/web`: Next.js global model/output-language and Workspace control plane
-  plus the incident Workbench for manual intake, occurrence history, server-driven
+  plus the incident Workbench for manual intake, signal and association history, server-driven
   lifecycle actions, investigation runs/reports, follow-up actions, compact/full
   execution flow, structured node detail, retry, and SSE refresh. All
   user-visible product text is served through `next-intl`.
+  Incident detail is a state-owning page container; causal report/evidence
+  rendering lives in `components/incident-report-panel.tsx`, and proposal/action
+  workflows live in `components/incident-actions.tsx`.
 
 PostgreSQL is the source of truth. Kafka consumers only validate and enqueue;
 workers execute investigations. FastAPI exposes health, authentication,
@@ -795,7 +833,13 @@ step/decision wave while multiple operations in that wave may run. On worker rec
 completed evidence is reused and the first unfinished durable action resumes. A second
 policy rejection after the single repair terminates as `insufficient`, not model
 unavailability. Lease cleanup only changes jobs whose own leases expired and whose
-persisted phase matches the investigation state.
+  persisted phase matches the investigation state.
+
+The investigation planner also persists `attempted_fingerprints` and rejects a
+duplicate planned read before authorization. A model-proposed `next_model_hint`
+is advisory only: the server model policy either approves a routable eligible
+model or records a rejection reason. Hints cannot enlarge role, data-class,
+budget, Connector, repository, or evidence scope.
 
 Planner output may select catalog IDs and cite archived evidence IDs. Only the
 operation-bound native-query role may propose the provider-specific LogQL,
@@ -855,12 +899,12 @@ full lowercase 40-character `source_revision`, and structured `error` (`type`,
 component, environment, deduplication key, event kind, service, request,
 commit, correlation, and carrier fields. The Kafka topic selects the Workspace;
 no Workspace identifier is accepted from the payload. Only the main
-application produces Kafka alerts, so every accepted v1 message is internally
-an immutable firing occurrence; Lode never invents component or environment
+application produces Kafka alerts, so every accepted v1 message becomes an
+immutable Kafka signal; Lode never invents component or environment
 values for it.
 
 The original `trace_id`, including empty, whitespace, Unicode, or punctuation,
-is never normalized. It is encrypted in the immutable occurrence and
+is never normalized. It is encrypted with the immutable signal and
 sealed-value vault and
 represented in ordinary investigation JSON only as
 `<VALUE_REF:incident.trace_id>`. The complete recursive error is structurally
@@ -870,7 +914,7 @@ Kafka processing persists before committing its offset. Redelivery is deduped
 by topic/partition/offset and producer retry by `(workspace_id, alert_id)`.
 Distinct alert IDs with the same active `(workspace_id, event, opaque trace_id)`
 signature are correlated to the same incident and retained as separate
-immutable occurrences. Kafka has no recovery event; lifecycle mitigation and
+immutable signals. Kafka has no recovery event; lifecycle mitigation and
 resolution remain explicit incident commands, and a new firing after
 resolution/closure opens a recurrence. Invalid and unassigned payloads are
 durably masked. DLQ replay is atomic and always uses the current validator;
@@ -884,16 +928,22 @@ offsets. The consumer continuously writes observed generation, consumer ID,
 partition assignment, heartbeat, and error state to
 `workspace_ingestion_runtime`.
 
-Manual `POST /incidents` accepts `workspace_id`, `dedup_key`, timezone-aware
-`occurred_at`, `event_kind`, `severity`, `event`, `component`, `environment`,
-optional opaque `trace_id`, optional lowercase `source_revision`, structured
-`error`, and at most ten bounded typed attachments. It requires Workspace
-`operator` permission and calls the same normalization and persistence services
-as Kafka. Each manual firing is an immutable occurrence and starts an
-incident-owned investigation run. Removed service/request fields fail strict
-validation.
+Manual `POST /workspaces/{workspace_id}/manual-incidents` accepts exactly
+`schema_version=manual-incident.v1`, required trimmed `summary`, required
+`error_text`, optional opaque `trace_id`, and optional
+`repository_binding_id`. It requires Workspace `operator` permission and an
+`Idempotency-Key` header generated by the Web client. The selected repository
+must be an enabled `analysis_mode=code` binding in that Workspace; its binding
+and descriptor revision are frozen and prioritized for code investigation.
+When no repository is selected, source remains `unknown`, the report exposes
+that evidence gap, and Lode does not infer the main application. The server
+records receipt time and starts severity at `unclassified`; only an operator may
+promote it to warning or critical. Raw error text is sealed, while models see
+only a masked projection and controlled ValueRefs. Manual input does not accept
+Kafka event/error shape, `occurred_at`, severity, component, environment,
+source revision, or a client deduplication key.
 
-`source_revision` is immutable Kafka occurrence evidence and the authoritative SHA
+`source_revision` is immutable Kafka signal evidence and the authoritative SHA
 for the Workspace alert-source repository. It is not a generic runtime commit
 for every repository and is never compared with non-alert repository snapshots.
 
@@ -930,7 +980,8 @@ may have multiple instances without a schema migration.
 Native evidence capabilities are selected through the provider-neutral Connector
 registry, never by an investigation-core product branch. The configurable kinds
 are `loki`, `elasticsearch`, `opensearch`, `postgresql`, `mysql`, `clickhouse`,
-and `https`;
+`https`, `prometheus`, `tempo`, `jaeger`, `kubernetes`, `github`, `gitlab`, and
+`argocd`;
 each kind declares one native
 language and its own verification, introspection, parser/policy versions, read
 capabilities, adapter, fixture corpus, and failure semantics. A
@@ -938,6 +989,16 @@ new provider is not active merely because it resembles an existing product: it
 must register a complete independent security profile and contract tests.
 The isolated command runner remains an internal execution component and is not
 exposed as a user-configurable evidence connector.
+
+Prometheus yields metric-threshold evidence; Tempo and Jaeger yield spans;
+Kubernetes yields resource and rollout state; GitHub/GitLab yield repository,
+workflow, and deployment facts; Argo CD yields application sync and deployment
+state. Providers preserve a sealed raw response separately while ordinary JSON
+contains only masked, prompt-injection-marked projections and normalized graph
+records. Kubernetes rejects writes, exec, port-forward, watch, and Secret
+content. Every provider uses an endpoint catalog and typed operation, never an
+arbitrary URL or command. Connectors may read only for an existing authorized
+investigation and cannot create or correlate an incident.
 
 Database connectors support PostgreSQL, MySQL, and ClickHouse through structured
 host, optional defaulted port, database, username, encrypted password,
@@ -969,9 +1030,6 @@ identifiers, so provider-valid punctuation such as Supabase Pooler's dotted
 PostgreSQL usernames is accepted; surrounding whitespace and control characters
 remain invalid. Request-validation responses identify the first invalid field
 without echoing submitted values.
-Kafka evidence connectors are independent of `Workspace.ingestion_topic` and
-are limited to administrator-allowlisted topics and consumer groups.
-
 All user-managed secrets are submitted as values, encrypted immediately with a
 data-encryption key derived from `LODE_MASTER_KEY`, stored separately from non-secret config, and never
 returned. A Connector secret plaintext is a strict duplicate-free JSON object
@@ -1063,7 +1121,7 @@ External causes can be represented accurately while code diagnosis separately re
 HTTP errors use one envelope: `error.code`, a string or HTTP status code; `error.message`, always a string; and optional structured `error.details`. Do not place structured objects in `error.message`.
 
 `GET /incidents/{id}` is the canonical operational view. It returns current
-incident state/version, immutable occurrences, ordered investigation runs,
+incident state/version, immutable signals and association history, ordered investigation runs,
 append-only incident timeline, follow-up actions, and the server-computed
 `allowed_actions` capability set. The only state commands are
 `acknowledge`, `mitigate`, `resolve`, `close`, and `reopen`; each requires
@@ -1077,10 +1135,17 @@ Incident viewers may read only that incident's active assignee candidates;
 only administrators may read or change the full Workspace member directory and
 its grants.
 
-`GET /investigations/{id}/report` returns the complete immutable report: cause,
-code diagnosis, findings, confirmed and counter evidence, source/configuration
-assessments, gaps, and next step. `POST /investigations/{id}/reviews` appends an
-immutable human review and records the incident event. Secret ciphertext,
+`GET /investigations/{id}/report` returns `investigation-report.v1`: a typed
+causal DAG whose nodes and edges independently bind investigation-owned evidence,
+plus impact, participating entities, timeline, findings, counter-evidence,
+source/configuration assessments, gaps, and next steps. The independent verifier
+must cover every node, edge, and code finding and may approve an element only
+with evidence owned by that element. `POST /investigations/{id}/reviews` appends
+an immutable human review; later corrections use `supersedes_review_id`. Report
+proposals become formal actions only after human acceptance. Formal actions use
+`open -> in_progress -> validation -> completed`, with `blocked` and `cancelled`
+branches; owners must be active Workspace members and validation evidence must
+belong to the incident. Secret ciphertext,
 authorization token hashes, connector secret values, prompts, full model
 context, and hidden reasoning are never serialized.
 
@@ -1116,6 +1181,14 @@ returned as an explicitly truncated preview. Both node and artifact ownership
 are revalidated inside the investigation before content is returned. All three
 endpoints require Workspace `viewer` permission.
 
+Correlation candidates have explicit list, accept, and reject routes. Incident
+merge and split append association history. Pause/cancel stop at safe job
+boundaries and append control events; resume, evidence supplements, follow-up
+questions, and hypothesis branches create immutable child runs. Run comparison
+returns changes in inputs, hypotheses, evidence, causal graph, and conclusions.
+Only human-accepted reports enter similar-incident retrieval, and retrieved
+cases are hypothesis hints rather than authority or online training data.
+
 There is no root investigation creation/list endpoint and no investigation
 archive command. Investigation records are immutable runs under their incident;
 the incident lifecycle, not an archive flag, controls operational closure.
@@ -1133,57 +1206,28 @@ reconnects with the last observed cursor and preserves the last canonical view.
 
 ## Database
 
-Database revisions may already be deployed and are immutable once executed.
-`alembic/versions/0001_initial.py` creates the original 72-table baseline and
-`0002_repository_binding_analysis.py` expands it to the 73-table inventory that
-the current forward chain retains. `0003_schema_catalog_secret_scope.py` updates only the
-secret-rejection trigger function: ordinary Connector and scope configuration
-still rejects credential keys recursively, while server-generated Schema
-catalogues may preserve legitimate provider identifiers such as `token` or
-`password`. It changes no table, trigger inventory, or stored row.
-`0004_workspace_ingestion_state.py` closes the Workspace ingestion lifecycle.
-`0005_canonical_evidence_budget.py` publishes immutable canonical scope revisions
-and enforces their exact execution-budget shape. `0006_sql_scope_dialect.py`
-publishes explicit SQL dialect revisions and adds bidirectional Connector-kind,
-language, and dialect enforcement. `0007_investigation_job_phase.py` adds the
-durable investigation/reporting job phase and the non-terminal public
-`reporting` status. `0008_confirmed_report_semantics.py` aligns the immutable
-report trigger with the result contract: a confirmed report requires a successful
-investigation verifier plus an owned-evidence incident cause or the exact confirmed
-code findings referenced by the report. `0009_confirmed_report_invocation_anchors.py`
-makes nested status checks null-safe and requires the report's successful synthesizer,
-verifier, and confirmed findings to belong to the same investigation and verification
-decision. `0010_evidence_authority.py` is the intentionally destructive forward
-replacement for repository roles, source revision authority, operation dedupe,
-and report v2 fields. It clears investigations and all derived evidence, report,
-source, and ResourceGraph state; removes every Workspace repository binding; and
-returns active or paused ingestion to `draft` with a new ingestion version so
-consumers stop until readiness passes again. It preserves Workspaces, Git
-accounts and repository catalogues, Connectors, and model configuration. No old
-role is mapped and there is no dual read, alias, or rollback. It installs
-one-time non-alert branch-HEAD snapshot freezing and one-way source-authority
-contradiction triggers. Executed migration files remain immutable. There is one
-current schema and no compatibility view or dual write.
-`0011_clickhouse_sql_scope.py` extends the existing SQL dialect-ownership trigger
-so ClickHouse Connector scopes must advertise only the `clickhouse` dialect. Its
-downgrade refuses to remove that enforcement while a ClickHouse SQL scope exists.
-`0012_incident_platform_rebuild.py` is an intentionally destructive replacement
-for legacy alerts and standalone/archived investigations. It truncates their
-incident data, installs `incidents`, immutable `incident_occurrences`,
-`incident_events`, `incident_actions`, and immutable `investigation_reviews`,
-and makes every investigation a required incident-owned run with a trigger
-occurrence and trigger reason. There is no downgrade, data mapping, dual read,
-or compatibility route. This architecture/workflow change introduces no new
-dependency; operators must re-create discarded incident data and rebind
-repositories under the existing analysis-mode/alert-source contract after
-upgrade.
-`0013_kafka_v1_boundary.py` preserves the deployed `incident.alert.v1` wire
-contract while keeping the Incident/Occurrence model: Kafka `alert_id` maps to
-the internal source identity, every Kafka occurrence is firing, and correlation
-uses event plus opaque trace identity. It makes internal component/environment
-projections nullable so v1 Kafka intake stores no fabricated context. It adds no
-dependency, payload adapter, compatibility route, or producer workflow change.
-Future schema changes use ordinary forward migrations.
+This greenfield project has exactly one migration:
+`alembic/versions/v1_initial.py`, with `revision = "v1"` and
+`down_revision = None`. It creates the final 87-table schema, indexes,
+constraints, PostgreSQL functions, immutable triggers, snowflake allocator, and
+initial administrator. Its downgrade removes all V1 objects in reverse order.
+Revisions `0001` through `0013` do not exist and are not recognized; there is no
+old-database probe, data mapping, revision alias, compatibility view, dual read,
+or dual write. Development databases are deleted and rebuilt from empty with
+`alembic upgrade v1`.
+
+The schema uses `incident_signals`, association decisions/candidates/history,
+investigation parent-child relationships, control events, causal report records,
+reviews, proposal decisions, and formal actions. Incidents have no client dedup
+key, environment field, or single component string; source and affected-service
+identity comes from resource entities and immutable relations. Every Lode-owned
+persisted protocol is `*.v1`; third-party model protocol identifiers remain
+unchanged. All built-in Connector `kind_version` values are `1`.
+
+The V1 architecture and workflow changes add no runtime dependency. They replace
+the database, API contracts, investigation orchestration, Provider adapters, and
+Workbench flows, so every contributor must create a fresh database. No code may
+introduce a compatibility branch for pre-V1 rows or payloads.
 
 `next_lode_id()` and its state sequence are created before business tables in
 the initial migration. Tests exercise concurrent connections, independent
@@ -1192,8 +1236,8 @@ digit length, JavaScript safety, and fresh-schema foreign keys.
 
 The table inventory and database invariants are frozen independently under
 `contracts/v1/database`. SQLAlchemy metadata must exactly match the migration.
-The schema trigger inventory is frozen by the complete forward migration chain and
-database contract. `set_updated_at()` uses
+The schema trigger inventory is frozen by the sole V1 migration and database
+contract. `set_updated_at()` uses
 `clock_timestamp()` so updates within one transaction still advance the value.
 Ordinary connector/scope JSON is traversed structurally and rejects credential
 keys at any object depth. Schema catalogues are excluded from that key-name
@@ -1230,7 +1274,8 @@ Each Make target requires local PostgreSQL server tools (`initdb`, `pg_ctl`, and
 `createdb`) and uses `scripts/run_with_isolated_postgres.sh`. The behavior
 checker rolls back all fixtures, including its concurrent unique
 topic writes. The intake checker verifies strict validation, all dedupe layers,
-concurrent races, durable DLQ/unassigned handling, current-validator replay,
+concurrent position and signal-identity races, immutable terminal ingestion
+events, durable DLQ/unassigned handling, current-validator replay,
 manual HTTP intake, and exact encrypted trace round trips. `make resource-check`
 verifies single/monorepo and multi-repository
 identity, documentation-binding Build Unit exclusion, recovery reuse, alias conflict,
@@ -1361,18 +1406,12 @@ define empty, filtered-empty, inline-error, and retry states. All visible labels
 accessibility names, enum values, placeholders, validation messages, and client
 API errors use `next-intl`. `npm run check:i18n` enforces English/Chinese key
 parity and scans TSX literals; dates and numbers use the active locale.
-The PostgreSQL scope/create-workflow change adds no dependency or kind-version
-bump. Its catalog-trigger correction is delivered only through the V3 forward
-migration; V1 and V2 remain unchanged. Generic HTTP(S) scope is intentionally strict:
-new instances use kind version 2 and every endpoint requires an explicit
-`scheme`; there is no legacy scope fallback. It adds no dependency or database
-schema migration.
-Database TLS-mode/custom-CA support also adds no dependency, migration,
-kind-version change, or compatibility path. Persisted configs and every new API
-request must explicitly select a mode.
-PostgreSQL primary acceptance, scoped write-grant proof, and batched discovery
-add no dependency, database migration, kind-version change, or operator-tunable
-timeout. They change only verification/discovery policy and its fixed budget.
+All Connector contracts are final V1 designs with `kind_version=1`. HTTPS
+requires an explicit endpoint scheme and catalog; database transports require an
+explicit TLS mode. There is no kind-version conversion, legacy-scope fallback,
+forward repair migration, or compatibility path. The V1 rebuild adds no runtime
+dependency; it changes the architecture, database bootstrap, API, and Web
+workflow documented here.
 
 Authentication uses normalized lowercase usernames. The initial migration
 creates exactly one system administrator, `admin`, with password `123456` and
@@ -1469,7 +1508,7 @@ error preservation, exact stack/source range, candidate rejection, incident
 revision gates, strict model response schemas, independent semantic downgrade,
 external cause separation, cross-investigation concurrency, transient AI retry
 classification, scoped lease recovery, idempotent resume, manual retry lineage,
-immutable occurrence/event/review history, state-version conflict handling,
+immutable signal/association/event/review history, state-version conflict handling,
 server-driven incident capabilities, structured operation detail, SSE replay,
 permissions, masking, and fresh schema creation.
 

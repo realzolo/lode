@@ -223,23 +223,19 @@ async def _fixture() -> tuple[int, int, int]:
         await session.commit()
         request = ManualIncidentRequest.model_validate(
             {
-                "workspace_id": workspace.id,
-                "occurred_at": "2026-08-27T10:00:00Z",
-                "severity": "WARNING",
-                "event": "investigation.orchestration.check",
+                "schema_version": "manual-incident.v1",
+                "summary": "Investigation orchestration check",
+                "error_text": "Check: orchestration\n  at orchestrator.py:1",
                 "trace_id": "trace-check",
-                "source_revision": "a" * 40,
-                "error": {
-                    "type": "Check",
-                    "message": "orchestration",
-                    "stack": "frame",
-                    "cause": None,
-                },
             }
         )
         intake = await PostgresIntakeStore(session).persist_manual(
             workspace_id=workspace.id,
-            incident=normalize_manual(request),
+            signal=normalize_manual(
+                request,
+                idempotency_key="investigation-orchestration-check",
+                observed_at=datetime(2026, 8, 27, 10, 0, tzinfo=UTC),
+            ),
             created_by=user.id,
         )
         return workspace.id, intake.investigation_id, connector.id
@@ -521,6 +517,14 @@ async def main() -> None:
     else:
         raise AssertionError("report publication must precede job completion")
     assert await second_lease.reclaim_expired(now=lease_time + timedelta(seconds=63)) >= 1
+    async with AsyncSessionLocal() as session:
+        earliest = (
+            await session.execute(select(func.min(InvestigationJob.available_at)))
+        ).scalar_one()
+        reporting_job = await session.get(InvestigationJob, reclaimed.job_id)
+        assert reporting_job is not None and reporting_job.phase == "reporting"
+        reporting_job.available_at = earliest - timedelta(days=1)
+        await session.commit()
     third_lease = InvestigationLeaseStore(
         AsyncSessionLocal, owner="worker:third", lease_ttl_seconds=30
     )
@@ -534,17 +538,39 @@ async def main() -> None:
         report_value = {
             "result_state": "insufficient",
             "headline": "Investigation evidence was insufficient",
-            "summary": "The orchestration fixture completed without a supported conclusion.",
-            "incident_cause": {"status": "not_found"},
-            "code_diagnosis": {"status": "not_found"},
+            "executive_summary": (
+                "The orchestration fixture completed without a supported conclusion."
+            ),
+            "impact_scope": [],
+            "causal_graph": {
+                "nodes": [
+                    {
+                        "node_id": "verification_gap",
+                        "node_type": "evidence_gap",
+                        "status": "unknown",
+                        "statement": "The fixture has no supported causal conclusion.",
+                        "evidence_refs": [],
+                        "entity_refs": [],
+                    }
+                ],
+                "edges": [],
+                "root_node_ids": [],
+            },
+            "code_finding_refs": [],
             "participants": [],
             "timeline_summary": [],
             "source_assessments": [],
             "configuration_assessments": [],
-            "confirmed_facts": [],
             "counter_evidence": [],
-            "evidence_gaps": ["verification_fixture"],
-            "next_step": "Collect additional evidence.",
+            "evidence_gaps": [
+                {
+                    "description": "The fixture intentionally ends without causal evidence.",
+                    "consequence": "No root cause can be confirmed.",
+                    "required_evidence": "Collect additional runtime evidence.",
+                    "related_node_ids": ["verification_gap"],
+                }
+            ],
+            "action_recommendations": [],
         }
         session.add(
             InvestigationReport(

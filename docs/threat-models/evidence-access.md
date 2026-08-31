@@ -1,6 +1,6 @@
 # Evidence Access Plane Threat Model
 
-Status: Phase 0 frozen baseline; Phase 4 kernel and Phase 5/6 native connectors implemented
+Status: V1 evidence-access kernel and all built-in native/provider Connectors implemented
 
 Owners:
 
@@ -49,6 +49,11 @@ regeneration.
 | OpenSearch DSL | Elasticsearch policy reuse despite version/plugin differences, scripts, PPL/SQL, management API | Exact non-reserved index allowlist at creation, independent versioned parser/policy and contract corpus, exact `_search` path | Read-only role, plugins disabled |
 | SQL | operator-selected unsafe tables, multi-statement, writable CTE, locking reads, file/network/UDF side effects, system catalogs, TLS interception, cost exhaustion | Fixed dialect AST, every node read-only, introspected safe-table catalog, enforced limit/timeouts, optional non-executing explain | Explicit TLS 1.2+ `verify_full` or encryption-only `require`, no plaintext/fallback, non-privileged identity, read-only transaction, scoped no-write grant proof, resource group |
 | HTTP(S) | Ambiguous normalization, redirects, credential override, nominal GET with side effects, plaintext transport | Canonical HTTP(S) URL, safe-read endpoint catalog, exact scheme/host/port/path/schema and response checks | Zero redirects, adapter-injected identity, operator-controlled network for HTTP |
+| Prometheus | unbounded range/cardinality, expensive expressions, management endpoints | Typed query-range/series/metadata catalog, server window/result budget, normalized metric records | Read-only identity, byte/timeout limits |
+| Tempo / Jaeger | trace enumeration, oversized traces, cross-tenant access, management APIs | Typed trace-search/service-graph operations, frozen tenant scope, server window/result budget | Read-only identity, endpoint catalog, byte/timeout limits |
+| Kubernetes | mutation, exec, port-forward, watch exhaustion, Secret disclosure, cross-namespace reads | Fixed GET-only pod/event/deployment/statefulset catalog, exact namespace, response filtering | Read-only service account, no Secret resource/content permission |
+| GitHub / GitLab | repository escape, workflow mutation, credential leakage, pagination abuse | Fixed repository/project commit/deployment/pipeline operations and server result limit | Read-only token, exact repository/project scope |
+| Argo CD | sync/rollback mutation, resource escape, credential leakage | Fixed application and resource-tree reads with typed application selector | Read-only account, exact API catalog |
 | Command | shell injection, interpreter escape, path/symlink escape, writable mount, inherited environment/network, binary replacement | Structured executable/argv/working-set, exact flag grammar, fixed binary path and hash | Separate uid/image, read-only mounts/root, empty environment, no network, syscall/resource limits |
 
 The SQL policy uses the fixed SQLGlot parser for PostgreSQL and MySQL and
@@ -73,8 +78,9 @@ scheme and exact port are mandatory in generic endpoint scopes. Redirect,
 embedded-credential, timeout, and response-bound checks remain unchanged.
 Operators own the confidentiality
 risk when credentials or evidence traverse plaintext HTTP.
-Generic HTTP(S) Connector kind version 2 requires this explicit scheme; older
-scope payloads are not inferred or upgraded.
+Every built-in Connector is the final `kind_version=1` design. Generic HTTP(S)
+requires an explicit scheme and exact endpoint catalog. There is no older scope
+inference, upgrade, compatibility alias, or fallback.
 
 PostgreSQL and MySQL connector forms expose no allowed-table, time-column,
 stable-order, `search_path`, plaintext, or TLS-fallback authority. `verify_full`
@@ -123,6 +129,14 @@ The database secret-free trigger recursively scans ordinary Connector and scope
 configuration, but not server-generated Schema catalogues. Catalogues contain
 provider identifiers and type/policy metadata without row values, so legitimate
 column names such as `token` or `password` are not treated as credentials.
+
+Typed Provider responses are kept in two distinct channels: the complete raw
+response is sealed for audit, while ordinary result JSON contains only bounded,
+masked projections and normalized evidence records. Structured secret-key
+redaction runs before value-pattern masking, and prompt-injection markers remain
+attached to the projected record. Provider Connectors execute only after an
+existing investigation owns a frozen Connector snapshot and authorization; they
+cannot create, correlate, or change an incident.
 
 The command runner is separately authenticated and replay protected. It
 revalidates binary hash, argv, budget, logical working root and every path
@@ -179,6 +193,10 @@ failures and never relabeled as policy decisions.
 - [ ] Absolute window, result, byte, timeout, concurrency, and total budgets are
       enforced below AI requests.
 - [ ] Credentials and provider identities are injected by the adapter only.
+- [ ] Typed Provider routes reject arbitrary paths, methods, write operations,
+      Kubernetes exec/port-forward/watch, and Secret content.
+- [ ] Raw Provider responses are sealed separately; ordinary output is masked,
+      injection-marked, byte-bounded, and normalized into evidence graph types.
 - [ ] The infrastructure identity is independently read-only.
 - [ ] SQL scope comes only from bounded schema introspection over system-CA,
       hostname-verified TLS 1.2+; excluded and empty scopes remain fail-closed.

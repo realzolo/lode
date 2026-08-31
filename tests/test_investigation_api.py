@@ -69,12 +69,10 @@ async def test_event_stream_replays_cursor_for_an_incident_owned_run() -> None:
         )
         incident = Incident(
             workspace_id=workspace.id,
-            dedup_key="stream.failure",
-            event="stream.failure",
-            component="stream",
-            environment="test",
+            title="Stream failure",
             severity="WARNING",
             state="open",
+            signal_count=1,
             first_occurred_at=now,
             last_occurred_at=now,
             state_changed_at=now,

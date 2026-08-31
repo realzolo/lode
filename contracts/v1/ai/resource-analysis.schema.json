@@ -1,0 +1,29 @@
+{
+  "$defs": {
+    "ResourceComponentAnnotation": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {"items": {"type": "string"}, "maxItems": 50, "type": "array"},
+        "build_unit_keys": {"items": {"type": "string"}, "maxItems": 50, "minItems": 1, "type": "array"},
+        "component_key": {"pattern": "^[a-z0-9][a-z0-9._-]{0,99}$", "type": "string"},
+        "component_kind": {"enum": ["service", "worker", "job", "gateway", "library_runtime", "unknown"], "type": "string"},
+        "dependencies": {"items": {"type": "string"}, "maxItems": 100, "type": "array"},
+        "description": {"maxLength": 4000, "type": "string"},
+        "display_name": {"maxLength": 200, "minLength": 1, "type": "string"},
+        "entrypoints": {"items": {"type": "string"}, "maxItems": 100, "type": "array"},
+        "observation_refs": {"items": {"type": "string"}, "maxItems": 100, "minItems": 1, "type": "array"},
+        "owners": {"items": {"type": "string"}, "maxItems": 50, "type": "array"},
+        "runbooks": {"items": {"type": "string"}, "maxItems": 50, "type": "array"}
+      },
+      "required": ["component_key", "display_name", "component_kind", "build_unit_keys", "observation_refs", "aliases", "description", "entrypoints", "dependencies", "runbooks", "owners"],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "components": {"items": {"$ref": "#/$defs/ResourceComponentAnnotation"}, "maxItems": 200, "type": "array"}
+  },
+  "required": ["components"],
+  "title": "resource-analysis.v1",
+  "type": "object"
+}

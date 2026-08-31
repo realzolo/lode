@@ -22,7 +22,6 @@ from lode.db.models import (
 )
 from lode.db.session import AsyncSessionLocal
 
-
 router = APIRouter(prefix="/workspaces/{workspace_id}", tags=["resource-understanding"])
 Limit = Annotated[int, Query(ge=1, le=200)]
 Offset = Annotated[int, Query(ge=0)]
@@ -270,7 +269,5 @@ def _resolution_view(row: IdentityResolution) -> dict:
         "root_provenance_refs": row.root_provenance_refs,
         "validator_version": row.validator_version,
         "valid_from": row.valid_from,
-        "valid_until": row.valid_until,
-        "invalidation_reason": row.invalidation_reason,
         "resolution_hash": row.resolution_hash,
     }

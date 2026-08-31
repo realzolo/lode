@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -28,6 +28,8 @@ from lode.db.models import (
     InvestigationOperationEvent,
     InvestigationRepositorySnapshot,
     InvestigationStep,
+    IncidentSignal,
+    IncidentSignalLink,
     SealedEvidenceValue,
 )
 from lode.db.models import (
@@ -274,6 +276,17 @@ class PostgresInvestigationStore:
                 allowed_value_refs=value_refs,
                 attempted_fingerprints=frozenset(row.fingerprint for row in operations),
                 budget=remaining,
+                approved_model_hint=(
+                    decisions[-1].next_model_hint
+                    if decisions
+                    and decisions[-1].next_model_hint is not None
+                    and any(
+                        item.get("code") == "next_model_hint_approved"
+                        for item in decisions[-1].policy_decisions
+                        if isinstance(item, dict)
+                    )
+                    else None
+                ),
                 state_packet={
                     "investigation_id": investigation_id,
                     "hypotheses": [_plain_hypothesis(item) for item in hypotheses],
@@ -283,6 +296,29 @@ class PostgresInvestigationStore:
                 max_waves=max_steps,
                 remaining_model_calls=max(0, max_model_calls - model_calls),
             )
+
+    async def _expand_investigation_window(
+        self, session: AsyncSession, investigation: Investigation
+    ) -> None:
+        if investigation.window_expansion_level >= 3:
+            return
+        first_signal, last_signal = (
+            await session.execute(
+                select(
+                    func.min(IncidentSignal.observed_at),
+                    func.max(IncidentSignal.observed_at),
+                )
+                .join(IncidentSignalLink, IncidentSignalLink.signal_id == IncidentSignal.id)
+                .where(IncidentSignalLink.incident_id == investigation.incident_id)
+            )
+        ).one()
+        if first_signal is None or last_signal is None:
+            return
+        next_level = investigation.window_expansion_level + 1
+        expansion = timedelta(hours=(1, 6, 24)[next_level - 1])
+        investigation.window_started_at = first_signal - expansion
+        investigation.window_finished_at = last_signal + expansion
+        investigation.window_expansion_level = next_level
 
     async def prepare_wave(
         self, investigation_id: int, decision: EvaluatedDecision
@@ -295,6 +331,8 @@ class PostgresInvestigationStore:
                     .with_for_update()
                 )
             ).scalar_one()
+            if any(value.evidence_gaps for value in decision.candidate.hypotheses):
+                await self._expand_investigation_window(session, investigation)
             existing = (
                 await session.execute(
                     select(InvestigationDecisionRow).where(

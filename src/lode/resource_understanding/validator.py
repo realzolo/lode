@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Any, Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from lode.resource_understanding.types import (
     IdentityResolutionDraft,
     ScanResult,
     SemanticAnnotationDraft,
 )
-
 
 _STABLE_KEY = re.compile(r"^[a-z0-9][a-z0-9._:/-]{0,199}$")
 _COMPONENT_KINDS = {"service", "worker", "job", "gateway", "library_runtime", "unknown"}
@@ -99,6 +99,7 @@ class ResourceIdentityValidator:
                     "description": annotation.description,
                     "build_unit_keys": annotation.build_unit_keys,
                     "aliases": annotation.aliases,
+                    "semantics": dict(annotation.extra),
                 },
                 evidence_basis={
                     "scanner_candidates_only": True,

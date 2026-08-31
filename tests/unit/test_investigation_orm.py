@@ -219,17 +219,21 @@ def test_code_finding_requires_exact_source_anchor_when_causal() -> None:
     assert "end_line IS NOT NULL" in sql
 
 
-def test_report_keeps_incident_cause_and_code_diagnosis_separate() -> None:
+def test_report_persists_the_v1_causal_dag_and_evidence_bound_sections() -> None:
     columns = set(Base.metadata.tables["investigation_reports"].c.keys())
     assert {
-        "incident_cause",
-        "code_diagnosis",
+        "executive_summary",
+        "impact_scope",
+        "causal_graph",
+        "code_finding_refs",
         "participants",
         "timeline_summary",
         "source_assessments",
         "configuration_assessments",
         "counter_evidence",
         "evidence_gaps",
+        "action_recommendations",
+        "schema_version",
     }.issubset(columns)
 
 

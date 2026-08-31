@@ -25,7 +25,8 @@ type LokiCondition = {
 type LokiGroup = { kind: 'group'; combinator: 'all' | 'any'; items: Array<LokiCondition | LokiGroup> };
 type FieldErrors = Record<string, string>;
 
-const ENDPOINT_KINDS = new Set<ConnectorKind>(['loki', 'elasticsearch', 'opensearch', 'https']);
+const TYPED_PROVIDER_KINDS = new Set<ConnectorKind>(['prometheus', 'tempo', 'jaeger', 'kubernetes', 'github', 'gitlab', 'argocd']);
+const ENDPOINT_KINDS = new Set<ConnectorKind>(['loki', 'elasticsearch', 'opensearch', 'https', ...TYPED_PROVIDER_KINDS]);
 const SEARCH_KINDS = new Set<ConnectorKind>(['elasticsearch', 'opensearch']);
 const DATABASE_KINDS = new Set<ConnectorKind>(['postgresql', 'mysql', 'clickhouse']);
 const MULTI_VALUE_OPERATORS = new Set<LokiOperator>(['any_of', 'not_any_of']);
@@ -119,6 +120,10 @@ export function EvidenceConnectorDialog({
   const [verificationPath, setVerificationPath] = useState('');
   const [tenantId, setTenantId] = useState('');
   const [safeReadPath, setSafeReadPath] = useState('');
+  const [namespace, setNamespace] = useState('');
+  const [owner, setOwner] = useState('');
+  const [repository, setRepository] = useState('');
+  const [projectId, setProjectId] = useState('');
   const [allowedIndices, setAllowedIndices] = useState<string[]>([]);
   const [allowedIndicesDraft, setAllowedIndicesDraft] = useState('');
   const [allowedSchemas, setAllowedSchemas] = useState<string[]>([]);
@@ -149,6 +154,10 @@ export function EvidenceConnectorDialog({
     setVerificationPath('');
     setTenantId('');
     setSafeReadPath('');
+    setNamespace('');
+    setOwner('');
+    setRepository('');
+    setProjectId('');
     setAllowedIndices([]);
     setAllowedIndicesDraft('');
     setAllowedSchemas([]);
@@ -175,6 +184,10 @@ export function EvidenceConnectorDialog({
     setVerificationPath('');
     setTenantId('');
     setSafeReadPath('');
+    setNamespace('');
+    setOwner('');
+    setRepository('');
+    setProjectId('');
     setAllowedIndices([]);
     setAllowedIndicesDraft('');
     setAllowedSchemas([]);
@@ -250,6 +263,12 @@ export function EvidenceConnectorDialog({
       if (!safeReadPath.trim()) next.safeReadPath = required;
       else if (!isSafePath(safeReadPath.trim())) next.safeReadPath = t('connectorPathInvalid');
     }
+    if (kind === 'kubernetes' && !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(namespace)) next.namespace = required;
+    if (kind === 'github') {
+      if (!/^[A-Za-z0-9_.-]+$/.test(owner)) next.owner = required;
+      if (!/^[A-Za-z0-9_.-]+$/.test(repository)) next.repository = required;
+    }
+    if (kind === 'gitlab' && (!/^\d+$/.test(projectId) || Number(projectId) < 1)) next.projectId = required;
 
     if (DATABASE_KINDS.has(kind)) {
       if (!host.trim()) next.host = required;
@@ -348,6 +367,19 @@ export function EvidenceConnectorDialog({
         ...(caCertificatePem.trim() ? { ca_certificate_pem: caCertificatePem.trim() } : {}),
       };
     }
+    if (kind && TYPED_PROVIDER_KINDS.has(kind)) {
+      return {
+        ...common,
+        kind,
+        endpoint: endpoint.trim(),
+        authentication: authentication as Exclude<Authentication, 'none'>,
+        credential,
+        ...(authentication === 'basic' ? { credential_username: credentialUsername.trim() } : {}),
+        ...(kind === 'kubernetes' ? { namespace } : {}),
+        ...(kind === 'github' ? { owner, repository } : {}),
+        ...(kind === 'gitlab' ? { project_id: Number(projectId) } : {}),
+      } as ConnectorCreateInput;
+    }
     return {
       ...common,
       kind: 'https',
@@ -437,6 +469,10 @@ export function EvidenceConnectorDialog({
                     <Input placeholder={t('tenantIdPlaceholder')} value={tenantId} onChange={(event) => setTenantId(event.target.value)} />
                   </ConnectorField>
                 ) : null}
+
+                {kind === 'kubernetes' ? <ConnectorField name="namespace" label={t('connectorNamespace')} error={errors.namespace} required><Input value={namespace} aria-invalid={Boolean(errors.namespace)} onChange={(event) => { setNamespace(event.target.value); clearFieldError('namespace'); }} /></ConnectorField> : null}
+                {kind === 'github' ? <div className="grid gap-4 sm:grid-cols-2"><ConnectorField name="owner" label={t('connectorOwner')} error={errors.owner} required><Input value={owner} aria-invalid={Boolean(errors.owner)} onChange={(event) => { setOwner(event.target.value); clearFieldError('owner'); }} /></ConnectorField><ConnectorField name="repository" label={t('connectorRepository')} error={errors.repository} required><Input value={repository} aria-invalid={Boolean(errors.repository)} onChange={(event) => { setRepository(event.target.value); clearFieldError('repository'); }} /></ConnectorField></div> : null}
+                {kind === 'gitlab' ? <ConnectorField name="projectId" label={t('connectorProjectId')} error={errors.projectId} required><Input inputMode="numeric" value={projectId} aria-invalid={Boolean(errors.projectId)} onChange={(event) => { setProjectId(event.target.value); clearFieldError('projectId'); }} /></ConnectorField> : null}
 
                 {isEndpointConnector ? (
                   <>

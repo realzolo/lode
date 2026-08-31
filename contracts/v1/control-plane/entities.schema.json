@@ -174,7 +174,7 @@
         "workspace_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
         "provider_account_model_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
         "execution_classes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["latency_optimized", "reasoning_optimized"]}},
-        "allowed_roles": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["planner", "native_query", "synthesizer", "verifier", "context_compactor"]}},
+        "allowed_roles": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["resource_analyst", "planner", "native_query", "synthesizer", "verifier", "context_compactor"]}},
         "priority": {"type": "integer", "minimum": 0},
         "max_calls": {"type": "integer", "minimum": 1},
         "max_cost_per_call": {"type": "number", "minimum": 0},
@@ -217,7 +217,7 @@
       "properties": {
         "id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
         "investigation_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
-        "role": {"type": "string", "enum": ["planner", "native_query", "synthesizer", "verifier", "context_compactor"]},
+        "role": {"type": "string", "enum": ["resource_analyst", "planner", "native_query", "synthesizer", "verifier", "context_compactor"]},
         "routing_decision_id": {"type": "integer", "minimum": 1, "maximum": 4503599627370495},
         "state_packet": {"type": "object"},
         "evidence_refs": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 4503599627370495}},

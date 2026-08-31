@@ -26,7 +26,9 @@ from lode.db.models import (
     EvidenceCollection,
     GitRepository,
     Incident,
-    IncidentOccurrence,
+    IncidentCorrelationDecision,
+    IncidentSignal,
+    IncidentSignalLink,
     IngestionEvent,
     Investigation,
     SealedEvidenceValue,
@@ -207,7 +209,7 @@ async def main() -> None:
     if sorted(result.outcome for result in same_offset_results) != ["accepted", "duplicate"]:
         raise RuntimeError("same-offset race did not produce one accepted record")
     if sorted(result.outcome for result in producer_race_results) != ["accepted", "duplicate"]:
-        raise RuntimeError("alert-ID race did not produce one accepted occurrence")
+        raise RuntimeError("alert-ID race did not produce one accepted signal")
 
     try:
         await handler.replay(
@@ -236,38 +238,40 @@ async def main() -> None:
         raise RuntimeError(f"valid DLQ replay was not accepted: {replay_result.outcome}")
 
     manual_payload = {
-        "workspace_id": workspace_id,
-        "dedup_key": "manual.runtime.failure",
-        "occurred_at": "2026-08-26T10:00:00Z",
-        "severity": "WARNING",
-        "event": "manual.runtime.failure",
-        "component": "manual",
-        "environment": "production",
-        "error": {
-            "type": "RuntimeError",
-            "message": "manual input",
-            "stack": "",
-            "cause": None,
-        },
+        "schema_version": "manual-incident.v1",
+        "summary": "Manual runtime failure",
+        "error_text": "RuntimeError: manual input\n  at worker.py:7",
     }
     headers = {"authorization": f"Bearer {create_token(user_id, settings.jwt_signing_key)}"}
+    manual_headers = {**headers, "Idempotency-Key": "manual-intake-check-request"}
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://intake.test"
     ) as client:
         invalid_manual = await client.post(
-            "/incidents",
-            headers=headers,
-            json={**manual_payload, "service" + "_name": "removed"},
+            f"/workspaces/{workspace_id}/manual-incidents",
+            headers={**headers, "Idempotency-Key": "manual-invalid-intake-request"},
+            json={**manual_payload, "environment": "production"},
         )
         if invalid_manual.status_code != 422:
-            raise RuntimeError("manual endpoint accepted a removed scope field")
-        manual_response = await client.post("/incidents", headers=headers, json=manual_payload)
+            raise RuntimeError("manual endpoint accepted a removed environment field")
+        manual_response = await client.post(
+            f"/workspaces/{workspace_id}/manual-incidents",
+            headers=manual_headers,
+            json=manual_payload,
+        )
         if manual_response.status_code != 201:
             raise RuntimeError(
                 f"manual endpoint failed: {manual_response.status_code} {manual_response.text}"
             )
         if manual_response.json()["investigation_id"] is None:
             raise RuntimeError("manual endpoint did not create an investigation run")
+        manual_duplicate = await client.post(
+            f"/workspaces/{workspace_id}/manual-incidents",
+            headers=manual_headers,
+            json=manual_payload,
+        )
+        if manual_duplicate.status_code != 201 or manual_duplicate.json()["outcome"] != "duplicate":
+            raise RuntimeError("manual Idempotency-Key did not prevent duplicate intake")
 
     outcomes = [
         first.outcome,
@@ -293,15 +297,16 @@ async def main() -> None:
         raise RuntimeError(f"unexpected intake outcomes: {outcomes}")
 
     async with AsyncSessionLocal() as session:
-        occurrence = (
+        signal = (
             await session.execute(
-                select(IncidentOccurrence).where(IncidentOccurrence.source_event_id == "alert-1")
+                select(IncidentSignal).where(IncidentSignal.source_event_id == "alert-1")
             )
         ).scalar_one()
         sealed = (
             await session.execute(
                 select(SealedEvidenceValue).where(
-                    SealedEvidenceValue.investigation_id == first.investigation_id
+                    SealedEvidenceValue.investigation_id == first.investigation_id,
+                    SealedEvidenceValue.value_ref == "incident.trace_id",
                 )
             )
         ).scalar_one()
@@ -309,9 +314,25 @@ async def main() -> None:
         durable_failures = (
             (await session.execute(select(DeadLetter).order_by(DeadLetter.id))).scalars().all()
         )
-        incident = (
+        link = await session.get(IncidentSignalLink, signal.id)
+        if link is None:
+            raise RuntimeError("Kafka signal has no current incident association")
+        incident = await session.get(Incident, link.incident_id)
+        if incident is None:
+            raise RuntimeError("Kafka signal association references no incident")
+        manual_signal = (
             await session.execute(
-                select(Incident).where(Incident.event == "payment.order_create.failed")
+                select(IncidentSignal).where(
+                    IncidentSignal.workspace_id == workspace_id,
+                    IncidentSignal.source_type == "manual",
+                )
+            )
+        ).scalar_one()
+        manual_decision = (
+            await session.execute(
+                select(IncidentCorrelationDecision).where(
+                    IncidentCorrelationDecision.signal_id == manual_signal.id
+                )
             )
         ).scalar_one()
         incident_input_artifact = (
@@ -326,26 +347,31 @@ async def main() -> None:
             EvidenceCollection, incident_input_artifact.collection_id
         )
         counts = {
-            "occurrences": await session.scalar(select(func.count(IncidentOccurrence.id))),
+            "signals": await session.scalar(select(func.count(IncidentSignal.id))),
             "dead_letters": await session.scalar(select(func.count(DeadLetter.id))),
             "ingestion_events": await session.scalar(select(func.count(IngestionEvent.id))),
             "investigations": await session.scalar(select(func.count(Investigation.id))),
         }
 
-    if decrypt_value(occurrence.trace_id_ciphertext) != trace_id:
-        raise RuntimeError("Occurrence trace ciphertext did not preserve the original value")
+    if decrypt_value(signal.trace_id_ciphertext) != trace_id:
+        raise RuntimeError("Signal trace ciphertext did not preserve the original value")
     if decrypt_value(sealed.value_ciphertext) != trace_id:
         raise RuntimeError("ValueRef vault did not preserve the original value")
-    if occurrence.raw_payload_masked["trace_id"] != "<VALUE_REF:incident.trace_id>":
-        raise RuntimeError("masked occurrence payload exposed its trace value")
-    if occurrence.component is not None or occurrence.environment is not None:
-        raise RuntimeError("Kafka v1 occurrence invented component or environment context")
+    if signal.raw_payload_masked["trace_id"] != "<VALUE_REF:incident.trace_id>":
+        raise RuntimeError("masked signal payload exposed its trace value")
     if {"component", "environment", "dedup_key", "event_kind"}.intersection(
-        occurrence.raw_payload_masked
+        signal.raw_payload_masked
     ):
-        raise RuntimeError("Kafka v1 occurrence persisted fields outside the wire contract")
-    if incident.occurrence_count != 2:
+        raise RuntimeError("Kafka v1 signal persisted fields outside the wire contract")
+    if incident.signal_count != 2:
         raise RuntimeError("active incident deduplication did not count the second alert")
+    if (
+        manual_signal.severity != "UNCLASSIFIED"
+        or manual_signal.repository_binding_id is not None
+        or manual_signal.trace_id_ciphertext is not None
+        or manual_decision.outcome != "new"
+    ):
+        raise RuntimeError("minimal manual intake inferred a source, trace, severity, or association")
     if incident_input_collection is None:
         raise RuntimeError("canonical incident input collection is missing")
     if (
@@ -356,7 +382,7 @@ async def main() -> None:
         raise RuntimeError("canonical incident input collection is invalid")
     input_content = incident_input_artifact.content_masked
     if (
-        input_content["event"] != "payment.order_create.failed"
+        input_content["title"] != "payment.order_create.failed"
         or input_content["error"]["message"] != "Payment creation failed"
         or input_content["trace_value_ref"] != "incident.trace_id"
         or input_content["raw_payload"]["trace_id"] != "<VALUE_REF:incident.trace_id>"
@@ -371,7 +397,7 @@ async def main() -> None:
     ):
         raise RuntimeError("durable failure payload exposed an opaque trace")
     if counts != {
-        "occurrences": 6,
+        "signals": 6,
         "dead_letters": 3,
         "ingestion_events": 9,
         "investigations": 5,

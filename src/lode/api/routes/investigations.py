@@ -28,6 +28,7 @@ from lode.api.types import EntityId
 from lode.db.models import (
     EvidenceArtifact,
     IncidentEvent,
+    IncidentKnowledgeCase,
     Investigation,
     InvestigationCodeFinding,
     InvestigationInput,
@@ -43,29 +44,16 @@ from lode.metrics import SSE_CONNECTIONS, SSE_REPLAY_LAG
 
 router = APIRouter(prefix="/investigations", tags=["investigations"])
 workbench_router = APIRouter(prefix="/workbench", tags=["workbench"])
-_TERMINAL_STATUSES = {"completed", "failed"}
-
-
-class InvestigationReportConclusion(BaseModel):
-    status: str
-    summary: str
-    causal_chain: list[str]
-    evidence_refs: list[EntityId]
-
-
-class InvestigationReportFact(BaseModel):
-    text: str
-    evidence_refs: list[EntityId]
+_TERMINAL_STATUSES = {"paused", "completed", "failed", "cancelled"}
 
 
 class InvestigationReportSummary(BaseModel):
     headline: str
-    summary: str
-    cause: InvestigationReportConclusion
-    code_diagnosis: InvestigationReportConclusion
-    confirmed_facts: list[InvestigationReportFact]
-    evidence_gaps: list[str]
-    next_step: str
+    executive_summary: str
+    impact_scope: list[dict]
+    causal_graph: dict
+    evidence_gaps: list[dict]
+    action_recommendations: list[dict]
 
 
 class InvestigationOverview(BaseModel):
@@ -76,9 +64,10 @@ class InvestigationOverview(BaseModel):
     result_state: str
     trigger_reason: str
     output_language: str
-    event: str | None
+    title: str | None
+    summary: str | None
     severity: str | None
-    occurred_at: datetime | None
+    observed_at: datetime | None
     error_type: str | None
     error_message: str | None
     created_at: datetime
@@ -116,17 +105,16 @@ class InvestigationReportView(BaseModel):
     schema_version: str
     result_state: str
     headline: str
-    summary: str
-    incident_cause: dict
-    code_diagnosis: dict
+    executive_summary: str
+    impact_scope: list[dict]
+    causal_graph: dict
     participants: list[dict]
     timeline_summary: list[dict]
     source_assessments: list[dict]
     configuration_assessments: list[dict]
-    confirmed_facts: list[dict]
     counter_evidence: list[dict]
-    evidence_gaps: list[str]
-    next_step: str
+    evidence_gaps: list[dict]
+    action_recommendations: list[dict]
     code_findings: list[InvestigationCodeFindingView]
 
 
@@ -134,6 +122,7 @@ class InvestigationReviewRequest(BaseModel):
     code_finding_id: EntityId | None = None
     verdict: str = Field(pattern="^(accepted|rejected|needs_evidence)$")
     comment: str = Field(min_length=1, max_length=20_000)
+    supersedes_review_id: EntityId | None = None
 
 
 class InvestigationReviewOut(BaseModel):
@@ -142,6 +131,7 @@ class InvestigationReviewOut(BaseModel):
     verdict: str
     comment: str
     reviewer_id: EntityId
+    supersedes_review_id: EntityId | None
     created_at: datetime
 
 
@@ -236,60 +226,17 @@ def _row(row: Any, *, exclude: frozenset[str] = frozenset()) -> dict[str, Any] |
 
 def _report_summary(
     report: InvestigationReport | None,
-    code_findings: tuple[InvestigationCodeFinding, ...] = (),
 ) -> InvestigationReportSummary | None:
     if report is None:
         return None
-    cause = report.incident_cause
-    diagnosis = report.code_diagnosis
-    facts = []
-    for value in report.confirmed_facts:
-        if not isinstance(value, dict) or not isinstance(value.get("text"), str):
-            continue
-        facts.append(
-            InvestigationReportFact(
-                text=_clean_report_text(value["text"]),
-                evidence_refs=_positive_ids(value.get("evidence_refs")),
-            )
-        )
     return InvestigationReportSummary(
         headline=_clean_report_text(report.headline),
-        summary=_clean_report_text(report.summary),
-        cause=InvestigationReportConclusion(
-            status=str(cause.get("status", "not_found")),
-            summary=_clean_report_text(str(cause.get("mechanism", ""))),
-            causal_chain=[
-                _clean_report_text(str(item)) for item in cause.get("causal_chain", [])
-            ],
-            evidence_refs=_positive_ids(cause.get("evidence_refs")),
-        ),
-        code_diagnosis=InvestigationReportConclusion(
-            status=str(diagnosis.get("status", "not_found")),
-            summary=_clean_report_text(str(diagnosis.get("summary", ""))),
-            causal_chain=[],
-            evidence_refs=_diagnosis_evidence_refs(report, code_findings),
-        ),
-        confirmed_facts=facts,
-        evidence_gaps=[_clean_report_text(str(item)) for item in report.evidence_gaps],
-        next_step=_clean_report_text(report.next_step),
+        executive_summary=_clean_report_text(report.executive_summary),
+        impact_scope=report.impact_scope,
+        causal_graph=report.causal_graph,
+        evidence_gaps=report.evidence_gaps,
+        action_recommendations=report.action_recommendations,
     )
-
-
-def _diagnosis_evidence_refs(
-    report: InvestigationReport,
-    code_findings: tuple[InvestigationCodeFinding, ...],
-) -> list[int]:
-    selected_findings = set(_positive_ids(report.code_diagnosis.get("finding_refs")))
-    values: set[int] = set()
-    for finding in code_findings:
-        if finding.id not in selected_findings:
-            continue
-        values.update(_positive_ids(finding.incident_evidence_refs))
-        values.update(_positive_ids(finding.supporting_evidence_refs))
-        values.update(_positive_ids(finding.counter_evidence_refs))
-        if finding.source_artifact_id is not None:
-            values.add(finding.source_artifact_id)
-    return sorted(values)
 
 
 def _positive_ids(value: Any) -> list[int]:
@@ -302,6 +249,8 @@ def _positive_ids(value: Any) -> list[int]:
             if isinstance(item, int) and not isinstance(item, bool) and item > 0
         }
     )
+
+
 
 
 @router.get("/{investigation_id}", response_model=InvestigationOverview)
@@ -319,25 +268,7 @@ async def get_investigation(
     internal_id = investigation.id
     input_row = await session.get(InvestigationInput, internal_id)
     report = await session.get(InvestigationReport, internal_id)
-    code_findings: tuple[InvestigationCodeFinding, ...] = ()
-    if report is not None:
-        finding_ids = _positive_ids(report.code_diagnosis.get("finding_refs"))
-        if finding_ids:
-            code_findings = tuple(
-                (
-                    await session.execute(
-                        select(InvestigationCodeFinding)
-                        .where(
-                            InvestigationCodeFinding.investigation_id == internal_id,
-                            InvestigationCodeFinding.id.in_(finding_ids),
-                        )
-                        .order_by(InvestigationCodeFinding.id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-    error = input_row.error if input_row is not None else {}
+    error = input_row.error_masked if input_row is not None else {}
     return InvestigationOverview(
         id=investigation.id,
         incident_id=investigation.incident_id,
@@ -346,14 +277,15 @@ async def get_investigation(
         result_state=investigation.result_state,
         trigger_reason=investigation.trigger_reason,
         output_language=investigation.output_language,
-        event=input_row.event if input_row is not None else None,
+        title=input_row.title if input_row is not None else None,
+        summary=input_row.summary if input_row is not None else None,
         severity=input_row.severity if input_row is not None else None,
-        occurred_at=input_row.occurred_at if input_row is not None else None,
+        observed_at=input_row.observed_at if input_row is not None else None,
         error_type=str(error.get("type")) if error.get("type") is not None else None,
         error_message=str(error.get("message")) if error.get("message") is not None else None,
         created_at=investigation.created_at,
         updated_at=investigation.updated_at,
-        report=_report_summary(report, code_findings),
+        report=_report_summary(report),
         operation_count=int(
             await session.scalar(
                 select(func.count()).select_from(InvestigationOperation).where(
@@ -371,6 +303,8 @@ async def get_investigation(
             or 0
         ),
     )
+
+
 
 
 def _finding_view(row: InvestigationCodeFinding) -> InvestigationCodeFindingView:
@@ -427,19 +361,53 @@ async def get_investigation_report(
         schema_version=report.schema_version,
         result_state=report.result_state,
         headline=_clean_report_text(report.headline),
-        summary=_clean_report_text(report.summary),
-        incident_cause=report.incident_cause,
-        code_diagnosis=report.code_diagnosis,
+        executive_summary=_clean_report_text(report.executive_summary),
+        impact_scope=report.impact_scope,
+        causal_graph=report.causal_graph,
         participants=report.participants,
         timeline_summary=report.timeline_summary,
         source_assessments=report.source_assessments,
         configuration_assessments=report.configuration_assessments,
-        confirmed_facts=report.confirmed_facts,
         counter_evidence=report.counter_evidence,
-        evidence_gaps=[_clean_report_text(value) for value in report.evidence_gaps],
-        next_step=_clean_report_text(report.next_step),
+        evidence_gaps=report.evidence_gaps,
+        action_recommendations=report.action_recommendations,
         code_findings=[_finding_view(row) for row in findings],
     )
+
+
+@router.get("/{investigation_id}/reviews", response_model=list[InvestigationReviewOut])
+async def list_investigation_reviews(
+    investigation_id: EntityId,
+    user_id: EntityId = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[InvestigationReviewOut]:
+    _, investigation = await _investigation_access(
+        session,
+        user_id=user_id,
+        investigation_id=investigation_id,
+        permission="viewer",
+    )
+    rows = tuple(
+        (
+            await session.execute(
+                select(InvestigationReview)
+                .where(InvestigationReview.investigation_id == investigation.id)
+                .order_by(InvestigationReview.created_at, InvestigationReview.id)
+            )
+        ).scalars()
+    )
+    return [
+        InvestigationReviewOut(
+            id=row.id,
+            code_finding_id=row.code_finding_id,
+            verdict=row.verdict,
+            comment=row.comment,
+            reviewer_id=row.reviewer_id,
+            supersedes_review_id=row.supersedes_review_id,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
 
 
 @router.post("/{investigation_id}/reviews", response_model=InvestigationReviewOut, status_code=201)
@@ -459,15 +427,66 @@ async def create_investigation_review(
         finding = await session.get(InvestigationCodeFinding, payload.code_finding_id)
         if finding is None or finding.investigation_id != investigation.id:
             raise _error(422, "review_finding_mismatch", "Code finding does not belong to investigation.")
+    if payload.supersedes_review_id is not None:
+        superseded = await session.get(InvestigationReview, payload.supersedes_review_id)
+        if superseded is None or superseded.investigation_id != investigation.id:
+            raise _error(
+                422,
+                "superseded_review_mismatch",
+                "Superseded review does not belong to investigation.",
+            )
+        already_superseded = await session.scalar(
+            select(InvestigationReview.id).where(
+                InvestigationReview.supersedes_review_id == superseded.id
+            )
+        )
+        if already_superseded is not None:
+            raise _error(409, "review_already_superseded", "Review was already superseded.")
     review = InvestigationReview(
         investigation_id=investigation.id,
         code_finding_id=payload.code_finding_id,
         verdict=payload.verdict,
         comment=payload.comment,
         reviewer_id=user.id,
+        supersedes_review_id=payload.supersedes_review_id,
     )
     session.add(review)
     await session.flush()
+    if payload.verdict == "accepted" and payload.code_finding_id is None:
+        report = await session.get(InvestigationReport, investigation.id)
+        if report is None:
+            raise _error(
+                409,
+                "report_review_requires_report",
+                "A report-level acceptance requires a published report.",
+            )
+        existing_case = await session.scalar(
+            select(IncidentKnowledgeCase.id).where(
+                IncidentKnowledgeCase.investigation_id == investigation.id
+            )
+        )
+        if existing_case is None:
+            nodes = report.causal_graph.get("nodes", [])
+            edges = report.causal_graph.get("edges", [])
+            signature = sorted(
+                {
+                    *(str(node.get("node_type")) for node in nodes if isinstance(node, dict)),
+                    *(str(edge.get("relation")) for edge in edges if isinstance(edge, dict)),
+                }
+            )
+            session.add(
+                IncidentKnowledgeCase(
+                    workspace_id=investigation.workspace_id,
+                    incident_id=investigation.incident_id,
+                    investigation_id=investigation.id,
+                    accepted_review_id=review.id,
+                    report_hash=report.report_hash,
+                    headline=report.headline,
+                    executive_summary=report.executive_summary,
+                    causal_signature=signature,
+                    search_document=f"{report.headline}\n{report.executive_summary}".lower(),
+                )
+            )
     session.add(
         IncidentEvent(
             incident_id=investigation.incident_id,
@@ -489,6 +508,7 @@ async def create_investigation_review(
         verdict=review.verdict,
         comment=review.comment,
         reviewer_id=review.reviewer_id,
+        supersedes_review_id=review.supersedes_review_id,
         created_at=review.created_at,
     )
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lode.local/contracts/v1/ai/investigation-decision.schema.json",
-  "title": "investigation-decision.v6",
+  "title": "investigation-decision.v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["decision", "hypotheses", "operations", "objective", "next_model_hint"],
@@ -101,7 +101,7 @@
       "properties": {
         "role": {
           "type": "string",
-          "enum": ["planner", "native_query", "synthesizer", "verifier", "context_compactor"]
+          "enum": ["resource_analyst", "planner", "native_query", "synthesizer", "verifier", "context_compactor"]
         },
         "execution_class": {"type": "string", "enum": ["latency_optimized", "reasoning_optimized"]},
         "required_context_tokens": {"type": "integer", "minimum": 1},

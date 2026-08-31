@@ -58,6 +58,20 @@ const COMPACT_NODE_TYPES = new Set<InvestigationExecutionNode['node_type']>([
 type FocusRequest = { nodeId: string; nonce: number } | null;
 type CanvasFocusRequest = { nodeIds: string[]; nonce: number } | null;
 
+function useDesktopFlow() {
+  const [isDesktop, setIsDesktop] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 768px)');
+    const update = () => setIsDesktop(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+
+  return isDesktop;
+}
+
 type FlowNodeData = {
   item: InvestigationExecutionNode;
   lane: InvestigationExecutionLane;
@@ -441,6 +455,7 @@ export function InvestigationExecutionFlow({
   const t = useTranslations('workbench');
   const [mode, setMode] = useState<'compact' | 'full'>('compact');
   const [canvasFocus, setCanvasFocus] = useState<CanvasFocusRequest>(null);
+  const isDesktopFlow = useDesktopFlow();
   const viewGraph = useMemo(() => graph && mode === 'compact' ? compactExecutionGraph(graph) : graph, [graph, mode]);
   const visibleIds = useMemo(() => new Set(viewGraph?.nodes.map((node) => node.id) || []), [viewGraph]);
   const selectedNode = graph?.nodes.find((node) => node.id === selectedNodeId) || null;
@@ -500,10 +515,9 @@ export function InvestigationExecutionFlow({
         <Button size="icon" variant="outline" aria-label={t('flowLocateCurrent')} title={t('flowLocateCurrent')} onClick={locateCurrent}><LocateFixed size={16} /></Button>
       </div>
     </header>
-    <ReactFlowProvider>
+    {isDesktopFlow ? <ReactFlowProvider>
       <FlowCanvas graph={viewGraph} selectedNodeId={selectedNodeId} focusRequest={canvasFocus} onSelect={select} />
-    </ReactFlowProvider>
-    <MobileFlow graph={viewGraph} selectedNodeId={selectedNodeId} onSelect={select} />
+    </ReactFlowProvider> : <MobileFlow graph={viewGraph} selectedNodeId={selectedNodeId} onSelect={select} />}
     {graph.unused_connectors.length > 0 && <details className="execution-unused">
       <summary>{t('flowUnusedConnectors', { count: graph.unused_connectors.length })}</summary>
       <div>{graph.unused_connectors.map((connector) => <article key={connector.snapshot_id}>

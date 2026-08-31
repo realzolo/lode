@@ -12,6 +12,15 @@ The project is unreleased. It maintains one current architecture, one API, and
 one database baseline. There are no compatibility routes, schema adapters,
 dual writes, or historical payload converters.
 
+The implemented architecture and its invariants are documented in
+[`docs/architecture/v1-incident-platform.md`](docs/architecture/v1-incident-platform.md).
+
+Production and test use physically isolated deployments, databases, and
+configuration. Environment is therefore not a domain, API, database, UI,
+correlation, or filtering field. A Workspace is the hard main-application
+boundary: only that main application publishes Kafka alerts; side services can
+be submitted manually and can otherwise appear only as investigation evidence.
+
 ## Investigation Model
 
 Each immutable investigation run freezes its Workspace control state at intake: repository
@@ -69,7 +78,7 @@ resuming ingestion is allowed only when:
 
 1. the topic is configured;
 2. the active model policy covers planner, native query, synthesizer, verifier,
-   and context compactor roles with healthy deployments;
+   context compactor, and resource analyst roles with healthy deployments;
 3. the broker confirms the topic is reachable;
 4. exactly one active code repository is marked as the alert source.
 
@@ -93,9 +102,18 @@ Provider switches never carry hidden reasoning state.
 ## Evidence Access
 
 Workspace-owned Connectors support Loki, Elasticsearch, OpenSearch,
-PostgreSQL, MySQL, cataloged HTTPS reads, and an isolated command runner. Native
+PostgreSQL, MySQL, ClickHouse, cataloged HTTPS, Prometheus, Tempo, Jaeger,
+Kubernetes, GitHub, GitLab, and Argo CD reads, plus an isolated command runner. Native
 candidate parsers and policies enforce scope, time, row, byte, cardinality,
 and cost limits before issuing a single-use signed authorization.
+
+Every provider operation is typed and read-only. Kubernetes rejects writes,
+exec, port-forward, watch, and Secret content; no provider accepts an arbitrary
+URL or command. Raw responses are sealed separately, while models and the
+Workbench receive masked projections and normalized metric, span, resource,
+deployment, pipeline, configuration, and entity-relation evidence. Connectors
+can respond only to an existing authorized investigation and never create an
+incident.
 
 The first Loki read that uses the sealed incident trace is server-expanded to
 the Connector root scope, so every allowed app participates in discovery. Loki
@@ -147,8 +165,28 @@ Kafka message.
 }
 ```
 
-Kafka and manual intake use the same normalization, masking, immutable evidence,
-control snapshot, idempotency, and durable job creation path.
+Kafka and manual intake share only the internal `incident-signal.v1` model,
+masking, immutable evidence, control snapshot, and durable job creation path.
+The Kafka wire contract remains unchanged and strict.
+
+## Manual Intake
+
+`POST /workspaces/{workspace_id}/manual-incidents` accepts
+`manual-incident.v1` with required `summary` and `error_text`, plus optional
+`trace_id` and `repository_binding_id`. The Web client sends a generated
+`Idempotency-Key`; users do not enter a deduplication key. Receipt time is
+server-owned and initial severity is `unclassified` until an operator changes
+it. The optional repository list contains only enabled code bindings and does
+not preselect the main application. Without a repository, source is explicitly
+unknown and the report must expose that evidence gap. Raw error text is masked
+and sealed before model use.
+
+Within a Workspace, an exact trace can auto-correlate. Repository plus canonical
+error fingerprint and time proximity are scored: `>=0.85` auto-correlates,
+`0.60` to `<0.85` creates a human candidate, and lower scores create a new
+incident. A manual error with neither trace nor repository always creates a new
+incident. Accept/reject, merge, and split append association history rather than
+rewriting signals.
 
 ## API And Web
 
@@ -157,13 +195,14 @@ The final FastAPI surface includes:
 - global provider accounts and model deployments;
 - Workspace lifecycle, model bindings/policy, repositories, ResourceGraph
   views, Connector instances, verification, and introspection;
-- manual incident creation, searchable/paginated incident list, canonical
-  incident detail with server-driven lifecycle capabilities, immutable report
-  reads/reviews, execution detail, nested run retry, follow-up actions, and SSE;
+- manual incident creation, cursor-paginated and filtered incident list,
+  correlation candidates, merge/split, investigation controls, child runs,
+  run comparison, canonical incident detail, causal-DAG reports, append-only
+  reviews, action proposal decisions, similar cases, execution detail, and SSE;
 - authentication, users, invitations, health, and metrics.
 
 `GET /incidents/{id}` is the canonical client state. It includes immutable
-occurrences, investigation runs, the incident timeline, follow-up actions, and
+signals and association history, investigation runs, the incident timeline, follow-up actions, and
 server-computed allowed actions. `GET /investigations/{id}/report` is the full
 immutable report view. SSE replays persisted
 operation events by sequence, accepts `Last-Event-ID`, emits
@@ -173,10 +212,13 @@ canonical reload.
 The Next.js Web app provides global model and AI-output-language settings,
 Workspace topic/readiness settings, searchable direct account/repository
 binding, and a searchable/filterable member list with row-level actions,
-manual intake, a searchable incident list, and a responsive incident detail
-that leads with incident state, occurrences, cause, diagnosis, evidence, and
-next action. Investigation execution snapshots remain scoped to their immutable
-run. Wide tables and tab lists scroll locally instead of widening the page.
+manual intake, source/report/owner/time filters, correlation-candidate decisions,
+and a responsive incident detail. The detail exposes signal and association
+history, causal graph, impact, participants, timeline, evidence links, source
+gaps, counter-evidence, run controls/comparison, reviews, similar cases, and
+human-governed actions. Investigation execution snapshots remain scoped to
+their immutable run. Wide tables and tab lists scroll locally instead of
+widening the page.
 
 ## Local Development
 
@@ -204,19 +246,13 @@ uv run alembic upgrade head
 uv run python scripts/seed.py
 ```
 
-Migration `0010_evidence_authority` intentionally clears investigations,
-derived evidence/report/source/ResourceGraph data, and Workspace repository
-bindings. Rebind repositories with the new analysis-mode/alert-source model
-after upgrading. Active or paused ingestion returns to `draft` and must pass
-readiness again before starting. The migration preserves Workspace, Git
-catalogue/account, Connector, and model configuration and introduces no new
-dependency.
-
-Migration `0012_incident_platform_rebuild` discards legacy incident data and
-installs the Incident/Occurrence model. Migration `0013_kafka_v1_boundary`
-keeps `incident.alert.v1` unchanged and permits Kafka occurrences to omit
-internal component/environment projections. Producers require no payload or
-workflow change.
+The repository contains only `alembic/versions/v1_initial.py` (`revision =
+"v1"`, `down_revision = None`). It creates and fully downgrades the final V1
+schema. Revisions `0001` through `0013`, upgrade adapters, revision aliases,
+compatibility views, and data conversion do not exist. Delete any pre-V1 local
+database and rebuild it from empty. This architecture changes the database,
+API, investigation orchestration, Provider adapters, and Workbench workflow but
+adds no runtime dependency.
 
 Run processes individually with:
 
@@ -263,18 +299,18 @@ make test
 uv run python scripts/check_forbidden_contracts.py
 ```
 
-Schema verification must use a fresh PostgreSQL database and run both
-`alembic upgrade head` and `alembic check`. The immutable baseline and forward
-migrations are under `alembic/versions/`; never edit a revision after it has
-been executed in an environment.
+Schema verification must use a fresh PostgreSQL database and run
+`upgrade v1 -> downgrade base -> upgrade v1`, `alembic check`, the frozen schema
+contract, and database behavior checks. `v1_initial.py` is the sole immutable
+baseline; future work in this greenfield V1 must not add an old-schema adapter.
 
 `make web-check` runs TypeScript validation, English/Chinese key parity and
 untranslated-literal scanning, then the production Next.js build.
 
-`make analysis-check` is a deterministic smoke gate. A release additionally
-requires frozen real-provider observations to pass the quality thresholds and
-Wilson confidence bounds documented in `CLAUDE.md`; the deterministic corpus is
-intentionally too small to claim that statistical release gate.
+`make analysis-check` runs the deterministic 100-case gold corpus. A release
+additionally requires repeated frozen real-provider observations to pass the
+quality thresholds and Wilson confidence bounds documented in `CLAUDE.md`;
+case-count alone is not statistical release evidence.
 
 ```bash
 make provider-release-check \

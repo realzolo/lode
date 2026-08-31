@@ -11,13 +11,13 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lode.application.conclusion_validation import ConclusionValidator
 from lode.application.reporting import InvestigationReportPayload, VerificationPayload
 from lode.application.source_authority import ConfigurationAuthorityEngine
 from lode.db.models import (
     AIInvocation,
     EvidenceArtifact,
     EvidenceLink,
+    IncidentActionProposal,
     Investigation,
     InvestigationCodeFinding,
     InvestigationModelPolicySnapshot,
@@ -46,7 +46,6 @@ class PublishedReport:
 class PostgresReportStore:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
-        self.conclusions = ConclusionValidator()
         self.configuration = ConfigurationAuthorityEngine()
 
     async def publish_unavailable(
@@ -62,26 +61,37 @@ class PostgresReportStore:
         value = {
             "result_state": "unavailable",
             "headline": "Investigation analysis unavailable",
-            "summary": "The analysis model or its structured protocol was unavailable.",
-            "incident_cause": {
-                "status": "not_found",
-                "mechanism": "unavailable",
-                "causal_chain": [],
-                "evidence_refs": [],
+            "executive_summary": "The analysis model or structured protocol was unavailable.",
+            "impact_scope": [],
+            "causal_graph": {
+                "nodes": [
+                    {
+                        "node_id": "analysis_unavailable",
+                        "node_type": "evidence_gap",
+                        "status": "unknown",
+                        "statement": "No causal conclusion was produced.",
+                        "evidence_refs": [],
+                        "entity_refs": [],
+                    }
+                ],
+                "edges": [],
+                "root_node_ids": [],
             },
-            "code_diagnosis": {
-                "status": "not_found",
-                "summary": "No code diagnosis was published.",
-                "finding_refs": [],
-            },
+            "code_finding_refs": [],
             "participants": [],
             "timeline_summary": [],
             "source_assessments": [],
             "configuration_assessments": [],
-            "confirmed_facts": [],
             "counter_evidence": [],
-            "evidence_gaps": [reason],
-            "next_step": "Restore an eligible analysis model and retry the investigation.",
+            "evidence_gaps": [
+                {
+                    "description": reason,
+                    "consequence": "No causal conclusion can be established.",
+                    "required_evidence": "Restore an eligible model and create a child investigation.",
+                    "related_node_ids": ["analysis_unavailable"],
+                }
+            ],
+            "action_recommendations": [],
         }
         report_hash = canonical_hash(value)
         existing = await self.session.get(InvestigationReport, investigation_id)
@@ -98,17 +108,17 @@ class PostgresReportStore:
                 investigation_id=investigation_id,
                 result_state="unavailable",
                 headline=value["headline"],
-                summary=value["summary"],
-                incident_cause=value["incident_cause"],
-                code_diagnosis=value["code_diagnosis"],
+                executive_summary=value["executive_summary"],
+                impact_scope=[],
+                causal_graph=value["causal_graph"],
+                code_finding_refs=[],
                 participants=[],
                 timeline_summary=[],
                 source_assessments=[],
                 configuration_assessments=[],
-                confirmed_facts=[],
                 counter_evidence=[],
-                evidence_gaps=[reason],
-                next_step=value["next_step"],
+                evidence_gaps=value["evidence_gaps"],
+                action_recommendations=[],
                 synthesizer_invocation_id=synthesizer_invocation_id,
                 verifier_invocation_id=None,
                 report_hash=report_hash,
@@ -191,19 +201,6 @@ class PostgresReportStore:
         source_by_id = {
             assessment.id: (revision, snapshot) for assessment, revision, snapshot in source_rows
         }
-        source_authority = tuple(
-            SourceAuthorityAssessment(
-                repository_snapshot_id=revision.repository_snapshot_id,
-                revision_origin=revision.revision_origin,
-                requested_ref=revision.requested_ref,
-                resolved_sha=revision.resolved_sha,
-                authority_status=assessment.authority_status,
-                compatibility_status=assessment.compatibility_status,
-                runtime_evidence_refs=tuple(assessment.evidence_refs),
-                mismatch_reasons=tuple(assessment.mismatch_reasons),
-            )
-            for assessment, revision, _ in source_rows
-        )
         configuration_assessments = tuple(
             self.configuration.assess(
                 scope=item.scope,
@@ -220,6 +217,7 @@ class PostgresReportStore:
             verifier=verifier,
             verifier_row=verifier_row,
             payload=payload,
+            artifact_ids=artifact_ids,
         )
         finding_ids: list[int] = []
         finding_statuses: list[str] = []
@@ -290,19 +288,11 @@ class PostgresReportStore:
                         )
                     )
 
-        report_value = payload.model_dump(mode="json", exclude={"code_findings"})
-        selected_finding_ids = tuple(
-            finding_ids[index] for index in payload.code_diagnosis.finding_indices
+        report_value = payload.model_dump(
+            mode="json",
+            exclude={"code_findings", "source_assessments", "configuration_assessments"},
         )
-        code_diagnosis = dict(report_value["code_diagnosis"])
-        code_diagnosis.pop("finding_indices", None)
-        code_diagnosis["finding_refs"] = list(selected_finding_ids)
-        if code_diagnosis["status"] == "confirmed" and any(
-            finding_statuses[index] != "confirmed"
-            for index in payload.code_diagnosis.finding_indices
-        ):
-            code_diagnosis["status"] = "hypothesis"
-        report_value["code_diagnosis"] = code_diagnosis
+        report_value["code_finding_refs"] = finding_ids
         source_assessment_values = [
             {
                 "repository_id": snapshot.repository_id,
@@ -328,16 +318,34 @@ class PostgresReportStore:
             }
             for item in configuration_assessments
         ]
-        validated = self.conclusions.validate(
-            report_value,
-            source_assessments=source_authority,
-            configuration_assessments=configuration_assessments,
-            verifier_status=verifier_status,
-        )
-        final_report = dict(validated.report)
-        gaps = list(final_report.get("evidence_gaps", ()))
-        gaps.extend(reason for reason in validated.reasons if reason not in gaps)
-        final_report["evidence_gaps"] = gaps
+        downgrade_reasons: list[str] = []
+        causal_graph = dict(report_value["causal_graph"])
+        nodes = [dict(value) for value in causal_graph["nodes"]]
+        edges = [dict(value) for value in causal_graph["edges"]]
+        if verifier_status != "approved":
+            for node in nodes:
+                if node["status"] == "confirmed":
+                    node["status"] = "hypothesis"
+            for edge in edges:
+                if edge["status"] == "confirmed":
+                    edge["status"] = "hypothesis"
+            if report_value["result_state"] == "confirmed":
+                report_value["result_state"] = "hypothesis"
+            if any(
+                value.status == "confirmed" for value in payload.causal_graph.nodes
+            ) or any(value.status == "confirmed" for value in payload.causal_graph.edges):
+                downgrade_reasons.append("independent_causal_verification_required")
+        causal_graph["nodes"] = nodes
+        causal_graph["edges"] = edges
+        report_value["causal_graph"] = causal_graph
+        if any(
+            status != original.status
+            for status, original in zip(
+                finding_statuses, payload.code_findings, strict=True
+            )
+        ):
+            downgrade_reasons.append("source_or_finding_verification_failed")
+        final_report = report_value
         report_hash = canonical_hash(final_report)
         existing = await self.session.get(InvestigationReport, investigation_id)
         if existing is not None:
@@ -348,28 +356,43 @@ class PostgresReportStore:
                 existing.result_state,
                 existing.report_hash,
                 tuple(finding_ids),
-                validated.reasons,
+                tuple(downgrade_reasons),
             )
         report_row = InvestigationReport(
             investigation_id=investigation_id,
-            result_state=validated.result_state,
+            result_state=str(final_report["result_state"]),
             headline=str(final_report["headline"]),
-            summary=str(final_report["summary"]),
-            incident_cause=dict(final_report["incident_cause"]),
-            code_diagnosis=dict(final_report["code_diagnosis"]),
+            executive_summary=str(final_report["executive_summary"]),
+            impact_scope=list(final_report["impact_scope"]),
+            causal_graph=dict(final_report["causal_graph"]),
+            code_finding_refs=list(final_report["code_finding_refs"]),
             participants=list(final_report["participants"]),
             timeline_summary=list(final_report["timeline_summary"]),
             source_assessments=list(final_report["source_assessments"]),
             configuration_assessments=list(final_report["configuration_assessments"]),
-            confirmed_facts=list(final_report["confirmed_facts"]),
             counter_evidence=list(final_report["counter_evidence"]),
             evidence_gaps=list(final_report["evidence_gaps"]),
-            next_step=str(final_report["next_step"]),
+            action_recommendations=list(final_report["action_recommendations"]),
             synthesizer_invocation_id=synthesizer_invocation_id,
             verifier_invocation_id=verifier_invocation_id,
             report_hash=report_hash,
         )
         self.session.add(report_row)
+        for recommendation in payload.action_recommendations:
+            recommendation_value = recommendation.model_dump(mode="json")
+            self.session.add(
+                IncidentActionProposal(
+                    incident_id=investigation.incident_id,
+                    investigation_id=investigation_id,
+                    action_type=recommendation.action_type,
+                    priority=recommendation.priority,
+                    title=recommendation.title,
+                    rationale=recommendation.rationale,
+                    validation=recommendation.validation,
+                    evidence_refs=list(recommendation.evidence_refs),
+                    proposal_hash=canonical_hash(recommendation_value),
+                )
+            )
         for artifact_id in referenced:
             self.session.add(
                 EvidenceLink(
@@ -380,15 +403,15 @@ class PostgresReportStore:
                     relation="derived_from",
                 )
             )
-        investigation.result_state = validated.result_state
+        investigation.result_state = str(final_report["result_state"])
         investigation.status = "completed"
         investigation.finished_at = datetime.now(UTC)
         return PublishedReport(
             investigation_id,
-            validated.result_state,
+            str(final_report["result_state"]),
             report_hash,
             tuple(finding_ids),
-            validated.reasons,
+            tuple(downgrade_reasons),
         )
 
     async def _invocation(
@@ -464,6 +487,7 @@ class PostgresReportStore:
         verifier: VerificationPayload | None,
         verifier_row: AIInvocation | None,
         payload: InvestigationReportPayload,
+        artifact_ids: frozenset[int],
     ) -> str | None:
         if verifier is None or verifier_row is None or verifier.verdict != "approved":
             return None if verifier is None else "rejected"
@@ -474,20 +498,85 @@ class PostgresReportStore:
             and verifier_row.provider_account_model_id == synthesizer.provider_account_model_id
         ):
             return "rejected"
+        verifier_refs = {
+            ref
+            for verdict in (
+                *verifier.node_verdicts,
+                *verifier.edge_verdicts,
+                *verifier.finding_verdicts,
+            )
+            for ref in verdict.evidence_refs
+        } | set(verifier.counter_evidence_refs)
+        if not verifier_refs.issubset(artifact_ids):
+            return "rejected"
+        node_evidence = {
+            node.node_id: frozenset(node.evidence_refs) for node in payload.causal_graph.nodes
+        }
+        edge_evidence = {
+            edge.edge_id: frozenset(edge.evidence_refs) for edge in payload.causal_graph.edges
+        }
+        finding_evidence = {
+            index: _finding_evidence_refs(finding)
+            for index, finding in enumerate(payload.code_findings)
+        }
+        if {item.element_id for item in verifier.node_verdicts} != set(node_evidence):
+            return "rejected"
+        if {item.element_id for item in verifier.edge_verdicts} != set(edge_evidence):
+            return "rejected"
+        if {item.finding_index for item in verifier.finding_verdicts} != set(
+            finding_evidence
+        ):
+            return "rejected"
+        if any(
+            item.verdict == "approved"
+            and not (set(item.evidence_refs) & node_evidence[item.element_id])
+            for item in verifier.node_verdicts
+        ):
+            return "rejected"
+        if any(
+            item.verdict == "approved"
+            and not (set(item.evidence_refs) & edge_evidence[item.element_id])
+            for item in verifier.edge_verdicts
+        ):
+            return "rejected"
+        if any(
+            item.verdict == "approved"
+            and not (set(item.evidence_refs) & finding_evidence[item.finding_index])
+            for item in verifier.finding_verdicts
+        ):
+            return "rejected"
         if (
             verifier_policy.get("separate_provider", False)
             and verifier_row.provider_account_id == synthesizer.provider_account_id
         ):
             return "rejected"
-        confirmed = {
+        confirmed_findings = {
             index
             for index, finding in enumerate(payload.code_findings)
             if finding.status == "confirmed"
         }
-        approved = {
+        approved_findings = {
             item.finding_index for item in verifier.finding_verdicts if item.verdict == "approved"
         }
-        return "approved" if confirmed.issubset(approved) else "rejected"
+        confirmed_nodes = {
+            node.node_id for node in payload.causal_graph.nodes if node.status == "confirmed"
+        }
+        approved_nodes = {
+            item.element_id for item in verifier.node_verdicts if item.verdict == "approved"
+        }
+        confirmed_edges = {
+            edge.edge_id for edge in payload.causal_graph.edges if edge.status == "confirmed"
+        }
+        approved_edges = {
+            item.element_id for item in verifier.edge_verdicts if item.verdict == "approved"
+        }
+        return (
+            "approved"
+            if confirmed_findings.issubset(approved_findings)
+            and confirmed_nodes.issubset(approved_nodes)
+            and confirmed_edges.issubset(approved_edges)
+            else "rejected"
+        )
 
 
 def _finding_approved(verifier: VerificationPayload | None, index: int) -> bool:
@@ -510,7 +599,12 @@ def _finding_evidence_refs(finding) -> frozenset[int]:
 
 def _report_evidence_refs(payload: InvestigationReportPayload) -> frozenset[int]:
     values: set[int] = set()
-    values.update(payload.incident_cause.evidence_refs)
+    for item in payload.impact_scope:
+        values.update(item.evidence_refs)
+    for node in payload.causal_graph.nodes:
+        values.update(node.evidence_refs)
+    for edge in payload.causal_graph.edges:
+        values.update(edge.evidence_refs)
     for finding in payload.code_findings:
         values.update(_finding_evidence_refs(finding))
     for participant in payload.participants:
@@ -519,6 +613,8 @@ def _report_evidence_refs(payload: InvestigationReportPayload) -> frozenset[int]
         values.update(item.evidence_refs)
     for item in payload.configuration_assessments:
         values.update(item.evidence_refs)
-    for item in (*payload.confirmed_facts, *payload.counter_evidence):
+    for item in payload.counter_evidence:
         values.update(item.evidence_refs)
+    for recommendation in payload.action_recommendations:
+        values.update(recommendation.evidence_refs)
     return frozenset(values)

@@ -114,10 +114,10 @@ function get<T>(path: string): Promise<T> {
   return request<T>(path, { headers: authHeaders() });
 }
 
-function send<T>(path: string, method: string, body?: unknown): Promise<T> {
+function send<T>(path: string, method: string, body?: unknown, headers: HeadersInit = {}): Promise<T> {
   return request<T>(path, {
     method,
-    headers: authHeaders(body !== undefined),
+    headers: { ...authHeaders(body !== undefined), ...headers },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 }
@@ -274,17 +274,42 @@ export function testConnector(workspaceId: number | string, connectorId: number)
 export function introspectConnector(workspaceId: number | string, connectorId: number) {
   return send<Record<string, unknown>>(`/workspaces/${workspaceId}/evidence-connectors/${connectorId}/introspect`, 'POST');
 }
-export function fetchIncidents(input: { workspaceId?: number; state?: string; q?: string; afterId?: number } = {}) {
+export function fetchIncidents(input: {
+  workspaceId?: number;
+  state?: string;
+  severity?: string;
+  sourceType?: string;
+  reportState?: string;
+  assignedTo?: number;
+  observedFrom?: string;
+  observedTo?: string;
+  q?: string;
+  cursor?: string;
+} = {}) {
   const query = new URLSearchParams();
   if (input.workspaceId) query.set('workspace_id', String(input.workspaceId));
   if (input.state && input.state !== 'all') query.set('state', input.state);
+  if (input.severity && input.severity !== 'all') query.set('severity', input.severity);
+  if (input.sourceType && input.sourceType !== 'all') query.set('source_type', input.sourceType);
+  if (input.reportState && input.reportState !== 'all') query.set('report_state', input.reportState);
+  if (input.assignedTo) query.set('assigned_to', String(input.assignedTo));
+  if (input.observedFrom) query.set('observed_from', input.observedFrom);
+  if (input.observedTo) query.set('observed_to', input.observedTo);
   if (input.q?.trim()) query.set('q', input.q.trim());
-  if (input.afterId) query.set('after_id', String(input.afterId));
+  if (input.cursor) query.set('cursor', input.cursor);
   const suffix = query.size ? `?${query.toString()}` : '';
   return get<IncidentListPage>(`/incidents${suffix}`);
 }
-export function createIncident(input: Record<string, unknown>) {
-  return send<{ incident_id: number; investigation_id: number | null; job_id: number | null }>('/incidents', 'POST', input);
+export function createManualIncident(
+  workspaceId: number,
+  input: { schema_version: 'manual-incident.v1'; summary: string; error_text: string; trace_id?: string; repository_binding_id?: number },
+) {
+  return send<{ incident_id: number; signal_id: number; investigation_id: number | null; job_id: number | null }>(
+    `/workspaces/${workspaceId}/manual-incidents`,
+    'POST',
+    input,
+    { 'Idempotency-Key': crypto.randomUUID() },
+  );
 }
 export function fetchIncident(id: number | string) { return get<IncidentOverview>(`/incidents/${encodeURIComponent(id)}`); }
 export function fetchIncidentAssignees(id: number | string) { return get<import('./types').WorkspaceMember[]>(`/incidents/${encodeURIComponent(id)}/assignees`); }
@@ -306,8 +331,53 @@ export function createIncidentAction(incidentId: number | string, input: Record<
 export function updateIncidentAction(incidentId: number | string, actionId: number | string, input: Record<string, unknown>) {
   return send<import('./types').IncidentAction>(`/incidents/${encodeURIComponent(incidentId)}/actions/${encodeURIComponent(actionId)}`, 'PATCH', input);
 }
+export function classifyIncidentSeverity(id: number | string, input: { severity: 'WARNING' | 'CRITICAL'; expected_state_version: number; reason: string }) {
+  return send<IncidentOverview>(`/incidents/${encodeURIComponent(id)}/severity`, 'POST', input);
+}
+export function fetchCorrelationCandidates(workspaceId: number, status = 'pending') {
+  return get<import('./types').CorrelationCandidate[]>(`/workspaces/${workspaceId}/correlation-candidates?status=${status}`);
+}
+export function decideCorrelationCandidate(candidateId: number, decision: 'accept' | 'reject', reason: string) {
+  return send<unknown>(`/incidents/correlation-candidates/${candidateId}/${decision}`, 'POST', { reason });
+}
+export function mergeIncident(targetId: number, source_incident_id: number, reason: string) {
+  return send<IncidentOverview>(`/incidents/${targetId}/merge`, 'POST', { source_incident_id, reason });
+}
+export function splitIncident(sourceId: number, signal_ids: number[], title: string, reason: string) {
+  return send<IncidentOverview>(`/incidents/${sourceId}/split`, 'POST', { signal_ids, title, reason });
+}
+export function fetchSimilarIncidents(incidentId: number) {
+  return get<import('./types').SimilarIncident[]>(`/incidents/${incidentId}/similar-incidents`);
+}
+export function fetchActionProposals(incidentId: number) {
+  return get<import('./types').ActionProposal[]>(`/incidents/${incidentId}/action-proposals`);
+}
+export function decideActionProposal(incidentId: number, proposalId: number, decision: 'accept' | 'reject', input: { reason: string; owner_id?: number }) {
+  return send<import('./types').ActionProposal>(`/incidents/${incidentId}/action-proposals/${proposalId}/${decision}`, 'POST', input);
+}
 export function fetchInvestigation(id: number | string) { return get<InvestigationOverview>(`/investigations/${encodeURIComponent(id)}`); }
 export function fetchInvestigationReport(id: number | string) { return get<InvestigationReportView>(`/investigations/${encodeURIComponent(id)}/report`); }
+export function controlInvestigation(id: number, command: 'pause' | 'cancel' | 'resume', reason: string) {
+  return send<Record<string, unknown>>(`/investigations/${id}/${command}`, 'POST', { reason });
+}
+export function addInvestigationEvidence(id: number, description: string, evidence_text: string) {
+  return send<Record<string, unknown>>(`/investigations/${id}/evidence`, 'POST', { description, evidence_text });
+}
+export function askInvestigationQuestion(id: number, question: string) {
+  return send<Record<string, unknown>>(`/investigations/${id}/questions`, 'POST', { question });
+}
+export function branchInvestigation(id: number, hypothesis: string) {
+  return send<Record<string, unknown>>(`/investigations/${id}/branches`, 'POST', { hypothesis });
+}
+export function compareInvestigations(leftId: number, rightId: number) {
+  return get<Record<string, unknown>>(`/investigations/comparisons?left_id=${leftId}&right_id=${rightId}`);
+}
+export function fetchInvestigationReviews(id: number) {
+  return get<import('./types').InvestigationReview[]>(`/investigations/${id}/reviews`);
+}
+export function createInvestigationReview(id: number, input: { code_finding_id?: number; verdict: 'accepted' | 'rejected' | 'needs_evidence'; comment: string; supersedes_review_id?: number }) {
+  return send<import('./types').InvestigationReview>(`/investigations/${id}/reviews`, 'POST', input);
+}
 export function fetchInvestigationExecutionGraph(id: number | string) {
   return get<InvestigationExecutionGraph>(`/investigations/${encodeURIComponent(id)}/execution-graph`);
 }

@@ -131,7 +131,14 @@ class SourceQueryPayload(StrictResponseModel):
 
 
 class ModelHintPayload(StrictResponseModel):
-    role: Literal["planner", "native_query", "synthesizer", "verifier", "context_compactor"]
+    role: Literal[
+        "resource_analyst",
+        "planner",
+        "native_query",
+        "synthesizer",
+        "verifier",
+        "context_compactor",
+    ]
     execution_class: Literal["latency_optimized", "reasoning_optimized"]
     required_context_tokens: int = Field(gt=0)
     reason: BoundedText
@@ -225,4 +232,6 @@ class StructuredInvestigationPlanner:
 
 
 def decision_json_schema() -> dict[str, Any]:
-    return InvestigationDecisionPayload.response_json_schema()
+    schema = InvestigationDecisionPayload.response_json_schema()
+    schema["title"] = "investigation-decision.v1"
+    return schema

@@ -65,14 +65,14 @@ import type {
   ArchitectureContextKind,
 } from '@/lib/types';
 
-const roles = ['planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor'];
+const roles = ['resource_analyst', 'planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor'];
 const repositoryAnalysisModeKeys = {
   code: 'codeAnalysis',
   documentation: 'documentation',
 } as const;
 const repositoryAnalysisModes = Object.keys(repositoryAnalysisModeKeys) as Array<keyof typeof repositoryAnalysisModeKeys>;
 const modelRoleKeys = {
-  planner: 'modelRoles.planner', native_query: 'modelRoles.native_query', synthesizer: 'modelRoles.synthesizer',
+  resource_analyst: 'modelRoles.resource_analyst', planner: 'modelRoles.planner', native_query: 'modelRoles.native_query', synthesizer: 'modelRoles.synthesizer',
   verifier: 'modelRoles.verifier', context_compactor: 'modelRoles.context_compactor',
 } as const;
 const executionClassKeys = { latency_optimized: 'executionClasses.latency_optimized', reasoning_optimized: 'executionClasses.reasoning_optimized' } as const;
@@ -80,7 +80,7 @@ const readinessCheckKeys = { kafka_topic: 'readinessChecks.kafkaTopic', model_po
 const identityStatusKeys = { verified: 'identityStatus.verified', provisional: 'identityStatus.provisional', ambiguous: 'identityStatus.ambiguous' } as const;
 const componentKindKeys = { service: 'componentKinds.service', worker: 'componentKinds.worker', job: 'componentKinds.job', gateway: 'componentKinds.gateway', library_runtime: 'componentKinds.library_runtime', unknown: 'componentKinds.unknown' } as const;
 const buildSystemKeys = { npm: 'buildSystems.npm', pnpm: 'buildSystems.pnpm', python: 'buildSystems.python', go: 'buildSystems.go', cargo: 'buildSystems.cargo', maven: 'buildSystems.maven', gradle: 'buildSystems.gradle', docker: 'buildSystems.docker', other: 'buildSystems.other' } as const;
-const connectorCapabilityKeys = { bounded_log_query: 'connectorCapabilities.bounded_log_query', bounded_metric_query: 'connectorCapabilities.bounded_metric_query', schema_introspection: 'connectorCapabilities.schema_introspection', bounded_search: 'connectorCapabilities.bounded_search', bounded_select: 'connectorCapabilities.bounded_select', cost_explain: 'connectorCapabilities.cost_explain', bounded_https_read: 'connectorCapabilities.bounded_https_read' } as const;
+const connectorCapabilityKeys = { bounded_log_query: 'connectorCapabilities.bounded_log_query', bounded_metric_query: 'connectorCapabilities.bounded_metric_query', bounded_trace_query: 'connectorCapabilities.bounded_trace_query', bounded_resource_read: 'connectorCapabilities.bounded_resource_read', bounded_deployment_read: 'connectorCapabilities.bounded_deployment_read', bounded_pipeline_read: 'connectorCapabilities.bounded_pipeline_read', endpoint_catalog: 'connectorCapabilities.endpoint_catalog', normalized_evidence: 'connectorCapabilities.normalized_evidence', schema_introspection: 'connectorCapabilities.schema_introspection', bounded_search: 'connectorCapabilities.bounded_search', bounded_select: 'connectorCapabilities.bounded_select', cost_explain: 'connectorCapabilities.cost_explain', bounded_https_read: 'connectorCapabilities.bounded_https_read', safe_get: 'connectorCapabilities.safe_get', safe_head: 'connectorCapabilities.safe_head' } as const;
 
 function flattenAccountModels(accounts: ProviderAccount[]): ProviderAccountModel[] {
   return accounts.flatMap((account) => account.models.map((model) => ({ ...model, provider_account_id: account.id })));

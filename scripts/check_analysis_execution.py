@@ -265,23 +265,19 @@ async def _fixture() -> tuple[int, int, int, int, int, int, int]:
 
         request = ManualIncidentRequest.model_validate(
             {
-                "workspace_id": workspace.id,
-                "occurred_at": "2026-08-27T10:00:00Z",
-                "severity": "WARNING",
-                "event": "analysis.execution.check",
+                "schema_version": "manual-incident.v1",
+                "summary": "Analysis execution check",
+                "error_text": "CheckError: analysis execution\n  at analysis.py:1",
                 "trace_id": "analysis-trace",
-                "source_revision": "e" * 40,
-                "error": {
-                    "type": "CheckError",
-                    "message": "analysis execution",
-                    "stack": "frame",
-                    "cause": None,
-                },
             }
         )
         intake = await PostgresIntakeStore(session).persist_manual(
             workspace_id=workspace.id,
-            incident=normalize_manual(request),
+            signal=normalize_manual(
+                request,
+                idempotency_key="analysis-execution-check",
+                observed_at=datetime(2026, 8, 27, 10, 0, tzinfo=UTC),
+            ),
             created_by=user.id,
         )
         assert intake.investigation_id is not None
@@ -763,17 +759,30 @@ async def _check_report_publication(
                 investigation_id=investigation_id,
                 result_state="confirmed",
                 headline="Invalid unanchored confirmation",
-                summary="This row must be rejected by the database invariant.",
-                incident_cause={},
-                code_diagnosis={},
+                executive_summary="This row must be rejected by the database invariant.",
+                impact_scope=[],
+                causal_graph={
+                    "nodes": [
+                        {
+                            "node_id": "unverified_root",
+                            "node_type": "root_cause",
+                            "status": "hypothesis",
+                            "statement": "The root cause was not independently verified.",
+                            "evidence_refs": [],
+                            "entity_refs": [],
+                        }
+                    ],
+                    "edges": [],
+                    "root_node_ids": ["unverified_root"],
+                },
+                code_finding_refs=[],
                 participants=[],
                 timeline_summary=[],
                 source_assessments=[],
                 configuration_assessments=[],
-                confirmed_facts=[],
                 counter_evidence=[],
                 evidence_gaps=[],
-                next_step="Correct the external request.",
+                action_recommendations=[],
                 synthesizer_invocation_id=synthesizer_invocation_id,
                 verifier_invocation_id=verifier_invocation_id,
                 report_hash=canonical_hash({"fixture": "unanchored-confirmation"}),
@@ -782,7 +791,9 @@ async def _check_report_publication(
         try:
             await session.flush()
         except DBAPIError as exc:
-            assert "confirmed report requires a confirmed incident cause" in str(exc.orig)
+            assert "confirmed report requires independently verified causal claims" in str(
+                exc.orig
+            )
             await invalid_savepoint.rollback()
         else:
             raise AssertionError("database accepted an unanchored confirmed incident cause")
@@ -831,17 +842,46 @@ def _confirmed_report(
     return {
         "result_state": "confirmed",
         "headline": "Checkout fails on the timeout branch",
-        "summary": "The exact incident revision raises instead of preserving the result.",
-        "incident_cause": {
-            "status": "confirmed",
-            "mechanism": "application_code",
-            "causal_chain": ["timeout", "faulty branch", "request failure"],
-            "evidence_refs": [source_artifact_id],
-        },
-        "code_diagnosis": {
-            "status": "confirmed",
-            "summary": "The timeout branch raises the wrong error.",
-            "finding_indices": [0],
+        "executive_summary": (
+            "The exact incident revision raises instead of preserving the result."
+        ),
+        "impact_scope": [
+            {
+                "text": "Checkout requests fail on the timeout branch.",
+                "evidence_refs": [source_artifact_id],
+            }
+        ],
+        "causal_graph": {
+            "nodes": [
+                {
+                    "node_id": "faulty_timeout_branch",
+                    "node_type": "root_cause",
+                    "status": "confirmed",
+                    "statement": "The timeout branch replaces the original error context.",
+                    "evidence_refs": [source_artifact_id],
+                    "entity_refs": [],
+                },
+                {
+                    "node_id": "checkout_request_failure",
+                    "node_type": "impact",
+                    "status": "confirmed",
+                    "statement": "Checkout requests fail when the timeout branch executes.",
+                    "evidence_refs": [source_artifact_id],
+                    "entity_refs": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "timeout_causes_checkout_failure",
+                    "source_node_id": "faulty_timeout_branch",
+                    "target_node_id": "checkout_request_failure",
+                    "status": "confirmed",
+                    "relation": "causes",
+                    "statement": "Replacing the timeout error causes the request failure.",
+                    "evidence_refs": [source_artifact_id],
+                }
+            ],
+            "root_node_ids": ["faulty_timeout_branch"],
         },
         "code_findings": [
             {
@@ -872,15 +912,18 @@ def _confirmed_report(
         "timeline_summary": [],
         "source_assessments": [],
         "configuration_assessments": [],
-        "confirmed_facts": [
+        "counter_evidence": [],
+        "evidence_gaps": [],
+        "action_recommendations": [
             {
-                "text": "The exact source revision contains the faulty branch.",
+                "action_type": "remediate",
+                "priority": "P1",
+                "title": "Preserve the original checkout timeout context",
+                "rationale": "The confirmed root cause is in the timeout branch.",
+                "validation": "Force the timeout path and verify the original context survives.",
                 "evidence_refs": [source_artifact_id],
             }
         ],
-        "counter_evidence": [],
-        "evidence_gaps": [],
-        "next_step": "Add a regression test for the timeout branch.",
     }
 
 
@@ -888,38 +931,76 @@ def _confirmed_external_report(artifact_id: int) -> dict:
     return {
         "result_state": "confirmed",
         "headline": "The payment provider rejected the request",
-        "summary": "Runtime evidence confirms an external provider rejection.",
-        "incident_cause": {
-            "status": "confirmed",
-            "mechanism": "external_dependency",
-            "causal_chain": ["provider rejected parameter", "payment creation failed"],
-            "evidence_refs": [artifact_id],
-        },
-        "code_diagnosis": {
-            "status": "not_found",
-            "summary": "No project code defect was established.",
-            "finding_indices": [],
+        "executive_summary": "Runtime evidence confirms an external provider rejection.",
+        "impact_scope": [
+            {
+                "text": "Payment creation failed for the rejected request.",
+                "evidence_refs": [artifact_id],
+            }
+        ],
+        "causal_graph": {
+            "nodes": [
+                {
+                    "node_id": "provider_parameter_rejection",
+                    "node_type": "root_cause",
+                    "status": "confirmed",
+                    "statement": "The provider rejected an invalid request parameter.",
+                    "evidence_refs": [artifact_id],
+                    "entity_refs": [],
+                },
+                {
+                    "node_id": "payment_creation_failure",
+                    "node_type": "impact",
+                    "status": "confirmed",
+                    "statement": "Payment creation failed after the provider rejection.",
+                    "evidence_refs": [artifact_id],
+                    "entity_refs": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "provider_rejection_causes_payment_failure",
+                    "source_node_id": "provider_parameter_rejection",
+                    "target_node_id": "payment_creation_failure",
+                    "status": "confirmed",
+                    "relation": "causes",
+                    "statement": "The provider rejection caused payment creation to fail.",
+                    "evidence_refs": [artifact_id],
+                }
+            ],
+            "root_node_ids": ["provider_parameter_rejection"],
         },
         "code_findings": [],
         "participants": [],
         "timeline_summary": [],
         "source_assessments": [],
         "configuration_assessments": [],
-        "confirmed_facts": [
-            {
-                "text": "The provider returned an invalid-parameter response.",
-                "evidence_refs": [artifact_id],
-            }
-        ],
         "counter_evidence": [],
         "evidence_gaps": [],
-        "next_step": "Correct the provider request parameter.",
+        "action_recommendations": [],
     }
 
 
 def _approved_verification(artifact_id: int) -> dict:
     return {
         "verdict": "approved",
+        "node_verdicts": [
+            {
+                "element_id": node_id,
+                "verdict": "approved",
+                "reasons": ["The causal node is bound to the exact source artifact."],
+                "evidence_refs": [artifact_id],
+            }
+            for node_id in ("faulty_timeout_branch", "checkout_request_failure")
+        ],
+        "edge_verdicts": [
+            {
+                "element_id": "timeout_causes_checkout_failure",
+                "verdict": "approved",
+                "reasons": ["The causal hop is supported by the exact source artifact."],
+                "evidence_refs": [artifact_id],
+            }
+        ],
         "finding_verdicts": [
             {
                 "finding_index": 0,
@@ -937,6 +1018,23 @@ def _approved_verification(artifact_id: int) -> dict:
 def _approved_external_verification(artifact_id: int) -> dict:
     return {
         "verdict": "approved",
+        "node_verdicts": [
+            {
+                "element_id": node_id,
+                "verdict": "approved",
+                "reasons": ["Runtime evidence directly supports this causal node."],
+                "evidence_refs": [artifact_id],
+            }
+            for node_id in ("provider_parameter_rejection", "payment_creation_failure")
+        ],
+        "edge_verdicts": [
+            {
+                "element_id": "provider_rejection_causes_payment_failure",
+                "verdict": "approved",
+                "reasons": ["The provider response supports this causal hop."],
+                "evidence_refs": [artifact_id],
+            }
+        ],
         "finding_verdicts": [],
         "alternative_explanations_checked": ["application_code", "network"],
         "counter_evidence_refs": [],

@@ -20,6 +20,16 @@ class DuplicateProviderKey(ValueError):
     pass
 
 
+class EvidenceResultEnvelope(dict[str, Any]):
+    """Expose only a safe projection while carrying raw data to the archiver."""
+
+    __slots__ = ("sealed_raw",)
+
+    def __init__(self, projected: Mapping[str, Any], sealed_raw: Any) -> None:
+        super().__init__(projected)
+        self.sealed_raw = sealed_raw
+
+
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     output: dict[str, Any] = {}
     for key, value in pairs:

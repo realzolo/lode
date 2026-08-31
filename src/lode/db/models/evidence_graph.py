@@ -87,6 +87,45 @@ class EvidenceArtifact(CreatedAtMixin, Base):
     )
 
 
+class NormalizedEvidenceRecord(CreatedAtMixin, Base):
+    """Provider-neutral graph input anchored to one archived raw result."""
+
+    __tablename__ = "normalized_evidence_records"
+
+    id: Mapped[int] = snowflake_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("evidence_artifacts.id", ondelete="CASCADE"), nullable=False
+    )
+    connector_snapshot_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("investigation_connector_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    record_type: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_position: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attributes_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "record_type IN ('metric_boundary', 'span', 'resource_state', 'deployment', "
+            "'pipeline', 'configuration', 'entity_relation')",
+            name="record_type",
+        ),
+        UniqueConstraint(
+            "investigation_id",
+            "connector_snapshot_id",
+            "provider_position",
+            name="uq_normalized_evidence_provider_position",
+        ),
+        Index("ix_normalized_evidence_records_run_type", "investigation_id", "record_type"),
+    )
+
+
 class EvidenceLink(CreatedAtMixin, Base):
     __tablename__ = "evidence_links"
 

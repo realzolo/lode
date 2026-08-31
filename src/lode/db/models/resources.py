@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     Text,
     UniqueConstraint,
     text,
@@ -450,10 +451,7 @@ class IdentityResolution(CreatedAtMixin, Base):
     root_provenance_refs: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     validator_version: Mapped[str] = mapped_column(Text, nullable=False)
     valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    invalidation_reason: Mapped[str | None] = mapped_column(Text)
     resolution_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         CheckConstraint(
@@ -599,6 +597,67 @@ class RepositoryAnalysisJob(TimestampMixin, Base):
             postgresql_where=text("state IN ('queued', 'running')"),
         ),
         Index("ix_repository_analysis_jobs_claim", "state", "lease_expires_at", "created_at"),
+    )
+
+
+class RepositoryAnalysisModelInvocation(CreatedAtMixin, Base):
+    """Immutable audit record for one resource_analyst attempt."""
+
+    __tablename__ = "repository_analysis_model_invocations"
+
+    id: Mapped[int] = snowflake_pk()
+    repository_analysis_job_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("repository_analysis_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider_account_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("ai_provider_accounts.id", ondelete="RESTRICT")
+    )
+    provider_account_model_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("provider_account_models.id", ondelete="RESTRICT")
+    )
+    workspace_model_binding_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("workspace_model_bindings.id", ondelete="RESTRICT")
+    )
+    provider_account_revision: Mapped[int | None] = mapped_column(Integer)
+    provider_account_model_revision: Mapped[int | None] = mapped_column(Integer)
+    binding_revision: Mapped[int | None] = mapped_column(Integer)
+    role: Mapped[str] = mapped_column(Text, nullable=False, server_default="resource_analyst")
+    prompt_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    request_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    response_hash: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    output_masked: Mapped[dict | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_detail: Mapped[dict | None] = mapped_column(JSONB)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    cost: Mapped[float | None] = mapped_column(Numeric(18, 8))
+
+    __table_args__ = (
+        CheckConstraint("role = 'resource_analyst'", name="role"),
+        CheckConstraint("status IN ('succeeded', 'failed', 'unavailable')", name="status"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'", name="request_hash_sha256"),
+        CheckConstraint(
+            "response_hash IS NULL OR response_hash ~ '^[0-9a-f]{64}$'",
+            name="response_hash_sha256",
+        ),
+        CheckConstraint("latency_ms >= 0", name="latency_nonnegative"),
+        CheckConstraint(
+            "(status = 'unavailable' AND provider_account_id IS NULL "
+            "AND provider_account_model_id IS NULL AND workspace_model_binding_id IS NULL) OR "
+            "(provider_account_id IS NOT NULL AND provider_account_model_id IS NOT NULL "
+            "AND workspace_model_binding_id IS NOT NULL)",
+            name="route_shape",
+        ),
+        Index(
+            "ix_repository_analysis_model_invocations_job",
+            "repository_analysis_job_id",
+            "created_at",
+        ),
     )
 
 

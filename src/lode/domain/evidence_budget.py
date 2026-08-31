@@ -85,7 +85,7 @@ def standard_execution_budget_policy(
     max_output_bytes: int = 1_000_000,
     max_total_output_bytes: int = 20_000_000,
     max_native_reads: int = 8,
-    max_window_seconds: int = 7_200,
+    max_window_seconds: int = 3_600,
     max_parallel_operations: int = 1,
     estimated_cost: float = 0.0,
 ) -> dict[str, int | float]:

@@ -637,8 +637,8 @@ class PostgresModelRuntime:
                 response_schema=ResponseSchema(
                     name="context_summary", schema=context_summary_json_schema()
                 ),
-                prompt_revision="context-compactor.2",
-                schema_revision="context-summary.v2",
+                prompt_revision="context-compactor.v1",
+                schema_revision="context-summary.v1",
                 remaining_calls=remaining_calls - 1,
                 remaining_cost=remaining_cost,
                 _allow_compaction=False,
@@ -684,8 +684,8 @@ class PostgresModelRuntime:
                     retained_counter_evidence_refs=list(summary.retained_counter_evidence_refs),
                     omitted_evidence_refs=list(summary.omitted_evidence_refs),
                     summary_masked=_plain(summary.summary),
-                    prompt_revision="context-compactor.2",
-                    schema_revision="context-summary.v2",
+                    prompt_revision="context-compactor.v1",
+                    schema_revision="context-summary.v1",
                     tokenizer_id=invocation_context.tokenizer_id,
                     input_tokens=max(1, invocation.input_tokens or 1),
                     output_tokens=max(0, invocation.output_tokens or 0),

@@ -18,6 +18,15 @@ from lode.evidence_connectors.loki import LokiConnector
 from lode.evidence_connectors.mysql import MySQLConnector
 from lode.evidence_connectors.opensearch import OpenSearchConnector
 from lode.evidence_connectors.postgresql import PostgreSQLConnector
+from lode.evidence_connectors.providers import (
+    ArgoCDConnector,
+    GitHubConnector,
+    GitLabConnector,
+    JaegerConnector,
+    KubernetesConnector,
+    PrometheusConnector,
+    TempoConnector,
+)
 from lode.evidence_connectors.types import EvidenceConnectorContract
 
 ConnectorFactory = Callable[
@@ -42,6 +51,17 @@ _CONNECTORS: dict[str, ConnectorFactory] = {
         config, secrets, runtime
     ),
     "https": lambda config, secrets, runtime=None: HTTPSConnector(config, secrets, runtime),
+    "prometheus": lambda config, secrets, runtime=None: PrometheusConnector(
+        config, secrets, runtime
+    ),
+    "tempo": lambda config, secrets, runtime=None: TempoConnector(config, secrets, runtime),
+    "jaeger": lambda config, secrets, runtime=None: JaegerConnector(config, secrets, runtime),
+    "kubernetes": lambda config, secrets, runtime=None: KubernetesConnector(
+        config, secrets, runtime
+    ),
+    "github": lambda config, secrets, runtime=None: GitHubConnector(config, secrets, runtime),
+    "gitlab": lambda config, secrets, runtime=None: GitLabConnector(config, secrets, runtime),
+    "argocd": lambda config, secrets, runtime=None: ArgoCDConnector(config, secrets, runtime),
 }
 
 
@@ -77,6 +97,13 @@ def native_connector_capabilities() -> Mapping[str, Mapping[str, Any]]:
         "mysql": MySQLConnector,
         "clickhouse": ClickHouseConnector,
         "https": HTTPSConnector,
+        "prometheus": PrometheusConnector,
+        "tempo": TempoConnector,
+        "jaeger": JaegerConnector,
+        "kubernetes": KubernetesConnector,
+        "github": GitHubConnector,
+        "gitlab": GitLabConnector,
+        "argocd": ArgoCDConnector,
     }
     return {
         kind: {

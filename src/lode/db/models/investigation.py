@@ -34,10 +34,10 @@ class Investigation(TimestampMixin, Base):
     incident_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("incidents.id", ondelete="RESTRICT"), nullable=False
     )
-    trigger_occurrence_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("incident_occurrences.id", ondelete="SET NULL")
+    trigger_signal_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("incident_signals.id", ondelete="SET NULL")
     )
-    retry_of_id: Mapped[int | None] = mapped_column(
+    parent_investigation_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="SET NULL")
     )
     trigger_signature_hash: Mapped[str] = mapped_column(Text, nullable=False)
@@ -47,6 +47,9 @@ class Investigation(TimestampMixin, Base):
     output_language: Mapped[str] = mapped_column(Text, nullable=False, server_default="en")
     window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     window_finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_expansion_level: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
     execution_budget: Mapped[dict] = mapped_column(JSONB, nullable=False)
     budget_usage: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
@@ -61,12 +64,14 @@ class Investigation(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("trigger_signature_hash ~ '^[0-9a-f]{64}$'", name="trigger_hash_sha256"),
         CheckConstraint(
-            "trigger_reason IN ('initial', 'severity_escalation', 'evidence_change', "
-            "'operator_request', 'retry')",
+            "trigger_reason IN ('initial', 'severity_escalation', 'evidence_change', 'recovery', "
+            "'operator_request', 'retry', 'resumed', 'evidence_added', 'follow_up', "
+            "'hypothesis_branch')",
             name="trigger_reason",
         ),
         CheckConstraint(
-            "status IN ('queued', 'running', 'reporting', 'completed', 'failed')",
+            "status IN ('queued', 'running', 'paused', 'reporting', 'completed', 'failed', "
+            "'cancelled')",
             name="status",
         ),
         CheckConstraint(
@@ -75,6 +80,9 @@ class Investigation(TimestampMixin, Base):
         ),
         CheckConstraint("output_language IN ('en', 'zh')", name="output_language"),
         CheckConstraint("window_finished_at > window_started_at", name="window_range"),
+        CheckConstraint(
+            "window_expansion_level BETWEEN 0 AND 3", name="window_expansion_level"
+        ),
         CheckConstraint("event_cursor >= 0", name="event_cursor_nonnegative"),
         CheckConstraint(
             "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
@@ -82,8 +90,38 @@ class Investigation(TimestampMixin, Base):
         ),
         Index("ix_investigations_workspace_created", "workspace_id", "created_at"),
         Index("ix_investigations_incident", "incident_id"),
-        Index("ix_investigations_trigger_occurrence", "trigger_occurrence_id"),
-        Index("ix_investigations_retry_of", "retry_of_id"),
+        Index("ix_investigations_trigger_signal", "trigger_signal_id"),
+        Index("ix_investigations_parent", "parent_investigation_id"),
+    )
+
+
+class InvestigationControlEvent(CreatedAtMixin, Base):
+    """Append-only operator control and child-run provenance."""
+
+    __tablename__ = "investigation_control_events"
+
+    id: Mapped[int] = snowflake_pk()
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False
+    )
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    payload_masked: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    child_investigation_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("investigations.id", ondelete="RESTRICT")
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "command IN ('pause', 'cancel', 'resume', 'add_evidence', 'follow_up', "
+            "'branch_hypothesis')",
+            name="command",
+        ),
+        Index("ix_investigation_control_events_run", "investigation_id", "created_at"),
     )
 
 
@@ -93,28 +131,59 @@ class InvestigationInput(CreatedAtMixin, Base):
     investigation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("investigations.id", ondelete="CASCADE"), primary_key=True
     )
+    signal_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("incident_signals.id", ondelete="RESTRICT"), nullable=False
+    )
     source_type: Mapped[str] = mapped_column(Text, nullable=False)
-    event: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
     severity: Mapped[str] = mapped_column(Text, nullable=False)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    repository_binding_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("workspace_repository_bindings.id", ondelete="RESTRICT")
+    )
     trace_value_ref: Mapped[str | None] = mapped_column(Text)
     source_revision: Mapped[str | None] = mapped_column(Text)
-    error: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    error_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
     raw_payload_masked: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    attachments_masked: Mapped[list] = mapped_column(
-        JSONB, nullable=False, server_default=text("'[]'::jsonb")
-    )
     created_by: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="SET NULL")
     )
 
     __table_args__ = (
         CheckConstraint("source_type IN ('kafka', 'manual')", name="source_type"),
-        CheckConstraint("severity IN ('CRITICAL', 'WARNING')", name="severity"),
+        CheckConstraint(
+            "severity IN ('CRITICAL', 'WARNING', 'UNCLASSIFIED')", name="severity"
+        ),
+        CheckConstraint("length(title) > 0", name="title_nonempty"),
+        CheckConstraint("length(summary) > 0", name="summary_nonempty"),
         CheckConstraint(
             "source_revision IS NULL OR source_revision ~ '^[0-9a-f]{40}$'",
             name="source_revision_sha",
         ),
+    )
+
+
+class InvestigationSignalInput(CreatedAtMixin, Base):
+    """Append-only set of immutable signals coalesced into one run."""
+
+    __tablename__ = "investigation_signal_inputs"
+
+    investigation_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("investigations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    signal_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("incident_signals.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    input_role: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("input_role IN ('trigger', 'delta')", name="input_role"),
+        Index("ix_investigation_signal_inputs_signal", "signal_id", "investigation_id"),
     )
 
 
@@ -628,7 +697,7 @@ class ModelRoutingDecision(CreatedAtMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "role IN ('planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor')",
+            "role IN ('resource_analyst', 'planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor')",
             name="role",
         ),
         CheckConstraint(
@@ -675,7 +744,7 @@ class ContextBundleRevision(CreatedAtMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "role IN ('planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor')",
+            "role IN ('resource_analyst', 'planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor')",
             name="role",
         ),
         CheckConstraint("revision > 0", name="revision_positive"),

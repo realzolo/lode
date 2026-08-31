@@ -27,6 +27,7 @@ from lode.infrastructure.git_source import (
     GitRevisionResolver,
     GitSourceReader,
 )
+from lode.infrastructure.resource_analyst import PostgresResourceAnalyst, ResourceAnalystResult
 from lode.resource_understanding.scanner import ManifestScanner, RepositoryScanLimitError
 from lode.resource_understanding.store import BoundRepositoryScan, ResourceGraphStore
 from lode.resource_understanding.types import (
@@ -204,11 +205,13 @@ class RepositoryAnalysisService:
         resolver: GitRevisionResolver | None = None,
         reader: GitSourceReader | None = None,
         scanner: ManifestScanner | None = None,
+        analyst: PostgresResourceAnalyst | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.resolver = resolver or GitRemoteRevisionResolver()
         self.reader = reader or GitSourceReader()
         self.scanner = scanner or ManifestScanner()
+        self.analyst = analyst or PostgresResourceAnalyst(session_factory)
 
     async def _scan_repository(self, binding, repository, revision: str, credential):
         return await self.reader.read_checkout(
@@ -323,12 +326,21 @@ class RepositoryAnalysisService:
             BoundRepositoryScan(binding.id, repository.id, scan)
             for (binding, repository, _, _), scan in zip(rows, scans, strict=True)
         )
-        annotations = _deterministic_component_annotations(
+        deterministic_annotations = _deterministic_component_annotations(
             {
                 binding_id: str(snapshot["analysis_mode"])
                 for binding_id, snapshot in snapshots.items()
             },
             bound_scans,
+        )
+        semantic = await self.analyst.analyze(
+            job_id=job.id,
+            workspace_id=job.workspace_id,
+            scans=bound_scans,
+        )
+        annotations, prompt_revisions, invocation_ids = _merge_semantic_annotations(
+            deterministic_annotations,
+            semantic,
         )
         async with self.session_factory() as session:
             published = await ResourceGraphStore(session).publish(
@@ -341,7 +353,32 @@ class RepositoryAnalysisService:
                     if snapshot["analysis_mode"] == "code"
                 },
                 allow_inactive_binding_ids=set(snapshots),
-                prompt_revision="deterministic-component-projection.1",
+                annotation_prompt_revisions=prompt_revisions,
+                annotation_model_invocation_ids=invocation_ids,
+            )
+        issues = [
+            RepositoryAnalysisIssueDraft(
+                repository_binding_id=binding.id,
+                severity="warning",
+                code=issue.code,
+                path=issue.path,
+                detail=issue.detail,
+            )
+            for (binding, _, _, _), scan in zip(rows, scans, strict=True)
+            for issue in scan.issues
+        ]
+        if semantic.status != "succeeded":
+            issues.append(
+                RepositoryAnalysisIssueDraft(
+                    repository_binding_id=None,
+                    severity="warning",
+                    code=semantic.error_code or "resource_analyst_unavailable",
+                    path=None,
+                    detail=(
+                        "Deterministic repository facts were published, but semantic "
+                        "resource enrichment was unavailable."
+                    ),
+                )
             )
         return RepositoryAnalysisResult(
             graph_revision_id=published.revision_id,
@@ -355,17 +392,7 @@ class RepositoryAnalysisService:
                 for binding, _, _, _ in rows
             },
             scanned_file_count=sum(scan.scanned_file_count for scan in scans),
-            issues=tuple(
-                RepositoryAnalysisIssueDraft(
-                    repository_binding_id=binding.id,
-                    severity="warning",
-                    code=issue.code,
-                    path=issue.path,
-                    detail=issue.detail,
-                )
-                for (binding, _, _, _), scan in zip(rows, scans, strict=True)
-                for issue in scan.issues
-            ),
+            issues=tuple(issues),
         )
 
 
@@ -405,6 +432,43 @@ def _deterministic_component_annotations(
     return tuple(annotations)
 
 
+def _merge_semantic_annotations(
+    deterministic: tuple[SemanticAnnotationDraft, ...],
+    semantic: ResourceAnalystResult,
+) -> tuple[tuple[SemanticAnnotationDraft, ...], tuple[str, ...], tuple[int | None, ...]]:
+    by_unit = {
+        item.build_unit_keys[0]: index
+        for index, item in enumerate(deterministic)
+        if len(item.build_unit_keys) == 1
+    }
+    merged = list(deterministic)
+    prompt_revisions = ["deterministic-component-projection.v1"] * len(merged)
+    invocation_ids: list[int | None] = [None] * len(merged)
+    for item in semantic.annotations:
+        indexes = {by_unit[key] for key in item.build_unit_keys if key in by_unit}
+        if len(indexes) == 1:
+            index = indexes.pop()
+            basis = merged[index]
+            merged[index] = SemanticAnnotationDraft(
+                annotation_kind=basis.annotation_kind,
+                stable_key=basis.stable_key,
+                display_name=item.display_name,
+                component_kind=item.component_kind,
+                build_unit_keys=item.build_unit_keys,
+                observation_refs=item.observation_refs,
+                aliases=item.aliases,
+                description=item.description,
+                extra=item.extra,
+            )
+            prompt_revisions[index] = "resource-analyst.v1"
+            invocation_ids[index] = semantic.invocation_id
+            continue
+        merged.append(item)
+        prompt_revisions.append("resource-analyst.v1")
+        invocation_ids.append(semantic.invocation_id)
+    return tuple(merged), tuple(prompt_revisions), tuple(invocation_ids)
+
+
 def _failure_code(exc: Exception) -> str:
     text = str(exc)
     if "authorization" in text or "credential" in text:
@@ -422,7 +486,7 @@ def _binding_snapshots(job: RepositoryAnalysisJob) -> dict[int, dict]:
     snapshots: dict[int, dict] = {}
     for value in job.binding_snapshot:
         if not isinstance(value, dict):
-            raise RuntimeError("repository analysis snapshot is invalid")
+            raise TypeError("repository analysis snapshot is invalid")
         binding_id = value.get("binding_id")
         repository_id = value.get("repository_id")
         account_connection_id = value.get("account_connection_id")

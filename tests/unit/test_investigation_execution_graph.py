@@ -218,45 +218,52 @@ def test_graph_preserves_parallel_operations_and_repeated_connector_calls() -> N
 def test_report_summary_projects_deterministic_section_evidence_links() -> None:
     report = SimpleNamespace(
         headline="Database timeout confirmed",
-        summary="The primary database exceeded its timeout budget. [Evidence 9]",
-        incident_cause={
-            "status": "confirmed",
-            "mechanism": "Database timeout 【证据 9】",
-            "causal_chain": ["Pool saturation [9]", "Request timeout [Evidence #7]"],
-            "evidence_refs": [9, 7, 9, 0, True],
-        },
-        code_diagnosis={
-            "status": "hypothesis",
-            "summary": "Retry handling may amplify the failure.",
-            "finding_refs": [44],
-        },
-        confirmed_facts=[
-            {"text": "The query exceeded 5 seconds. [Evidence 8]", "evidence_refs": [8, 7]},
-            {"text": "The pool was saturated.", "evidence_refs": [9]},
+        executive_summary="The primary database exceeded its timeout budget. [Evidence 9]",
+        impact_scope=[
+            {"text": "Checkout failed. [Evidence 8]", "evidence_refs": [8, 7]}
         ],
-        evidence_gaps=[],
-        next_step="Inspect pool sizing.",
-    )
-    finding = SimpleNamespace(
-        id=44,
-        source_artifact_id=10,
-        incident_evidence_refs=[9],
-        supporting_evidence_refs=[11, 10],
-        counter_evidence_refs=[12],
+        causal_graph={
+            "nodes": [
+                {
+                    "node_id": "root",
+                    "node_type": "root_cause",
+                    "status": "confirmed",
+                    "statement": "Database timeout 【证据 9】",
+                    "evidence_refs": [9],
+                    "entity_refs": [],
+                }
+            ],
+            "edges": [],
+            "root_node_ids": ["root"],
+        },
+        evidence_gaps=[
+            {
+                "description": "Pool saturation cause is unknown.",
+                "consequence": "The contributing factor remains a hypothesis.",
+                "required_evidence": "Pool metrics",
+                "related_node_ids": ["root"],
+            }
+        ],
+        action_recommendations=[
+            {
+                "action_type": "validate",
+                "priority": "P1",
+                "title": "Inspect pool sizing",
+                "rationale": "Validate the identified timeout.",
+                "validation": "Compare saturation before and after.",
+                "evidence_refs": [9],
+            }
+        ],
     )
 
-    summary = _report_summary(report, (finding,))
+    summary = _report_summary(report)
 
     assert summary is not None
-    assert summary.summary == "The primary database exceeded its timeout budget."
-    assert summary.cause.summary == "Database timeout"
-    assert summary.cause.causal_chain == ["Pool saturation", "Request timeout"]
-    assert summary.cause.evidence_refs == [7, 9]
-    assert [item.model_dump() for item in summary.confirmed_facts] == [
-        {"text": "The query exceeded 5 seconds.", "evidence_refs": [7, 8]},
-        {"text": "The pool was saturated.", "evidence_refs": [9]},
-    ]
-    assert summary.code_diagnosis.evidence_refs == [9, 10, 11, 12]
+    assert summary.executive_summary == "The primary database exceeded its timeout budget."
+    assert summary.impact_scope[0]["evidence_refs"] == [8, 7]
+    assert summary.causal_graph["nodes"][0]["evidence_refs"] == [9]
+    assert summary.evidence_gaps[0]["related_node_ids"] == ["root"]
+    assert summary.action_recommendations[0]["evidence_refs"] == [9]
 
 
 def test_model_node_detail_exposes_only_product_summary() -> None:

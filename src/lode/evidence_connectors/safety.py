@@ -27,6 +27,9 @@ _PROMPT_INJECTION = re.compile(
     r"(?i)(?:ignore\s+(?:all\s+)?previous\s+instructions|system\s+prompt|"
     r"<\|(?:system|assistant|developer)\|>|do\s+not\s+follow\s+the\s+user)"
 )
+_SECRET_FIELD = re.compile(
+    r"(?i)^(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization|cookie)$"
+)
 
 
 def sanitize_evidence(value: Any) -> tuple[Any, tuple[str, ...], bool]:
@@ -42,7 +45,15 @@ def sanitize_evidence(value: Any) -> tuple[Any, tuple[str, ...], bool]:
                 "invalid_response", "normalized evidence exceeds structure budget"
             )
         if isinstance(item, dict):
-            return {str(key): scrub(child, depth + 1) for key, child in item.items()}
+            output: dict[str, Any] = {}
+            for key, child in item.items():
+                name = str(key)
+                if _SECRET_FIELD.fullmatch(name) and child is not None:
+                    categories.add("secret_field")
+                    output[name] = "<REDACTED:secret_field>"
+                else:
+                    output[name] = scrub(child, depth + 1)
+            return output
         if isinstance(item, list):
             return [scrub(child, depth + 1) for child in item]
         if isinstance(item, str):

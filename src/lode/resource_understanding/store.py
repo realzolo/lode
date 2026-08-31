@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -70,7 +71,9 @@ class ResourceGraphStore:
         annotations: Iterable[SemanticAnnotationDraft] = (),
         code_binding_ids: set[int] | None = None,
         allow_inactive_binding_ids: set[int] | None = None,
-        prompt_revision: str = "resource-understanding.1",
+        prompt_revision: str = "resource-understanding.v1",
+        annotation_prompt_revisions: Sequence[str] | None = None,
+        annotation_model_invocation_ids: Sequence[int | None] | None = None,
     ) -> PublishedResourceGraph:
         started = monotonic()
         if not scans:
@@ -99,6 +102,14 @@ class ResourceGraphStore:
             raise ValueError("code scan bindings are not part of the publication")
         code_scans = [item.scan for item in scans if item.repository_binding_id in code_binding_ids]
         annotation_list = tuple(annotations)
+        if annotation_prompt_revisions is None:
+            annotation_prompt_revisions = (prompt_revision,) * len(annotation_list)
+        if annotation_model_invocation_ids is None:
+            annotation_model_invocation_ids = (None,) * len(annotation_list)
+        if len(annotation_prompt_revisions) != len(annotation_list):
+            raise ValueError("annotation prompt revisions must align with annotations")
+        if len(annotation_model_invocation_ids) != len(annotation_list):
+            raise ValueError("annotation model invocation ids must align with annotations")
         drafts = list(self.validator.validate_many(code_scans, annotation_list))
         candidate_bindings = {
             unit.candidate_key: item.repository_binding_id
@@ -110,7 +121,11 @@ class ResourceGraphStore:
 
         observation_ids = await self._persist_observations(workspace_id, scans)
         annotation_ids = await self._persist_annotations(
-            workspace_id, annotation_list, observation_ids, prompt_revision
+            workspace_id,
+            annotation_list,
+            observation_ids,
+            tuple(annotation_prompt_revisions),
+            tuple(annotation_model_invocation_ids),
         )
         resolution_rows = await self._persist_resolutions(
             workspace_id, drafts, observation_ids, annotation_ids
@@ -176,18 +191,6 @@ class ResourceGraphStore:
             )
         member_ids = {row.id for row in members}
         removed_ids = previous_ids - member_ids
-        if removed_ids:
-            await self.session.execute(
-                update(IdentityResolution)
-                .where(
-                    IdentityResolution.id.in_(removed_ids),
-                    IdentityResolution.valid_until.is_(None),
-                )
-                .values(
-                    valid_until=datetime.now(UTC),
-                    invalidation_reason="superseded_by_resource_graph_revision",
-                )
-            )
         graph = ResourceGraphRevision(
             workspace_id=workspace_id,
             revision=1 if latest is None else latest.revision + 1,
@@ -195,8 +198,17 @@ class ResourceGraphStore:
             input_hash=input_hash,
             validator_version=self.validator.version,
             diff={
-                "added_resolution_ids": sorted(member_ids - previous_ids),
-                "removed_resolution_ids": sorted(removed_ids),
+                "added": [
+                    {"identity_resolution_id": resolution_id}
+                    for resolution_id in sorted(member_ids - previous_ids)
+                ],
+                "removed": [
+                    {
+                        "identity_resolution_id": resolution_id,
+                        "reason": "superseded_by_resource_graph_revision",
+                    }
+                    for resolution_id in sorted(removed_ids)
+                ],
                 "issues": [asdict(issue) for item in scans for issue in item.scan.issues],
             },
             published_at=datetime.now(UTC),
@@ -321,10 +333,13 @@ class ResourceGraphStore:
         workspace_id: int,
         annotations: tuple[SemanticAnnotationDraft, ...],
         observation_ids: dict[str, int],
-        prompt_revision: str,
+        prompt_revisions: tuple[str, ...],
+        model_invocation_ids: tuple[int | None, ...],
     ) -> list[int]:
         result: list[int] = []
-        for item in annotations:
+        for item, prompt_revision, model_invocation_id in zip(
+            annotations, prompt_revisions, model_invocation_ids, strict=True
+        ):
             refs = [observation_ids[ref] for ref in item.observation_refs]
             payload = asdict(item)
             existing = (
@@ -335,6 +350,7 @@ class ResourceGraphStore:
                         SemanticAnnotation.structured_payload == payload,
                         SemanticAnnotation.observation_refs == refs,
                         SemanticAnnotation.prompt_revision == prompt_revision,
+                        SemanticAnnotation.model_invocation_id == model_invocation_id,
                         SemanticAnnotation.superseded_at.is_(None),
                     )
                 )
@@ -346,6 +362,7 @@ class ResourceGraphStore:
                     structured_payload=payload,
                     observation_refs=refs,
                     prompt_revision=prompt_revision,
+                    model_invocation_id=model_invocation_id,
                 )
                 self.session.add(row)
                 await self.session.flush()

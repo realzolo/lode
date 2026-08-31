@@ -11,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from lode.api.main import app
-from lode.api.routes import control_plane
+from lode.api.routes import control_plane, evidence_connectors
 from lode.config import settings
 from lode.db.models import (
     AuditEvent,
@@ -148,7 +148,7 @@ async def test_connector_creation_verifies_discovers_and_persists_atomically(mon
         created_adapters.append(adapter)
         return adapter
 
-    monkeypatch.setattr(control_plane, "create_evidence_connector", create_adapter)
+    monkeypatch.setattr(evidence_connectors, "create_evidence_connector", create_adapter)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace = await client.post(
             "/workspaces",
@@ -213,7 +213,7 @@ async def test_clickhouse_connector_creation_persists_broad_catalog(monkeypatch)
         adapters.append(adapter)
         return adapter
 
-    monkeypatch.setattr(control_plane, "create_evidence_connector", create_adapter)
+    monkeypatch.setattr(evidence_connectors, "create_evidence_connector", create_adapter)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace = await client.post(
             "/workspaces",
@@ -307,7 +307,7 @@ async def test_failed_connector_creation_leaves_no_persisted_record(
     headers = await _admin_headers()
     connector_name = f"failed-{fail_stage}-{suffix}"
     monkeypatch.setattr(
-        control_plane,
+        evidence_connectors,
         "create_evidence_connector",
         lambda *_args, **_kwargs: _StubEvidenceConnector("https", fail_stage=fail_stage),
     )
@@ -384,7 +384,7 @@ async def test_https_basic_authentication_is_stored_as_one_supported_secret_form
         created_adapters.append(adapter)
         return adapter
 
-    monkeypatch.setattr(control_plane, "create_evidence_connector", create_adapter)
+    monkeypatch.setattr(evidence_connectors, "create_evidence_connector", create_adapter)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace = await client.post(
             "/workspaces",
@@ -406,7 +406,7 @@ async def test_https_basic_authentication_is_stored_as_one_supported_secret_form
         )
 
     assert response.status_code == 201
-    assert response.json()["kind_version"] == 2
+    assert response.json()["kind_version"] == 1
     assert response.json()["configured_secret_fields"] == ["password", "username"]
     assert "https-private-value" not in response.text
     assert created_adapters[0].scope["safe_read_endpoints"][0]["scheme"] == "http"

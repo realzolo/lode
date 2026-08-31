@@ -13,7 +13,14 @@ from lode.api.types import EntityId
 from lode.domain.types import ModelDataClass
 
 ExecutionClassValue = Literal["latency_optimized", "reasoning_optimized"]
-ModelRoleValue = Literal["planner", "native_query", "synthesizer", "verifier", "context_compactor"]
+ModelRoleValue = Literal[
+    "resource_analyst",
+    "planner",
+    "native_query",
+    "synthesizer",
+    "verifier",
+    "context_compactor",
+]
 ProviderKindValue = Literal["openai", "anthropic"]
 ProviderProtocolValue = Literal[
     "openai.responses.v1", "openai.chat_completions.v1", "anthropic.messages.v1"
@@ -776,13 +783,66 @@ class HTTPSConnectorCreate(_ConnectorCreateBase):
         return self
 
 
+class _TypedProviderConnectorCreate(_ConnectorCreateBase):
+    endpoint: str = Field(min_length=1, max_length=1_000)
+    authentication: Literal["bearer_token", "api_key", "basic"]
+    credential: str = Field(min_length=1, max_length=8_000)
+    credential_username: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def valid_provider_authentication(self):
+        _validate_connector_authentication(
+            self.authentication, self.credential, self.credential_username
+        )
+        return self
+
+
+class PrometheusConnectorCreate(_TypedProviderConnectorCreate):
+    kind: Literal["prometheus"]
+
+
+class TempoConnectorCreate(_TypedProviderConnectorCreate):
+    kind: Literal["tempo"]
+
+
+class JaegerConnectorCreate(_TypedProviderConnectorCreate):
+    kind: Literal["jaeger"]
+
+
+class KubernetesConnectorCreate(_TypedProviderConnectorCreate):
+    kind: Literal["kubernetes"]
+    namespace: str = Field(min_length=1, max_length=253, pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+
+class GitHubConnectorCreate(_TypedProviderConnectorCreate):
+    kind: Literal["github"]
+    owner: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
+    repository: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
+
+
+class GitLabConnectorCreate(_TypedProviderConnectorCreate):
+    kind: Literal["gitlab"]
+    project_id: int = Field(gt=0)
+
+
+class ArgoCDConnectorCreate(_TypedProviderConnectorCreate):
+    kind: Literal["argocd"]
+
+
 ConnectorCreate: TypeAlias = Annotated[
     LokiConnectorCreate
     | SearchConnectorCreate
     | PostgreSQLConnectorCreate
     | MySQLConnectorCreate
     | ClickHouseConnectorCreate
-    | HTTPSConnectorCreate,
+    | HTTPSConnectorCreate
+    | PrometheusConnectorCreate
+    | TempoConnectorCreate
+    | JaegerConnectorCreate
+    | KubernetesConnectorCreate
+    | GitHubConnectorCreate
+    | GitLabConnectorCreate
+    | ArgoCDConnectorCreate,
     Field(discriminator="kind"),
 ]
 

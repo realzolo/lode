@@ -423,10 +423,14 @@ class _GraphBuilder:
                 title=node.title,
                 overview={
                     "source_type": input_row.source_type if input_row else None,
-                    "event": input_row.event if input_row else None,
+                    "title": input_row.title if input_row else None,
+                    "summary": input_row.summary if input_row else None,
                     "severity": input_row.severity if input_row else None,
-                    "occurred_at": input_row.occurred_at if input_row else None,
-                    "error": input_row.error if input_row else {},
+                    "observed_at": input_row.observed_at if input_row else None,
+                    "repository_binding_id": (
+                        input_row.repository_binding_id if input_row else None
+                    ),
+                    "error": input_row.error_masked if input_row else {},
                 },
                 events=[],
                 artifacts=self._artifact_summaries(node),
@@ -522,33 +526,13 @@ class _GraphBuilder:
             overview={
                 "result_state": report.result_state if report else self.investigation.result_state,
                 "headline": _clean_report_text(report.headline) if report else None,
-                "summary": _clean_report_text(report.summary) if report else None,
-                "incident_cause": (
-                    {
-                        "status": report.incident_cause.get("status"),
-                        "mechanism": _clean_report_text(
-                            str(report.incident_cause.get("mechanism", ""))
-                        ),
-                    }
-                    if report
-                    else None
+                "executive_summary": (
+                    _clean_report_text(report.executive_summary) if report else None
                 ),
-                "code_diagnosis": (
-                    {
-                        "status": report.code_diagnosis.get("status"),
-                        "summary": _clean_report_text(
-                            str(report.code_diagnosis.get("summary", ""))
-                        ),
-                    }
-                    if report
-                    else None
-                ),
-                "evidence_gaps": (
-                    [_clean_report_text(str(item)) for item in report.evidence_gaps]
-                    if report
-                    else []
-                ),
-                "next_step": _clean_report_text(report.next_step) if report else None,
+                "impact_scope": report.impact_scope if report else [],
+                "causal_graph": report.causal_graph if report else None,
+                "evidence_gaps": report.evidence_gaps if report else [],
+                "action_recommendations": report.action_recommendations if report else [],
             },
             events=[],
             artifacts=[],
@@ -579,7 +563,7 @@ class _GraphBuilder:
             lane_id="control",
             stage_index=0,
             status="succeeded" if input_row is not None else "queued",
-            title=input_row.event if input_row is not None else "Incident input",
+            title=input_row.title if input_row is not None else "Incident input",
             subtitle=input_row.severity if input_row is not None else None,
             purpose="Immutable incident input",
             started_at=input_row.created_at
@@ -738,7 +722,7 @@ class _GraphBuilder:
                     status="succeeded" if self.investigation.status == "completed" else "running",
                     title=_clean_report_text(report.headline),
                     subtitle=report.result_state,
-                    purpose=_clean_report_text(report.summary),
+                    purpose=_clean_report_text(report.executive_summary),
                     started_at=report.created_at,
                     finished_at=report.published_at,
                 )

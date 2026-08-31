@@ -27,6 +27,11 @@ def credential_identity_hash(secrets: Mapping[str, str]) -> str:
 
 def provider_headers(secrets: Mapping[str, str]) -> dict[str, str]:
     supplied = set(secrets)
+    if not supplied:
+        return {
+            "accept": "application/json",
+            "content-type": "application/json",
+        }
     if supplied == {"api_key"}:
         authorization = f"ApiKey {secrets['api_key']}"
     elif supplied == {"bearer_token"}:

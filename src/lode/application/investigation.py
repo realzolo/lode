@@ -32,6 +32,7 @@ class InvestigationState:
     allowed_value_refs: frozenset[str]
     attempted_fingerprints: frozenset[str]
     budget: DecisionBudget
+    approved_model_hint: Mapping[str, Any] | None = None
     state_packet: Mapping[str, Any] = field(default_factory=dict)
     max_waves: int = 100
     remaining_model_calls: int = 100

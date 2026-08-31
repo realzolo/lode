@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lode.crypto import encrypt_value
 from lode.db.models import (
     AuthorizedEvidenceRead,
     EvidenceAccessDecision,
@@ -23,7 +24,9 @@ from lode.db.models import (
     InvestigationConnectorSnapshot,
     InvestigationRepositorySnapshot,
     NativeReadCandidate,
+    NormalizedEvidenceRecord,
     ObservedEvent,
+    SealedEvidenceValue,
 )
 from lode.domain.investigation import canonical_hash
 from lode.evidence_access.vault import EvidenceValueVault
@@ -93,6 +96,39 @@ class PostgresEvidenceResultArchiver:
         if not isinstance(masked, dict):
             raise TypeError("normalized evidence result must be an object")
         result_bytes = len(json.dumps(masked, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+        raw_result = getattr(result, "sealed_raw", result)
+        sealed_result = json.dumps(
+            raw_result, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        raw_value_ref = f"native_read.result.{candidate.id}"
+        self.session.add(
+            SealedEvidenceValue(
+                workspace_id=investigation.workspace_id,
+                investigation_id=investigation.id,
+                value_ref=raw_value_ref,
+                value_ciphertext=encrypt_value(sealed_result),
+                value_hash=canonical_hash(raw_result),
+                value_type="json",
+                data_class="sealed_raw_provider_evidence",
+                envelope_key_version="data-encryption-key.v1",
+            )
+        )
+        provenance = {
+            "authorized_read_id": authorized.id,
+            "access_decision_id": decision.id,
+            "candidate_id": candidate.id,
+            "candidate_hash": candidate.candidate_hash,
+            "connector_snapshot_id": snapshot.id,
+            "scope_coverage": _scope_coverage(snapshot, masked),
+            "masking_categories": list(categories),
+            "sealed_raw_value_ref": raw_value_ref,
+        }
+        if uses_sealed_trace:
+            provenance["sealed_correlation"] = {
+                "value_ref": trace_value_ref,
+                "match_mode": "exact_line_filter",
+                "server_generated": True,
+            }
         collection = EvidenceCollection(
             investigation_id=authorized.investigation_id,
             operation_id=candidate.operation_id,
@@ -121,15 +157,7 @@ class PostgresEvidenceResultArchiver:
             evidence_class="runtime",
             content_masked=masked,
             content_hash=canonical_hash(masked),
-            provenance={
-                "authorized_read_id": authorized.id,
-                "access_decision_id": decision.id,
-                "candidate_id": candidate.id,
-                "candidate_hash": candidate.candidate_hash,
-                "connector_snapshot_id": snapshot.id,
-                "scope_coverage": _scope_coverage(snapshot, masked),
-                "masking_categories": list(categories),
-            },
+            provenance=provenance,
             source_time_start=None,
             source_time_end=None,
             source_revision=None,
@@ -158,15 +186,6 @@ class PostgresEvidenceResultArchiver:
                 result=masked,
                 full_scope_discovery=trace_discovery,
             )
-            artifact.provenance = {
-                **artifact.provenance,
-                "server_assertion_refs": [assertion.id],
-                "sealed_correlation": {
-                    "value_ref": trace_value_ref,
-                    "match_mode": "exact_line_filter",
-                    "server_generated": True,
-                },
-            }
         if candidate.language == "logql":
             await self._archive_loki_events(
                 investigation_id=investigation.id,
@@ -175,7 +194,64 @@ class PostgresEvidenceResultArchiver:
                 result=masked,
                 assertion=assertion,
             )
+        await self._archive_normalized_records(
+            investigation_id=investigation.id,
+            snapshot=snapshot,
+            artifact=artifact,
+            result=masked,
+        )
         return (artifact.id,)
+
+    async def _archive_normalized_records(
+        self,
+        *,
+        investigation_id: int,
+        snapshot: InvestigationConnectorSnapshot,
+        artifact: EvidenceArtifact,
+        result: Mapping[str, Any],
+    ) -> None:
+        records = result.get("normalized_records")
+        if not isinstance(records, list):
+            return
+        for index, record in enumerate(records[:10_000]):
+            if not isinstance(record, Mapping):
+                continue
+            record_type = record.get("evidence_type")
+            if record_type not in {
+                "metric_boundary",
+                "span",
+                "resource_state",
+                "deployment",
+                "pipeline",
+                "configuration",
+                "entity_relation",
+            }:
+                continue
+            position = f"{record.get('operation', 'read')}:{record.get('provider_position', index)}"
+            existing = await self.session.scalar(
+                select(NormalizedEvidenceRecord.id).where(
+                    NormalizedEvidenceRecord.investigation_id == investigation_id,
+                    NormalizedEvidenceRecord.connector_snapshot_id == snapshot.id,
+                    NormalizedEvidenceRecord.provider_position == position,
+                )
+            )
+            if existing is not None:
+                continue
+            attributes = record.get("attributes")
+            self.session.add(
+                NormalizedEvidenceRecord(
+                    investigation_id=investigation_id,
+                    artifact_id=artifact.id,
+                    connector_snapshot_id=snapshot.id,
+                    provider=str(record.get("provider", snapshot.connector_kind)),
+                    record_type=str(record_type),
+                    provider_position=position,
+                    observed_at=None,
+                    attributes_masked=(
+                        dict(attributes) if isinstance(attributes, Mapping) else {}
+                    ),
+                )
+            )
 
     async def _archive_runtime_revision_assertions(
         self,

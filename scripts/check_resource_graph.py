@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -22,7 +23,6 @@ from lode.db.models import (
     ComponentSourceBinding,
     EvidenceAccessScope,
     GitRepository,
-    IdentityResolution,
     InvestigationResourceGraphSnapshot,
     ResourceGraphRevision,
     ResourceGraphRevisionMember,
@@ -240,18 +240,20 @@ async def main() -> None:
 
         request = ManualIncidentRequest.model_validate(
             {
-                "workspace_id": workspace.id,
-                "occurred_at": "2026-08-26T12:00:00Z",
-                "severity": "WARNING",
-                "event": "resource.graph.snapshot",
+                "schema_version": "manual-incident.v1",
+                "summary": "Resource graph snapshot",
+                "error_text": "Check: snapshot\n  at resource_graph.py:1",
                 "trace_id": "resource-check-trace",
-                "source_revision": "1" * 40,
-                "error": {"type": "Check", "message": "snapshot", "stack": "frame", "cause": None},
+                "repository_binding_id": source.id,
             }
         )
         intake = await PostgresIntakeStore(session).persist_manual(
             workspace_id=workspace.id,
-            incident=normalize_manual(request),
+            signal=normalize_manual(
+                request,
+                idempotency_key="resource-graph-check",
+                observed_at=datetime(2026, 8, 26, 12, 0, tzinfo=UTC),
+            ),
             created_by=user.id,
         )
         snapshot = await session.get(InvestigationResourceGraphSnapshot, intake.investigation_id)
@@ -317,19 +319,12 @@ async def main() -> None:
             ).scalars()
         )
         invalidated_ids = original_member_ids - current_member_ids
-        invalidated = (
-            []
-            if not invalidated_ids
-            else (
-                await session.execute(
-                    select(IdentityResolution).where(IdentityResolution.id.in_(invalidated_ids))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert invalidated
-        assert all(row.valid_until is not None and row.invalidation_reason for row in invalidated)
+        current_graph_row = await session.get(ResourceGraphRevision, current_graph.revision_id)
+        assert current_graph_row is not None
+        removed = current_graph_row.diff["removed"]
+        assert invalidated_ids
+        assert {item["identity_resolution_id"] for item in removed} == invalidated_ids
+        assert all(item["reason"] == "superseded_by_resource_graph_revision" for item in removed)
         await session.refresh(snapshot)
         assert snapshot.resource_graph_revision_id == first.revision_id
 
@@ -391,7 +386,7 @@ async def main() -> None:
                     "graph_revision_count": graph_count,
                     "graph_reused_on_recovery": recovered.reused,
                     "identity_conflict_status": conflict_component.identity_status,
-                    "invalidated_resolution_count": len(invalidated),
+                    "invalidated_resolution_count": len(invalidated_ids),
                     "investigation_snapshot_revision": snapshot.graph_revision,
                     "member_count": first_member_count,
                 },

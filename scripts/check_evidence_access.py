@@ -57,7 +57,7 @@ from lode.infrastructure.native_read_executor import NativeReadOperationExecutor
 from lode.model_catalog import require_model
 
 SENTINEL = "__LODE_VALUE_REF_INCIDENT_TRACE__"
-RAW_TRACE = ' trace/值?x=1&quoted="yes"\nnext '
+RAW_TRACE = 'trace/值?x=1&quoted="yes"\nnext'
 
 
 def _hash(value: str) -> str:
@@ -194,18 +194,19 @@ async def _create_fixture(session):
     workspace.architecture_context_revision_id = architecture_context.id
     request = ManualIncidentRequest.model_validate(
         {
-            "workspace_id": workspace.id,
-            "occurred_at": "2026-08-26T12:00:00Z",
-            "severity": "WARNING",
-            "event": "evidence.access.check",
+            "schema_version": "manual-incident.v1",
+            "summary": "Evidence access check",
+            "error_text": "Check: evidence access\n  at evidence.py:1",
             "trace_id": RAW_TRACE,
-            "source_revision": "a" * 40,
-            "error": {"type": "Check", "message": "evidence", "stack": "frame", "cause": None},
         }
     )
     intake = await PostgresIntakeStore(session).persist_manual(
         workspace_id=workspace.id,
-        incident=normalize_manual(request),
+        signal=normalize_manual(
+            request,
+            idempotency_key=f"evidence-access-check-{fixture_id}",
+            observed_at=datetime(2026, 8, 26, 12, 0, tzinfo=UTC),
+        ),
         created_by=user.id,
     )
     investigation = await session.get(Investigation, intake.investigation_id)
@@ -724,8 +725,36 @@ async def main() -> None:
             ).execute(allow.token, SlowCaptureAdapter(calls)),
             return_exceptions=True,
         )
-    assert sum(getattr(item, "status", None) == "succeeded" for item in outcomes) == 1
-    assert sum(isinstance(item, AuthorizationTokenError) for item in outcomes) == 1
+    outcome_summary = [
+        {
+            "type": type(item).__name__,
+            "status": getattr(item, "status", None),
+            "detail": str(item),
+        }
+        for item in outcomes
+    ]
+    async with AsyncSessionLocal() as diagnostic_session:
+        attempt_diagnostics = [
+            {
+                "status": row.status,
+                "failure_code": row.failure_code,
+                "failure_detail": row.failure_detail,
+            }
+            for row in (
+                await diagnostic_session.execute(
+                    select(EvidenceReadAttempt).where(
+                        EvidenceReadAttempt.authorized_read_id == allow.authorized_read_id
+                    )
+                )
+            ).scalars()
+        ]
+    if sum(getattr(item, "status", None) == "succeeded" for item in outcomes) != 1:
+        raise RuntimeError(
+            "concurrent evidence execution had no single winner: "
+            f"outcomes={outcome_summary}, attempts={attempt_diagnostics}"
+        )
+    if sum(isinstance(item, AuthorizationTokenError) for item in outcomes) != 1:
+        raise RuntimeError(f"concurrent evidence execution did not reject replay: {outcome_summary}")
     assert len(calls) == 1
     assert _find_trace_value(calls[0]) == RAW_TRACE
 

@@ -32,15 +32,55 @@ class DecisionPolicyEngine:
         policy_log: list[PolicyDecision] = []
         hypothesis_ids = {item.hypothesis_id for item in decision.hypotheses}
 
+        if decision.next_model_hint is not None:
+            hint_role = decision.next_model_hint.get("role")
+            if decision.decision == "continue" and hint_role == "planner":
+                policy_log.append(
+                    PolicyDecision(
+                        "next_model_hint_approved",
+                        "allow",
+                        None,
+                        {
+                            "reason": "The server policy permits a planner execution-class preference.",
+                            "execution_class": decision.next_model_hint.get(
+                                "execution_class"
+                            ),
+                        },
+                    )
+                )
+            else:
+                policy_log.append(
+                    PolicyDecision(
+                        "next_model_hint_rejected",
+                        "trim",
+                        None,
+                        {
+                            "reason": "The server workflow, not model output, selects the next role."
+                        },
+                    )
+                )
+
         counter_gate = self._counter_evidence_gate(decision)
         if counter_gate is not None:
             return self._reject(decision, counter_gate)
 
         if decision.decision == "finish":
-            return EvaluatedDecision(decision, "allow", (), (), 0.0, 0, 0)
+            return EvaluatedDecision(
+                decision, "allow", (), tuple(policy_log), 0.0, 0, 0
+            )
 
         accepted: list[tuple[PlannedOperation, CapabilityEntry]] = []
         for operation in decision.operations:
+            if operation.fingerprint in attempted_fingerprints:
+                policy_log.append(
+                    PolicyDecision(
+                        "operation_already_attempted",
+                        "trim",
+                        operation.action_id,
+                        {"fingerprint": operation.fingerprint},
+                    )
+                )
+                continue
             entry = entries.get(operation.action_id)
             reason = self._operation_rejection(
                 operation,

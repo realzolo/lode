@@ -345,6 +345,26 @@ export type ConnectorCreateInput =
   | (DatabaseConnectorCreate & { kind: 'mysql' })
   | ClickHouseConnectorCreate
   | (ConnectorCreateBase & AuthenticatedConnectorCreate & {
+    kind: 'prometheus' | 'tempo' | 'jaeger' | 'argocd';
+    endpoint: string;
+  })
+  | (ConnectorCreateBase & AuthenticatedConnectorCreate & {
+    kind: 'kubernetes';
+    endpoint: string;
+    namespace: string;
+  })
+  | (ConnectorCreateBase & AuthenticatedConnectorCreate & {
+    kind: 'github';
+    endpoint: string;
+    owner: string;
+    repository: string;
+  })
+  | (ConnectorCreateBase & AuthenticatedConnectorCreate & {
+    kind: 'gitlab';
+    endpoint: string;
+    project_id: number;
+  })
+  | (ConnectorCreateBase & AuthenticatedConnectorCreate & {
     kind: 'https';
     endpoint: string;
     verification_path?: string;
@@ -354,6 +374,7 @@ export type ConnectorCreateInput =
 export type EntityId = number;
 
 export type IncidentState = 'open' | 'acknowledged' | 'mitigated' | 'resolved' | 'closed';
+export type IncidentSeverity = 'UNCLASSIFIED' | 'WARNING' | 'CRITICAL';
 
 export interface IncidentActionCapability {
   action: 'acknowledge' | 'mitigate' | 'resolve' | 'close' | 'reopen' | 'start_investigation' | 'assign' | 'create_action' | 'review';
@@ -361,26 +382,30 @@ export interface IncidentActionCapability {
   reason_code: string | null;
 }
 
-export interface IncidentOccurrence {
+export interface IncidentSignal {
   id: number;
+  schema_version: 'incident-signal.v1';
   source_type: 'kafka' | 'manual';
   source_event_id: string | null;
-  event_kind: 'firing' | 'recovered';
-  occurred_at: string;
-  severity: 'CRITICAL' | 'WARNING';
-  event: string;
-  component: string | null;
-  environment: string | null;
+  signal_kind: 'firing' | 'recovered';
+  observed_at: string;
+  severity: IncidentSeverity;
+  title: string;
+  summary: string;
+  repository_binding_id: number | null;
+  has_trace: boolean;
   source_revision: string | null;
+  fingerprint: string;
+  error_masked: Record<string, unknown>;
 }
 
 export interface InvestigationRun {
   id: number;
-  status: 'queued' | 'running' | 'reporting' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'paused' | 'reporting' | 'completed' | 'failed' | 'cancelled';
   result_state: 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
-  trigger_reason: 'initial' | 'severity_escalation' | 'evidence_change' | 'operator_request' | 'retry';
-  trigger_occurrence_id: number | null;
-  retry_of_id: number | null;
+  trigger_reason: 'initial' | 'severity_escalation' | 'evidence_change' | 'recovery' | 'operator_request' | 'retry' | 'resumed' | 'evidence_added' | 'follow_up' | 'hypothesis_branch';
+  trigger_signal_id: number | null;
+  parent_investigation_id: number | null;
   created_at: string;
   finished_at: string | null;
 }
@@ -397,14 +422,15 @@ export interface IncidentAction {
   id: number;
   investigation_id: number | null;
   action_type: 'mitigate' | 'remediate' | 'validate' | 'prevent';
-  status: 'proposed' | 'accepted' | 'in_progress' | 'verified' | 'rejected' | 'cancelled';
+  status: 'open' | 'in_progress' | 'blocked' | 'validation' | 'completed' | 'cancelled';
   priority: 'P0' | 'P1' | 'P2' | 'P3';
   title: string;
   rationale: string;
   validation: string;
   evidence_refs: number[];
-  owner_id: number | null;
+  owner_id: number;
   created_by: number | null;
+  state_version: number;
   created_at: string;
   updated_at: string;
 }
@@ -412,13 +438,10 @@ export interface IncidentAction {
 export interface IncidentSummary {
   id: number;
   workspace_id: number;
-  dedup_key: string;
-  event: string;
-  component: string | null;
-  environment: string | null;
-  severity: 'CRITICAL' | 'WARNING';
+  title: string;
+  severity: IncidentSeverity;
   state: IncidentState;
-  occurrence_count: number;
+  signal_count: number;
   first_occurred_at: string;
   last_occurred_at: string;
   assigned_to: number | null;
@@ -428,38 +451,41 @@ export interface IncidentSummary {
 
 export interface IncidentListPage {
   items: IncidentSummary[];
-  next_after_id: number | null;
+  next_cursor: string | null;
 }
 
 export interface IncidentOverview extends IncidentSummary {
   state_changed_at: string;
   allowed_actions: IncidentActionCapability[];
-  occurrences: IncidentOccurrence[];
+  signals: IncidentSignal[];
   investigations: InvestigationRun[];
   timeline: IncidentTimelineEvent[];
   actions: IncidentAction[];
 }
 
-export interface InvestigationReportConclusion {
-  status: string;
-  summary: string;
-  causal_chain: string[];
+export interface CausalNode {
+  node_id: string;
+  node_type: 'impact' | 'trigger' | 'root_cause' | 'contributing_factor' | 'propagation' | 'detection' | 'mitigation' | 'recovery' | 'counter_evidence' | 'evidence_gap';
+  status: 'confirmed' | 'hypothesis' | 'refuted' | 'unknown';
+  statement: string;
+  evidence_refs: number[];
+  entity_refs: number[];
+}
+
+export interface CausalEdge {
+  edge_id: string;
+  source_node_id: string;
+  target_node_id: string;
+  status: 'confirmed' | 'hypothesis' | 'refuted';
+  relation: 'triggers' | 'causes' | 'contributes_to' | 'propagates_to' | 'detected_by' | 'mitigated_by' | 'recovers' | 'contradicts';
+  statement: string;
   evidence_refs: number[];
 }
 
-export interface InvestigationReportFact {
-  text: string;
-  evidence_refs: number[];
-}
-
-export interface InvestigationReportSummary {
-  headline: string;
-  summary: string;
-  cause: InvestigationReportConclusion;
-  code_diagnosis: InvestigationReportConclusion;
-  confirmed_facts: InvestigationReportFact[];
-  evidence_gaps: string[];
-  next_step: string;
+export interface CausalGraph {
+  nodes: CausalNode[];
+  edges: CausalEdge[];
+  root_node_ids: string[];
 }
 
 export interface InvestigationCodeFindingView {
@@ -487,20 +513,19 @@ export interface InvestigationCodeFindingView {
 }
 
 export interface InvestigationReportView {
-  schema_version: string;
+  schema_version: 'investigation-report.v1';
   result_state: 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
   headline: string;
-  summary: string;
-  incident_cause: Record<string, unknown>;
-  code_diagnosis: Record<string, unknown>;
-  participants: Array<Record<string, unknown>>;
-  timeline_summary: Array<Record<string, unknown>>;
+  executive_summary: string;
+  impact_scope: Array<{ text: string; evidence_refs: number[] }>;
+  causal_graph: CausalGraph;
+  participants: Array<{ entity_ref: number; display_name: string; identity_status: string; evidence_refs: number[] }>;
+  timeline_summary: Array<{ occurred_at: string; event_ref: number; summary: string; evidence_refs: number[] }>;
   source_assessments: Array<Record<string, unknown>>;
   configuration_assessments: Array<Record<string, unknown>>;
-  confirmed_facts: Array<{ text: string; evidence_refs: number[] }>;
   counter_evidence: Array<{ text: string; evidence_refs: number[] }>;
-  evidence_gaps: string[];
-  next_step: string;
+  evidence_gaps: Array<{ description: string; consequence: string; required_evidence: string; related_node_ids: string[] }>;
+  action_recommendations: Array<{ action_type: string; priority: string; title: string; rationale: string; validation: string; evidence_refs: number[] }>;
   code_findings: InvestigationCodeFindingView[];
 }
 
@@ -508,20 +533,66 @@ export interface InvestigationOverview {
   id: EntityId;
   incident_id: EntityId;
   workspace_id: number;
-  status: 'queued' | 'running' | 'reporting' | 'completed' | 'failed';
+  status: InvestigationRun['status'];
   result_state: 'pending' | 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
   trigger_reason: InvestigationRun['trigger_reason'];
   output_language: 'en' | 'zh';
-  event: string | null;
-  severity: 'CRITICAL' | 'WARNING' | null;
-  occurred_at: string | null;
+  title: string | null;
+  summary: string | null;
+  severity: IncidentSeverity | null;
+  observed_at: string | null;
   error_type: string | null;
   error_message: string | null;
   created_at: string;
   updated_at: string;
-  report: InvestigationReportSummary | null;
+  report: Pick<InvestigationReportView, 'headline' | 'executive_summary' | 'impact_scope' | 'causal_graph' | 'evidence_gaps' | 'action_recommendations'> | null;
   operation_count: number;
   evidence_count: number;
+}
+
+export interface CorrelationCandidate {
+  id: number;
+  signal_id: number;
+  current_incident_id: number;
+  candidate_incident_id: number;
+  score: number;
+  factors: Record<string, unknown>;
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
+}
+
+export interface InvestigationReview {
+  id: number;
+  code_finding_id: number | null;
+  verdict: 'accepted' | 'rejected' | 'needs_evidence';
+  comment: string;
+  reviewer_id: number;
+  supersedes_review_id: number | null;
+  created_at: string;
+}
+
+export interface ActionProposal {
+  id: number;
+  investigation_id: number;
+  action_type: 'mitigate' | 'remediate' | 'validate' | 'prevent';
+  priority: 'P0' | 'P1' | 'P2' | 'P3';
+  title: string;
+  rationale: string;
+  validation: string;
+  evidence_refs: number[];
+  decision: 'accepted' | 'rejected' | null;
+  action_id: number | null;
+  created_at: string;
+}
+
+export interface SimilarIncident {
+  incident_id: number;
+  investigation_id: number;
+  headline: string;
+  executive_summary: string;
+  causal_signature: string[];
+  similarity: number;
+  clue_only: true;
 }
 
 export type InvestigationExecutionNodeType = 'input' | 'decision' | 'operation' | 'synthesis' | 'verification' | 'report' | 'phase';

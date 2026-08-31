@@ -29,8 +29,15 @@ from lode.api.deps import require_admin, require_workbench_user
 from lode.api.rate_limit import HardeningMiddleware, RateLimiter
 from lode.api.routes.auth import router as auth_router
 from lode.api.routes.control_plane import router as control_plane_router
+from lode.api.routes.evidence_connectors import router as evidence_connectors_router
 from lode.api.routes.health import router as health_router
+from lode.api.routes.incident_correlations import router as incident_correlations_router
+from lode.api.routes.incident_correlations import (
+    workspace_router as incident_correlation_workspace_router,
+)
 from lode.api.routes.incidents import router as incidents_router
+from lode.api.routes.incidents import workspace_router as incident_workspace_router
+from lode.api.routes.investigation_controls import router as investigation_controls_router
 from lode.api.routes.investigations import (
     router as investigations_router,
 )
@@ -172,9 +179,14 @@ app.include_router(auth_router)
 _admin_routes = [Depends(require_admin)]
 _workbench_routes = [Depends(require_workbench_user)]
 app.include_router(control_plane_router, dependencies=_admin_routes)
+app.include_router(evidence_connectors_router, dependencies=_admin_routes)
 app.include_router(users_router, dependencies=_admin_routes)
+app.include_router(investigation_controls_router, dependencies=_workbench_routes)
 app.include_router(investigations_router, dependencies=_workbench_routes)
 app.include_router(incidents_router, dependencies=_workbench_routes)
+app.include_router(incident_workspace_router, dependencies=_workbench_routes)
+app.include_router(incident_correlations_router, dependencies=_workbench_routes)
+app.include_router(incident_correlation_workspace_router, dependencies=_workbench_routes)
 # Workspace discovery applies its own admin/all-workspaces vs ordinary-user/
 # granted-workspaces filtering. The shared Workbench dependency permits the
 # unrestricted system administrator as well as ordinary Workbench users.

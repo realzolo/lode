@@ -134,7 +134,7 @@ def test_policy_uses_server_cost_for_native_operation_intent() -> None:
     assert rejected_cost.policy_decisions[-1].code == "wave_budget_exceeded"
 
 
-def test_policy_allows_reusing_action_before_full_query_fingerprint_exists() -> None:
+def test_policy_rejects_an_operation_whose_fingerprint_was_already_attempted() -> None:
     item = operation()
 
     result = DecisionPolicyEngine().evaluate(
@@ -144,8 +144,12 @@ def test_policy_allows_reusing_action_before_full_query_fingerprint_exists() -> 
         attempted_fingerprints={item.fingerprint},
     )
 
-    assert result.outcome == "allow"
-    assert result.operations == (item,)
+    assert result.outcome == "reject"
+    assert result.operations == ()
+    assert [value.code for value in result.policy_decisions] == [
+        "operation_already_attempted",
+        "no_eligible_operation",
+    ]
 
 
 def test_policy_trims_dependency_and_resource_conflict() -> None:

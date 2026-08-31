@@ -159,7 +159,7 @@ class KafkaIntakeHandler:
                     partition=partition,
                     offset=offset,
                     payload_hash=payload_hash,
-                    incident=normalize_kafka(message),
+                    signal=normalize_kafka(message),
                 )
             except IncidentCorrelationError as exc:
                 await session.rollback()
@@ -213,7 +213,7 @@ class KafkaIntakeHandler:
                 partition=dead_letter.partition,
                 offset=dead_letter.offset,
                 payload_hash=payload_hash,
-                incident=normalize_kafka(message),
+                signal=normalize_kafka(message),
                 replay_event_id=event_id,
                 replay_dead_letter_id=dead_letter.id,
             )

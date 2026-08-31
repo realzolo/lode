@@ -92,7 +92,9 @@ class ContextSummaryValidator:
 
 
 def context_summary_json_schema() -> dict[str, Any]:
-    return ContextSummaryPayload.response_json_schema()
+    schema = ContextSummaryPayload.response_json_schema()
+    schema["title"] = "context-summary.v1"
+    return schema
 
 
 def _plain(value: Any) -> Any:

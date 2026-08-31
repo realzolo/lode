@@ -1,6 +1,6 @@
 {
   "schema_version": "lode-database-tables.v1",
-  "migration_head": "0012_incident_platform_rebuild",
+  "migration_head": "v1",
   "control_plane": [
     "platform_settings",
     "workspaces",
@@ -25,6 +25,7 @@
     "resource_graph_revisions",
     "resource_graph_revision_members",
     "repository_analysis_jobs",
+    "repository_analysis_model_invocations",
     "evidence_connectors",
     "evidence_access_scopes",
     "ai_provider_accounts",
@@ -40,14 +41,23 @@
     "ingestion_events",
     "dead_letters",
     "incidents",
-    "incident_occurrences",
+    "incident_signals",
+    "incident_signal_links",
+    "incident_correlation_decisions",
+    "incident_correlation_candidates",
+    "incident_signal_association_events",
     "incident_events",
+    "incident_action_proposals",
+    "incident_action_proposal_decisions",
     "incident_actions",
+    "incident_knowledge_cases",
     "investigation_jobs"
   ],
   "investigation": [
     "investigations",
+    "investigation_control_events",
     "investigation_inputs",
+    "investigation_signal_inputs",
     "investigation_architecture_context_snapshots",
     "investigation_repository_snapshots",
     "investigation_build_unit_snapshots",
@@ -69,6 +79,7 @@
     "authorized_evidence_reads",
     "evidence_read_attempts",
     "sealed_evidence_values",
+    "normalized_evidence_records",
     "evidence_collections",
     "evidence_artifacts",
     "evidence_links",
@@ -85,6 +96,7 @@
   ],
   "forbidden_tables": [
     "alerts",
+    "incident_occurrences",
     "services",
     "application_service_bindings",
     "investigation_service_snapshots"

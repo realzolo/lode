@@ -98,9 +98,8 @@ async def run_job(
             await heartbeat
             raise LeaseOwnershipLost("investigation heartbeat stopped unexpectedly")
         await investigation
-        await durable.complete(job.job_id)
-        result = "completed"
-        INVESTIGATIONS.labels(result="completed").inc()
+        result = await durable.complete(job.job_id)
+        INVESTIGATIONS.labels(result=result).inc()
     except LeaseOwnershipLost:
         result = "lease_lost"
         logger.error("investigation %s lost its worker lease", job.investigation_id)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -20,14 +21,15 @@ def test_contract_manifest_is_complete_and_deterministic() -> None:
     second = validate_contracts()
 
     assert first == second
-    assert first["count"] == 9
+    assert first["count"] == 10
     assert first["endpoint_count"] >= 40
-    assert first["table_count"] >= 60
+    assert first["table_count"] >= 80
     assert len(first["sha256"]) == 64
 
 
 def test_incident_alert_fixture_is_the_only_final_wire_contract() -> None:
-    schema = _load("kafka/incident-alert.schema.json")
+    path = CONTRACT_ROOT / "kafka" / "incident-alert.schema.json"
+    schema = json.loads(path.read_text(encoding="utf-8"))
     properties = schema["properties"]
 
     assert schema["additionalProperties"] is False
@@ -59,6 +61,9 @@ def test_incident_alert_fixture_is_the_only_final_wire_contract() -> None:
     error = schema["$defs"]["error"]
     assert error["additionalProperties"] is False
     assert error["properties"]["cause"]["oneOf"][1] == {"$ref": "#/$defs/error"}
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
+        "5601797eb5b75c0f81648ac7d93006d3c2771dfb679213b59b5f79f1286f4e65"
+    )
 
 
 def test_native_read_languages_and_payload_shapes_are_closed() -> None:
@@ -87,8 +92,8 @@ def test_decision_wave_and_terminal_report_contracts_match_v1() -> None:
     assert decision["properties"]["hypotheses"]["minItems"] == 1
     assert decision["properties"]["decision"]["enum"] == ["continue", "finish"]
     operation = decision["$defs"]["operation"]
-    assert decision["title"] == "investigation-decision.v6"
-    assert report["title"] == "investigation-report.v2"
+    assert decision["title"] == "investigation-decision.v1"
+    assert report["title"] == "investigation-report.v1"
     assert "native_candidate" not in operation["properties"]
     assert "native_candidate_json" not in operation["properties"]
     assert "source_query" in operation["required"]
@@ -99,16 +104,19 @@ def test_decision_wave_and_terminal_report_contracts_match_v1() -> None:
         "evidence_refs",
     }
     native_query = _load("ai/native-query.schema.json")
+    resource_analysis = _load("ai/resource-analysis.schema.json")
     assert native_query["title"] == "native-query.v1"
     assert set(native_query["properties"]) == {"payload_json"}
+    assert resource_analysis["title"] == "resource-analysis.v1"
     assert report["properties"]["result_state"]["enum"] == [
         "confirmed",
         "hypothesis",
         "insufficient",
         "unavailable",
     ]
-    assert "incident_cause" in report["required"]
-    assert "code_diagnosis" in report["required"]
+    assert "impact_scope" in report["required"]
+    assert "causal_graph" in report["required"]
+    assert "action_recommendations" in report["required"]
     assert "source_assessments" in report["required"]
 
 
@@ -143,13 +151,13 @@ def test_contract_check_cli_output_is_reproducible() -> None:
     second = subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
 
     assert first.stdout == second.stdout
-    assert json.loads(first.stdout)["contracts"]["count"] == 9
+    assert json.loads(first.stdout)["contracts"]["count"] == 10
 
 
 def test_eval_corpus_has_a_repeatable_complete_oracle() -> None:
     result = validate_eval_corpus()
 
-    assert result["count"] == 30
+    assert result["count"] == 123
     assert result["baseline"] == "phase0-deterministic-oracle"
     assert len(result["sha256"]) == 64
 
@@ -170,13 +178,15 @@ def test_api_and_database_manifests_exclude_removed_resources() -> None:
 def test_database_invariant_contract_covers_only_frozen_tables() -> None:
     inventory, triggers = expected_schema()
 
-    assert len(inventory) == 76
-    assert sum(len(names) for names in triggers.values()) == 71
-    assert "trg_evidence_access_scopes_budget_canonical" in triggers["evidence_access_scopes"]
-    assert "trg_evidence_access_scopes_sql_dialect" in triggers["evidence_access_scopes"]
+    assert len(inventory) == 87
+    assert sum(len(names) for names in triggers.values()) == 94
+    assert "trg_incident_signals_immutable" in triggers["incident_signals"]
+    assert "trg_incident_signal_links_workspace" in triggers["incident_signal_links"]
     assert "trg_evidence_read_attempts_immutable" in triggers["evidence_read_attempts"]
     assert "trg_investigation_reports_semantics" in triggers["investigation_reports"]
-    assert "trg_incident_occurrences_immutable" in triggers["incident_occurrences"]
+    assert "trg_investigation_signal_inputs_consistency" in triggers[
+        "investigation_signal_inputs"
+    ]
 
 
 def test_all_contract_files_are_utf8_json_objects() -> None:

@@ -331,9 +331,9 @@ function OverviewPresentation({ detail, dateLocale }: { detail: InvestigationExe
     return <>
       <DetailSection title={t('flowIncidentContext')} icon={<CircleDot size={16} />}>
         <FactGrid items={[
-          [t('event'), overview.event],
+          [t('summary'), overview.title],
           [t('severity'), overview.severity],
-          [t('occurred'), formatTimestamp(overview.occurred_at, dateLocale)],
+          [t('observed'), formatTimestamp(overview.observed_at, dateLocale)],
           [t('flowSourceType'), overview.source_type],
         ]} />
       </DetailSection>

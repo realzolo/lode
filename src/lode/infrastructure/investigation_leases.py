@@ -139,13 +139,19 @@ class InvestigationLeaseStore:
                     select(InvestigationJob)
                     .where(
                         InvestigationJob.id == job_id,
-                        InvestigationJob.status == "running",
                         InvestigationJob.claimed_by == self.owner,
                     )
                     .with_for_update()
                 )
             ).scalar_one_or_none()
             if job is None:
+                await session.commit()
+                return False
+            if job.status in {"paused", "cancelled"}:
+                await self._finish_controlled_job(session, job)
+                await session.commit()
+                return False
+            if job.status != "running":
                 await session.commit()
                 return False
             investigation = (
@@ -166,9 +172,14 @@ class InvestigationLeaseStore:
             await session.commit()
             return True
 
-    async def complete(self, job_id: int) -> None:
+    async def complete(self, job_id: int) -> str:
         async with self.session_factory() as session:
-            job = await self._owned_job(session, job_id)
+            job = await self._owned_job(session, job_id, include_controlled=True)
+            if job.status in {"paused", "cancelled"}:
+                outcome = job.status
+                await self._finish_controlled_job(session, job)
+                await session.commit()
+                return outcome
             report_id = await session.scalar(
                 select(InvestigationReport.investigation_id)
                 .join(
@@ -190,6 +201,7 @@ class InvestigationLeaseStore:
                 investigation.lease_owner = None
                 investigation.lease_expires_at = None
             await session.commit()
+            return "completed"
 
     async def fail(
         self,
@@ -203,7 +215,12 @@ class InvestigationLeaseStore:
     ) -> str:
         current = now or datetime.now(UTC)
         async with self.session_factory() as session:
-            job = await self._owned_job(session, job_id)
+            job = await self._owned_job(session, job_id, include_controlled=True)
+            if job.status in {"paused", "cancelled"}:
+                outcome = job.status
+                await self._finish_controlled_job(session, job)
+                await session.commit()
+                return outcome
             investigation = await session.get(Investigation, job.investigation_id)
             masked, _ = mask_structure({"message": str(exc)[:1_000]})
             job.last_error_code = type(exc).__name__
@@ -350,13 +367,77 @@ class InvestigationLeaseStore:
             ),
         )
 
-    async def _owned_job(self, session: AsyncSession, job_id: int) -> InvestigationJob:
+    async def _finish_controlled_job(
+        self, session: AsyncSession, job: InvestigationJob
+    ) -> None:
+        now = datetime.now(UTC)
+        investigation = await session.get(Investigation, job.investigation_id)
+        running_operations = tuple(
+            (
+                await session.execute(
+                    select(InvestigationOperation)
+                    .where(
+                        InvestigationOperation.investigation_id == job.investigation_id,
+                        InvestigationOperation.status == "running",
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for operation in running_operations:
+            operation.status = "interrupted"
+            operation.failure_code = f"investigation_{job.status}"
+            operation.failure_detail = {"control_status": job.status}
+            operation.finished_at = now
+            if investigation is not None:
+                investigation.event_cursor += 1
+                session.add(
+                    InvestigationOperationEvent(
+                        investigation_id=investigation.id,
+                        operation_id=operation.id,
+                        sequence=investigation.event_cursor,
+                        event_name="operation.finished",
+                        message=f"Operation interrupted because the investigation was {job.status}.",
+                        detail_masked={"failure_code": operation.failure_code},
+                        evidence_refs=[],
+                        occurred_at=now,
+                    )
+                )
+        await session.execute(
+            update(InvestigationStep)
+            .where(
+                InvestigationStep.investigation_id == job.investigation_id,
+                InvestigationStep.status == "running",
+            )
+            .values(
+                status="interrupted",
+                failure_code=f"investigation_{job.status}",
+                failure_detail={"control_status": job.status},
+                finished_at=now,
+            )
+        )
+        job.claimed_by = None
+        job.lease_expires_at = None
+        if investigation is not None:
+            investigation.lease_owner = None
+            investigation.lease_expires_at = None
+
+    async def _owned_job(
+        self,
+        session: AsyncSession,
+        job_id: int,
+        *,
+        include_controlled: bool = False,
+    ) -> InvestigationJob:
+        statuses = ("running", "paused", "cancelled") if include_controlled else ("running",)
         job = (
             await session.execute(
                 select(InvestigationJob)
                 .where(
                     InvestigationJob.id == job_id,
-                    InvestigationJob.status == "running",
+                    InvestigationJob.status.in_(statuses),
                     InvestigationJob.claimed_by == self.owner,
                 )
                 .with_for_update()

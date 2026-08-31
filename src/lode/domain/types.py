@@ -17,6 +17,7 @@ class ExecutionClass(StrEnum):
 
 
 class ModelRole(StrEnum):
+    RESOURCE_ANALYST = "resource_analyst"
     PLANNER = "planner"
     NATIVE_QUERY = "native_query"
     SYNTHESIZER = "synthesizer"

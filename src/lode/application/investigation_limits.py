@@ -19,8 +19,6 @@ class InvestigationHardLimits:
     max_output_bytes: int
     max_cost: Decimal
     timeout_seconds: int
-    window_before_seconds: int
-    window_after_seconds: int
     max_parallel_operations: int
 
 
@@ -31,8 +29,6 @@ INVESTIGATION_HARD_LIMITS = InvestigationHardLimits(
     max_output_bytes=16 * 1024 * 1024,
     max_cost=Decimal("200"),
     timeout_seconds=900,
-    window_before_seconds=1800,
-    window_after_seconds=1800,
     max_parallel_operations=4,
 )
 

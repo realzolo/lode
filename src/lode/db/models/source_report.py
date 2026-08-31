@@ -215,7 +215,7 @@ class AIInvocation(CreatedAtMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "role IN ('planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor')",
+            "role IN ('resource_analyst', 'planner', 'native_query', 'synthesizer', 'verifier', 'context_compactor')",
             name="role",
         ),
         CheckConstraint(
@@ -246,17 +246,17 @@ class InvestigationReport(CreatedAtMixin, Base):
     )
     result_state: Mapped[str] = mapped_column(Text, nullable=False)
     headline: Mapped[str] = mapped_column(Text, nullable=False)
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    incident_cause: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    code_diagnosis: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    executive_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    impact_scope: Mapped[list] = mapped_column(JSONB, nullable=False)
+    causal_graph: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    code_finding_refs: Mapped[list[int]] = mapped_column(JSONB, nullable=False)
     participants: Mapped[list] = mapped_column(JSONB, nullable=False)
     timeline_summary: Mapped[list] = mapped_column(JSONB, nullable=False)
     source_assessments: Mapped[list] = mapped_column(JSONB, nullable=False)
     configuration_assessments: Mapped[list] = mapped_column(JSONB, nullable=False)
-    confirmed_facts: Mapped[list] = mapped_column(JSONB, nullable=False)
     counter_evidence: Mapped[list] = mapped_column(JSONB, nullable=False)
     evidence_gaps: Mapped[list] = mapped_column(JSONB, nullable=False)
-    next_step: Mapped[str] = mapped_column(Text, nullable=False)
+    action_recommendations: Mapped[list] = mapped_column(JSONB, nullable=False)
     synthesizer_invocation_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("ai_invocations.id", ondelete="RESTRICT")
     )
@@ -264,7 +264,7 @@ class InvestigationReport(CreatedAtMixin, Base):
         BigInteger, ForeignKey("ai_invocations.id", ondelete="RESTRICT")
     )
     schema_version: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="investigation-report.v2"
+        Text, nullable=False, server_default="investigation-report.v1"
     )
     report_hash: Mapped[str] = mapped_column(Text, nullable=False)
     published_at: Mapped[datetime] = mapped_column(
@@ -276,6 +276,6 @@ class InvestigationReport(CreatedAtMixin, Base):
             "result_state IN ('confirmed', 'hypothesis', 'insufficient', 'unavailable')",
             name="result_state",
         ),
-        CheckConstraint("schema_version = 'investigation-report.v2'", name="schema_version"),
+        CheckConstraint("schema_version = 'investigation-report.v1'", name="schema_version"),
         CheckConstraint("report_hash ~ '^[0-9a-f]{64}$'", name="report_hash_sha256"),
     )

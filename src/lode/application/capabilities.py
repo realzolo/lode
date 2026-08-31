@@ -23,6 +23,16 @@ _EVIDENCE_TYPES: Mapping[NativeLanguage, tuple[str, ...]] = {
     NativeLanguage.COMMAND: ("file_match",),
 }
 
+_PROVIDER_EVIDENCE_TYPES: Mapping[str, tuple[str, ...]] = {
+    "prometheus": ("metric_boundary",),
+    "tempo": ("span", "entity_relation"),
+    "jaeger": ("span", "entity_relation"),
+    "kubernetes": ("resource_state", "configuration"),
+    "github": ("pipeline", "deployment"),
+    "gitlab": ("pipeline", "deployment"),
+    "argocd": ("deployment", "resource_state", "configuration"),
+}
+
 
 def _resource_summary(catalog: Mapping[str, Any]) -> Mapping[str, Any]:
     summary: dict[str, Any] = {}
@@ -85,7 +95,9 @@ class CapabilityCatalogBuilder:
                     CapabilityEntry(
                         action_id=f"native:{snapshot.snapshot_id}:{language.value}",
                         operation_kind="native_read",
-                        evidence_types=_EVIDENCE_TYPES[language],
+                        evidence_types=_PROVIDER_EVIDENCE_TYPES.get(
+                            snapshot.connector_kind, _EVIDENCE_TYPES[language]
+                        ),
                         evidence_anchors=snapshot_anchors,
                         resource_summary=_resource_summary(snapshot.schema_catalog),
                         resource_key=f"connector:{snapshot.connector_id}",

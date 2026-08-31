@@ -17,6 +17,7 @@ from lode.evidence_connectors.transport import (
     validate_base_url,
 )
 from lode.evidence_connectors.types import (
+    EvidenceResultEnvelope,
     IntrospectionBudget,
     NativeSchemaCatalog,
     ProviderExecutionError,
@@ -72,7 +73,7 @@ class HTTPSConnector:
         return VerificationResult(
             self.kind,
             "http/1.1",
-            credential_identity_hash(self.secrets),
+            credential_identity_hash(self.secrets or {"anonymous": self.config.base_url}),
             self.read_capabilities,
         )
 
@@ -148,12 +149,21 @@ class HTTPSConnector:
                 "record": value,
             }
         )
-        return {
+        projected = {
             **sanitized,
             "bytes": len(response.body),
             "secret_categories": list(categories),
             "prompt_injection_detected": injection,
         }
+        return EvidenceResultEnvelope(
+            projected=projected,
+            sealed_raw={
+                "provider": self.kind,
+                "endpoint_id": action["endpoint_id"],
+                "status_code": response.status_code,
+                "record": value,
+            },
+        )
 
     @staticmethod
     def _action(permit: ExecutionPermit) -> Mapping[str, Any]:
