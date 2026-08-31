@@ -430,6 +430,9 @@ statistical and non-regression gate.
   actively handled investigations share the same hard concurrency bound. Lease
   heartbeat loss cancels the handler and never completes or fails a job no
   longer owned; expired work is resumed only through durable lease recovery.
+  The `make work` process converts SIGINT/SIGTERM into a shared stop event,
+  stops claiming new investigation and repository-analysis jobs, and disposes
+  the async database engine before process exit.
   A missing frozen model policy is an expected `model_capability_unavailable`
   terminal result with an unavailable report, not an unhandled worker failure.
   Invalid planner output is likewise an expected `invalid_structured_output`

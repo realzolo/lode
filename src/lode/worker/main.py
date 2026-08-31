@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import platform
+import signal
 import uuid
 from collections.abc import Awaitable, Callable
 from time import monotonic
@@ -16,7 +17,7 @@ from lode.application.investigation import (
 from lode.application.model_planner import StructuredInvestigationPlanner
 from lode.config import settings
 from lode.db.models import Investigation, InvestigationReport
-from lode.db.session import AsyncSessionLocal
+from lode.db.session import AsyncSessionLocal, engine
 from lode.infrastructure.connector_resolver import PostgresConnectorAdapterResolver
 from lode.infrastructure.investigation_leases import (
     ClaimedInvestigationJob,
@@ -68,6 +69,34 @@ def lease_store() -> InvestigationLeaseStore:
         owner=WORKER_ID,
         lease_ttl_seconds=WORKER_LEASE_TTL_SECONDS,
     )
+
+
+async def _sleep_until_stop(timeout: float, stop: asyncio.Event | None) -> None:
+    if stop is None:
+        await asyncio.sleep(timeout)
+        return
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=timeout)
+    except TimeoutError:
+        return
+
+
+def _install_stop_signal_handlers(stop: asyncio.Event) -> tuple[signal.Signals, ...]:
+    loop = asyncio.get_running_loop()
+    installed: list[signal.Signals] = []
+
+    def request_stop() -> None:
+        if not stop.is_set():
+            logger.info("worker shutdown requested")
+        stop.set()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signum, request_stop)
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
+        installed.append(signum)
+    return tuple(installed)
 
 
 async def _heartbeat(store: InvestigationLeaseStore, job_id: int) -> None:
@@ -135,19 +164,23 @@ async def run_worker(
     running: set[asyncio.Task[None]] = set()
     try:
         while True:
+            if stop is not None and stop.is_set():
+                if not running:
+                    return
+                await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+                continue
             await semaphore.acquire()
             if stop is not None and stop.is_set():
                 semaphore.release()
                 if not running:
                     return
-                await asyncio.sleep(0)
                 continue
             job = await durable.claim()
             if job is None:
                 semaphore.release()
                 if stop is not None and stop.is_set() and not running:
                     return
-                await asyncio.sleep(WORKER_POLL_INTERVAL_SECONDS)
+                await _sleep_until_stop(WORKER_POLL_INTERVAL_SECONDS, stop)
                 continue
             task = asyncio.create_task(run_job(job, handler, store=durable))
             running.add(task)
@@ -163,11 +196,25 @@ async def run_worker(
         await asyncio.gather(*running, return_exceptions=True)
 
 
-async def main(handler: InvestigationHandler | None = None) -> None:
-    await asyncio.gather(
-        run_worker(handler or build_handler(), lease_store()),
-        run_repository_analysis_worker(),
+async def main(
+    handler: InvestigationHandler | None = None,
+    *,
+    stop: asyncio.Event | None = None,
+    install_signal_handlers: bool = False,
+) -> None:
+    stop_event = stop or asyncio.Event()
+    installed_signals = (
+        _install_stop_signal_handlers(stop_event) if install_signal_handlers else ()
     )
+    try:
+        await asyncio.gather(
+            run_worker(handler or build_handler(), lease_store(), stop=stop_event),
+            run_repository_analysis_worker(stop=stop_event),
+        )
+    finally:
+        for signum in installed_signals:
+            asyncio.get_running_loop().remove_signal_handler(signum)
+        await engine.dispose()
 
 
 async def run_repository_analysis_worker(*, stop: asyncio.Event | None = None) -> None:
@@ -181,7 +228,7 @@ async def run_repository_analysis_worker(*, stop: asyncio.Event | None = None) -
     while stop is None or not stop.is_set():
         job = await durable.claim()
         if job is None:
-            await asyncio.sleep(WORKER_POLL_INTERVAL_SECONDS)
+            await _sleep_until_stop(WORKER_POLL_INTERVAL_SECONDS, stop)
             continue
         await _run_repository_analysis_job(job, durable, service)
 
@@ -309,5 +356,15 @@ async def _publish_unavailable(
         await session.commit()
 
 
+def run() -> None:
+    """Run worker processes and treat operator interruption as a clean stop."""
+
+    logging.basicConfig(level=logging.INFO)
+    try:
+        asyncio.run(main(install_signal_handlers=True))
+    except KeyboardInterrupt:
+        logger.info("worker stopped")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    run()

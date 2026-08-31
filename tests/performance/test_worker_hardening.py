@@ -94,6 +94,42 @@ async def test_worker_soak_never_preclaims_beyond_worker_concurrency(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_worker_main_stops_both_loops_and_disposes_engine(monkeypatch) -> None:
+    seen_stops: list[asyncio.Event] = []
+    disposed = False
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            nonlocal disposed
+            disposed = True
+
+    async def handler(_job: ClaimedInvestigationJob) -> None:
+        raise AssertionError("main should not run the handler in this test")
+
+    async def fake_run_worker(_handler, _durable, *, stop=None) -> None:
+        assert stop is not None
+        seen_stops.append(stop)
+        stop.set()
+
+    async def fake_repository_worker(*, stop=None) -> None:
+        assert stop is not None
+        seen_stops.append(stop)
+        await stop.wait()
+
+    monkeypatch.setattr(worker, "lease_store", lambda: object())
+    monkeypatch.setattr(worker, "engine", FakeEngine())
+    monkeypatch.setattr(worker, "run_worker", fake_run_worker)
+    monkeypatch.setattr(worker, "run_repository_analysis_worker", fake_repository_worker)
+
+    await worker.main(handler)
+
+    assert len(seen_stops) == 2
+    assert seen_stops[0] is seen_stops[1]
+    assert seen_stops[0].is_set()
+    assert disposed
+
+
+@pytest.mark.asyncio
 async def test_lease_loss_cancels_handler_without_mutating_unowned_job(monkeypatch) -> None:
     stop = asyncio.Event()
     store = FakeLeaseStore(1, stop)
