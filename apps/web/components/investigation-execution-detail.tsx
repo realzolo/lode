@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Select } from '@/components/ui/select';
+import { TableColumns } from '@/components/ui/table';
 import {
   apiErrorMessage,
   fetchInvestigationExecutionArtifact,
@@ -111,14 +112,14 @@ function jsonRecord(value: unknown): UnknownRecord | null {
 }
 
 function formatDuration(duration: number | null) {
-  if (duration === null) return '-';
+  if (duration === null) return '—';
   if (duration < 1_000) return `${duration} ms`;
   return `${(duration / 1_000).toFixed(duration < 10_000 ? 1 : 0)} s`;
 }
 
 function formatTimestamp(value: unknown, dateLocale: string) {
   const raw = textValue(value) || '';
-  if (!raw) return '-';
+  if (!raw) return '—';
   if (/^\d{16,}$/.test(raw)) {
     try {
       return new Date(Number(BigInt(raw) / 1_000_000n)).toLocaleString(dateLocale);
@@ -242,7 +243,7 @@ export function NodeDetailDrawer({
   }, [artifactId, investigationId, node, page?.next_after_index, tc]);
 
   return <Dialog open={node !== null} onOpenChange={onOpenChange}>
-    <DialogContent variant="drawer" className="execution-detail-drawer max-w-3xl overflow-hidden p-0">
+    <DialogContent variant="drawer" className="execution-detail-drawer max-w-3xl gap-0 overflow-hidden p-0">
       <DialogHeader className="execution-detail-header">
         <DialogTitle>{node?.title || detail?.title || t('flowNodeDetails')}</DialogTitle>
         <DialogDescription>{node ? `${nodeTypeLabel(node.node_type, t)} · ${statusLabel(node.status, t)}` : t('flowDetailLoading')}</DialogDescription>
@@ -254,7 +255,7 @@ export function NodeDetailDrawer({
         </div>}
       </DialogHeader>
       <div className="execution-detail-scroll">
-        {error && <div className="execution-detail-error"><AlertTriangle size={16} />{error}</div>}
+        {error && <div className="dashboard-feedback execution-detail-error" role="alert"><AlertTriangle size={16} />{error}</div>}
         {!detail && !error && <div className="execution-detail-loading"><RefreshCw size={16} />{t('flowDetailLoading')}</div>}
         {detail && <NodeDetailContent
           detail={detail}
@@ -397,7 +398,7 @@ function QueryPresentation({ query, dateLocale }: { query: UnknownRecord; dateLo
   if (!action) return null;
   return <DetailSection title={state === 'proposed' ? t('flowProposedQuery') : t('flowActualQuery')} icon={<Search size={16} />}>
     <FactGrid items={[
-      [t('flowQueryLanguage'), language || '-'],
+      [t('flowQueryLanguage'), language || '—'],
       [t('flowQueryState'), t(`flowQueryStates.${state}`)],
       [t('flowQueryLimit'), query.requested_limit],
       [t('flowQueryTimeout'), query.requested_timeout_ms ? `${query.requested_timeout_ms} ms` : null],
@@ -483,7 +484,7 @@ function CommandAction({ action }: { action: UnknownRecord }) {
 
 function AuthorizationPresentation({ authorization, dateLocale }: { authorization: UnknownRecord; dateLocale: string }) {
   const t = useTranslations('workbench');
-  const outcome = textValue(authorization.outcome) || '-';
+  const outcome = textValue(authorization.outcome) || '—';
   const budget = asRecord(authorization.effective_budget);
   return <DetailSection title={t('flowAuthorization')} icon={<ShieldCheck size={16} />}>
     <div className="execution-authorization-summary" data-tone={statusTone(outcome === 'allow' ? 'allowed' : outcome)}>
@@ -523,7 +524,7 @@ function ExecutionPresentation({ execution, artifactsAvailable, dateLocale }: { 
     {!artifactsAvailable && result !== null && result !== undefined && <StructuredValue value={result} />}
     {attempts.length > 0 && <div className="execution-attempts"><h4>{t('flowAttempts')}</h4>{attempts.map((attempt, index) => <div key={textValue(attempt.id) || index}>
       <strong>{t('flowAttemptNumber', { number: textValue(attempt.attempt) || index + 1 })}</strong>
-      <span data-tone={statusTone(textValue(attempt.status) || '')}>{statusLabel(textValue(attempt.status) || '-', t)}</span>
+      <span data-tone={statusTone(textValue(attempt.status) || '')}>{statusLabel(textValue(attempt.status) || '—', t)}</span>
       {textValue(attempt.failure_code) && <small>{textValue(attempt.failure_code)}</small>}
     </div>)}</div>}
   </DetailSection>;
@@ -536,7 +537,7 @@ function AuditTimeline({ authorization, execution, events, dateLocale }: { autho
   return <DetailSection title={t('flowExecutionRecord')} icon={<CircleDot size={16} />}>
     <ol className="execution-audit-chain">
       {authorization && <li><ShieldCheck size={15} /><div><strong>{authorization.outcome === 'allow' ? t('flowAuthorizationAllowed') : t('flowAuthorizationRejected')}</strong>{textValue(authorization.rejection_code) && <small>{textValue(authorization.rejection_code)}</small>}</div></li>}
-      {attempts.map((attempt, index) => <li key={textValue(attempt.id) || index}><Clock3 size={15} /><div><strong>{t('flowAttemptStatus', { number: textValue(attempt.attempt) || index + 1, status: statusLabel(textValue(attempt.status) || '-', t) })}</strong><small>{formatTimestamp(attempt.finished_at || attempt.started_at, dateLocale)}</small></div></li>)}
+      {attempts.map((attempt, index) => <li key={textValue(attempt.id) || index}><Clock3 size={15} /><div><strong>{t('flowAttemptStatus', { number: textValue(attempt.attempt) || index + 1, status: statusLabel(textValue(attempt.status) || '—', t) })}</strong><small>{formatTimestamp(attempt.finished_at || attempt.started_at, dateLocale)}</small></div></li>)}
       {events.map((event, index) => <li key={textValue(event.sequence) || index}><CircleDot size={15} /><div><strong>{textValue(event.message) || textValue(event.event_name) || t('flowExecutionEvent')}</strong><small>{formatTimestamp(event.occurred_at, dateLocale)}</small></div></li>)}
     </ol>
   </DetailSection>;
@@ -580,7 +581,7 @@ function LogResult({ rows, dateLocale }: { rows: UnknownRecord[]; dateLocale: st
     return <li key={index}>
       <div><time>{formatTimestamp(payload?.timestamp || row.timestamp || row.time, dateLocale)}</time>{level && <span data-level={level.toLowerCase()}>{level}</span>}</div>
       <code>{message}</code>
-      {Object.keys(fields).length > 0 && <div className="execution-log-labels">{Object.entries(fields).slice(0, 12).map(([key, value]) => <span key={key}><b>{humanizeKey(key)}</b>{textValue(value) || '-'}</span>)}</div>}
+      {Object.keys(fields).length > 0 && <div className="execution-log-labels">{Object.entries(fields).slice(0, 12).map(([key, value]) => <span key={key}><b>{humanizeKey(key)}</b>{textValue(value) || '—'}</span>)}</div>}
     </li>;
   })}</ol>;
 }
@@ -591,7 +592,7 @@ function SourceResult({ page }: { page: InvestigationExecutionArtifactPage }) {
   if (!source) return <p className="execution-empty-result">{t('flowNoResults')}</p>;
   const lineRange = source.start_line || source.end_line
     ? `${textValue(source.start_line) || '?'}-${textValue(source.end_line) || '?'}`
-    : '-';
+    : '—';
   return <div className="execution-source-result">
     <FactGrid items={[[t('flowSourcePath'), source.path], [t('flowSourceSymbol'), source.symbol], [t('flowSourceLines'), lineRange]]} />
     <CodeBlock value={textValue(source.content) || ''} label={textValue(source.path) || t('flowSourceCode')} />
@@ -631,7 +632,7 @@ function flattenSearchRecord(row: UnknownRecord): UnknownRecord {
 
 function RecordTable({ rows }: { rows: UnknownRecord[] }) {
   const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row)))).slice(0, 16);
-  return <div className="execution-result-table"><table><thead><tr>{columns.map((column) => <th key={column}>{humanizeKey(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}><CellValue value={row[column]} /></td>)}</tr>)}</tbody></table></div>;
+  return <div className="execution-result-table table-wrap"><table className="table"><TableColumns widths={columns.map(() => 1)} /><thead><tr>{columns.map((column) => <th key={column}>{humanizeKey(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}><CellValue value={row[column]} /></td>)}</tr>)}</tbody></table></div>;
 }
 
 function CellValue({ value }: { value: unknown }) {
@@ -641,7 +642,7 @@ function CellValue({ value }: { value: unknown }) {
   if (Array.isArray(value)) return <span className="text-muted-foreground">{t('flowItemsCount', { count: value.length })}</span>;
   const record = asRecord(value);
   if (record) return <span className="text-muted-foreground">{t('flowFieldsCount', { count: Object.keys(record).length })}</span>;
-  return <span className="text-muted-foreground">-</span>;
+  return <span className="text-muted-foreground">—</span>;
 }
 
 function StructuredValue({ value, emptyLabel }: { value: unknown; emptyLabel?: string }) {
@@ -649,13 +650,13 @@ function StructuredValue({ value, emptyLabel }: { value: unknown; emptyLabel?: s
   const scalar = textValue(value);
   if (scalar !== null) return <p className="execution-structured-scalar">{scalar}</p>;
   if (Array.isArray(value)) {
-    if (!value.length) return <p className="execution-empty-result">{emptyLabel || '-'}</p>;
+    if (!value.length) return <p className="execution-empty-result">{emptyLabel || '—'}</p>;
     const rows = asRecords(value);
     if (rows.length === value.length) return <RecordTable rows={rows} />;
     return <ul className="execution-structured-list">{value.slice(0, 50).map((item, index) => <li key={index}><CellValue value={item} /></li>)}</ul>;
   }
   const record = asRecord(value);
-  if (!record || !Object.keys(record).length) return <p className="execution-empty-result">{emptyLabel || '-'}</p>;
+  if (!record || !Object.keys(record).length) return <p className="execution-empty-result">{emptyLabel || '—'}</p>;
   const entries = Object.entries(record).slice(0, 24);
   return <dl className="execution-structured-fields">{entries.map(([key, item]) => <div key={key}>
     <dt>{fieldLabel(key, t)}</dt>
@@ -717,7 +718,7 @@ function EvidenceSummary({ artifact, dateLocale }: { artifact: InvestigationExec
   const t = useTranslations('workbench');
   return <div className="execution-evidence-summary">
     <strong>{t('evidenceReference', { id: artifact.id })}</strong>
-    <span>{artifactLabel(artifact.kind, t)} · {artifact.record_count === null ? '-' : t('flowRecords', { count: artifact.record_count })} · {formatTimestamp(artifact.archived_at, dateLocale)}</span>
+    <span>{artifactLabel(artifact.kind, t)} · {artifact.record_count === null ? '—' : t('flowRecords', { count: artifact.record_count })} · {formatTimestamp(artifact.archived_at, dateLocale)}</span>
   </div>;
 }
 

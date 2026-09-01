@@ -1354,7 +1354,8 @@ an immutable revision. Per-field generic Save buttons are not part of this flow.
 The Members tab independently loads its own member/user
 data, provides combined search plus permission/status filters, and uses compact
 rows with initials, status, permission, independent row actions, destructive
-confirmation, and a right-side add drawer. The sole system administrator creates
+confirmation, and a responsive add Sheet (right-side on desktop, bottom Drawer
+on phones). The sole system administrator creates
 ordinary users and grants each Workspace `viewer` or `operator` access. There
 are no Workspace administrators. The Repositories tab selects a searchable
 healthy Git account and then a searchable repository within the two combobox
@@ -1393,17 +1394,20 @@ the planner decides whether to finish or continue inside the code-owned ceiling.
 
 The authenticated shell follows `apps/web/DESIGN.md`: 256px fixed desktop
 sidebar, 64px tablet rail, mobile navigation drawer, 56px context bar, neutral
-one-pixel borders, 6px control radii, 8px operational panels, 36px controls,
+one-pixel borders, 6px control and operational-surface radii, 12px floating
+surfaces, 36px controls,
 compact tables, and non-nested operational sections in both themes. Shared shell
 fidelity rules live in `apps/web/app/dashboard.css`, imported after the domain
 and Tailwind rules in `globals.css`; investigation-specific visualizations stay
-in `globals.css`. The sidebar Find command supports mouse and `F` keyboard
+in `globals.css`. The sidebar Find command supports mouse and `Cmd/Ctrl+K` keyboard
 navigation while preserving the current permission-filtered route set. Shared
 buttons preserve size while loading, set `aria-busy`, and prevent duplicate
-submissions; row actions have independent state. Shared text inputs and
+submissions; row actions have independent state. The direct Web dependency
+`@radix-ui/react-tooltip` provides the shared 150ms hover/focus, Escape-aware,
+6px-stem tooltip layer for icon-only controls; its tooltip body supplements,
+but never replaces, each trigger's accessible name. Shared text inputs and
 textareas force autocomplete/password-manager opt-out attributes. Text inputs
-also remain read-only until their first user focus so browsers cannot inject
-saved values during page load, then behave as normal controlled inputs. Lists
+pass through explicit read-only semantics and remain editable by default. Lists
 use structural skeletons on first load, retain prior data during refresh, and
 define empty, filtered-empty, inline-error, and retry states. All visible labels,
 accessibility names, enum values, placeholders, validation messages, and client
@@ -1444,7 +1448,7 @@ keyboard focus, and a locate-current-step control. Stage labels and lane bands
 are structural graph nodes and share the same pan/zoom transform as execution
 nodes and edges. Phones below 768px use the
 same projection as a round-grouped vertical list. Selecting a persisted node or
-report evidence reference opens the Radix right-side drawer and restores the
+report evidence reference opens the responsive Radix Sheet and restores the
 previous graph position and focus when closed. SQL uses a dynamic-column table,
 Loki a time-ordered log list, search providers structured conditions and result
 tables, HTTPS typed request/response fields, Command bounded output lines, and
@@ -1502,6 +1506,12 @@ pnpm install
 pnpm typecheck
 pnpm build
 ```
+
+`npm run dev -- -p <port>` assigns that server port-scoped `.next-dev-<port>`
+output and TypeScript configuration files. Use this command for every
+concurrent Web session; direct `next dev` processes in the same checkout share
+`.next` and can corrupt each other's client and server chunks. Production
+builds and `next start` continue to use the default `.next` directory.
 
 For incident/investigation changes, tests must cover strict `incident.alert.v1` parsing,
 opaque trace preservation/sealing, Workspace permissions, all intake idempotency

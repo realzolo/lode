@@ -33,3 +33,29 @@ export function Th(props: ThHTMLAttributes<HTMLTableCellElement>) {
 export function Td(props: TdHTMLAttributes<HTMLTableCellElement>) {
   return <td {...props} />;
 }
+
+type TableColumnsProps = {
+  widths: number[];
+  leadingWidth?: number;
+  trailingWidth?: number;
+};
+
+export function TableColumns({ widths, leadingWidth = 0, trailingWidth = 0 }: TableColumnsProps) {
+  const total = widths.reduce((sum, width) => sum + width, 0);
+  const fixedWidth = leadingWidth + trailingWidth;
+  const contentWidth = (width: number) => {
+    const ratio = width / total;
+    const percentage = Number((ratio * 100).toFixed(4));
+    const fixedShare = Number((fixedWidth * ratio).toFixed(4));
+
+    return fixedWidth
+      ? `calc(${percentage}% - ${fixedShare}px)`
+      : `${percentage}%`;
+  };
+
+  return <colgroup>
+    {leadingWidth ? <col style={{ width: `${leadingWidth}px` }} /> : null}
+    {widths.map((width, index) => <col key={index} style={{ width: contentWidth(width) }} />)}
+    {trailingWidth ? <col style={{ width: `${trailingWidth}px` }} /> : null}
+  </colgroup>;
+}

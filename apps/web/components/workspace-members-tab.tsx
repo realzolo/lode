@@ -1,10 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { MoreHorizontal, Plus, RefreshCw, Search, Trash2, UserRound } from 'lucide-react';
+import { MoreHorizontal, Plus, RefreshCw, Search, Trash2, UserRound, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
@@ -23,10 +22,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { EmptyState } from '@/components/ui/empty-state';
+import { TableEmptyState } from '@/components/ui/empty-state';
 import { Input } from '@/components/ui/input';
+import { ListSkeleton } from '@/components/ui/list-skeleton';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Select } from '@/components/ui/select';
+import { TableColumns } from '@/components/ui/table';
 import {
   apiErrorMessage,
   fetchUsers,
@@ -40,18 +41,13 @@ type Permission = 'viewer' | 'operator';
 type StatusFilter = 'all' | 'active' | 'disabled';
 type PermissionFilter = 'all' | Permission;
 
-function initials(member: Pick<WorkspaceMember, 'display_name' | 'username'>): string {
-  const parts = member.display_name.trim().split(/\s+/).filter(Boolean);
-  const value = parts.length > 1 ? `${parts[0][0]}${parts.at(-1)?.[0] ?? ''}` : parts[0]?.slice(0, 2);
-  return (value || member.username.slice(0, 2)).toUpperCase();
-}
-
 export function WorkspaceMembersTab({ workspaceId }: { workspaceId: string }) {
   const t = useTranslations('workspace');
   const tc = useTranslations('common');
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [users, setUsers] = useState<CurrentUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [permissionFilter, setPermissionFilter] = useState<PermissionFilter>('all');
@@ -64,8 +60,8 @@ export function WorkspaceMembersTab({ workspaceId }: { workspaceId: string }) {
   const [permission, setPermission] = useState<Permission>('viewer');
   const [adding, setAdding] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (background = false) => {
+    background ? setRefreshing(true) : setLoading(true);
     try {
       const [nextMembers, nextUsers] = await Promise.all([
         fetchWorkspaceMembers(workspaceId),
@@ -78,6 +74,7 @@ export function WorkspaceMembersTab({ workspaceId }: { workspaceId: string }) {
       setLoadError(apiErrorMessage(cause, tc('requestFailed')));
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [tc, workspaceId]);
 
@@ -129,7 +126,7 @@ export function WorkspaceMembersTab({ workspaceId }: { workspaceId: string }) {
     setAdding(true);
     try {
       await putWorkspaceMember(workspaceId, Number(userId), permission);
-      await load();
+      await load(true);
       setAddOpen(false);
       setUserId('');
       setPermission('viewer');
@@ -158,39 +155,39 @@ export function WorkspaceMembersTab({ workspaceId }: { workspaceId: string }) {
 
   return (
     <section className="space-y-4" aria-labelledby="members-title">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 id="members-title" className="text-base font-semibold">{t('members')}</h2>
-            <span className="rounded-sm border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-              {members.length}
-            </span>
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">{t('membersDescription')}</p>
+      <h2 id="members-title" className="sr-only">{t('members')}</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-2xl text-sm text-muted-foreground">{t('membersDescription')}</p>
+        <div className="flex items-center gap-2">
+          <span className="rounded-sm border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+            {members.length}
+          </span>
+          <Button size="icon" variant="outline" loading={refreshing} aria-label={tc('refresh')} title={tc('refresh')} onClick={() => void load(true)}>
+            <RefreshCw size={15} />
+          </Button>
+          <Button size="sm" variant="primary" onClick={() => setAddOpen(true)}>
+            <Plus size={15} />
+            {t('addMember')}
+          </Button>
         </div>
-        <Button size="sm" variant="primary" onClick={() => setAddOpen(true)}>
-          <Plus size={15} />
-          {t('addMember')}
-        </Button>
       </div>
 
-      <div className="flex flex-col gap-2 border-y py-3 sm:flex-row">
-        <label className="relative min-w-0 flex-1">
+      <div className="dashboard-filterbar">
+        <label className="dashboard-search">
           <span className="sr-only">{t('searchMembers')}</span>
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Search size={15} />
           <Input
             type="search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder={t('searchMembersPlaceholder')}
-            className="pl-9"
           />
         </label>
         <Select
           aria-label={t('permissionFilter')}
           value={permissionFilter}
           onChange={(event) => setPermissionFilter(event.target.value as PermissionFilter)}
-          className="w-full sm:w-44"
+          className="dashboard-filter-select"
         >
           <option value="all">{t('allPermissions')}</option>
           <option value="viewer">{t('viewer')}</option>
@@ -200,93 +197,110 @@ export function WorkspaceMembersTab({ workspaceId }: { workspaceId: string }) {
           aria-label={t('statusFilter')}
           value={statusFilter}
           onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
-          className="w-full sm:w-40"
+          className="dashboard-filter-select"
         >
           <option value="all">{t('allStatuses')}</option>
           <option value="active">{t('memberStatus.active')}</option>
           <option value="disabled">{t('memberStatus.disabled')}</option>
         </Select>
+        {filtersActive ? (
+          <Button
+            size="icon"
+            variant="ghost"
+            aria-label={tc('clearFilters')}
+            title={tc('clearFilters')}
+            onClick={clearFilters}
+          >
+            <X size={16} />
+          </Button>
+        ) : null}
       </div>
 
-      <div className="overflow-hidden rounded-md border">
-        {loading ? (
-          <div className="space-y-px bg-border" aria-busy="true">
-            {[0, 1, 2].map((row) => <div key={row} className="h-[68px] animate-pulse bg-card" />)}
-          </div>
-        ) : loadError ? (
-          <EmptyState
-            title={t('membersLoadFailed')}
-            description={loadError}
-            action={<Button size="sm" variant="outline" onClick={() => void load()}><RefreshCw />{tc('retry')}</Button>}
-          />
-        ) : filtered.length ? (
-          <ul className="divide-y" aria-label={t('members')}>
-            {filtered.map((member) => (
-              <li key={member.user_id} className="flex min-h-[68px] items-center gap-3 px-3 py-2 sm:px-4">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-full border bg-muted text-xs font-semibold">
-                  {initials(member)}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex min-w-0 items-center">
-                    <span className="min-w-0 truncate text-sm font-medium" title={member.display_name}>
+      {loading ? (
+        <ListSkeleton rows={4} columns={5} />
+      ) : loadError ? (
+        <TableEmptyState
+          title={t('membersLoadFailed')}
+          description={loadError}
+          action={<Button size="sm" variant="outline" onClick={() => void load()}><RefreshCw />{tc('retry')}</Button>}
+        />
+      ) : filtered.length === 0 ? (
+        <TableEmptyState
+          icon={filtersActive ? <Search size={20} /> : <UserRound size={20} />}
+          title={filtersActive ? t('noFilteredMembers') : t('noMembers')}
+          description={filtersActive ? t('noFilteredMembersDescription') : t('noMembersDescription')}
+          action={filtersActive ? <Button size="sm" variant="outline" onClick={clearFilters}>{tc('clearFilters')}</Button> : undefined}
+        />
+      ) : (
+        <div className="operational-table">
+          <div className="table-wrap">
+            <table className="table">
+              <TableColumns widths={[34, 26, 20, 20]} trailingWidth={64} />
+              <thead>
+                <tr>
+                  <th>{t('member')}</th>
+                  <th>{t('username')}</th>
+                  <th>{t('permissions')}</th>
+                  <th>{t('accountStatus')}</th>
+                  <th><span className="sr-only">{tc('actions')}</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((member) => (
+                  <tr key={member.user_id}>
+                    <td className="font-medium">
                       {member.display_name}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                    <span className="min-w-0 truncate" title={`@${member.username}`}>@{member.username}</span>
-                    <span className="shrink-0" aria-hidden="true">·</span>
-                    <Badge className="shrink-0" variant={member.status === 'active' ? 'success' : 'default'}>
-                      {t(`memberStatus.${member.status}`)}
-                    </Badge>
-                    <span className="shrink-0" aria-hidden="true">·</span>
-                    <span className="shrink-0">{t(member.permission)}</span>
-                  </div>
-                  {rowErrors[member.user_id] ? (
-                    <p className="mt-1 text-xs text-destructive" role="alert">{rowErrors[member.user_id]}</p>
-                  ) : null}
-                </div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      loading={rowBusy[member.user_id]}
-                      aria-label={t('memberActions', { name: member.display_name })}
-                      title={tc('actions')}
-                    >
-                      <MoreHorizontal />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => void updatePermission(member, 'viewer')}>
-                      {t('setViewer')}
-                      <DropdownMenuCheck visible={member.permission === 'viewer'} />
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => void updatePermission(member, 'operator')}>
-                      {t('setOperator')}
-                      <DropdownMenuCheck visible={member.permission === 'operator'} />
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem destructive onSelect={() => setRemoveTarget(member)}>
-                      <Trash2 />
-                      {t('removeMember')}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </li>
-            ))}
-          </ul>
-        ) : filtersActive ? (
-          <EmptyState
-            icon={<Search />}
-            title={t('noFilteredMembers')}
-            description={t('noFilteredMembersDescription')}
-            action={<Button size="sm" variant="outline" onClick={clearFilters}>{tc('clearFilters')}</Button>}
-          />
-        ) : (
-          <EmptyState icon={<UserRound />} title={t('noMembers')} description={t('noMembersDescription')} />
-        )}
-      </div>
+                      {rowErrors[member.user_id] ? (
+                        <p className="mt-1 text-xs font-normal text-destructive" role="alert">{rowErrors[member.user_id]}</p>
+                      ) : null}
+                    </td>
+                    <td className="mono text-xs">@{member.username}</td>
+                    <td>{t(member.permission)}</td>
+                    <td>
+                      <span className={`table-status${member.status === 'active' ? ' table-status-success' : ''}`}>
+                        <i aria-hidden="true" />
+                        {t(`memberStatus.${member.status}`)}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="flex justify-end">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              loading={rowBusy[member.user_id]}
+                              aria-label={t('memberActions', { name: member.display_name })}
+                              title={tc('actions')}
+                            >
+                              <MoreHorizontal size={15} />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onSelect={() => void updatePermission(member, 'viewer')}>
+                              {t('setViewer')}
+                              <DropdownMenuCheck visible={member.permission === 'viewer'} />
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => void updatePermission(member, 'operator')}>
+                              {t('setOperator')}
+                              <DropdownMenuCheck visible={member.permission === 'operator'} />
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem destructive onSelect={() => setRemoveTarget(member)}>
+                              <Trash2 />
+                              {t('removeMember')}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <Dialog open={addOpen} onOpenChange={(open) => !adding && setAddOpen(open)}>
         <DialogContent variant="drawer">

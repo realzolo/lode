@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/lib/navigation';
 import { Input } from '@/components/ui/input';
@@ -15,14 +15,24 @@ export default function LoginPage() {
   const t = useTranslations('login');
   const tc = useTranslations('common');
   const router = useRouter();
-  const { setUser } = useUser();
+  const { loading, setUser, user } = useUser();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    if (loading || !user) return;
+    router.replace(
+      user.must_change_password
+        ? '/change-password'
+        : user.is_system_admin ? '/admin' : '/workbench',
+    );
+  }, [loading, router, user]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (busy || !username || !password) return;
     setBusy(true);
     setError(null);
     try {
@@ -51,23 +61,29 @@ export default function LoginPage() {
           <p className="login-form-subtitle">{t('subtitle')}</p>
         </div>
 
-        <form autoComplete="off" className="auth-form" onSubmit={handleSubmit}>
+        <form autoComplete="on" className="auth-form" onSubmit={handleSubmit}>
               <label className="auth-field" htmlFor="username">
                 <span className="auth-field-label">{t('username')}</span>
                 <Input
                   id="username"
+                  name="username"
+                  autoComplete="username"
                   placeholder={t('username')}
                   value={username}
+                  disabled={busy}
                   onChange={(e) => setUsername(e.target.value)}
                 />
               </label>
               <PasswordField
                 id="password"
+                name="password"
+                autoComplete="current-password"
                 label={t('password')}
                 placeholder={t('password')}
                 showLabel={t('showPassword')}
                 hideLabel={t('hidePassword')}
                 value={password}
+                disabled={busy}
                 onChange={(e) => setPassword(e.target.value)}
               />
 

@@ -18,9 +18,9 @@ export interface ConfirmDialogProps {
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
-  /** Label for the confirm (action) button. Defaults to "Confirm". */
+  /** Label for the confirm (action) button. Defaults to the localized common label. */
   confirmLabel?: string;
-  /** Label for the dismiss button. Defaults to "Cancel". */
+  /** Label for the dismiss button. Defaults to the localized common label. */
   cancelLabel?: string;
   /**
    * When true the confirm button uses the red `destructive` variant instead of
@@ -47,27 +47,25 @@ export interface ConfirmDialogProps {
  * native `window.confirm`.
  *
  * It is built on the same Radix `Dialog` as every other modal in the app, so it
- * inherits the canonical Geist tokens: 12px overlay scale, 16px modal panel
- * radius, the 2px-gap + 4px-blue focus ring, and 600-weight headings with
- * negative tracking. The cancel (safe) button is the first focusable element,
- * so pressing Enter never triggers a destructive action by accident — matching
- * Geist's confirmation-dialog behaviour.
+ * inherits the same compact panel, focus, and action treatment as every other
+ * dialog. The cancel (safe) button precedes the destructive action.
  */
 export function ConfirmDialog({
   open,
   onOpenChange,
   title,
   description,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   destructive = false,
   onConfirm,
   successMessage,
   errorMessage,
 }: ConfirmDialogProps) {
-  const t = useTranslations();
+  const t = useTranslations('common');
   const [busy, setBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
+  const cancelButtonRef = React.useRef<HTMLButtonElement>(null);
 
   React.useEffect(() => {
     if (!open) setActionError(null);
@@ -81,10 +79,9 @@ export function ConfirmDialog({
       await onConfirm();
       // Close only after the backend-backed action settles successfully.
       onOpenChange(false);
-      toast.success(successMessage ?? t('common.actionSuccess'));
-    } catch (error) {
-      const message = errorMessage
-        ?? (error instanceof Error && error.message ? error.message : t('common.actionFailed'));
+      toast.success(successMessage ?? t('actionSuccess'));
+    } catch {
+      const message = errorMessage ?? t('actionFailed');
       setActionError(message);
       toast.error(message);
     } finally {
@@ -94,22 +91,29 @@ export function ConfirmDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
-      <DialogContent>
+      <DialogContent
+        onOpenAutoFocus={(event) => {
+          // A confirmation dialog must initially favor the safe action.
+          event.preventDefault();
+          cancelButtonRef.current?.focus();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
         </DialogHeader>
-        {actionError ? <p className="dialog-action-error" role="alert">{actionError}</p> : null}
+        {actionError ? <p className="dashboard-feedback" role="alert">{actionError}</p> : null}
         <DialogFooter>
-          <Button variant="default" onClick={() => onOpenChange(false)} disabled={busy}>
-            {cancelLabel}
+          <Button ref={cancelButtonRef} variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+            {cancelLabel ?? t('cancel')}
           </Button>
           <Button
             variant={destructive ? 'destructive' : 'primary'}
             onClick={handleConfirm}
             disabled={busy}
+            loading={busy}
           >
-            {confirmLabel}
+            {confirmLabel ?? t('confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>

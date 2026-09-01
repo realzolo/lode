@@ -66,13 +66,6 @@ export default function middleware(request: NextRequest): NextResponse {
     return NextResponse.redirect(url);
   }
 
-  // Already-authenticated users shouldn't land on the login screen. We can't
-  // read role from the (role-less) JWT here, so bounce to /admin and let the
-  // client-side gate send non-admins to /workbench.
-  if (segment === 'login' && authed) {
-    return NextResponse.redirect(new URL(`/${locale}/admin`, request.url));
-  }
-
   return intlMiddleware(request);
 }
 

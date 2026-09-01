@@ -36,6 +36,8 @@ node_modules/
 .next/
 .next.old/
 .next.*/
+.next-dev-*/
+.next-dev-*.tsconfig.json
 out/
 .swc/
 .vercel

@@ -37,6 +37,7 @@ import {
 import { useTranslations } from 'next-intl';
 import { NodeDetailDrawer } from '@/components/investigation-execution-detail';
 import { Button } from '@/components/ui/button';
+import { EmptyState } from '@/components/ui/empty-state';
 import type {
   InvestigationExecutionEdge,
   InvestigationExecutionGraph,
@@ -89,7 +90,7 @@ type StageFlowNode = Node<{ label: string }, 'stage'>;
 type ExecutionCanvasNode = ExecutionFlowNode | LaneFlowNode | StageFlowNode;
 
 function formatDuration(duration: number | null) {
-  if (duration === null) return '-';
+  if (duration === null) return '—';
   if (duration < 1_000) return `${duration} ms`;
   return `${(duration / 1_000).toFixed(duration < 10_000 ? 1 : 0)} s`;
 }
@@ -345,7 +346,7 @@ function FlowCanvas({
           statusLabel: statusLabel(item.status, t),
           typeLabel: nodeTypeLabel(item.node_type, t),
           roundLabel: item.round_ordinal ? t('flowRound', { round: item.round_ordinal }) : null,
-          metricsLabel: metrics.join(' · ') || '-',
+          metricsLabel: metrics.join(' · ') || '—',
         },
       };
     });
@@ -442,12 +443,14 @@ function MobileFlow({ graph, selectedNodeId, onSelect }: { graph: InvestigationE
 export function InvestigationExecutionFlow({
   investigationId,
   graph,
+  loading = false,
   selectedNodeId,
   onSelectedNodeIdChange,
   focusRequest,
 }: {
   investigationId: number | string;
   graph: InvestigationExecutionGraph | null;
+  loading?: boolean;
   selectedNodeId: string | null;
   onSelectedNodeIdChange: (nodeId: string | null) => void;
   focusRequest: FocusRequest;
@@ -494,8 +497,11 @@ export function InvestigationExecutionFlow({
     }
   }
 
-  if (!graph || !viewGraph) return <section id="investigation-flow" className="execution-flow-empty"><RefreshCw size={17} />{t('flowLoading')}</section>;
-  if (!graph.nodes.length) return <section id="investigation-flow" className="execution-flow-empty">{t('flowEmpty')}</section>;
+  if (!graph || !viewGraph) {
+    if (loading) return <section id="investigation-flow" className="execution-flow-empty" aria-busy="true" aria-live="polite"><RefreshCw className="animate-spin" size={17} />{t('flowLoading')}</section>;
+    return <section id="investigation-flow" className="dashboard-empty" aria-live="polite"><EmptyState title={t('flowEmpty')} /></section>;
+  }
+  if (!graph.nodes.length) return <section id="investigation-flow" className="dashboard-empty" aria-live="polite"><EmptyState title={t('flowEmpty')} /></section>;
   const rounds = new Set(graph.nodes.map((node) => node.round_ordinal).filter((value) => value !== null)).size;
   const operationCount = graph.nodes.filter((node) => node.node_type === 'operation').length;
   const evidenceCount = new Set(graph.nodes.flatMap((node) => node.evidence_refs)).size;

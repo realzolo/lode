@@ -5,6 +5,7 @@ import { ThemeProvider, useTheme } from 'next-themes';
 import { NextIntlClientProvider } from 'next-intl';
 import type { AbstractIntlMessages } from 'use-intl';
 import { Toaster } from 'sonner';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { UserProvider } from '@/lib/user-context';
 
 interface ProvidersProps {
@@ -21,15 +22,17 @@ interface ProvidersProps {
   now: Date;
 }
 
-// Theme (dark/light) is owned by shadcn/ui's CSS variables + next-themes, which
+// Theme (light/system/dark) is owned by shadcn/ui's CSS variables + next-themes, which
 // toggles the `dark`/`light` class on <html>. shadcn/ui components read those
 // variables directly, so no provider wrapper is needed (unlike @geist-ui/core).
 export function Providers({ children, messages, locale, timeZone, now }: ProvidersProps) {
   return (
     <NextIntlClientProvider messages={messages} locale={locale} timeZone={timeZone} now={now}>
-      <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
-        <UserProvider>{children}</UserProvider>
-        <ThemedToaster />
+      <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+        <TooltipPrimitive.Provider delayDuration={150} skipDelayDuration={0}>
+          <UserProvider>{children}</UserProvider>
+          <ThemedToaster />
+        </TooltipPrimitive.Provider>
       </ThemeProvider>
     </NextIntlClientProvider>
   );
@@ -37,5 +40,5 @@ export function Providers({ children, messages, locale, timeZone, now }: Provide
 
 function ThemedToaster() {
   const { resolvedTheme } = useTheme();
-  return <Toaster theme={(resolvedTheme as 'light' | 'dark') ?? 'dark'} richColors position="bottom-right" closeButton />;
+  return <Toaster theme={resolvedTheme === 'dark' ? 'dark' : 'light'} position="bottom-right" />;
 }

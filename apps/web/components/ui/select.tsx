@@ -13,10 +13,10 @@ import { IconCheck, IconChevronDown } from '@/components/icons';
  * explore) keep working without churn: accept `value` / `onChange` /
  * `disabled` + `<option>` children, and synthesise a change event back
  * to the caller with the new value. Internally we render a button-style
- * trigger + Radix-floated content (elevation-5, 6 px radius, Geist body-sm
+ * trigger + Radix-floated content (elevation-5, 12 px radius, Geist body-sm
  * with canvas-soft-2 hover wash and a check indicator on the selected item).
  *
- * The trigger mirrors the compact form-input geometry (h-9, rounded-sm, hairline
+ * The trigger mirrors the compact form-input geometry (h-9, rounded-md, hairline
  * border) and reuses the canonical Geist focus ring via
  * `focus-visible:shadow-geist-focus`, so it sits in the same row as
  * `<Input>` and `<Textarea>`.
@@ -103,7 +103,7 @@ export function Select({
         aria-invalid={ariaInvalid}
         aria-required={ariaRequired}
         className={cn(
-          'flex h-9 w-full items-center justify-between rounded-sm border border-hairline bg-canvas px-3 text-sm text-ink',
+          'flex h-9 w-full items-center justify-between rounded-md border border-hairline bg-canvas px-3 text-sm text-ink',
           'font-sans',
           'focus:outline-none focus-visible:shadow-geist-focus',
           'disabled:cursor-not-allowed disabled:opacity-50',
@@ -124,8 +124,7 @@ export function Select({
           position="popper"
           sideOffset={4}
           className={cn(
-            'relative z-50 max-h-96 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-sm',
-            'border border-hairline bg-canvas text-ink shadow-elevation-5',
+            'relative z-50 max-h-96 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg border border-[var(--dashboard-border)] bg-[var(--dashboard-panel)] text-ink shadow-elevation-5',
             'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:duration-150',
           )}
         >
@@ -136,8 +135,8 @@ export function Select({
                 value={it.value}
                 disabled={it.disabled}
                 className={cn(
-                  'relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none',
-                  'focus:bg-canvas-soft-2 data-[highlighted]:bg-canvas-soft-2',
+                  'relative flex w-full cursor-default select-none items-center rounded-md py-1.5 pl-8 pr-2 text-sm outline-none',
+                  'focus:bg-[var(--dashboard-hover)] data-[highlighted]:bg-[var(--dashboard-hover)]',
                   'data-[state=checked]:font-medium',
                   'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
                 )}

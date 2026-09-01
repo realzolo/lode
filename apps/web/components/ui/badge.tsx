@@ -3,9 +3,9 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 // shadcn/ui Badge. Keeps the app's `variant` union (default | accent | danger |
-// warning | success) so pages don't change. Pills follow DESIGN.md badge-secondary
-// (rounded-full). `accent` = brand link blue (primary is now ink/black, so the
-// blue highlight lives here); the rest are tinted semantic pills.
+// warning | success) so pages don't change. Badges use the shared compact
+// control radius. `accent` = brand link blue (primary is now ink/black, so the
+// blue highlight lives here); the rest are tinted semantic badges.
 const badgeVariants = cva(
   'inline-flex items-center whitespace-nowrap rounded-sm border px-2 py-0.5 text-xs font-medium transition-colors focus:outline-none',
   {

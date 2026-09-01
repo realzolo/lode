@@ -24,6 +24,8 @@ interface UserContextValue {
   isAdmin: boolean;
   /** True until the initial /auth/me lookup resolves — avoids a role flash. */
   loading: boolean;
+  /** The session exists but the backend could not verify it. */
+  sessionError: boolean;
   /** Adopt the current user (e.g. right after login) without a refetch. */
   setUser: (user: CurrentUser) => void;
   /** Drop the session: clears the token and resets user state. */
@@ -37,14 +39,22 @@ const UserContext = createContext<UserContextValue | null>(null);
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionError, setSessionError] = useState(false);
 
-  const setUser = useCallback((u: CurrentUser) => setUserState(u), []);
+  const setUser = useCallback((u: CurrentUser) => {
+    setUserState(u);
+    setSessionError(false);
+  }, []);
   const clearUser = useCallback(() => {
     clearToken();
     setUserState(null);
+    setSessionError(false);
+    setLoading(false);
   }, []);
 
   const refresh = useCallback(async () => {
+    setLoading(true);
+    setSessionError(false);
     if (!getToken()) {
       setUserState(null);
       setLoading(false);
@@ -52,8 +62,12 @@ export function UserProvider({ children }: { children: ReactNode }) {
     }
     try {
       setUserState(await fetchCurrentUser());
+      setSessionError(false);
     } catch {
       setUserState(null);
+      // A 401 clears the cookie in request(); other failures are recoverable
+      // service/session checks and must not trigger a login redirect loop.
+      setSessionError(getToken() !== null);
     } finally {
       setLoading(false);
     }
@@ -62,6 +76,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onSessionExpired = () => {
       setUserState(null);
+      setSessionError(false);
       setLoading(false);
     };
     window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
@@ -71,15 +86,22 @@ export function UserProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let active = true;
     if (!getToken()) {
+      setSessionError(false);
       setLoading(false);
       return;
     }
     fetchCurrentUser()
       .then((u) => {
-        if (active) setUserState(u);
+        if (active) {
+          setUserState(u);
+          setSessionError(false);
+        }
       })
       .catch(() => {
-        if (active) setUserState(null);
+        if (active) {
+          setUserState(null);
+          setSessionError(getToken() !== null);
+        }
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -92,7 +114,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const isAdmin = user?.is_system_admin === true;
 
   return (
-    <UserContext.Provider value={{ user, isAdmin, loading, setUser, clearUser, refresh }}>
+    <UserContext.Provider value={{ user, isAdmin, loading, sessionError, setUser, clearUser, refresh }}>
       {children}
     </UserContext.Provider>
   );

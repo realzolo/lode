@@ -30,6 +30,8 @@ import type {
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
 const TOKEN_KEY = 'lode_token';
 export const SESSION_EXPIRED_EVENT = 'lode:session-expired';
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const AUTH_REQUEST_TIMEOUT_MS = 10_000;
 
 export class ApiError extends Error {
   constructor(
@@ -43,8 +45,11 @@ export class ApiError extends Error {
   }
 }
 
-export function apiErrorMessage(cause: unknown, fallback: string): string {
-  return cause instanceof ApiError && cause.serverMessage ? cause.serverMessage : fallback;
+export function apiErrorMessage(_cause: unknown, fallback: string): string {
+  // API error messages are implementation detail and are not localized. Each
+  // caller supplies its route-localized recovery copy instead of leaking a
+  // backend string into the dashboard language.
+  return fallback;
 }
 
 export function getToken(): string | null {
@@ -84,12 +89,30 @@ function authHeaders(json = false): HeadersInit {
   };
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const abortForCaller = () => controller.abort();
+  if (init.signal?.aborted) {
+    controller.abort();
+  } else {
+    init.signal?.addEventListener('abort', abortForCaller, { once: true });
+  }
+  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, { cache: 'no-store', ...init });
+    response = await fetch(`${API_BASE}${path}`, { cache: 'no-store', ...init, signal: controller.signal });
   } catch {
+    if (controller.signal.aborted && !init.signal?.aborted) {
+      throw new ApiError('request_timeout', 0);
+    }
     throw new ApiError('network_error', 0);
+  } finally {
+    globalThis.clearTimeout(timeout);
+    init.signal?.removeEventListener('abort', abortForCaller);
   }
   if (response.status === 401) {
     clearToken();
@@ -110,8 +133,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function get<T>(path: string): Promise<T> {
-  return request<T>(path, { headers: authHeaders() });
+function get<T>(path: string, timeoutMs?: number): Promise<T> {
+  return request<T>(path, { headers: authHeaders() }, timeoutMs);
 }
 
 function send<T>(path: string, method: string, body?: unknown, headers: HeadersInit = {}): Promise<T> {
@@ -125,7 +148,7 @@ function send<T>(path: string, method: string, body?: unknown, headers: HeadersI
 export function login(username: string, password: string) {
   return send<{ token: string; user: CurrentUser }>('/auth/login', 'POST', { username, password });
 }
-export function fetchCurrentUser() { return get<CurrentUser>('/auth/me'); }
+export function fetchCurrentUser() { return get<CurrentUser>('/auth/me', AUTH_REQUEST_TIMEOUT_MS); }
 export function fetchUsers() { return get<CurrentUser[]>('/users'); }
 export function createUser(input: { username: string; display_name: string; initial_password: string }) {
   return send<CurrentUser>('/users', 'POST', input);
@@ -370,7 +393,7 @@ export function branchInvestigation(id: number, hypothesis: string) {
   return send<Record<string, unknown>>(`/investigations/${id}/branches`, 'POST', { hypothesis });
 }
 export function compareInvestigations(leftId: number, rightId: number) {
-  return get<Record<string, unknown>>(`/investigations/comparisons?left_id=${leftId}&right_id=${rightId}`);
+  return get<import('@/lib/types').InvestigationComparisonView>(`/investigations/comparisons?left_id=${leftId}&right_id=${rightId}`);
 }
 export function fetchInvestigationReviews(id: number) {
   return get<import('./types').InvestigationReview[]>(`/investigations/${id}/reviews`);

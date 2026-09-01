@@ -5,10 +5,13 @@ import { Activity, CloudDownload, Pencil, Plus, RefreshCw } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { EmptyState, TableEmptyState } from '@/components/ui/empty-state';
+import { TableColumns } from '@/components/ui/table';
 import {
   apiErrorMessage,
   createProviderAccount,
@@ -36,6 +39,14 @@ const DEFAULT_URL: Record<ProviderKind, string> = {
   anthropic: 'https://api.anthropic.com',
 };
 
+function availabilityTone(state: ProviderAccount['models'][number]['availability_state']) {
+  return state === 'healthy' ? 'success' : state === 'unavailable' ? 'danger' : 'warning';
+}
+
+function accountStateTone(state: ProviderAccount['models'][number]['state']) {
+  return state === 'active' ? 'success' : 'neutral';
+}
+
 export default function ModelsPage() {
   const t = useTranslations('admin');
   const tc = useTranslations('common');
@@ -59,7 +70,7 @@ export default function ModelsPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [tc]);
   useEffect(() => { void load(); }, [load]);
 
   async function refreshModels(account: ProviderAccount) {
@@ -89,29 +100,33 @@ export default function ModelsPage() {
 
   return (
     <main className="dashboard-page space-y-6">
-      <header className="flex flex-wrap items-end justify-between gap-4">
+      <header className="dashboard-page-header">
         <div><h1 className="page-title">{t('providerAccounts')}</h1><p className="page-subtitle">{t('modelsSubtitle')}</p></div>
         <div className="flex gap-2">
           <Button size="icon" variant="outline" loading={refreshing} title={tc('refresh')} aria-label={tc('refresh')} onClick={() => void load(true)}><RefreshCw size={16} /></Button>
           <Button size="sm" variant="primary" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={16} />{t('addAccount')}</Button>
         </div>
       </header>
-      {error ? <div role="alert" className="flex items-center justify-between gap-3 border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"><span>{error}</span><Button size="sm" variant="outline" onClick={() => void load()}>{tc('retry')}</Button></div> : null}
-      {loading ? <AccountSkeleton /> : accounts.length === 0 ? (
-        <section className="flex min-h-56 flex-col items-center justify-center border text-center"><h2 className="text-sm font-semibold">{t('noAccounts')}</h2><p className="mt-1 max-w-md text-sm text-muted-foreground">{t('noAccountsDescription')}</p><Button className="mt-4" size="sm" variant="primary" onClick={() => setOpen(true)}><Plus size={16} />{t('addAccount')}</Button></section>
+      {error && accounts.length > 0 ? <div role="alert" className="dashboard-feedback justify-between gap-3"><span>{error}</span><Button size="sm" variant="outline" onClick={() => void load()}>{tc('retry')}</Button></div> : null}
+      {loading ? <AccountSkeleton /> : error && accounts.length === 0 ? <TableEmptyState title={tc('requestFailed')} action={<Button size="sm" variant="outline" onClick={() => void load()}><RefreshCw size={15} />{tc('retry')}</Button>} /> : accounts.length === 0 ? (
+        <TableEmptyState
+          title={t('noAccounts')}
+          description={t('noAccountsDescription')}
+          action={<Button size="sm" variant="primary" onClick={() => setOpen(true)}><Plus size={16} />{t('addAccount')}</Button>}
+        />
       ) : (
-        <section className="divide-y border">
+        <section className="dashboard-record-list">
           {accounts.map((account) => (
-            <article key={account.id} className="p-4">
+            <article key={account.id} className="dashboard-record">
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div><div className="flex items-center gap-2"><h2 className="font-semibold">{account.name}</h2><span className="status-badge">{account.provider_kind === 'openai' ? 'OpenAI' : 'Anthropic'}</span></div><p className="mono mt-1 text-xs text-muted-foreground">{account.protocol_id} · {account.base_url}</p></div>
-                <div className="flex gap-1"><Button size="icon" variant="ghost" loading={busyAccount === account.id} title={t('syncModels')} aria-label={t('syncModels')} onClick={() => void refreshModels(account)}><CloudDownload size={16} /></Button><Button size="icon" variant="ghost" title={t('editAccount')} aria-label={t('editAccount')} onClick={() => { setEditing(account); setOpen(true); }}><Pencil size={16} /></Button></div>
+                <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h2 className="truncate font-semibold">{account.name}</h2><span className="status-badge shrink-0">{account.provider_kind === 'openai' ? 'OpenAI' : 'Anthropic'}</span></div><p className="mono mt-1 break-words text-xs text-muted-foreground">{account.protocol_id} · {account.base_url}</p></div>
+                <div className="flex shrink-0 gap-1"><Button size="icon" variant="ghost" loading={busyAccount === account.id} title={t('syncModels')} aria-label={t('syncModels')} onClick={() => void refreshModels(account)}><CloudDownload size={16} /></Button><Button size="icon" variant="ghost" title={t('editAccount')} aria-label={t('editAccount')} onClick={() => { setEditing(account); setOpen(true); }}><Pencil size={16} /></Button></div>
               </div>
-              <div className="mt-4 overflow-x-auto border">
-                <table className="table"><thead><tr><th>{t('providerModel')}</th><th>{t('source')}</th><th>{t('availability')}</th><th>{t('state')}</th><th><span className="sr-only">{tc('actions')}</span></th></tr></thead>
-                  <tbody>{account.models.map((model) => <tr key={model.id}><td><span className="font-medium">{model.display_name}</span><span className="ml-2 mono text-xs text-muted-foreground">{model.provider_model_id}</span></td><td>{t(`modelSource.${model.discovery_state}`)}</td><td>{t(`availabilityState.${model.availability_state}`)}</td><td>{t(`accountState.${model.state}`)}</td><td className="text-right"><Button size="icon" variant="ghost" loading={busyModel === model.id} disabled={model.state !== 'active'} title={t('probeModel')} aria-label={t('probeModel')} onClick={() => void probe(account.id, model.id)}><Activity size={16} /></Button></td></tr>)}</tbody>
-                </table>
-              </div>
+              {account.models.length === 0 ? <EmptyState title={t('noModels')} /> : <div className="operational-table">
+                <div className="table-wrap"><table className="table"><TableColumns widths={[42, 18, 18, 22]} trailingWidth={64} /><thead><tr><th>{t('providerModel')}</th><th>{t('source')}</th><th>{t('availability')}</th><th>{t('state')}</th><th><span className="sr-only">{tc('actions')}</span></th></tr></thead>
+                  <tbody>{account.models.map((model) => <tr key={model.id}><td><span className="font-medium">{model.display_name}</span><span className="ml-2 mono text-xs text-muted-foreground">{model.provider_model_id}</span></td><td>{t(`modelSource.${model.discovery_state}`)}</td><td><span className={`table-status table-status-${availabilityTone(model.availability_state)}`}><i aria-hidden="true" />{t(`availabilityState.${model.availability_state}`)}</span></td><td><span className={`table-status table-status-${accountStateTone(model.state)}`}><i aria-hidden="true" />{t(`accountState.${model.state}`)}</span></td><td className="text-right"><Button size="icon" variant="ghost" loading={busyModel === model.id} disabled={model.state !== 'active'} title={t('probeModel')} aria-label={t('probeModel')} onClick={() => void probe(account.id, model.id)}><Activity size={16} /></Button></td></tr>)}</tbody>
+                </table></div>
+              </div>}
             </article>
           ))}
         </section>
@@ -122,7 +137,7 @@ export default function ModelsPage() {
 }
 
 function AccountSkeleton() {
-  return <section className="divide-y border" aria-busy="true">{[0, 1].map((row) => <div key={row} className="space-y-4 p-4"><div className="flex justify-between"><div className="space-y-2"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-72" /></div><Skeleton className="h-8 w-20" /></div><Skeleton className="h-24 w-full" /></div>)}</section>;
+  return <section className="list-skeleton" aria-busy="true">{[0, 1].map((row) => <div key={row} className="space-y-4 border-b border-[var(--dashboard-border)] p-4 last:border-b-0"><div className="flex justify-between"><div className="space-y-2"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-72" /></div><Skeleton className="h-8 w-20" /></div><Skeleton className="h-24 w-full" /></div>)}</section>;
 }
 
 function AccountDialog({ open, account, onOpenChange, onSaved }: { open: boolean; account: ProviderAccount | null; onOpenChange: (value: boolean) => void; onSaved: () => Promise<void> }) {
@@ -186,14 +201,14 @@ function AccountDialog({ open, account, onOpenChange, onSaved }: { open: boolean
   const canDiscover = Boolean(baseUrl && (account || apiKey));
   const canSave = Boolean(name.trim() && baseUrl.trim() && Object.keys(selected).length && (account || apiKey));
   return <Dialog open={open} onOpenChange={(value) => !saving && onOpenChange(value)}><DialogContent variant="drawer" className="max-w-2xl overflow-hidden p-0"><DialogHeader className="border-b px-6 py-5"><DialogTitle>{account ? t('editAccount') : t('addAccount')}</DialogTitle></DialogHeader><div className="h-[calc(100dvh-145px)] space-y-5 overflow-y-auto px-6 py-5">
-    {error ? <p role="alert" className="border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</p> : null}
+    {error ? <p role="alert" className="dashboard-feedback">{error}</p> : null}
     <label className="field"><span className="field-label">{t('accountName')}</span><Input value={name} onChange={(event) => setName(event.target.value)} /></label>
     <div className="grid gap-4 sm:grid-cols-2"><label className="field"><span className="field-label">{t('provider')}</span><Select value={providerKind} onChange={(event) => changeProvider(event.target.value as ProviderKind)}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></Select></label><label className="field"><span className="field-label">{t('messageFormat')}</span><Select value={protocolId} onChange={(event) => { setProtocolId(event.target.value); setSelected({}); }}>{PROTOCOLS[providerKind].map((protocol) => <option key={protocol.id} value={protocol.id}>{protocol.label}</option>)}</Select></label></div>
     <label className="field"><span className="field-label">{t('httpsBaseUrl')}</span><Input className="mono" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label>
-    <label className="field"><span className="field-label">API Key</span><Input type="password" autoComplete="off" placeholder={account ? t('apiKeyOptional') : 'API Key'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label>
+    <label className="field"><span className="field-label">{t('apiKey')}</span><Input type="password" autoComplete="off" placeholder={account ? t('apiKeyOptional') : t('apiKey')} value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label>
     <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-medium">{t('accountModels')}</h3><p className="text-xs text-muted-foreground">{t('modelDiscoveryDescription')}</p></div><Button size="sm" variant="outline" loading={discovering} loadingText={t('discoveringModels')} disabled={!canDiscover} onClick={() => void discover()}><CloudDownload size={16} />{t('syncModels')}</Button></div>
     {unsupportedCount ? <p className="text-xs text-muted-foreground">{t('unsupportedModelsHidden', { count: unsupportedCount })}</p> : null}
-    <div className="overflow-hidden border" aria-busy={loadingCatalog}>{loadingCatalog ? <div className="space-y-3 p-3"><Skeleton className="h-9 w-full" /><Skeleton className="h-9 w-full" /></div> : catalog.map((model) => { const source = selected[model.provider_model_id]; return <label key={model.provider_model_id} className="flex min-h-12 cursor-pointer items-center gap-3 border-b px-3 py-2 last:border-0 hover:bg-accent/50"><input type="checkbox" checked={Boolean(source)} onChange={(event) => setSelected((current) => { const next = { ...current }; event.target.checked ? next[model.provider_model_id] = 'manual' : delete next[model.provider_model_id]; return next; })} /><span className="min-w-0 flex-1"><span className="block text-sm font-medium">{model.display_name}</span><span className="mono block truncate text-xs text-muted-foreground">{model.provider_model_id}</span></span>{source ? <span className="status-badge">{t(`modelSource.${source}`)}</span> : null}</label>; })}</div>
-    <div className="flex gap-2"><Input className="mono" placeholder={t('manualModelPlaceholder')} value={manualId} onChange={(event) => setManualId(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addManual(); } }} /><Button variant="outline" onClick={addManual}>{t('addCatalogModel')}</Button></div>
+    <div className="dashboard-record-list" aria-busy={loadingCatalog}>{loadingCatalog ? <div className="space-y-3 p-3"><Skeleton className="h-9 w-full" /><Skeleton className="h-9 w-full" /></div> : catalog.length === 0 ? <EmptyState title={t('noModels')} /> : catalog.map((model) => { const source = selected[model.provider_model_id]; return <label key={model.provider_model_id} className="dashboard-record flex min-h-12 cursor-pointer items-center gap-3"><Checkbox checked={Boolean(source)} onChange={(event) => setSelected((current) => { const next = { ...current }; event.target.checked ? next[model.provider_model_id] = 'manual' : delete next[model.provider_model_id]; return next; })} /><span className="min-w-0 flex-1"><span className="block text-sm font-medium">{model.display_name}</span><span className="mono block truncate text-xs text-muted-foreground">{model.provider_model_id}</span></span>{source ? <span className="status-badge">{t(`modelSource.${source}`)}</span> : null}</label>; })}</div>
+    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]"><label className="field"><span className="field-label">{t('manualModelPlaceholder')}</span><Input className="mono" value={manualId} onChange={(event) => setManualId(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addManual(); } }} /></label><Button className="self-end" variant="outline" onClick={addManual}>{t('addCatalogModel')}</Button></div>
   </div><DialogFooter className="border-t px-6 py-4"><Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>{tc('cancel')}</Button><Button variant="primary" loading={saving} loadingText={tc('saving')} disabled={!canSave} onClick={() => void save()}>{tc('save')}</Button></DialogFooter></DialogContent></Dialog>;
 }

@@ -1,11 +1,6 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
-// shadcn/ui Card. `p-6` is baked in so flush content (the old Geist cards had
-// built-in padding) keeps the Vercel spacing; pages that want a flush card
-// (e.g. table containers) override with `style={{ padding: 0 }}`. Cards carry
-// DESIGN.md Level-2 stacked elevation — a hairline (`border-border`) held by a
-// subtle multi-offset drop — so they sit on the page rather than float.
 const Card = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
@@ -13,7 +8,7 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      'rounded-md border border-border bg-card text-card-foreground p-5 shadow-none',
+      'card rounded-sm border border-[var(--dashboard-border)] bg-[var(--dashboard-panel)] p-5 text-card-foreground shadow-none',
       className,
     )}
     {...props}

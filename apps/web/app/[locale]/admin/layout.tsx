@@ -9,30 +9,23 @@ import { useEffect, type ReactNode } from 'react';
 import { useRouter } from '@/lib/navigation';
 import { useUser } from '@/lib/user-context';
 import { AppShell } from '@/components/layout/app-shell';
+import { PortalLoadingShell } from '@/components/layout/portal-loading-shell';
+import { SessionUnavailableState } from '@/components/layout/session-unavailable-state';
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
-  const { isAdmin, loading, user } = useUser();
+  const { isAdmin, loading, sessionError, user } = useUser();
   const router = useRouter();
 
   useEffect(() => {
-    if (!loading && user?.must_change_password) {
+    if (!loading && !sessionError && user?.must_change_password) {
       router.replace('/change-password');
-    } else if (!loading && !isAdmin) {
+    } else if (!loading && !sessionError && !isAdmin) {
       router.replace(user ? '/workbench' : '/login');
     }
-  }, [isAdmin, loading, router, user]);
+  }, [isAdmin, loading, router, sessionError, user]);
 
-  if (loading) {
-    // Render the chrome without children until the role is known, so we don't
-    // flash a non-admin into a protected screen before the redirect fires.
-    return (
-      <div className="shell">
-        <div className="main">
-          <div className="content" />
-        </div>
-      </div>
-    );
-  }
+  if (loading) return <PortalLoadingShell />;
+  if (sessionError) return <SessionUnavailableState />;
   if (!isAdmin || user?.must_change_password) return null;
 
   return <AppShell portal="admin">{children}</AppShell>;

@@ -7,7 +7,7 @@
 // guard (admin requires the admin role; workbench is open to any signed-in
 // user). Keeping the chrome here avoids duplicating the sidebar/topbar.
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Topbar } from '@/components/layout/topbar';
@@ -17,9 +17,24 @@ import { useUser } from '@/lib/user-context';
 
 export type Portal = 'admin' | 'workbench';
 
+const drawerFocusableSelector = [
+  '.sidebar a[href]',
+  '.sidebar button:not([disabled])',
+  '.sidebar [tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function drawerFocusableElements(drawer: HTMLElement) {
+  return Array.from(drawer.querySelectorAll<HTMLElement>(drawerFocusableSelector)).filter((element) => {
+    const style = window.getComputedStyle(element);
+    return style.visibility !== 'hidden' && style.display !== 'none';
+  });
+}
+
 export function AppShell({ portal, children }: { portal: Portal; children: ReactNode }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [finderOpen, setFinderOpen] = useState(false);
+  const mobileNavRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const t = useTranslations('navigation');
   const { user, loading } = useUser();
   const router = useRouter();
@@ -30,18 +45,52 @@ export function AppShell({ portal, children }: { portal: Portal; children: React
 
   useEffect(() => {
     if (!mobileNavOpen) return;
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const drawer = mobileNavRef.current;
+    const focusFirst = () => drawer && drawerFocusableElements(drawer)[0]?.focus();
+    const frame = window.requestAnimationFrame(focusFirst);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileNavOpen(false);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMobileNavOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !drawer) return;
+      const focusable = drawerFocusableElements(drawer);
+      if (!focusable.length) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      returnFocusRef.current?.focus();
+      returnFocusRef.current = null;
+    };
   }, [mobileNavOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (event.key.toLowerCase() !== 'f' || event.metaKey || event.ctrlKey || event.altKey || target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName ?? '')) return;
+      const editingControl = target?.closest('input, textarea, select, [role="textbox"], [role="combobox"], [contenteditable]:not([contenteditable="false"])');
+      if (event.key.toLowerCase() !== 'k' || (!event.metaKey && !event.ctrlKey) || event.altKey || editingControl) return;
       event.preventDefault();
+      setMobileNavOpen(false);
       setFinderOpen(true);
     };
     window.addEventListener('keydown', onKeyDown);
@@ -55,8 +104,8 @@ export function AppShell({ portal, children }: { portal: Portal; children: React
         <Topbar portal={portal} onMenu={() => setMobileNavOpen(true)} />
         <div className="content"><div className="page-frame">{children}</div></div>
       </div>
-      <div className={`mobile-nav-drawer ${mobileNavOpen ? 'is-open' : ''}`} role="dialog" aria-label={t('navigation')} aria-modal="true" aria-hidden={!mobileNavOpen}>
-        <button className="mobile-nav-backdrop" aria-label={t('closeNavigation')} onClick={() => setMobileNavOpen(false)} />
+      <div ref={mobileNavRef} className={`mobile-nav-drawer ${mobileNavOpen ? 'is-open' : ''}`} role="dialog" aria-label={t('navigation')} aria-modal="true" aria-hidden={!mobileNavOpen}>
+        <button type="button" className="mobile-nav-backdrop" aria-label={t('closeNavigation')} onClick={() => setMobileNavOpen(false)} />
         <Sidebar portal={portal} onFind={() => setFinderOpen(true)} onNavigate={() => setMobileNavOpen(false)} />
       </div>
       <DashboardFinder portal={portal} open={finderOpen} onOpenChange={setFinderOpen} />

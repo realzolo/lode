@@ -11,6 +11,9 @@
   --dashboard-border: #eaeaea;
   --dashboard-strong-border: #c7c7c7;
   --dashboard-muted-text: #666666;
+  --dashboard-radius: 6px;
+  --dashboard-menu-radius: 12px;
+  --dashboard-floating-radius: 12px;
 }
 
 .dark {
@@ -81,20 +84,15 @@ body {
 .workspace-plan {
   max-width: 104px;
   overflow: hidden;
-  padding: 2px 7px;
-  border: 1px solid var(--dashboard-border);
-  border-radius: 999px;
-  background: var(--dashboard-hover);
-  color: var(--color-9);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--dashboard-muted-text);
   font-size: 11px;
   line-height: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.workspace-switcher-icon {
-  flex: 0 0 auto;
-  color: var(--dashboard-muted-text);
 }
 
 .sidebar-search {
@@ -131,7 +129,7 @@ body {
   margin-left: auto;
   padding: 2px 5px;
   border: 1px solid var(--dashboard-border);
-  border-radius: 5px;
+  border-radius: var(--dashboard-radius);
   color: var(--dashboard-muted-text);
   font: 11px/14px var(--font-geist-mono), monospace;
   text-align: center;
@@ -183,6 +181,11 @@ body {
   background: var(--dashboard-hover);
 }
 
+.sidebar-account:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-blue);
+}
+
 .account-avatar {
   width: 24px;
   height: 24px;
@@ -202,7 +205,7 @@ body {
 
 .account-menu {
   border-color: var(--dashboard-border);
-  border-radius: 8px;
+  border-radius: var(--dashboard-menu-radius);
   background: var(--dashboard-panel);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
 }
@@ -260,7 +263,7 @@ body {
 .page-frame:has(.serial-investigation-page) {
   width: 100%;
   min-width: 0;
-  max-width: 1200px;
+  max-width: 1600px;
   margin-inline: auto;
 }
 
@@ -282,9 +285,18 @@ body {
   margin-top: 0;
 }
 
-.dashboard-page > header {
+.dashboard-page-header {
+  display: flex;
+  flex-wrap: wrap;
   min-height: 64px;
   align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.dashboard-detail-header {
+  min-height: 64px;
+  align-items: start;
 }
 
 .page-title {
@@ -334,14 +346,268 @@ body {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus-blue) 30%, transparent) !important;
 }
 
+.input[aria-invalid='true'],
+.textarea[aria-invalid='true'],
+.select-trigger[aria-invalid='true'],
+.dashboard-token-input:has(.input[aria-invalid='true']) {
+  border-color: var(--red) !important;
+}
+
+.input[aria-invalid='true']:focus-visible,
+.textarea[aria-invalid='true']:focus-visible,
+.select-trigger[aria-invalid='true']:focus-visible,
+.dashboard-token-input:has(.input[aria-invalid='true']):focus-within {
+  border-color: var(--red) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--red) 28%, transparent) !important;
+}
+
 .field {
-  gap: 10px;
+  gap: 12px;
 }
 
 .field-label {
   color: var(--dashboard-muted-text);
   font-size: 13px;
   line-height: 20px;
+}
+
+.dashboard-inline-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 192px) minmax(0, 1fr);
+  align-items: end;
+  gap: 12px;
+}
+
+.dashboard-inline-fields-equal {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dashboard-search {
+  display: flex;
+  width: min(320px, 100%);
+  height: 36px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--dashboard-border);
+  border-radius: var(--dashboard-radius);
+  color: var(--dashboard-muted-text);
+  background: var(--dashboard-panel);
+}
+
+.dashboard-search:focus-within {
+  border-color: var(--focus-blue);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus-blue) 30%, transparent);
+}
+
+.dashboard-search > .input {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 100%;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.dashboard-search > .input:hover,
+.dashboard-search > .input:focus,
+.dashboard-search > .input:focus-visible {
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+.dashboard-token-input > .input,
+.dashboard-token-input > .input:hover,
+.dashboard-token-input > .input:focus,
+.dashboard-token-input > .input:focus-visible {
+  height: 28px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 4px !important;
+  background: transparent !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+.dashboard-token-input {
+  border-radius: var(--dashboard-radius) !important;
+}
+
+.dashboard-token-input:not(:has(.input[aria-invalid='true'])):focus-within {
+  border-color: var(--focus-blue) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus-blue) 30%, transparent);
+}
+
+/* Reusable page-level patterns. Keeping these here prevents individual routes
+   from rebuilding a slightly different filter bar, feedback state, or record
+   stream with ad-hoc utility combinations. */
+.dashboard-filterbar {
+  display: flex;
+  min-height: 60px;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  border-block: 1px solid var(--dashboard-border);
+}
+
+.dashboard-filterbar .dashboard-search {
+  width: min(360px, 100%);
+  flex: 1 1 280px;
+}
+
+.dashboard-filter-select {
+  width: 176px !important;
+  flex: 0 0 176px;
+}
+
+.dashboard-filter-select-sm {
+  width: 144px !important;
+  flex-basis: 144px;
+}
+
+.dashboard-filter-date {
+  width: 188px;
+  flex: 0 1 188px;
+}
+
+.dashboard-filter-button {
+  flex: 0 0 auto;
+}
+
+.dashboard-filter-count {
+  display: inline-grid;
+  min-width: 16px;
+  height: 16px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-10);
+  color: var(--color-1);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+.dashboard-filter-popover {
+  width: min(496px, calc(100vw - 32px));
+  max-height: min(560px, var(--radix-popover-content-available-height, calc(100dvh - 32px)));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+}
+
+.dashboard-filter-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 12px;
+}
+
+.dashboard-filter-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: var(--dashboard-muted-text);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.dashboard-feedback {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--red) 30%, var(--dashboard-border));
+  border-radius: 6px;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 6%, var(--dashboard-panel));
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.dashboard-section {
+  padding: 20px 0;
+  border-block: 1px solid var(--dashboard-border);
+}
+
+.dashboard-section + .dashboard-section {
+  border-top: 0;
+}
+
+.dashboard-section-heading {
+  display: flex;
+  min-height: 32px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.dashboard-section-title {
+  margin: 0;
+  color: var(--color-10);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.dashboard-form-panel {
+  display: grid;
+  gap: 20px;
+  padding: 20px;
+  border: 1px solid var(--dashboard-border);
+  border-radius: var(--dashboard-radius);
+  background: var(--dashboard-panel);
+}
+
+.dashboard-record-list {
+  overflow: hidden;
+  border: 1px solid var(--dashboard-border);
+  border-radius: var(--dashboard-radius);
+  background: var(--dashboard-panel);
+}
+
+.dashboard-record {
+  min-width: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--dashboard-border);
+}
+
+.dashboard-record:last-child {
+  border-bottom: 0;
+}
+
+.dashboard-record:hover {
+  background: var(--dashboard-hover);
+}
+
+.dashboard-record-selectable.is-selected {
+  background: var(--dashboard-muted-panel);
+  box-shadow: inset 2px 0 0 var(--color-10);
+}
+
+.dashboard-record-selectable.is-selected:hover {
+  background: var(--dashboard-muted-panel);
+}
+
+.dashboard-key-value {
+  display: grid;
+  grid-template-columns: minmax(132px, 0.45fr) minmax(0, 1fr);
+  gap: 8px 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--dashboard-border);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.dashboard-key-value > dt {
+  color: var(--dashboard-muted-text);
+}
+
+.dashboard-key-value > dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .dashboard-page .operational-table,
@@ -351,44 +617,284 @@ body {
   overflow: hidden;
   margin-top: 0;
   border: 1px solid var(--dashboard-border);
-  border-radius: 8px;
+  border-radius: var(--dashboard-radius);
   background: var(--dashboard-panel);
+}
+
+.dashboard-page .table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-color: var(--dashboard-strong-border) transparent;
+}
+
+.dashboard-page .operational-table > .table-wrap,
+.dashboard-page > .table-wrap {
+  background: var(--dashboard-panel);
+}
+
+.dashboard-page > .table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--dashboard-border);
+  border-radius: var(--dashboard-radius);
 }
 
 .table th,
 .table td {
-  height: 44px;
-  padding: 10px 12px;
   border-bottom: 1px solid var(--dashboard-border);
+  vertical-align: middle;
 }
 
 .table th {
-  background: var(--dashboard-muted-panel);
+  height: 36px;
+  padding: 0 8px;
+}
+
+.table td {
+  height: 40px;
+  padding: 10px 8px;
+}
+
+.dashboard-page .table {
+  min-width: 720px;
+  table-layout: fixed;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.table th {
+  background: transparent;
   color: var(--dashboard-muted-text);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
+  line-height: 20px;
   text-transform: none;
+  white-space: nowrap;
 }
 
 .table tbody tr:hover {
   background: var(--dashboard-hover);
 }
 
+.dashboard-page .table td {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-10);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-page .table td:has(> p),
+.dashboard-page .table td:has(> strong + p) {
+  white-space: normal;
+}
+
+/* Inline table controls, including Button `asChild` links, use the compact
+   32px rhythm. Keeping their cell padding at 4px preserves the shared 40px
+   data-row height instead of letting an action inflate an operational table. */
+.dashboard-page .table td:has(> .select-trigger),
+.dashboard-page .table td:has(> button),
+.dashboard-page .table td:has(> a.inline-flex),
+.dashboard-page .table td:has(> .flex.justify-end) {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.dashboard-page .table td > .select-trigger {
+  height: 32px;
+}
+
+.dashboard-page .table td p,
+.dashboard-page .table td span,
+.dashboard-page .table td strong,
+.dashboard-page .table td code {
+  min-width: 0;
+}
+
+.dashboard-page .table td.mono,
+.dashboard-page .table .mono {
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: nowrap;
+}
+
+.dashboard-page .table-record-link {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 2px;
+  color: var(--color-10);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-page .table-record-link:hover {
+  color: var(--link);
+}
+
+.dashboard-page .table-record-link:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 2px var(--focus-blue);
+}
+
+.dashboard-page .table .table-number,
+.dashboard-page .table .table-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-page .table th:first-child,
+.dashboard-page .table td:first-child {
+  padding-left: 16px;
+}
+
+.dashboard-page .table th:last-child,
+.dashboard-page .table td:last-child {
+  padding-right: 16px;
+}
+
+.dashboard-page .table th:empty,
+.dashboard-page .table td:has(> button),
+.dashboard-page .table td:has(> a.inline-flex),
+.dashboard-page .table td:has(> .flex.justify-end) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.dashboard-page .table th:has(.sr-only),
+.dashboard-page .table td:has(.sr-only) {
+  position: relative;
+}
+
+.dashboard-page .table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* An entity can contain a supporting collection (for example an account's
+   discovered models). This must follow the generic table-surface rules so it
+   remains part of the parent record rather than becoming a second card. */
+.dashboard-page .dashboard-record > .operational-table,
+.dashboard-page .dashboard-record > .empty-state-content {
+  margin: 12px -16px -12px;
+  border: 0;
+  border-top: 1px solid var(--dashboard-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.dashboard-page .dashboard-record > .empty-state-content,
+.dashboard-page .dashboard-record-list > .empty-state-content {
+  min-height: 96px;
+  padding: 24px 16px;
+}
+
+.dashboard-page .divide-y.border-y {
+  overflow: hidden;
+  border: 1px solid var(--dashboard-border);
+  border-radius: var(--dashboard-radius);
+  background: var(--dashboard-panel);
+}
+
+.dashboard-page .divide-y.border-y > * {
+  padding-inline: 12px;
+}
+
+.list-skeleton {
+  overflow: hidden;
+  border: 1px solid var(--dashboard-border);
+  border-radius: var(--dashboard-radius);
+  background: var(--dashboard-panel);
+}
+
+.list-skeleton-row {
+  display: grid;
+  min-height: 40px;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--dashboard-border);
+}
+
+.list-skeleton-row:last-child {
+  border-bottom: 0;
+}
+
 .table-status,
 .status-badge {
+  display: inline-flex;
+  align-items: center;
   min-height: 22px;
-  border-radius: 999px;
+  border-radius: var(--dashboard-radius);
   font-size: 12px;
   line-height: 18px;
+}
+
+.status-badge {
+  padding: 0 6px;
+  border: 1px solid var(--dashboard-border);
+  background: var(--dashboard-muted-panel);
+  color: var(--dashboard-muted-text);
+  font-weight: 500;
+}
+
+.table-status {
+  gap: 7px;
+  color: var(--color-10);
+  font-weight: 500;
+}
+
+.table-status i {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--color-6);
+}
+
+.table-status-success i {
+  background: var(--green);
+}
+
+.table-status-warning i {
+  background: var(--amber);
+}
+
+.table-status-danger i {
+  background: var(--red);
+}
+
+.table-status-accent i {
+  background: var(--blue);
 }
 
 .dashboard-empty,
 .empty-state {
   min-height: 220px;
   border: 1px solid var(--dashboard-border);
-  border-radius: 8px;
+  border-radius: var(--dashboard-radius);
   background: var(--dashboard-panel);
+}
+
+/* Shared empty states sit exactly at the visual center of their panel. The
+   selector intentionally excludes pages that use `dashboard-empty` for a
+   custom, non-component layout. */
+.dashboard-empty:has(> .empty-state-content) {
+  display: grid;
+  place-items: center;
+}
+
+.dashboard-empty > .empty-state-content {
+  width: 100%;
+  min-height: 0;
+}
+
+.session-unavailable {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 24px;
+  background: var(--dashboard-canvas);
 }
 
 .dialog-surface {
@@ -396,13 +902,56 @@ body {
   background: var(--dashboard-panel);
 }
 
+/* Desktop Sheets are contextual, non-blocking inspectors. Their mobile Drawer
+   counterpart keeps a restrained scrim so tapping outside remains an obvious
+   dismissal path without reading as a destructive Modal. */
+.dialog-drawer-overlay {
+  background: rgb(0 0 0 / 0.16) !important;
+  backdrop-filter: none !important;
+}
+
+@media (min-width: 640px) {
+  .dialog-drawer-overlay {
+    background: transparent !important;
+    pointer-events: none !important;
+  }
+}
+
+/* Long forms provide their own scrolling body. Make that body consume the
+   available Sheet/Drawer height instead of calculating against the viewport. */
+.dialog-surface[data-variant='drawer']:has(> [data-dialog-header].border-b) {
+  gap: 0;
+}
+
+.dialog-surface[data-variant='drawer'] > .h-\[calc\(100dvh-145px\)\],
+.dialog-surface[data-variant='drawer'] > form > .h-\[calc\(100dvh-145px\)\] {
+  height: auto !important;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.dialog-surface[data-variant='drawer'] > form:has(> .h-\[calc\(100dvh-145px\)\]) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .dialog-surface[data-variant='drawer'],
 .dialog-surface[data-variant='drawer']:focus,
 .dialog-surface[data-variant='drawer']:focus-visible {
-  /* The drawer reaches the viewport's top, right, and bottom edges. An outer
-     focus ring is therefore visible only as a vertical stripe on the left. */
+  /* Mobile drawers sit on the viewport edge, so the regular focus ring would
+     become a distracting edge stripe. */
   outline: none !important;
-  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.18) !important;
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.18) !important;
+}
+
+@media (min-width: 640px) {
+  .dialog-surface[data-variant='drawer'],
+  .dialog-surface[data-variant='drawer']:focus,
+  .dialog-surface[data-variant='drawer']:focus-visible {
+    box-shadow: -8px 0 28px rgba(0, 0, 0, 0.18) !important;
+  }
 }
 
 .dialog-surface[data-variant='drawer'] [data-dialog-header].border-b,
@@ -414,10 +963,16 @@ body {
   background: var(--dashboard-panel);
 }
 
+.dialog-surface[data-variant='drawer'] [data-dialog-footer] {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
+}
+
 .finder-dialog {
   top: 18%;
   width: min(520px, calc(100vw - 32px));
-  border-radius: 8px;
+  border-radius: var(--dashboard-menu-radius);
   transform: translateX(-50%);
 }
 
@@ -429,6 +984,11 @@ body {
   padding: 0 14px;
   border-bottom: 1px solid var(--dashboard-border);
   color: var(--dashboard-muted-text);
+}
+
+.finder-input:focus-within {
+  border-bottom-color: var(--focus-blue);
+  box-shadow: inset 0 -2px 0 var(--focus-blue);
 }
 
 .finder-input .input {
@@ -470,10 +1030,14 @@ body {
 }
 
 .finder-results button:hover,
-.finder-results button[aria-selected='true'],
+.finder-results button[aria-selected='true'] {
+  background: var(--dashboard-hover);
+}
+
 .finder-results button:focus-visible {
   background: var(--dashboard-hover);
   outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-blue);
 }
 
 .finder-results p {
@@ -482,6 +1046,35 @@ body {
   color: var(--dashboard-muted-text);
   font-size: 13px;
   text-align: center;
+}
+
+/* Sonner is the transport only; these values mirror Geist's compact toast
+   surface rather than Sonner's colored notification treatment. */
+[data-sonner-toaster] {
+  --width: min(420px, calc(100vw - 32px));
+  --border-radius: var(--dashboard-floating-radius);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+[data-sonner-toast][data-styled='true'] {
+  gap: 8px;
+  padding: 16px;
+  border-color: var(--dashboard-border);
+  border-radius: var(--dashboard-floating-radius);
+  background: var(--dashboard-panel);
+  color: var(--color-10);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dashboard-border) 82%, transparent), 0 1px 1px rgb(0 0 0 / 0.02), 0 4px 8px -4px rgb(0 0 0 / 0.04), 0 16px 24px -8px rgb(0 0 0 / 0.06);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+[data-sonner-toast][data-styled='true'] [data-title] {
+  font-weight: 400;
+  line-height: 21px;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-description] {
+  color: var(--dashboard-muted-text);
 }
 
 .auth-shell {
@@ -742,7 +1335,7 @@ body {
   height: 36px;
   place-items: center;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--dashboard-radius);
   color: var(--dashboard-muted-text);
   background: transparent;
   cursor: pointer;
@@ -751,6 +1344,13 @@ body {
 .auth-input-action:hover {
   color: var(--color-10);
   background: var(--dashboard-hover);
+}
+
+.auth-input-action:disabled {
+  color: var(--dashboard-muted-text);
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .auth-input-action:focus-visible {
@@ -807,7 +1407,17 @@ body {
 }
 
 .auth-error {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
   margin: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--red) 30%, var(--dashboard-border));
+  border-radius: 6px;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 6%, var(--dashboard-panel));
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .auth-footer {
@@ -877,7 +1487,7 @@ body {
   }
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1023px) {
   .auth-shell {
     display: block;
     min-height: 100dvh;
@@ -944,6 +1554,11 @@ body {
     color: inherit;
   }
 
+  .mobile-menu-button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--focus-blue);
+  }
+
   .content {
     padding: 18px 16px 32px;
   }
@@ -973,12 +1588,49 @@ body {
     min-width: 0;
   }
 
+  .dashboard-filterbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dashboard-filterbar .dashboard-search,
+  .dashboard-filter-select,
+  .dashboard-filter-select-sm,
+  .dashboard-filter-date {
+    width: 100% !important;
+    flex-basis: auto;
+  }
+
+  .dashboard-filter-button {
+    width: 100%;
+  }
+
+  .dashboard-filter-popover-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-section-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dashboard-inline-fields,
+  .dashboard-inline-fields-equal {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-key-value {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
   .mobile-nav-drawer {
     position: fixed;
     inset: 0;
     z-index: 80;
     display: block;
     pointer-events: none;
+    visibility: hidden;
   }
 
   .mobile-nav-backdrop {
@@ -1039,10 +1691,6 @@ body {
     display: inline-block;
   }
 
-  .mobile-nav-drawer .workspace-switcher-icon {
-    display: block;
-  }
-
   .mobile-nav-drawer .sidebar-search {
     width: 100%;
     justify-content: flex-start;
@@ -1073,6 +1721,7 @@ body {
 
   .mobile-nav-drawer.is-open {
     pointer-events: auto;
+    visibility: visible;
   }
 
   .mobile-nav-drawer.is-open .mobile-nav-backdrop {

@@ -4,6 +4,7 @@ import { Menu } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/lib/navigation';
 import { LodeMark } from '@/components/brand/lode-logo';
+import { Tooltip } from '@/components/ui/tooltip';
 
 export function Topbar({ portal, onMenu }: { portal: 'admin' | 'workbench'; onMenu: () => void }) {
   const t = useTranslations('navigation');
@@ -22,7 +23,9 @@ export function Topbar({ portal, onMenu }: { portal: 'admin' | 'workbench'; onMe
             : t('workspaces');
   return <header className="topbar">
     <div className="topbar-project">
-      <button className="mobile-menu-button" aria-label={t('openNavigation')} onClick={onMenu}><Menu size={17} /></button>
+      <Tooltip content={t('openNavigation')}>
+        <button type="button" className="mobile-menu-button" aria-label={t('openNavigation')} onClick={onMenu}><Menu size={17} /></button>
+      </Tooltip>
       <Link href={controlPlane ? '/admin' : '/workbench'}>
         <LodeMark className="topbar-brand-mark" />
         <span>{controlPlane ? t('controlPlane') : t('workbench')}</span>

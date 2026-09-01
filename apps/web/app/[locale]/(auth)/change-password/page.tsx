@@ -25,6 +25,7 @@ export default function ChangePasswordPage() {
   const passwordsMatch = Boolean(confirmation) && confirmation === newPassword;
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (busy || !currentPassword || !hasMinimumLength || !isDifferent || !passwordsMatch) return;
     setBusy(true);
     setError(null);
     try {
@@ -46,33 +47,42 @@ export default function ChangePasswordPage() {
           <p className="login-form-subtitle">{t('subtitle')}</p>
         </div>
 
-        <form autoComplete="off" className="auth-form" onSubmit={submit}>
+        <form autoComplete="on" className="auth-form" onSubmit={submit}>
               <PasswordField
                 id="current-password"
+                name="current-password"
+                autoComplete="current-password"
                 label={t('current')}
                 placeholder={t('current')}
                 showLabel={t('showPassword')}
                 hideLabel={t('hidePassword')}
                 value={currentPassword}
+                disabled={busy}
                 onChange={(event) => setCurrentPassword(event.target.value)}
               />
               <div className="auth-form-separator" />
               <PasswordField
                 id="new-password"
+                name="new-password"
+                autoComplete="new-password"
                 label={t('new')}
                 placeholder={t('new')}
                 showLabel={t('showPassword')}
                 hideLabel={t('hidePassword')}
                 value={newPassword}
+                disabled={busy}
                 onChange={(event) => setNewPassword(event.target.value)}
               />
               <PasswordField
                 id="confirm-password"
+                name="confirm-password"
+                autoComplete="new-password"
                 label={t('confirm')}
                 placeholder={t('confirm')}
                 showLabel={t('showPassword')}
                 hideLabel={t('hidePassword')}
                 value={confirmation}
+                disabled={busy}
                 onChange={(event) => setConfirmation(event.target.value)}
               />
 

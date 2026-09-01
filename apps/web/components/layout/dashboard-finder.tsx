@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { Activity, Boxes, GitFork, Search, ServerCog, Settings, Users } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import type { Portal } from '@/components/layout/app-shell';
@@ -13,6 +13,7 @@ export function DashboardFinder({ portal, open, onOpenChange }: { portal: Portal
   const t = useTranslations('navigation');
   const router = useRouter();
   const { isAdmin } = useUser();
+  const resultsId = useId();
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const items = useMemo(() => portal === 'workbench'
@@ -35,12 +36,14 @@ export function DashboardFinder({ portal, open, onOpenChange }: { portal: Portal
     setActiveIndex(0);
   }
 
+  const activeItemId = visibleItems[activeIndex] ? `${resultsId}-${activeIndex}` : undefined;
+
   return <Dialog open={open} onOpenChange={(value) => { onOpenChange(value); if (!value) { setQuery(''); setActiveIndex(0); } }}>
     <DialogContent showClose={false} className="finder-dialog gap-0 overflow-hidden p-0">
       <DialogTitle className="sr-only">{t('find')}</DialogTitle>
       <div className="finder-input">
         <Search size={17} aria-hidden="true" />
-        <Input autoFocus aria-label={t('find')} placeholder={t('findPlaceholder')} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} onKeyDown={(event) => {
+        <Input autoFocus role="combobox" aria-label={t('find')} aria-autocomplete="list" aria-controls={resultsId} aria-expanded={open} aria-activedescendant={activeItemId} placeholder={t('findPlaceholder')} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} onKeyDown={(event) => {
           if (event.key === 'ArrowDown' && visibleItems.length) {
             event.preventDefault();
             setActiveIndex((current) => Math.min(current + 1, visibleItems.length - 1));
@@ -53,8 +56,9 @@ export function DashboardFinder({ portal, open, onOpenChange }: { portal: Portal
         }} />
         <kbd>{t('escapeShortcut')}</kbd>
       </div>
-      <div className="finder-results" role="listbox" aria-label={t('findResults')}>
-        {visibleItems.map((item, index) => <button key={item.href} type="button" role="option" aria-selected={activeIndex === index} onMouseMove={() => setActiveIndex(index)} onClick={() => navigate(item.href)}>
+      <p className="sr-only" aria-live="polite" aria-atomic="true">{t('findResultCount', { count: visibleItems.length })}</p>
+      <div id={resultsId} className="finder-results" role="listbox" aria-label={t('findResults')}>
+        {visibleItems.map((item, index) => <button id={`${resultsId}-${index}`} key={item.href} type="button" role="option" tabIndex={-1} aria-selected={activeIndex === index} onMouseMove={() => setActiveIndex(index)} onClick={() => navigate(item.href)}>
           <item.icon size={16} aria-hidden="true" /><span>{item.label}</span>
         </button>)}
         {!visibleItems.length ? <p>{t('noFindResults')}</p> : null}

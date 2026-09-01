@@ -50,33 +50,50 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 
 - Desktop (`>=1024px`): 256px fixed workspace sidebar and 56px context bar. Page content is fluid and uses a maximum readable frame only when a form or prose surface needs it.
 - Tablet (`768-1023px`): 64px icon-only sidebar. Navigation labels become accessible names/tooltips, never hidden semantics.
-- Mobile (`<768px`): a 56px single-line context bar and an off-canvas navigation drawer. The drawer closes by navigation, backdrop click, and Escape.
-- Workspace detail stays inside the global control-plane shell and uses tabs for
-  model policy, repositories, Connectors, and ResourceGraph views. Investigation
-  routes use the separate Workbench shell.
+- Mobile (`<768px`): a 56px single-line context bar and an off-canvas navigation drawer. The drawer closes by navigation, backdrop click, and Escape; it locks page scroll, traps keyboard focus while open, restores focus to its trigger on close, and is removed from visual and keyboard navigation while closed.
+- Workspace detail stays inside the global control-plane shell and uses 50px
+  underline tabs with one shared hairline baseline for model policy,
+  repositories, Connectors, and ResourceGraph views. Investigation routes use
+  the separate Workbench shell.
 
 ## Navigation
 
 - The top of the sidebar shows Lode workspace identity and the active product context. Do not render a fake workspace switcher when workspace switching is not a supported Lode capability.
 - The sidebar Find control opens the permission-filtered route finder. It is
-  available by click and the `F` keyboard shortcut, ignores shortcuts while a
-  form control is active, filters immediately, supports arrow-key selection,
-  and opens the active match with Enter.
-- Navigation rows are 36px high with a 6px corner radius, 10px horizontal padding, clear hover and focus-visible states, and neutral active fill.
-- The signed-in user belongs at the sidebar bottom. Locale, theme, and sign-out live in its menu, not in the top bar.
+  available by click and the `Cmd/Ctrl+K` keyboard shortcut, ignores shortcuts
+  while a form control is active, filters immediately, supports arrow-key
+  selection, and opens the active match with Enter. Opening Finder dismisses
+  the mobile navigation drawer so only one modal navigation layer is active.
+- Navigation rows are 36px high with a 6px corner radius, 10px horizontal padding, clear hover and focus-visible states, and neutral active fill. Finder is a 12px command panel; its input retains keyboard focus while arrow keys expose the active match through standard combobox/listbox semantics. Result rows are pointer-selectable rather than Tab stops, and an off-screen live result count announces filtering changes.
+- The signed-in user belongs at the sidebar bottom. Locale, theme, and sign-out live in its menu, not in the top bar. The menu exposes explicit Chinese / English locale selections and one global Light / System / Dark theme selection, with the current value marked in each group.
 
 ## Controls
 
-- Inputs, selects, search controls, and standard toolbar buttons share a 36px external height and 6px radius, matching Vercel's compact dashboard controls. A combined search control owns the only border: its nested input has no independent border, padding, or shadow.
-- Shared text inputs and textareas always opt out of browser and password-manager
-  autocomplete. Text inputs load read-only and unlock on the first real user
-  focus so saved credentials cannot be injected before interaction; the focus
-  transition must preserve normal controlled-input typing and keyboard access.
+- Inputs, selects, search controls, and standard toolbar buttons share a 36px external height and 6px radius, matching Vercel's compact dashboard controls. A combined search control owns the only border: its nested input has no independent border, padding, or shadow. Every standalone input has a visible label or an accessible name; placeholders are examples, never the sole label. Use a non-nested labelled group around Radix button-based Select controls. Invalid inputs, textareas, selects, and token-entry controls use the same red border and red focus ring while their field-level error copy describes the issue.
+- Checkboxes use the shared native-input wrapper with a 16px square, 4px radius,
+  explicit checked indicator, focus ring, and disabled treatment. Do not render
+  browser-default checkboxes inside dashboard controls, tables, or drawers.
+- Use a Toggle for one independent boolean configuration, a Switch for a
+  two- or three-option mutually exclusive view, and a Checkbox for selecting one
+  or more items from a set. Toggles keep a native focusable input and require an
+  accessible name when no external visible label is associated. A disabled
+  Toggle names the resolution path in one sentence of helper text.
+- Shared text inputs, textareas, and combobox search inputs always opt out of
+  browser and password-manager autocomplete, auto-correction, auto-capitalization,
+  and spellchecking, and remain editable by default. Use explicit read-only
+  semantics only when the product state requires them; normal controlled-input
+  typing and keyboard access must remain intact.
 - A visible field label is 13px with a 20px line box; its input or select starts 12px below it. Use the shared vertical field layout rather than an unscoped `gap` declaration.
-- Toolbar controls use an 8px gap. On narrow screens filter bars wrap into a vertical stack without shrinking important controls below usable width.
-- Icon-only buttons require a tooltip and accessible name. Text buttons are reserved for explicit commands such as Save, Retry, or Clear filters.
-- All interactive controls expose hover, active, disabled, loading, and `focus-visible` states. Keyboard focus always has a visible ring. Async buttons preserve their dimensions, replace the icon/text with a spinner and action label, set `aria-busy`, and reject duplicate submission. Row actions own independent busy state.
-- Creation and edit workflows use the right-side `DialogContent` drawer variant at every viewport. The drawer is full-width on phones, constrained on larger screens, scrolls its body independently, and keeps its action footer at the bottom. Destructive confirmations remain centered dialogs.
+- Toolbar controls use an 8px gap. Keep primary search and one or two high-frequency scopes visible; put secondary list conditions in a compact Popover reached by a labelled Filters button with an active-count indicator. A filter Popover is bounded by Radix's available viewport height and scrolls internally when needed. On narrow screens filter bars wrap into a vertical stack without shrinking important controls below usable width.
+- A compact mode switch is a two- or three-option segmented control: it keeps a neutral shared outline, uses a subtly elevated selected surface instead of a primary CTA fill, and exposes selection with `aria-pressed`.
+- Select, combobox, and account-menu surfaces use a 12px radius. Combobox
+  triggers declare their controlled listbox, expanded state, and busy state so
+  keyboard and assistive-technology selection follows the visible surface. Larger modal,
+  command, and toast surfaces use 12px so hierarchy comes from the interaction
+  layer rather than decorative cards.
+- Icon-only buttons require the shared Radix Tooltip and an accessible name. It opens on hover and keyboard focus after 150ms, closes with Escape, and uses the 6px tooltip material with a triangular stem. Text buttons are reserved for explicit commands such as Save, Retry, or Clear filters.
+- All interactive controls expose hover, active, disabled, loading, and `focus-visible` states. Buttons use an in-place pressed surface change, never a layout-shifting scale transform. Keyboard focus always has a visible ring. Async buttons preserve their dimensions and focusability, replace original icons with a spinner and text-only action label, use the same muted visual hierarchy as disabled controls while retaining focus, set `aria-busy` and `aria-disabled`, and reject duplicate submission. Row actions own independent busy state.
+- Creation and edit workflows use the responsive `DialogContent` sheet variant: a non-blocking 600px right-side Sheet on larger screens and a bottom Drawer on phones. The desktop Sheet keeps the page visible and does not close on outside click; the phone Drawer uses a restrained scrim and permits tap-outside/Escape dismissal. Both have bounded height, independently scrolling bodies, action footers kept visible, and a 12px visible corner treatment. Destructive confirmations remain centered, fully blocking dialogs.
 - Evidence Connector creation is a single provider-specific form grouped into
   Basic information, Connection information, and Read scope. Render only fields
   used by the selected kind. Mark required fields explicitly; every optional
@@ -112,16 +129,22 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 ## Operational Surfaces
 
 - Use 1px-bordered, low-radius panels for forms, inspectors, dialogs, and repeated data groups. Do not place decorative cards inside cards.
-- Tables and record streams are the default list surface. Wide tables use a horizontal scroll container, stable column widths, truncation for unbounded technical strings, and copy affordances where appropriate.
-- Every row that has a detail view is entirely keyboard accessible and has a labelled detail path. A visual arrow may support the affordance but cannot be its only indication.
-- Empty, loading, and error states are first-class. First loads use structural table/list skeletons with the same row height as real data; refresh retains the existing data. Errors expose a Retry action when their source can be fetched again. Client UI renders localized safe messages and keeps stable backend codes out of ordinary display. Filtered-empty states preserve filters and offer Clear filters when any filter is active.
+- Tables and record streams are the default list surface. Tables use 36px muted header rows and 40px data rows; wide tables use a horizontal scroll container, stable column widths, truncation for unbounded technical strings, and copy affordances where appropriate. Every operational table declares its columns with `TableColumns`; it keeps fixed leading or trailing pixel widths separate and normalizes the remaining content-column weights. Checkbox selection and single-icon action columns use 64px; two-icon action columns use 104px; text-command columns reserve their command width explicitly. Numeric and relative-time columns use tabular figures. List timestamps are compact relative time for seven days, then a localized stable date with a full timestamp in the hover title. Every control-plane table uses this shared operational-table treatment; route-specific visual table overrides are prohibited.
+- When a record-list row selects the detail surface beside or below it, keep the selected row on a neutral muted surface with a 2px inset ink marker and expose its state through `aria-pressed`; do not use a semantic status color or only change the text color.
+- A table status is one concise semantic marker: use the shared `table-status` dot plus label for lifecycle or verification state. Do not pair a redundant success/error icon with the same label.
+- Use `status-badge` only for compact categorical metadata such as provider or source. It is a neutral, hairline-bordered 6px tag, never a substitute for a lifecycle-state marker.
+- Every row that has a detail view exposes its primary field as a named, keyboard-accessible detail link. A visual arrow may support the affordance but cannot be its only indication.
+- Empty, loading, and error states are first-class. First loads use structural table/list skeletons with the same row height as real data; refresh retains the existing data. An empty collection renders a dedicated, `aria-live="polite"` Empty State outside the table rather than a header-only table; nested collections use a compact in-surface empty state with a divider instead of a second card. Filtered-empty states preserve filters and offer Clear filters. Errors expose a Retry action when their source can be fetched again. Client UI renders localized safe messages and keeps stable backend codes out of ordinary display.
+- State-changing controls use visible labels for their reason and target fields; placeholders may supplement a label but never provide the only visible field context. Put the fields above the related commands and collapse the grid to one column on narrow screens.
+- In an inline form grid, align the associated command with its input or select control baseline (`self-end`), never with the field label; stacked mobile layouts keep the command after its related field.
 - Workflow state is literal: a missing stage is pending only for an active run. A terminal historical run that predates a stage marks it skipped with an explanation; never show it as still queued.
 
 ### Investigation Single-Page Workbench
 
 - Investigation detail has no page-level tabs. The continuous reading order is:
   compact status and incident error, diagnosis and recommended action, execution
-  process, unused Connectors, then contextual node detail in a right-side drawer.
+  process, unused Connectors, then contextual node detail in a responsive Sheet
+  (right side on desktop, bottom Drawer on phones).
   Workspace ID, duplicated evidence lists, model costs/tokens, and raw technical
   snapshots are not ordinary page content. The investigation ID is an icon copy
   action rather than permanent metadata.
@@ -146,7 +169,7 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
   Color only reinforces status. Running motion is disabled by
   `prefers-reduced-motion`.
 - Hover and keyboard focus expose a compact summary. Activating a persisted node
-  or a report `Evidence #ID` opens the same Radix right-side drawer. Closing it
+  or a report `Evidence #ID` opens the same responsive Radix Sheet. Closing it
   restores graph viewport and focus. Canonical SSE and five-second refresh keep
   the user's selection and silently refresh open detail when `event_cursor`
   advances. Drag, connect, delete, and edit are unavailable.
@@ -162,7 +185,7 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 - Unused frozen Connectors live in one collapsed region after the graph and show
   only name, type, and a persisted rejection reason when present. Below 768px the
   canvas becomes a round-grouped vertical list with identical selection and
-  drawer behavior; the drawer is full width. The page itself never gains
+  Sheet behavior; the bottom Drawer is full width. The page itself never gains
   horizontal overflow. Result tables and long query/log/code content scroll only
   inside their own surfaces.
 
@@ -170,7 +193,8 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 
 - Use compact 6-8px status chips only for discrete state, with text labels in addition to color. Keep status chips compact rather than converting ordinary metadata into pills.
 - Toasts acknowledge completed asynchronous actions. Errors remain visible at the failed surface and must not be toast-only.
-- Destructive actions require confirmation where the underlying workflow supports it. Disabled actions explain their unavailable state in nearby text or an accessible label.
+- Empty data states are separate from table headers and centered in their full panel on both axes. Shared `EmptyState` content owns the message and action; its parent owns the panel border and surface.
+- Destructive actions require confirmation where the underlying workflow supports it. The initial focus in a confirmation dialog is always its safe cancel action, never the destructive action or close affordance. Disabled actions explain their unavailable state in nearby text or an accessible label.
 
 ## Internationalization
 
@@ -188,7 +212,7 @@ Geist is the sans-serif UI face. Geist Mono is reserved for identifiers, branche
 - Workspace Members follows the Vercel Members hierarchy: title, description,
   count, right-aligned add action, combined search, permission/status filters,
   compact bordered rows, and row menus. Each row owns its busy/error state;
-  removal is confirmed and adding uses a right-side drawer with a searchable
+  removal is confirmed and adding uses the responsive Sheet with a searchable
   active-user combobox.
 
 ## Authenticated UI Checklist

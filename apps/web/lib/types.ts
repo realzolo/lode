@@ -512,6 +512,61 @@ export interface InvestigationCodeFindingView {
   test_scenario: string;
 }
 
+export interface SourceAssessmentView {
+  repository_id: number;
+  build_unit_id: number | null;
+  component_id: number | null;
+  revision: string | null;
+  revision_origin: 'alert_revision' | 'bound_branch_head' | 'runtime_observed';
+  authority_status: 'authoritative' | 'corroborated' | 'contradicted' | 'unavailable';
+  compatibility_status: 'not_checked' | 'compatible' | 'incompatible';
+  mismatch_reasons: string[];
+  evidence_refs: number[];
+}
+
+export interface ConfigurationAssessmentView {
+  scope: string;
+  declared_value: unknown;
+  runtime_value: unknown;
+  effective_status: 'unknown' | 'corroborated' | 'contradicted';
+  evidence_refs: number[];
+}
+
+export interface InvestigationComparisonRunView {
+  run: {
+    id: number;
+    parent_investigation_id: number | null;
+    trigger_reason: string;
+    status: InvestigationRun['status'];
+    result_state: 'pending' | InvestigationReportView['result_state'];
+    window_started_at: string;
+    window_finished_at: string;
+  };
+  input: {
+    signal_id: number | null;
+    title: string;
+    summary: string;
+    source_type: string;
+    repository_binding_id: number | null;
+    source_revision: string | null;
+  } | null;
+  hypotheses: unknown[];
+  evidence: Array<{ id: number; artifact_kind: string; content_hash: string; source_revision: string | null }>;
+  causal_graph: CausalGraph | null;
+  conclusion: {
+    result_state: InvestigationReportView['result_state'];
+    headline: string;
+    executive_summary: string;
+    causal_graph: CausalGraph;
+  } | null;
+}
+
+export interface InvestigationComparisonView {
+  incident_id: number;
+  left: InvestigationComparisonRunView;
+  right: InvestigationComparisonRunView;
+}
+
 export interface InvestigationReportView {
   schema_version: 'investigation-report.v1';
   result_state: 'confirmed' | 'hypothesis' | 'insufficient' | 'unavailable';
@@ -521,8 +576,8 @@ export interface InvestigationReportView {
   causal_graph: CausalGraph;
   participants: Array<{ entity_ref: number; display_name: string; identity_status: string; evidence_refs: number[] }>;
   timeline_summary: Array<{ occurred_at: string; event_ref: number; summary: string; evidence_refs: number[] }>;
-  source_assessments: Array<Record<string, unknown>>;
-  configuration_assessments: Array<Record<string, unknown>>;
+  source_assessments: SourceAssessmentView[];
+  configuration_assessments: ConfigurationAssessmentView[];
   counter_evidence: Array<{ text: string; evidence_refs: number[] }>;
   evidence_gaps: Array<{ description: string; consequence: string; required_evidence: string; related_node_ids: string[] }>;
   action_recommendations: Array<{ action_type: string; priority: string; title: string; rationale: string; validation: string; evidence_refs: number[] }>;

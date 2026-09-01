@@ -17,7 +17,7 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      'flex h-8 w-max max-w-full items-center justify-start overflow-x-auto rounded-sm bg-muted p-1 text-muted-foreground',
+      'flex h-[50px] w-full max-w-full items-center justify-start gap-6 overflow-x-auto border-b border-[var(--dashboard-border)] bg-transparent p-0 text-muted-foreground',
       className,
     )}
     {...props}
@@ -32,7 +32,7 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      'inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:shadow-geist-focus disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground',
+      'inline-flex -mb-px h-[50px] shrink-0 items-center justify-center whitespace-nowrap border-b-2 border-transparent px-0.5 text-sm font-normal transition-colors hover:text-[var(--color-10)] focus-visible:outline-none focus-visible:shadow-geist-focus disabled:pointer-events-none disabled:opacity-50 data-[state=active]:border-[var(--color-10)] data-[state=active]:text-[var(--color-10)]',
       className,
     )}
     {...props}
@@ -47,7 +47,7 @@ const TabsContent = React.forwardRef<
   <TabsPrimitive.Content
     ref={ref}
     className={cn(
-      'mt-4 focus-visible:outline-none focus-visible:shadow-geist-focus data-[state=active]:animate-in data-[state=active]:fade-in-0 data-[state=active]:duration-200',
+      'mt-5 focus-visible:outline-none focus-visible:shadow-geist-focus data-[state=active]:animate-in data-[state=active]:fade-in-0 data-[state=active]:duration-200',
       className,
     )}
     {...props}
@@ -59,16 +59,20 @@ TabsContent.displayName = TabsPrimitive.Content.displayName;
 export function Tabs({
   items,
   defaultIndex = 0,
+  value,
+  ariaLabel,
   onValueChange,
 }: {
   items: TabItem[];
   defaultIndex?: number;
+  value?: string;
+  ariaLabel?: string;
   onValueChange?: (value: string) => void;
 }) {
   const initial = items[defaultIndex]?.value ?? items[0]?.value;
   return (
-    <TabsPrimitive.Root defaultValue={initial} className="w-full" onValueChange={onValueChange}>
-      <TabsList>
+    <TabsPrimitive.Root value={value} defaultValue={value === undefined ? initial : undefined} className="w-full" onValueChange={onValueChange}>
+      <TabsList aria-label={ariaLabel}>
         {items.map((item) => (
           <TabsTrigger key={item.value} value={item.value}>
             {item.label}

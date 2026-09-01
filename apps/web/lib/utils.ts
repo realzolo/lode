@@ -5,28 +5,29 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// Geist-faithful relative-time label (e.g. "3 days ago", "just now").
-// Uses Intl.RelativeTimeFormat so it respects the active locale and stays
-// dependency-free. `numeric: 'auto'` yields "yesterday"/"tomorrow" wording.
-const RELATIVE_TIME_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
-  ['year', 60 * 60 * 24 * 365],
-  ['month', 60 * 60 * 24 * 30],
-  ['week', 60 * 60 * 24 * 7],
-  ['day', 60 * 60 * 24],
-  ['hour', 60 * 60],
-  ['minute', 60],
+const RELATIVE_TIME_UNITS: [Intl.RelativeTimeFormatUnit, number, string][] = [
+  ['day', 60 * 60 * 24, 'd'],
+  ['hour', 60 * 60, 'h'],
+  ['minute', 60, 'm'],
+  ['second', 1, 's'],
 ];
 
-export function relativeTime(iso: string, locale = 'en'): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '';
-  const seconds = Math.round((then - Date.now()) / 1000);
-  const rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
-  const abs = Math.abs(seconds);
-  for (const [unit, secs] of RELATIVE_TIME_UNITS) {
-    if (abs >= secs) {
-      return rtf.format(Math.round(seconds / secs), unit);
-    }
+// Tables use compact relative time for the current week, then a stable date.
+// Detail surfaces intentionally keep their complete local timestamps.
+export function relativeTime(iso: string, locale = 'en', now = Date.now()): string {
+  const timestamp = new Date(iso).getTime();
+  if (Number.isNaN(timestamp)) return '\u2014';
+
+  const elapsedSeconds = Math.round((now - timestamp) / 1000);
+  const absoluteSeconds = Math.abs(elapsedSeconds);
+  if (absoluteSeconds >= 7 * 24 * 60 * 60) {
+    return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', year: 'numeric' }).format(timestamp);
   }
-  return rtf.format(Math.round(seconds), 'second');
+
+  const [unit, seconds, abbreviation] = RELATIVE_TIME_UNITS.find(([, value]) => absoluteSeconds >= value) ?? RELATIVE_TIME_UNITS.at(-1)!;
+  const amount = Math.max(1, Math.round(absoluteSeconds / seconds));
+  if (locale.startsWith('en')) return elapsedSeconds >= 0 ? `${amount}${abbreviation} ago` : `in ${amount}${abbreviation}`;
+
+  return new Intl.RelativeTimeFormat(locale, { numeric: 'always', style: 'short' })
+    .format(elapsedSeconds >= 0 ? -amount : amount, unit);
 }

@@ -4,7 +4,7 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 
 /**
- * Geist-styled Switch (binary on/off toggle).
+ * Geist-styled Toggle (binary on/off setting).
  *
  * Built on the shadcn "sr-only peer + visual siblings" pattern: a
  * visually-hidden native <input type="checkbox" role="switch"> is the
@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils';
  * track and thumb are aria-hidden spans styled via `peer-checked:` and
  * `peer-focus-visible:` modifiers.
  *
- * No new Radix dependency — works with just the `@radix-ui/react-label`
+ * No new Radix dependency; works with just the `@radix-ui/react-label`
  * peer-awareness that other primitives already use.
  *
  * Geometry: 36x20 track (w-9 h-5), 16x16 thumb (w-4 h-4) with a 2 px
@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils';
  * checked, matching the Vercel dashboard's toggle chrome. Focus uses
  * the canonical Geist ring (`shadow-geist-focus`).
  */
-export interface SwitchProps {
+export interface ToggleProps {
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   disabled?: boolean;
@@ -30,9 +30,10 @@ export interface SwitchProps {
   name?: string;
   /** Accessible label when no visible <label htmlFor> is rendered. */
   'aria-label'?: string;
+  'aria-describedby'?: string;
 }
 
-export const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
+export const Toggle = React.forwardRef<HTMLInputElement, ToggleProps>(
   (
     {
       checked,
@@ -42,9 +43,13 @@ export const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
       id,
       name,
       'aria-label': ariaLabel,
+      'aria-describedby': ariaDescribedBy,
     },
     ref,
   ) => {
+    const generatedId = React.useId();
+    const inputId = id ?? generatedId;
+
     return (
       <label
         className={cn(
@@ -55,13 +60,14 @@ export const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
       >
         <input
           ref={ref}
-          id={id}
+          id={inputId}
           name={name}
           type="checkbox"
           role="switch"
           checked={checked}
           disabled={disabled}
           aria-label={ariaLabel}
+          aria-describedby={ariaDescribedBy}
           aria-checked={checked}
           onChange={(e) => onCheckedChange(e.target.checked)}
           className="peer sr-only"
@@ -87,4 +93,4 @@ export const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
     );
   },
 );
-Switch.displayName = 'Switch';
+Toggle.displayName = 'Toggle';
